@@ -164,7 +164,7 @@ void dissidia_cam_update(uint8_t* rdram, recomp_context* ctx) {
     if (active) {
         g_idle = 0.f;
         g_yaw   -= (g_invert_x ? -sx : sx) * g_sens * kRate * static_cast<float>(dt);   // stick right: the view turns right
-        g_pitch += (g_invert ? -sy : sy) * g_sens * kRate * 0.6f * static_cast<float>(dt);
+        g_pitch += (g_invert ? sy : -sy) * g_sens * kRate * 0.6f * static_cast<float>(dt);   // stick up: the view tilts up
     } else {
         g_idle += static_cast<float>(dt);
         // Let go of the stick: after a short pause (a brief release while adjusting must not snap back) the offset
