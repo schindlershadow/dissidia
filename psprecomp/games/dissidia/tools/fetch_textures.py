@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""Download the community HD texture pack (Niosai's Dissidia Duodecim Retexture Project) into an installed game.
+
+  fetch_textures.py <workdir> [--ref main|<commit>] [--zip FILE] [--keep-zip]
+
+The pack is Niosa/D012FFRT on GitHub (https://github.com/Niosa/D012FFRT, "HD Texture Mod for Dissidia 012", a PPSSPP texture pack:
+textures.ini + PNG files). It is NOT part of this project and is not bundled in releases: this script downloads it to the player's
+own machine from GitHub (the repository states no license, so check its terms and credits; a Credits.txt comes with it).
+Unpacked into <workdir>/mods/textures, which is where the runtime looks for a pack (PSPRECOMP_TEXPACK overrides). The runtime reads the
+PPSSPP `textures.ini` directly (docs/texture-packs.md, "PPSSPP-style packs"): nothing has to be converted.
+
+The pack was made for the US release (ULUS10566); other releases share most textures, a warning is printed for them.
+--zip FILE uses an already downloaded archive (offline installs, tests). Re-running replaces the pack with the newest one.
+Python 3 standard library only.
+"""
+import argparse
+import json
+import os
+import re
+import shutil
+import sys
+import urllib.request
+import zipfile
+
+REPO = "Niosa/D012FFRT"
+UA = {"User-Agent": "psprecomp-fetch-textures/1"}
+
+
+def say(msg):
+    print(msg, flush=True)
+
+
+def die(msg):
+    print("[textures] ERROR " + msg, flush=True)
+    print("error: " + msg, file=sys.stderr, flush=True)
+    sys.exit(1)
+
+
+def http(url, timeout=60):
+    return urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=timeout)
+
+
+def disc_id(workdir):
+    p = os.path.join(workdir, "disc0", "PSP_GAME", "PARAM.SFO")
+    try:
+        data = open(p, "rb").read()
+    except OSError:
+        return None
+    m = re.search(rb"U[LC][A-Z]{2}\d{5}", data)
+    return m.group(0).decode() if m else None
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("workdir")
+    ap.add_argument("--ref", default="main")
+    ap.add_argument("--zip", help="use this archive instead of downloading")
+    ap.add_argument("--keep-zip", action="store_true")
+    a = ap.parse_args()
+    work = os.path.abspath(a.workdir)
+    if not os.path.isdir(os.path.join(work, "disc0")):
+        die("%s is not an install folder (no disc0/)" % work)
+    did = disc_id(work)
+    if did and did != "ULUS10566":
+        say("note: this pack was made for the US release (ULUS10566); your disc is %s. Most textures are shared; the rest stay original." % did)
+
+    mods = os.path.join(work, "mods")
+    dest = os.path.join(mods, "textures")
+    os.makedirs(mods, exist_ok=True)
+    zpath = a.zip
+    sha = a.ref
+    if not zpath:
+        say("[textures] STEP 1/3 Looking up the newest pack version")
+        try:
+            with http("https://api.github.com/repos/%s/commits/%s" % (REPO, a.ref), 20) as r:
+                sha = json.loads(r.read().decode())["sha"]
+        except Exception as e:  # noqa: BLE001 - rate limit / offline: fall back to the branch name
+            say("could not resolve %s (%s); using the branch" % (a.ref, e))
+        url = "https://codeload.github.com/%s/zip/%s" % (REPO, sha)
+        zpath = os.path.join(mods, ".d012ffrt.zip")
+        say("[textures] STEP 2/3 Downloading %s (about 200 MB)" % url)
+        try:
+            with http(url, 120) as r, open(zpath + ".part", "wb") as f:
+                total = int(r.headers.get("Content-Length") or 0)
+                got = 0
+                last = -1
+                while True:
+                    b = r.read(1 << 20)
+                    if not b:
+                        break
+                    f.write(b)
+                    got += len(b)
+                    pc = got * 100 // total if total else min(99, got >> 22)
+                    if pc != last:
+                        say("[textures] PROGRESS %d" % pc)
+                        last = pc
+            os.replace(zpath + ".part", zpath)
+        except Exception as e:  # noqa: BLE001
+            die("download failed: %s" % e)
+    say("[textures] STEP 3/3 Unpacking")
+    tmp = dest + ".new"
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp)
+    n = 0
+    try:
+        with zipfile.ZipFile(zpath) as z:
+            names = [i for i in z.infolist() if not i.is_dir()]
+            for k, info in enumerate(names):
+                parts = [p for p in info.filename.split("/") if p]
+                if len(parts) < 2 or ".." in parts:
+                    continue
+                rel = parts[1:]                       # drop the "D012FFRT-<ref>/" top folder
+                if rel[-1].lower().endswith((".psd", ".lnk")):
+                    continue                          # sources and shortcuts: not used by the game
+                t = os.path.join(tmp, *rel)
+                os.makedirs(os.path.dirname(t), exist_ok=True)
+                with z.open(info) as s, open(t, "wb") as o:
+                    shutil.copyfileobj(s, o)
+                n += 1
+                if k % 50 == 0:
+                    say("[textures] PROGRESS %d" % (k * 100 // max(1, len(names))))
+    except zipfile.BadZipFile as e:
+        shutil.rmtree(tmp, ignore_errors=True)
+        die("the pack archive is damaged (%s); run again" % e)
+    if not os.path.isfile(os.path.join(tmp, "textures.ini")):
+        shutil.rmtree(tmp, ignore_errors=True)
+        die("the archive has no textures.ini: not the expected texture pack")
+    with open(os.path.join(tmp, ".source.json"), "w") as f:
+        json.dump({"repo": REPO, "ref": sha, "files": n, "disc": did}, f)
+    shutil.rmtree(dest, ignore_errors=True)
+    os.replace(tmp, dest)
+    if not a.zip and not a.keep_zip:
+        try:
+            os.remove(zpath)
+        except OSError:
+            pass
+    pngs = sum(1 for dp, _, fns in os.walk(dest) for fn in fns if fn.lower().endswith(".png"))
+    say("HD texture pack installed: %d files (%d PNG) in %s" % (n, pngs, dest))
+    say("[textures] PROGRESS 100")
+    say("[textures] DONE")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

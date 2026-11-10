@@ -6,6 +6,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -387,18 +388,15 @@ bool psp_png_decode_rgba(const uint8_t* d, size_t len, std::vector<uint8_t>& rgb
 
 // ----------------------------------------------------- pack operations ----
 
-bool psp_texpack_load_replacement(uint64_t id, std::vector<uint8_t>& rgba, int& w, int& h) {
-    init_once();
-    if (!g.replace || !g.pack.count(id) || g.bad.count(id)) return false;
+namespace {
+// Decoded-PNG LRU shared by the id packs and the PPSSPP packs (cache id = the texture id, or a hash of the file name).
+bool load_png_cached(uint64_t id, const std::string& path, std::vector<uint8_t>& rgba, int& w, int& h) {
     if (auto c = g.repl_cache.find(id); c != g.repl_cache.end()) {
         g.repl_lru.splice(g.repl_lru.begin(), g.repl_lru, c->second.lru);
         rgba = c->second.px; w = c->second.w; h = c->second.h;
         return true;
     }
     const auto t0 = std::chrono::steady_clock::now();
-    char name[40];
-    std::snprintf(name, sizeof name, "/%016llx.png", (unsigned long long)id);
-    std::string path = g.dir + name;
     std::vector<uint8_t> file;
     if (FILE* f = std::fopen(path.c_str(), "rb")) {
         std::fseek(f, 0, SEEK_END);
@@ -411,8 +409,8 @@ bool psp_texpack_load_replacement(uint64_t id, std::vector<uint8_t>& rgba, int& 
     if (!file.empty() && psp_png_decode_rgba(file.data(), file.size(), rgba, w, h, &err)) {
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         if (ms >= g.slow_ms)
-            std::fprintf(stderr, "[TEXPACK] slow load %016llx: %dx%d, %zu B png, %.1f ms (cached now, %zu MB in cache)\n",
-                         (unsigned long long)id, w, h, file.size(), ms, (g.repl_bytes + rgba.size()) >> 20);
+            std::fprintf(stderr, "[TEXPACK] slow load %s: %dx%d, %zu B png, %.1f ms (cached now, %zu MB in cache)\n",
+                         path.c_str(), w, h, file.size(), ms, (g.repl_bytes + rgba.size()) >> 20);
         const size_t sz = rgba.size();
         if (sz <= g.repl_budget) {
             while (g.repl_bytes + sz > g.repl_budget && !g.repl_lru.empty()) {
@@ -430,6 +428,161 @@ bool psp_texpack_load_replacement(uint64_t id, std::vector<uint8_t>& rgba, int& 
     std::fprintf(stderr, "[TEXPACK] bad replacement %s: %s (using original)\n", path.c_str(), err.c_str());
     g.bad.insert(id);
     return false;
+}
+}  // namespace
+
+bool psp_texpack_load_replacement(uint64_t id, std::vector<uint8_t>& rgba, int& w, int& h) {
+    init_once();
+    if (!g.replace || !g.pack.count(id) || g.bad.count(id)) return false;
+    char name[40];
+    std::snprintf(name, sizeof name, "/%016llx.png", (unsigned long long)id);
+    return load_png_cached(id, g.dir + name, rgba, w, h);
+}
+
+// ------------------------------------------------------- PPSSPP compatibility ----
+
+namespace {
+constexpr uint32_t X32P1 = 2654435761u, X32P2 = 2246822519u, X32P3 = 3266489917u, X32P4 = 668265263u, X32P5 = 374761393u;
+inline uint32_t rotl32(uint32_t x, int r) { return (x << r) | (x >> (32 - r)); }
+inline uint32_t x32round(uint32_t acc, uint32_t in) { return rotl32(acc + in * X32P2, 13) * X32P1; }
+}  // namespace
+
+uint32_t psp_texpack_xxh32(const uint8_t* p, size_t len, uint32_t seed) {
+    const uint8_t* end = p + len;
+    uint32_t h;
+    if (len >= 16) {
+        uint32_t v1 = seed + X32P1 + X32P2, v2 = seed + X32P2, v3 = seed, v4 = seed - X32P1;
+        const uint8_t* lim = end - 16;
+        do {
+            v1 = x32round(v1, rd32(p)); v2 = x32round(v2, rd32(p + 4));
+            v3 = x32round(v3, rd32(p + 8)); v4 = x32round(v4, rd32(p + 12));
+            p += 16;
+        } while (p <= lim);
+        h = rotl32(v1, 1) + rotl32(v2, 7) + rotl32(v3, 12) + rotl32(v4, 18);
+    } else {
+        h = seed + X32P5;
+    }
+    h += (uint32_t)len;
+    while (p + 4 <= end) { h += rd32(p) * X32P3; h = rotl32(h, 17) * X32P4; p += 4; }
+    while (p < end) { h += (*p++) * X32P5; h = rotl32(h, 11) * X32P1; }
+    h ^= h >> 15; h *= X32P2; h ^= h >> 13; h *= X32P3; h ^= h >> 16;
+    return h;
+}
+
+namespace {
+struct Pp {
+    bool tried = false, on = false, ignore_addr = false, log = false;
+    int kind = 2;                                  // hash = xxh64 (2) | xxh32 (1)
+    std::unordered_map<std::string, std::string> files;   // 24 hex chars (lowercase) -> path relative to the pack folder
+    uint64_t lookups = 0, hits = 0, logged = 0;
+};
+Pp pp;
+
+std::string trim(const std::string& s) {
+    size_t a = 0, b = s.size();
+    while (a < b && std::isspace((unsigned char)s[a])) a++;
+    while (b > a && std::isspace((unsigned char)s[b - 1])) b--;
+    return s.substr(a, b - a);
+}
+std::string lower(std::string s) { for (auto& c : s) c = (char)std::tolower((unsigned char)c); return s; }
+
+void pp_init() {
+    if (pp.tried) return;
+    pp.tried = true;
+    init_once();
+    const char* e = std::getenv("PSPRECOMP_TEX_PPSSPP");
+    if ((e && e[0] == '0') || !g.replace) return;
+    pp.log = (e = std::getenv("PSPRECOMP_TEXPACK_LOG")) && e[0] == '1';
+    FILE* f = std::fopen((g.dir + "/textures.ini").c_str(), "r");
+    if (!f) return;
+    char line[2048];
+    std::string section;
+    while (std::fgets(line, sizeof line, f)) {
+        std::string l = trim(line);
+        if (l.empty() || l[0] == '#' || l[0] == ';') continue;
+        if (l[0] == '[') { section = lower(l); continue; }
+        size_t eq = l.find('=');
+        if (eq == std::string::npos) continue;
+        std::string k = lower(trim(l.substr(0, eq))), v = trim(l.substr(eq + 1));
+        if (section == "[options]") {
+            if (k == "hash") { std::string hv = lower(v); pp.kind = hv == "xxh32" ? 1 : hv == "xxh64" ? 2 : 0; }
+            else if (k == "ignoreaddress") pp.ignore_addr = lower(v) == "true" || v == "1";
+        } else if (section == "[hashes]") {
+            if (k.size() != 24 && !(k.size() > 24 && k[24] == '_')) continue;   // level>0 (mip) entries are not used
+            if (k.size() != 24) continue;
+            if (lower(v).size() < 5 || lower(v).compare(lower(v).size() - 4, 4, ".png") != 0) continue;
+            for (auto& c : v) if (c == '\\') c = '/';
+            pp.files.emplace(k, v);
+        }
+    }
+    std::fclose(f);
+    if (pp.kind == 0) {
+        std::fprintf(stderr, "[TEXPACK] %s/textures.ini uses hash=quick, which is not supported: PPSSPP compatibility off\n", g.dir.c_str());
+        return;
+    }
+    pp.on = !pp.files.empty();
+    if (pp.on)
+        std::fprintf(stderr, "[TEXPACK] PPSSPP-style pack %s: %zu texture(s), hash=%s%s\n", g.dir.c_str(), pp.files.size(),
+                     pp.kind == 2 ? "xxh64" : "xxh32", pp.ignore_addr ? ", ignoreAddress" : "");
+}
+
+int fmt_bpp(int fmt) {
+    switch (fmt) {
+    case 0: case 1: case 2: case 6: return 16;
+    case 3: case 7: return 32;
+    case 4: return 4;
+    case 5: return 8;
+    }
+    return 0;
+}
+}  // namespace
+
+uint32_t psp_texpack_ppsspp_content_hash(const uint8_t* mem, size_t mem_len, int fmt, int w, int h, int bufw, int kind) {
+    const int bpp = fmt_bpp(fmt);
+    if (!bpp || w <= 0 || h <= 0 || bufw <= 0) return 0;
+    auto hash = [&](const uint8_t* p, size_t n) -> uint32_t {
+        return kind == 1 ? psp_texpack_xxh32(p, n, 0xBACD7814u) : (uint32_t)xxh64(p, n, 0xBACD7814ull);
+    };
+    if (bufw <= w) {
+        const size_t total = (size_t)bufw * h + (size_t)(w - bufw);
+        const size_t bytes = (size_t)bpp * total / 8;
+        return bytes <= mem_len ? hash(mem, bytes) : 0;
+    }
+    const size_t per_line = (size_t)bpp * w / 8, stride = (size_t)bpp * bufw / 8;
+    if (stride * (size_t)(h - 1) + per_line > mem_len) return 0;
+    uint32_t result = 0;
+    for (int y = 0; y < h; y++) result = (result * 11) ^ hash(mem + (size_t)y * stride, per_line);
+    return result;
+}
+
+bool psp_texpack_ppsspp_active() { pp_init(); return pp.on; }
+
+bool psp_texpack_ppsspp_lookup(const PspPpssppTex& t, std::vector<uint8_t>& rgba, int& w, int& h) {
+    pp_init();
+    if (!pp.on) return false;
+    const uint32_t dim = t.size_reg & 0xF0F;
+    uint64_t cachekey = ((uint64_t)(t.addr & 0x3FFFFFFF) << 32) | dim;
+    if (t.has_clut) cachekey ^= (uint64_t)(psp_texpack_xxh32(t.clut, t.clut_len, 0xC0108888u) ^ t.clut_format);
+    const uint32_t chash = psp_texpack_ppsspp_content_hash(t.mem, t.mem_len, t.fmt, t.width, t.height, t.bufw, pp.kind);
+    char full[40], noaddr[40];
+    std::snprintf(full, sizeof full, "%016llx%08x", (unsigned long long)cachekey, chash);
+    std::snprintf(noaddr, sizeof noaddr, "%016llx%08x", (unsigned long long)(cachekey & 0xFFFFFFFFull), chash);
+    pp.lookups++;
+    auto it = pp.files.find(full);
+    if (it == pp.files.end() && pp.ignore_addr) it = pp.files.find(noaddr);
+    const bool hit = it != pp.files.end();
+    if (pp.log && pp.logged < 400) {
+        pp.logged++;
+        std::fprintf(stderr, "[TEXPACK] ppsspp %s fmt=%d %dx%d bufw=%d addr=%08X %s\n", noaddr, t.fmt, t.width, t.height, t.bufw, t.addr,
+                     hit ? ("HIT " + it->second).c_str() : "miss");
+    }
+    if (!hit) return false;
+    pp.hits++;
+    if (pp.log && (pp.hits % 100) == 0)
+        std::fprintf(stderr, "[TEXPACK] ppsspp: %llu of %llu lookups hit\n", (unsigned long long)pp.hits, (unsigned long long)pp.lookups);
+    // cache id: hash of the key (files can be shared by several keys, the decoded pixels are the same)
+    const uint64_t cid = xxh64((const uint8_t*)it->second.data(), it->second.size(), 0x70707373u);
+    return load_png_cached(cid, g.dir + "/" + it->second, rgba, w, h);
 }
 
 void psp_texpack_flush() {

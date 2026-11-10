@@ -52,3 +52,25 @@ textures.
 
 Notes: ids of textures with partly uninitialised guest memory can differ between runs; textures drawn at
 runtime (text strips) produce a new id per distinct content. Stats are logged as `[TEXPACK]` lines.
+
+
+## PPSSPP-style packs (Niosa's D012FFRT)
+
+A pack folder that has a PPSSPP `textures.ini` is used as it is, no conversion: `[options] hash = xxh64 | xxh32` and `ignoreAddress`, and
+`[hashes]` lines `<24 hex> = relative/file.png`. (`hash = quick` is not supported and turns this off.) The runtime computes PPSSPP's key at
+texture-bind time from the same guest memory PPSSPP hashes (`runtime/src/psp_tex_pack.cpp`, `psp_texpack_ppsspp_lookup`):
+
+- cache key = `(addr & 0x3FFFFFFF) << 32 | (TEXSIZE0 & 0xF0F)`; for palette formats XOR `XXH32(palette bytes, seed 0xC0108888) ^ CLUTFORMAT`
+  (palette bytes = the last LOADCLUT's block count x 32 plus the CLUT base offset, at least 1 KiB window: `GeState::clut_load_blocks`);
+- content hash over the raw, still swizzled bytes in guest memory: contiguous textures (`bufw <= width`) hash `bpp * (bufw*h + (w - bufw)) / 8` bytes
+  with `XXH64(seed 0xBACD7814)` truncated to 32 bits; textures with gaps (`bufw > width`) hash each row and combine `(r*11) ^ rowhash`;
+- file name key = `%016llx%08x` (cache key, content hash); with `ignoreAddress` the lookup uses the key with the address bits cleared.
+
+From PPSSPP's `TextureCacheCommon` / `TextureReplacer` as of v1.17+ (read from GitHub, 2026-11-10). **Not implemented**: PPSSPP's `maxSeenV`
+height trimming for 512-high textures, `[hashranges]`, `[reducehashranges]`, mip levels (`_1.png`), `.dds/.ktx2`. `PSPRECOMP_TEX_PPSSPP=0`
+disables it; `PSPRECOMP_TEXPACK_LOG=1` logs the first 400 lookups as `[TEXPACK] ppsspp <key> ... HIT file | miss` and a hit counter, which is how to
+check a pack against the game (a miss on a texture the pack is known to replace points at one of the unimplemented parts).
+The hash functions are unit-tested (`test_tex_pack_ppsspp`); **no hit has been seen in the real game yet**.
+
+`tools/fetch_textures.py <workdir>` downloads Niosa/D012FFRT from GitHub into `<workdir>/mods/textures` (the installer wizard does this when
+"HD texture pack" is on). The pack has no stated license and is not bundled; it was made for the US release (ULUS10566).

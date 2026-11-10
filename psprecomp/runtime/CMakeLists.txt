@@ -343,6 +343,11 @@ add_test(NAME vfpu_atan2 COMMAND test_vfpu_atan2)
 # SDL2/GL; also runnable standalone via tests/run_savedata_*.sh).
 add_executable(test_savedata_crypto tests/test_savedata_crypto.cpp src/hle/psp_savedata_crypto.cpp)
 add_test(NAME savedata_crypto COMMAND test_savedata_crypto)
+# PPSSPP-compatible texture pack keys (hashes + lookup in a throw-away folder).
+add_executable(test_tex_pack_ppsspp tests/test_tex_pack_ppsspp.cpp src/psp_tex_pack.cpp)
+target_include_directories(test_tex_pack_ppsspp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(test_tex_pack_ppsspp PRIVATE ZLIB::ZLIB)
+add_test(NAME tex_pack_ppsspp COMMAND test_tex_pack_ppsspp)
 add_executable(test_savedata_dialog tests/test_savedata_dialog.cpp src/hle/psp_savedata_dialog.cpp ${PSP_UI_FONTS_CPP})
 target_link_libraries(test_savedata_dialog PRIVATE PkgConfig::FREETYPE)
 add_test(NAME savedata_dialog COMMAND test_savedata_dialog)

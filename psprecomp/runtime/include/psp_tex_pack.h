@@ -57,6 +57,28 @@ bool psp_texpack_upscale(uint64_t id, const uint8_t* rgba, int w, int h,
 /// PSPRECOMP_TEX_REPLACE_FILTER: 0 = keep the game's filter, 1 = linear, 2 = nearest.
 int psp_texpack_replace_filter();
 
+/// ---- PPSSPP-compatible packs (e.g. Niosa's D012FFRT) ----
+/// A pack folder with a PPSSPP `textures.ini` ([options] hash = xxh64|xxh32, ignoreAddress; [hashes] <24 hex> = file.png) is used
+/// directly: at texture-bind time the runtime computes PPSSPP's key from the same guest memory (cache key from address, size
+/// register and palette hash + the content hash over the raw, still swizzled bytes) and looks it up there. PSPRECOMP_TEX_PPSSPP=0
+/// turns it off; PSPRECOMP_TEXPACK_LOG=1 logs the first lookups (hit/miss + key) so a pack can be checked against the game.
+struct PspPpssppTex {
+    uint32_t addr;          // guest address of level 0
+    uint32_t size_reg;      // TEXSIZE0 register (log2 width/height nibbles)
+    int fmt, width, height, bufw;
+    const uint8_t* mem;     // raw guest bytes starting at addr (as stored: swizzled stays swizzled)
+    size_t mem_len;
+    bool has_clut;
+    uint32_t clut_format;   // CLUTFORMAT register
+    const uint8_t* clut;    // raw palette bytes as PPSSPP's clut buffer holds them (clut_len = its "extended" size)
+    size_t clut_len;
+};
+bool psp_texpack_ppsspp_active();
+bool psp_texpack_ppsspp_lookup(const PspPpssppTex& t, std::vector<uint8_t>& rgba, int& w, int& h);
+/// The two hashes, exposed for tests: XXH32 and the PPSSPP content hash of a texture's raw bytes (kind 2 = xxh64, 1 = xxh32).
+uint32_t psp_texpack_xxh32(const uint8_t* p, size_t len, uint32_t seed);
+uint32_t psp_texpack_ppsspp_content_hash(const uint8_t* mem, size_t mem_len, int fmt, int w, int h, int bufw, int kind);
+
 /// Write textures.txt now (also called periodically and at shutdown).
 void psp_texpack_flush();
 

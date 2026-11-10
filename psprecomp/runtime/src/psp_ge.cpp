@@ -865,7 +865,9 @@ GeListResult ge_process_display_list(
             g_ge_state.clut_format = data;
             break;
         case GE_CMD_LOADCLUT:
-            // Trigger CLUT load (texture cache handles this)
+            // The palette itself is read from guest memory at texture bind; the block count is kept for the
+            // PPSSPP-compatible texture pack key (psp_tex_pack.h).
+            g_ge_state.clut_load_blocks = data & 0x3F;
             break;
 
         // ---- Enable flags ----

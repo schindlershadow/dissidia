@@ -53,6 +53,7 @@ struct GeState {
 
     // -- CLUT state --
     uint32_t clut_addr;       // GE_CMD_CLUTADDR (low 24 bits)
+    uint32_t clut_load_blocks; // GE_CMD_LOADCLUT: number of 32-byte blocks of the last palette load (PPSSPP texture-pack hashing)
     uint32_t clut_addr_upper; // GE_CMD_CLUTADDRUPPER (high bits)
     uint32_t clut_format;     // GE_CMD_CLUTFORMAT: palette format + shift
 

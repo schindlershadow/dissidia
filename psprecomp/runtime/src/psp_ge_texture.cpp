@@ -732,10 +732,34 @@ GLuint ge_texture_bind(
     std::vector<uint8_t> pack_px;      // replacement / upscaled pixels
     int pack_w = 0, pack_h = 0;
     bool replaced = false;
+    // PPSSPP-style pack (textures.ini + hash-named files): its key comes from the raw guest memory, not from the decoded texels.
+    if (fmt <= GE_TFMT_CLUT8 && psp_texpack_ppsspp_active() && masked_addr < PSP_MEM_SIZE) {
+        PspPpssppTex pt{};
+        pt.addr = psp_addr;
+        pt.size_reg = key.size_reg;
+        pt.fmt = fmt; pt.width = width; pt.height = height; pt.bufw = bufw ? bufw : width;
+        pt.mem = rdram + masked_addr;
+        pt.mem_len = PSP_MEM_SIZE - masked_addr;
+        if (is_pal) {
+            const uint32_t ca = clut_address(state) & PSP_ADDR_MASK;
+            const size_t bpe = (state.clut_format & 3) == GE_CMODE_32BIT_ABGR8888 ? 4 : 2;
+            const size_t base_bytes = (size_t)((state.clut_format >> 16) & 0x1F) * 16 * bpe;
+            size_t loaded = (size_t)state.clut_load_blocks * 32;
+            if (!loaded) loaded = (size_t)(fmt == GE_TFMT_CLUT4 ? 16 : 256) * bpe;   // no LOADCLUT seen: the palette size
+            const size_t cap = std::max<size_t>(1024, loaded);
+            size_t ext = std::min(loaded + base_bytes, cap);
+            if (ca < PSP_MEM_SIZE) ext = std::min<size_t>(ext, PSP_MEM_SIZE - ca);
+            pt.has_clut = true;
+            pt.clut_format = state.clut_format;
+            pt.clut = rdram + ca;
+            pt.clut_len = ext;
+        }
+        replaced = psp_texpack_ppsspp_lookup(pt, pack_px, pack_w, pack_h);
+    }
     if (id_on)
         tid = psp_texpack_make_id(src_data, (size_t)width_bytes * height, fmt, width, height,
                                   fmt == GE_TFMT_CLUT4 ? 4 : fmt == GE_TFMT_CLUT8 ? 8 : 0, clut_rgba);
-    if (pack_on)
+    if (pack_on && !replaced)
         replaced = psp_texpack_load_replacement(tid, pack_px, pack_w, pack_h);
 
     // Convert to RGBA8888
