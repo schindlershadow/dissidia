@@ -2469,7 +2469,7 @@ static void ge_draw_prim_one(
         const float dw = float(1 << (state.tex_size[0] & 0xFF));
         ge_set_fb_u(480.0f / float(g_fbtex_w480), 0.5f * float(g_fbtex_w480 - 480) / float(g_fbtex_w480) * (480.0f / dw), dw / 480.0f);
     }
-    else ge_set_fb_u(1.0f, 0.0f, 1.0f);
+    else ge_set_fb_u(1.0f, 0.0f, fbo_tex ? float(1 << (state.tex_size[0] & 0xFF)) / 480.0f : 1.0f);
     // PSPRECOMP_DRAW_TRACE=1: GE state behind each non-clear PRIM (first 64).
     // PSPRECOMP_DRAW_TRACE_FROM=<draw#>: only trace draws numbered >= N (to
     // reach the battle), PSPRECOMP_DRAW_TRACE_MAX=<n>: how many to trace.
