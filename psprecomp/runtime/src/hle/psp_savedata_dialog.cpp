@@ -813,7 +813,7 @@ void render_themed(const SdTheme& T, Canvas& c, Kind kind, const std::vector<Sav
 
     // ---- information panel (frame with the game's corner ornaments) ----
     {
-        const float px = 16, py = 214, pw = 448, ph = 31;
+        const float px = 16, py = 203, pw = 448, ph = 44;
         const Col fill = unpack(T.panel_fill), edge = unpack(T.panel_edge);
         P.shadow(px, py, pw, ph, 3, 3.f, 0.22f);
         P.rrect(px - 1.2f, py - 1.2f, pw + 2.4f, ph + 2.4f, 3, edge);
@@ -1072,6 +1072,54 @@ void menu_value_themed(Canvas& c, Painter& P, const SdTheme& T, FT_Face f, float
     draw_sprite(c, L, x, cy - float(L.h) / 2, float(L.w), float(L.h), r.can_dec ? 1.f : 0.3f);
 }
 
+static void scroll_arrow(Painter& P, float cx, float cy, bool up, Col col) {
+    Poly p;
+    if (up) { p.add(cx, cy - 3.f); p.add(cx + 4.f, cy + 2.f); p.add(cx - 4.f, cy + 2.f); }
+    else { p.add(cx, cy + 3.f); p.add(cx + 4.f, cy - 2.f); p.add(cx - 4.f, cy - 2.f); }
+    P.poly(p, 0, [&](float, float) { return col; });
+}
+
+// Rows are drawn in a window of MENU_ROWS that scrolls to keep the selected row visible (kept between frames).
+static int menu_first_row(int total, int sel) {
+    static int first = 0;
+    if (sel >= 0) {
+        if (sel < first) first = sel;
+        if (sel >= first + MENU_ROWS) first = sel - MENU_ROWS + 1;
+    }
+    first = std::max(0, std::min(first, std::max(0, total - MENU_ROWS)));
+    return first;
+}
+
+// Word-wrap `str` to at most `max_lines` lines of `max_w` units; the last line ends in "..." when text is left over.
+static std::vector<std::string> wrap_text(Painter& P, FT_Face f, float size, const std::string& str, float max_w, int max_lines) {
+    std::vector<std::string> out;
+    size_t pos = 0;
+    while (pos < str.size() && int(out.size()) < max_lines) {
+        while (pos < str.size() && str[pos] == ' ') pos++;
+        if (pos >= str.size()) break;
+        std::string line;
+        size_t best = pos, i = pos;
+        while (i <= str.size()) {
+            size_t e = str.find(' ', i);
+            if (e == std::string::npos) e = str.size();
+            const std::string cand = str.substr(pos, e - pos);
+            if (!line.empty() && P.text_width(f, size, cand) > max_w) break;
+            line = cand; best = e;
+            if (e >= str.size()) break;
+            i = e + 1;
+        }
+        pos = best;
+        out.push_back(line);
+    }
+    while (pos < str.size() && str[pos] == ' ') pos++;
+    if (pos < str.size() && !out.empty()) {   // more text than lines: end the last line with "..."
+        std::string& l = out.back();
+        while (!l.empty() && P.text_width(f, size, l + "...") > max_w) { while (!l.empty() && (l.back() & 0xC0) == 0x80) l.pop_back(); if (!l.empty()) l.pop_back(); }
+        l += "...";
+    }
+    return out;
+}
+
 void render_menu_themed(const SdTheme& T, Canvas& c, const std::string& title, const std::string& tab,
                         const std::vector<MenuRow>& rows, int sel, bool confirm_cross) {
     const Fonts& F = fonts();
@@ -1100,14 +1148,16 @@ void render_menu_themed(const SdTheme& T, Canvas& c, const std::string& title, c
     draw_sprite(c, T.tab, 12, 43, 146, 21);
     themed_hint(P, bodyb, 9.5f * fs, 12 + 146 / 2.f, 43 + 14.f, tab, unpack(T.hint_text), 2);
 
-    const int n = std::min<int>(MENU_ROWS, int(rows.size()));
-    // 4 rows use the save dialog's spacing; more are packed into the same 140 units above the information panel.
-    const float ROW_Y0 = 70, PITCH = n > 4 ? 140.f / float(n) : 35.f, BAR_H = PITCH - 3.f, BAR_X = 46, BAR_W = 410;
+    const int total = int(rows.size());
+    const int first = menu_first_row(total, sel);
+    const int n = std::min<int>(MENU_ROWS, total - first);
+    // 4 rows use the save dialog's spacing; more are packed into the space above the information panel.
+    const float ROW_Y0 = 68, PITCH = n > 4 ? 128.f / float(n) : 35.f, BAR_H = PITCH - 3.f, BAR_X = 46, BAR_W = 410;
     const Col c_text = unpack(T.text), c_dim = unpack(T.text_dim), c_sel = unpack(T.text_selected),
               c_seld = unpack(T.text_selected_dim);
     for (int i = 0; i < n; ++i) {
-        const MenuRow& r = rows[size_t(i)];
-        const bool is_sel = i == sel;
+        const MenuRow& r = rows[size_t(first + i)];
+        const bool is_sel = first + i == sel;
         const float y = ROW_Y0 + float(i) * PITCH;
         if (is_sel) draw_sprite(c, T.row_selected, BAR_X - 4, y - 3, BAR_W + 8, BAR_H + 6);
         else if (T.row_normal.valid()) draw_sprite(c, T.row_normal, BAR_X - 4, y - 3, BAR_W + 8, BAR_H + 6);
@@ -1119,6 +1169,8 @@ void render_menu_themed(const SdTheme& T, Canvas& c, const std::string& title, c
         if (is_sel && T.cursor.valid())
             draw_sprite(c, T.cursor, 10.f, y + (BAR_H - float(T.cursor.h)) / 2 + 1.f, float(T.cursor.w), float(T.cursor.h));
     }
+    if (first > 0) scroll_arrow(P, BAR_X + BAR_W / 2.f, ROW_Y0 - 3.f, true, c_text);                            // more rows above
+    if (first + n < total) scroll_arrow(P, BAR_X + BAR_W / 2.f, ROW_Y0 + float(n) * PITCH, false, c_text);       // more rows below
 
     {   // information panel: the selected row's help
         const float px = 16, py = 214, pw = 448, ph = 31;
@@ -1136,13 +1188,16 @@ void render_menu_themed(const SdTheme& T, Canvas& c, const std::string& title, c
             draw_sprite(c, q[3], px + pw + o - float(q[3].w), py + ph + o - float(q[3].h), float(q[3].w), float(q[3].h));
         }
         const Col pt = unpack(T.panel_text);
-        if (sel >= 0 && sel < n) {
+        if (sel >= 0 && sel < total) {
             const std::string& h = rows[size_t(sel)].help;
             const size_t nl = h.find('\n');
-            if (nl == std::string::npos) P.text(body, 9.f * fs, px + 16, py + 19.f, h, pt, pw - 32);
-            else {
-                P.text(bodyb, 9.f * fs, px + 16, py + 13.f, h.substr(0, nl), pt, pw - 32);
-                P.text(body, 8.f * fs, px + 16, py + 24.5f, h.substr(nl + 1), {pt.r, pt.g, pt.b, 0.85f}, pw - 32);
+            if (nl == std::string::npos) {
+                const auto ls = wrap_text(P, body, 8.f * fs, h, pw - 32, 3);
+                for (size_t k = 0; k < ls.size(); ++k) P.text(body, 8.f * fs, px + 16, py + 13.f + 9.f * float(k), ls[k], pt);
+            } else {
+                P.text(bodyb, 9.f * fs, px + 16, py + 11.f, h.substr(0, nl), pt, pw - 32);
+                const auto ls = wrap_text(P, body, 7.6f * fs, h.substr(nl + 1), pw - 32, 3);
+                for (size_t k = 0; k < ls.size(); ++k) P.text(body, 7.6f * fs, px + 16, py + 21.f + 8.5f * float(k), ls[k], {pt.r, pt.g, pt.b, 0.85f});
             }
         }
     }
@@ -1220,11 +1275,13 @@ void render_menu_plain(Canvas& c, const std::string& title, const std::string& t
     P.rrect(PANEL_X + 1.1f, PANEL_Y + 1.1f, PANEL_W - 2.2f, PANEL_H - 2.2f, 6,
             Ramp(rgb(255, 255, 255), rgb(244, 243, 252), PANEL_Y, PANEL_Y + PANEL_H));
     const float ry0 = PANEL_Y + 4;
-    const int n = std::min<int>(MENU_ROWS, int(rows.size()));
+    const int total = int(rows.size());
+    const int first = menu_first_row(total, sel);
+    const int n = std::min<int>(MENU_ROWS, total - first);
     const float rh = n > 4 ? float(4 * ROW_H) / float(n) : float(ROW_H);
     for (int i = 0; i < n; ++i) {
-        const MenuRow& r = rows[size_t(i)];
-        const bool is_sel = i == sel;
+        const MenuRow& r = rows[size_t(first + i)];
+        const bool is_sel = first + i == sel;
         const float y = ry0 + float(i) * rh, h = rh - 4.f;
         if (is_sel) {
             Poly p = chevron(ROW_X, y, ROW_W, h, 7);
@@ -1232,7 +1289,7 @@ void render_menu_plain(Canvas& c, const std::string& title, const std::string& t
             Ramp rp(ROYAL_T, ROYAL_M, ROYAL_B, y, y + h);
             P.poly(p, 0, [&](float yy, float) { return rp.at(yy); });
             draw_hand(P, PANEL_X + 2.f, y + (h - 16.f * 1.3f) / 2 + 0.5f);
-        } else if (i + 1 < n && i + 1 != sel) {
+        } else if (i + 1 < n && first + i + 1 != sel) {
             P.hline(ROW_X + 10, ROW_X + ROW_W - 10, y + h + 2.f, 1.f, rgb(206, 208, 232, 0.9f));
         }
         const Col tc = is_sel ? rgb(255, 255, 255) : INK, dc = is_sel ? rgb(214, 220, 255) : INK_DIM;
