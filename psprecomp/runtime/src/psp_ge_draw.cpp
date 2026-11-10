@@ -13,6 +13,7 @@
 
 #include <SDL.h>
 #include "psp_gl.h"
+#include "psp_touch.h"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -3432,6 +3433,13 @@ static void present_blit(GLuint fbo, const char* why = "flip") {
     if (!std::strcmp(why, "flip")) perf_note_flip();
     if (std::strcmp(why, "menu") != 0) { present_perf_hud(pr); present_toast(pr); }
     present_dialog_overlay(cpr);
+    if (psp_touch_enabled()) {   // on-screen controls over the whole window (own program/VAO: the GE's cached GL state is reset after)
+        int tw = 0, th = 0;
+        SDL_GL_GetDrawableSize(window, &tw, &th);
+        psp_touch_draw(tw, th);
+        glc::invalidate();
+        ge_shader_note_external_program();
+    }
     present_service_window_capture();
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     if (g_sync_mode == 3) glFinish();

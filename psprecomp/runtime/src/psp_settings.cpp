@@ -1,5 +1,6 @@
 // psp_settings.cpp — in-game settings menu. See include/psp_settings.h.
 #include "psp_settings.h"
+#include "psp_touch.h"
 #include "psp_platform.h"
 #include "psp_ge_vertex.h"
 #include "psp_runtime.h"
@@ -81,7 +82,7 @@ bool updates_choice();
 bool texpack_choice();
 bool texpack_at_start();
 
-enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_VOICE, ROW_TEXPACK, ROW_UPDATES, ROW_QUIT,
+enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_VOICE, ROW_TEXPACK, ROW_TOUCH, ROW_UPDATES, ROW_QUIT,
            ROW_NET_MODE, ROW_NET_SERVER, ROW_NET_ROOM, ROW_NET_PEERS, ROW_NET_STATUS,   // Network page
            ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS };   // the last six: Debug page
 std::vector<Row> g_rows;
@@ -356,6 +357,16 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.help = "Texture pack\nReplaces the game's textures with the installed HD pack (mods/textures). Takes effect the next time the game starts.";
             break;
         }
+        case ROW_TOUCH: {
+            static const char* const names[3] = {"Auto", "On", "Off"};
+            const int t = psp_touch_mode();
+            m.label = "Touch Controls";
+            m.value = names[t];
+            m.can_dec = t > 0;
+            m.can_inc = t < 2;
+            m.help = "On-screen buttons (touch screens)\nAuto: shown when you touch the screen, hidden when a controller button is pressed. On: always shown. Off: never. Saved.";
+            break;
+        }
         case ROW_UPDATES: {
             const bool on = updates_choice();
             m.label = "Check for Updates";
@@ -600,6 +611,12 @@ void change(int d) {   // left / right on the selected row
     case ROW_VOICE: apply_voice(d > 0); break;   // left: English, right: Japanese
     case ROW_TEXPACK: apply_texpack(d > 0); break;
     case ROW_UPDATES: apply_updates(d > 0); break;
+    case ROW_TOUCH: {
+        const int t = std::clamp(psp_touch_mode() + d, 0, 2);
+        psp_touch_set_mode(t);
+        save("touch", t == 0 ? "auto" : t == 1 ? "on" : "off");
+        break;
+    }
     case ROW_QUIT: break;
     case ROW_NET_MODE:
         if (g_net_internet != (d < 0)) {   // left: Internet, right: LAN
@@ -658,6 +675,7 @@ void build_rows() {
         g_rows.push_back(ROW_SOFT);
         if (voice_row_wanted()) g_rows.push_back(ROW_VOICE);
         if (texpack_row_wanted()) g_rows.push_back(ROW_TEXPACK);
+        g_rows.push_back(ROW_TOUCH);
         g_rows.push_back(ROW_UPDATES);
         g_rows.push_back(ROW_QUIT);
     }
@@ -745,6 +763,7 @@ void confirm() {
     case ROW_VOICE: apply_voice(!voice_jp_choice()); break;
     case ROW_TEXPACK: apply_texpack(!texpack_choice()); break;
     case ROW_UPDATES: apply_updates(!updates_choice()); break;
+    case ROW_TOUCH: change(psp_touch_mode() >= 2 ? -2 : 1); return;
     case ROW_NET_MODE: change(g_net_internet ? 1 : -1); return;
     case ROW_NET_SERVER: edit_begin(0); return;
     case ROW_NET_ROOM: edit_begin(1); return;
@@ -828,6 +847,8 @@ void psp_settings_load_early() {
         put("PSPRECOMP_VOICE", it->second);
     if ((it = g_saved.find("hd_textures")) != g_saved.end() && (it->second == "0" || it->second == "1"))
         put("PSPRECOMP_TEX_REPLACE", it->second);
+    if ((it = g_saved.find("touch")) != g_saved.end() && (it->second == "auto" || it->second == "on" || it->second == "off"))
+        put("PSPRECOMP_TOUCH", it->second);
     if ((it = g_saved.find("window_size")) != g_saved.end() && g_saved.count("display") && g_saved["display"] == "window"
         && it->second.find('x') != std::string::npos) {
         put("PSPRECOMP_WINDOW", it->second);

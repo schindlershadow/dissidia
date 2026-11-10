@@ -188,6 +188,7 @@ set(RUNTIME_SOURCES
     ${PSP_VFPU_SOURCES}
     $<$<NOT:$<PLATFORM_ID:Android>>:src/glad.c>   # Android uses libGLESv3 directly (include/psp_gl.h)
     $<$<PLATFORM_ID:Android>:src/psp_android.cpp>
+    src/psp_touch.cpp
     src/psp_debug_socket.cpp
     src/psp_gl_stats.cpp
 )

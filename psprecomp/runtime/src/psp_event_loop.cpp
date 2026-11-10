@@ -8,6 +8,7 @@
 
 #include <SDL.h>
 #include "psp_gl.h"
+#include "psp_touch.h"
 void gl_stats_install();
 #include <csignal>
 #include <cstdio>
@@ -353,6 +354,7 @@ static void osk_tick() {
 
 // Handle one SDL event: window close, keyboard and game controller state.
 static void handle_sdl_event(const SDL_Event& ev) {
+    psp_touch_event(ev);   // on-screen touch controls: fingers become synthetic pad events (and real pad input hides them)
     {   // settings menu first: its hotkey is swallowed; opening / closing re-gates the game's input
         const bool was_open = psp_settings_menu_open();
         const bool eaten = psp_settings_handle_event(ev);
@@ -505,6 +507,9 @@ int psp_runtime_init_sdl() {
                     "[RT] gamecontrollerdb '%s': %d mappings loaded\n", db, n);
         }
     }
+
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");   // touch drives the on-screen controls, not a fake mouse
+    SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
 
     // 2. Set GL attributes: OpenGL 3.3 core profile, double-buffered
 #ifdef PSP_GLES
