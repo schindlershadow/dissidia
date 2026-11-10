@@ -81,6 +81,7 @@ bool g_scope_all = false, g_log = false;
 int g_switch_logs = 0;
 int g_rm_log_left = 300;
 bool g_fighter_log = false;   // PSPRECOMP_FIGHTER_LOG (see fighter_log_frame)
+uint32_t g_press_calls = 0, g_press_edges = 0, g_press_latched = 0, g_press_dropped = 0;   // press latch counters for the [FPS] log
 uint64_t g_tick = 1;               // frame ends seen (the effect system updates once per frame)
 // logic-rate log
 int64_t g_win_t0 = 0;
@@ -291,7 +292,6 @@ uint64_t g_fighter_seen[4] = {};   // g_tick when the fighter's step was last as
 // pressed for 2 / step updates in total (4 at 120 Hz), as long as the fighter has not started another action (script id) since:
 // the press that starts a move must not count again for that move's own early-press lockout (event 0x004C).
 bool g_press_latch = true;
-uint32_t g_press_calls = 0, g_press_edges = 0, g_press_latched = 0, g_press_dropped = 0;   // counters for the [FPS] log
 struct PressEntry { uint32_t obj = 0, bit = 0, actor = 0, scr = 0; uint64_t tick = 0; };
 PressEntry g_press[48];
 uint32_t actor_of_pad(uint32_t pad) {   // the fighter whose controller (actor+0x5C4) owns this virtual pad (controller+0x53C)
