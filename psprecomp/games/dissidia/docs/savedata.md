@@ -21,12 +21,34 @@ from the Dissidia module; more IDs can be added with `PSPRECOMP_SAVE_IDS=ID1,ID2
 or renaming, and the save list shows each slot once. Saving writes back into the folder that was found; a slot that
 exists nowhere is created under the running disc's own ID. Test: `runtime/tests/test_savedata_hle.cpp`.
 
+## In-game: Manage saves
+
+Open the game's save list (Load Game / Save Game) and press **Triangle** (the hint is in the bottom bar; with no saves
+yet the list says so and still offers it). The **Manage Saves** screen has:
+
+- **Import saves**: lists the places a Dissidia 012 save may be: PPSSPP's `PSP/SAVEDATA` (Linux `~/.config/ppsspp`,
+  Flatpak, macOS, Windows `Documents\PPSSPP` and `%APPDATA%`), PSP memory sticks mounted under `/media`, `/run/media`,
+  `/mnt` (two levels) and Windows drive letters, with the number of saves in each; or **Type a path...** (host
+  keyboard, or the pad keyboard; any folder holding save folders, or a memory stick / PPSSPP root). Then pick saves
+  (**All saves** toggles the default set: one save per slot, this game's region first; Cross toggles a save,
+  Start imports) and **Import selected**. Saves go in under this disc's ID (or into the other region's folder if the
+  game already uses one, see above), `PARAM.SFO` signed again as `savemgr` does.
+- **Export saves**: the same in reverse: pick PPSSPP / a memory stick / a typed folder, pick saves, choose
+  **Folder names**: *keep region* or *as ULES01505* (this game's ID, so a matching PPSSPP game finds them).
+
+Nothing is replaced silently: when a save already exists you choose **Replace them** (the old copy is moved to
+`ms0/PSP/SAVEDATA_BACKUP/<name>.bak`, never inside `SAVEDATA`, which the game lists) or **Skip existing**. Results are
+listed per save and logged as `[SAVEMGR]`. `PSPRECOMP_SAVEMGR=0` removes the Triangle key. The logic lives in
+`runtime/src/hle/psp_savemgr.cpp` (shared with `tools/savemgr`) and the screen in `psp_savemgr_ui.cpp`; tests:
+`runtime/tests/test_savemgr.cpp` (synthetic folders, every flow driven by pad presses, and the real PPSSPP folder
+read-only when `~/.config/ppsspp/PSP/SAVEDATA` exists; `PSPRECOMP_TEST_PPSSPP_SAVES` overrides it).
+
 ## savemgr
 
 `tools/savemgr/savemgr.cpp` is a small stand-alone tool (C++17, no libraries beyond `psp_savedata_crypto`):
 
 ```
-g++ -O2 -std=c++17 -Iruntime/src/hle tools/savemgr/savemgr.cpp runtime/src/hle/psp_savedata_crypto.cpp -o savemgr
+g++ -O2 -std=c++17 -Iruntime/src/hle tools/savemgr/savemgr.cpp runtime/src/hle/psp_savemgr.cpp runtime/src/hle/psp_savedata_crypto.cpp -o savemgr
 
 savemgr list   [--from DIR]
 savemgr import --from DIR [--workdir DIR | --to DIR] [--id ULUS10566] [--force] [NAME...]

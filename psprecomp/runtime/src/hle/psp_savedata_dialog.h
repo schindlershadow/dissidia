@@ -39,7 +39,7 @@ int output_scale();
 constexpr uint32_t BTN_UP = 0x0010, BTN_RIGHT = 0x0020, BTN_DOWN = 0x0040,
                    BTN_LEFT = 0x0080, BTN_LTRIGGER = 0x0100,
                    BTN_RTRIGGER = 0x0200, BTN_CIRCLE = 0x2000,
-                   BTN_CROSS = 0x4000;
+                   BTN_CROSS = 0x4000, BTN_TRIANGLE = 0x1000;
 
 struct SaveEntry {
     std::string dirname;     // full directory name, e.g. ULES01505GameData00
@@ -151,8 +151,11 @@ public:
     // Bumped whenever what render() would draw changes (selection/scroll/begin).
     uint32_t revision() const { return rev_; }
     void render(Canvas& c) const;
+    // Shows the "Triangle: Manage saves" hint (the HLE opens psp_savemgr_ui on that button).
+    void set_manage_hint(bool on) { if (manage_ != on) { manage_ = on; ++rev_; } }
 
 private:
+    bool manage_ = false;
     Kind kind_ = Kind::Load;
     std::vector<SaveEntry> entries_;
     bool confirm_cross_ = true;

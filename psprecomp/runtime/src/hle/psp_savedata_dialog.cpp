@@ -724,7 +724,7 @@ void themed_hint(Painter& P, FT_Face f, float size, float x, float base, const s
 }
 
 void render_themed(const SdTheme& T, Canvas& c, Kind kind, const std::vector<SaveEntry>& entries, int sel,
-                   int top, bool confirm_cross) {
+                   int top, bool confirm_cross, bool manage) {
     const Fonts& F = fonts();
     ThemeFaces& TF = theme_faces(T);
     FT_Face body = TF.reg ? TF.reg : F.body;
@@ -832,6 +832,7 @@ void render_themed(const SdTheme& T, Canvas& c, Kind kind, const std::vector<Sav
         const SaveEntry* e = (sel >= 0 && sel < int(entries.size())) ? &entries[size_t(sel)] : nullptr;
         if (!e) {
             P.text(bodyb, 9.5f * fs, px + pw / 2, py + 19.f, "No save data found.", pt, 0, 2);
+            if (manage) P.text(body, 8.f * fs, px + pw / 2, py + 31.f, "Triangle: import saves from PPSSPP or a memory stick", pt, 0, 2);
         } else {
             std::string a, b;
             if (e->exists) {
@@ -866,6 +867,10 @@ void render_themed(const SdTheme& T, Canvas& c, Kind kind, const std::vector<Sav
         x += P.text_width(bodyb, 8.8f * fs, "Select") + 22;
         x += glyph(g2, x) + 3;
         themed_hint(P, bodyb, 8.8f * fs, x, base, "Back", wh);
+        if (manage) {
+            x += P.text_width(bodyb, 8.8f * fs, "Back") + 18;
+            themed_hint(P, bodyb, 8.8f * fs, x, base, "Triangle: Manage saves", wh);
+        }
         const float rx = bx + bw - 28;
         const float tw = P.text_width(bodyb, 8.8f * fs, "Choose");
         themed_hint(P, bodyb, 8.8f * fs, rx - tw, base, "Choose", wh);
@@ -886,7 +891,7 @@ void render_themed(const SdTheme& T, Canvas& c, Kind kind, const std::vector<Sav
 // ---------------------------------------------------------------------------
 void ListDialog::render(Canvas& c) const {
     if (std::shared_ptr<const SdTheme> th = theme()) {
-        render_themed(*th, c, kind_, entries_, sel_, top_, confirm_cross_);
+        render_themed(*th, c, kind_, entries_, sel_, top_, confirm_cross_, manage_);
         return;
     }
     const Fonts& F = fonts();
@@ -936,6 +941,7 @@ void ListDialog::render(Canvas& c) const {
 
     if (entries_.empty()) {
         P.text(F.body, 15.f, PANEL_X + PANEL_W / 2, PANEL_Y + PANEL_H / 2 + 4, "No save data found.", INK_DIM, 0, 2);
+        if (manage_) P.text(F.body, 11.f, PANEL_X + PANEL_W / 2, PANEL_Y + PANEL_H / 2 + 24, "Press Triangle to import saves from PPSSPP or a memory stick.", INK_DIM, 0, 2);
     }
 
     const float ry0 = PANEL_Y + 4;
@@ -1020,7 +1026,8 @@ void ListDialog::render(Canvas& c) const {
         x += P.text(F.cinzel, 10.5f, x, base, "Select", wh) + 18;
         draw_btn_glyph(P, !confirm_cross_, x + 5.5f, by + bh / 2, wh);
         x += 14;
-        P.text(F.cinzel, 10.5f, x, base, "Back", wh);
+        x += P.text(F.cinzel, 10.5f, x, base, "Back", wh) + 18;
+        if (manage_) P.text(F.cinzel, 10.5f, x, base, "Triangle: Manage saves", wh);
         // D-pad hint on the right
         const float rx = PANEL_X + PANEL_W - 26;
         float tw = P.text_width(F.cinzel, 10.5f, "Choose");
@@ -1428,7 +1435,7 @@ void osk_push_key(uint32_t cp) {
 void KeyboardDialog::begin(const std::u16string& title, const std::u16string& initial, int max_chars,
                            bool confirm_cross) {
     title_ = title;
-    max_ = max_chars < 1 ? 1 : (max_chars > 64 ? 64 : max_chars);
+    max_ = max_chars < 1 ? 1 : (max_chars > 512 ? 512 : max_chars);
     text_ = initial.substr(0, size_t(max_));
     confirm_cross_ = confirm_cross;
     armed_ = false;

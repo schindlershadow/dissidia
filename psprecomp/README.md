@@ -178,6 +178,9 @@ labels mark scope and priority.
       has never been run, the GitHub workflow has not run yet, and Android is tabled ([docs/installer.md](docs/installer.md)).
 - [ ] Optional content: HD texture packs in PPSSPP format (Niosa's D012FFRT; `games/dissidia/docs/texture-packs.md`) and Japanese voices
       from an undub disc (`games/dissidia/docs/audio.md`); both built and linked, neither confirmed in game yet.
+- [ ] Save import / export: the game's save list has a Triangle key opening **Manage saves** (import from PPSSPP, a PSP memory stick or any
+      folder, any region; export the other way; backups on replace; `games/dissidia/docs/savedata.md`). Unit-tested against a real PPSSPP save
+      folder; not yet used in the running game.
 - [ ] Cross-platform: build and verify on Linux and Windows (#70 — see
       [docs/PLATFORMS.md](docs/PLATFORMS.md)).
 

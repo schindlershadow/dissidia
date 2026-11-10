@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
-g++ -O2 -std=c++17 -Wall -Werror -Iruntime/src/hle tools/savemgr/savemgr.cpp runtime/src/hle/psp_savedata_crypto.cpp -o "$T/savemgr"
+g++ -O2 -std=c++17 -Wall -Werror -Iruntime/src/hle tools/savemgr/savemgr.cpp runtime/src/hle/psp_savemgr.cpp runtime/src/hle/psp_savedata_crypto.cpp -o "$T/savemgr"
 python3 -I - "$T" <<'PY'
 import struct, sys, os
 T = sys.argv[1]

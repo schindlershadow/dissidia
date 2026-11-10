@@ -177,6 +177,8 @@ set(RUNTIME_SOURCES
     src/hle/psp_hle_adhoc.cpp
     src/hle/psp_savedata_crypto.cpp
     src/hle/psp_savedata_dialog.cpp
+    src/hle/psp_savemgr.cpp
+    src/hle/psp_savemgr_ui.cpp
     ${PSP_UI_FONTS_CPP}
     src/hle/psp_hle_font.cpp
     src/hle/psp_hle_sas.cpp
@@ -349,13 +351,21 @@ target_include_directories(test_tex_pack_ppsspp PRIVATE ${CMAKE_CURRENT_SOURCE_D
 target_link_libraries(test_tex_pack_ppsspp PRIVATE ZLIB::ZLIB)
 add_test(NAME tex_pack_ppsspp COMMAND test_tex_pack_ppsspp)
 add_executable(test_savedata_dialog tests/test_savedata_dialog.cpp src/hle/psp_savedata_dialog.cpp ${PSP_UI_FONTS_CPP})
+target_include_directories(test_savedata_dialog PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(test_savedata_dialog PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(test_savedata_dialog PRIVATE PkgConfig::FREETYPE)
 add_test(NAME savedata_dialog COMMAND test_savedata_dialog)
 add_executable(test_savedata_hle tests/test_savedata_hle.cpp
-    src/hle/psp_savedata_crypto.cpp src/hle/psp_savedata_dialog.cpp ${PSP_UI_FONTS_CPP})
+    src/hle/psp_savedata_crypto.cpp src/hle/psp_savedata_dialog.cpp
+    src/hle/psp_savemgr.cpp src/hle/psp_savemgr_ui.cpp ${PSP_UI_FONTS_CPP})
 target_include_directories(test_savedata_hle PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${PSPRECOMP_OUTPUT_DIR}/include)
 target_link_libraries(test_savedata_hle PRIVATE pthread PkgConfig::FREETYPE)
 add_test(NAME savedata_hle COMMAND test_savedata_hle)
+add_executable(test_savemgr tests/test_savemgr.cpp src/hle/psp_savemgr.cpp src/hle/psp_savemgr_ui.cpp
+    src/hle/psp_savedata_crypto.cpp src/hle/psp_savedata_dialog.cpp ${PSP_UI_FONTS_CPP})
+target_include_directories(test_savemgr PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/src/hle)
+target_link_libraries(test_savemgr PRIVATE PkgConfig::FREETYPE)
+add_test(NAME savemgr COMMAND test_savemgr)
 
 # Debug socket v2 unit test target (issue #35). Links ONLY the socket
 # layer -- the I/S commands reach game state through the PspDebugHooks
