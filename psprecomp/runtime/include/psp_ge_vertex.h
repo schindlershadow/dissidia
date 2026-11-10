@@ -56,6 +56,8 @@ void ge_transform_vertices(
 /// PSP's 0..480 stays on the middle of it: u' = u * u_scale + u_off (1, 0 = off).
 void ge_set_wide(float wx, bool cover, bool extend_fb);
 void ge_set_fb_u(float u_scale, float u_off, float shader_remap);
+bool ge_soft_focus();            // PSPRECOMP_SOFT_FOCUS / settings 'soft_focus' (default on)
+void ge_set_soft_focus(bool on);
 
 using GeDegenerateFallbackFn = void (*)(const float wpos[3], float out[3]);
 void ge_vertex_set_degenerate_fallback(GeDegenerateFallbackFn fn);

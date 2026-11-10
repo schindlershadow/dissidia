@@ -4,6 +4,7 @@
 #include "recomp.h"
 
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <vector>
 #include <cstring>
@@ -555,6 +556,15 @@ static float g_wide_x = 1.0f;
 static bool g_wide_cover = false, g_wide_extend = false;
 static float g_fb_u_scale = 1.0f, g_fb_u_off = 0.0f, g_fb_u_remap = 1.0f;   // remap: the shader's declared-width / 480 factor
 void ge_set_wide(float wx, bool cover, bool extend_fb) { g_wide_x = wx; g_wide_cover = cover; g_wide_extend = extend_fb; }
+// Soft focus (the stage-wide blurred copy some stages blend over the picture): PSPRECOMP_SOFT_FOCUS=0 / settings "soft_focus=0" drops it.
+// The env var is read on first use, because settings.ini is applied to the environment after static initialisation.
+static std::atomic<int> g_soft_focus_state{-1};
+bool ge_soft_focus() {
+    int v = g_soft_focus_state.load();
+    if (v < 0) { const char* e = std::getenv("PSPRECOMP_SOFT_FOCUS"); v = (e && e[0] == '0') ? 0 : 1; g_soft_focus_state.store(v); }
+    return v != 0;
+}
+void ge_set_soft_focus(bool on) { g_soft_focus_state.store(on ? 1 : 0); }
 void ge_set_fb_u(float u_scale, float u_off, float shader_remap) { g_fb_u_scale = u_scale; g_fb_u_off = u_off; g_fb_u_remap = shader_remap; }
 
 // Game-module degenerate-matrix fallback slot (#47 P5 seam).
@@ -677,6 +687,16 @@ void ge_transform_vertices(
         // Widescreen: a through draw is centred (x scaled by wx), except one that covers the whole screen without
         // a render-target texture, which is stretched across the whole width (menu backgrounds, fades).
         float wx = g_wide_x;
+        bool drop_soft = false;   // the soft-focus pass with Soft Focus off: moved out of the picture below
+        if (g_wide_extend && state.alpha_blend_enable && state.blend_mode == 0x32 && state.texture_enable && !verts.empty() && !ge_soft_focus()) {
+            float minx = 1e9f, maxx = -1e9f, miny = 1e9f, maxy = -1e9f, u0 = 1e9f, u1 = -1e9f;
+            for (const auto& v : verts) {
+                minx = std::min(minx, v.pos[0]); maxx = std::max(maxx, v.pos[0]); miny = std::min(miny, v.pos[1]); maxy = std::max(maxy, v.pos[1]);
+                if (v.has_uv && texw > 0.0f) { const float u = (v.uv[0] * state.tex_scale_u + state.tex_offset_u) / texw * g_fb_u_remap; u0 = std::min(u0, u); u1 = std::max(u1, u); }
+            }
+            // a screen-covering draw that stretches a part of a render target (the 1/4 size thumbnail) over the whole picture
+            drop_soft = minx <= 4.5f && maxx >= 475.5f && miny <= 4.5f && maxy >= 267.5f && u1 > u0 && u1 < 0.5f;
+        }
         bool extend_u = false;   // a covering render-target draw: full width, u scaled about its centre (see ge_set_wide)
         if (wx != 1.0f && (g_wide_cover || g_wide_extend) && !verts.empty()) {
             float minx = 1e9f, maxx = -1e9f, miny = 1e9f, maxy = -1e9f;
@@ -754,6 +774,7 @@ void ge_transform_vertices(
                              state.tex_offset_u, state.tex_offset_v, fu_scale, fu_off);
             }
         }
+        if (drop_soft) for (auto& v : verts) { v.pos[0] = 4.0f; v.pos[1] = 4.0f; }   // clipped: nothing is drawn
         if (extend_u && wide_wx > 0.0f) {   // scale u about the draw's centre by 1/wx (clamped texture edge fills the sides)
             float umin = 1e9f, umax = -1e9f;
             for (const auto& v : verts) if (v.has_uv) { umin = std::min(umin, v.uv[0]); umax = std::max(umax, v.uv[0]); }

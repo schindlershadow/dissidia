@@ -1,5 +1,6 @@
 // psp_settings.cpp — in-game settings menu. See include/psp_settings.h.
 #include "psp_settings.h"
+#include "psp_ge_vertex.h"
 #include "psp_runtime.h"
 #include "psp_event_loop.h"
 #include "psp_ge_draw.h"
@@ -71,7 +72,7 @@ bool g_wait_release = false;           // after closing: game input stays blocke
 bool g_confirm_cross = true;
 PspFrameRateHook g_fps{nullptr, 0, nullptr, nullptr};
 
-enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_WIDE, ROW_FPS, ROW_QUIT,
+enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_WIDE, ROW_SOFT, ROW_FPS, ROW_QUIT,
            ROW_NET_MODE, ROW_NET_SERVER, ROW_NET_ROOM, ROW_NET_PEERS, ROW_NET_STATUS,   // Network page
            ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS };   // the last six: Debug page
 std::vector<Row> g_rows;
@@ -387,6 +388,14 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.help = "Flicker test (--ge-sync)\nWaits for the GPU at each step: slower, rules out timing. This session only.";
             break;
         }
+        case ROW_SOFT: {
+            const bool on = ge_soft_focus();
+            m.label = "Soft Focus";
+            m.value = on ? "On" : "Off";
+            m.can_dec = on; m.can_inc = !on;
+            m.help = "Soft focus (PSPRECOMP_SOFT_FOCUS)\nSome stages (Order's Sanctuary) blend a blurred copy of the picture over the scene for a dreamy look. Off gives a sharper picture. Saved.";
+            break;
+        }
         case ROW_GLOWSOFT: {
             const bool on = ge_draw_fb_prefilter();
             m.label = "Glow Softening";
@@ -539,6 +548,9 @@ void change(int d) {   // left / right on the selected row
         if (s >= 0 && s <= 4) ge_draw_set_sync_mode(s);
         break;
     }
+    case ROW_SOFT:
+        if ((d > 0) != ge_soft_focus()) { ge_set_soft_focus(d > 0); save("soft_focus", d > 0 ? "1" : "0"); }
+        break;
     case ROW_GLOWSOFT: ge_draw_set_fb_prefilter(d > 0); break;
     case ROW_GLOWPASS: ge_draw_set_fb_snapshot(d > 0); break;
     case ROW_RING: {
@@ -564,7 +576,7 @@ void build_rows() {
     } else if (g_page == PAGE_DEBUG) {
         g_rows = {ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS};
     } else {
-        g_rows = {ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_WIDE};
+        g_rows = {ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_WIDE, ROW_SOFT};
         if (g_fps.get && g_fps.count > 1) g_rows.push_back(ROW_FPS);
         g_rows.push_back(ROW_QUIT);
     }
@@ -658,6 +670,7 @@ void confirm() {
     case ROW_FX: change(ge_draw_fx_shaders() ? -1 : 1); return;
     case ROW_SYNC: ge_draw_set_sync_mode((ge_draw_sync_mode() + 1) % 5); break;
     case ROW_RING: change((g_ring_next >= 0 ? g_ring_next : ge_draw_ring_mode()) ? -1 : 1); return;
+    case ROW_SOFT: change(ge_soft_focus() ? -1 : 1); return;
     case ROW_GLOWSOFT: change(ge_draw_fb_prefilter() ? -1 : 1); return;
     case ROW_GLOWPASS: change(ge_draw_fb_snapshot() ? -1 : 1); return;
     }
@@ -723,6 +736,7 @@ void psp_settings_load_early() {
     if ((it = g_saved.find("render_scale")) != g_saved.end() && std::atoi(it->second.c_str()) > 0)
         put("PSPRECOMP_RENDER_SCALE", it->second);
     if ((it = g_saved.find("widescreen")) != g_saved.end()) put("PSPRECOMP_WIDESCREEN", it->second == "1" ? "1" : "0");
+    if ((it = g_saved.find("soft_focus")) != g_saved.end()) put("PSPRECOMP_SOFT_FOCUS", it->second == "0" ? "0" : "1");
     if ((it = g_saved.find("fps")) != g_saved.end() && std::atoi(it->second.c_str()) > 0) put("PSPRECOMP_FPS", it->second);
     if ((it = g_saved.find("window_size")) != g_saved.end() && g_saved.count("display") && g_saved["display"] == "window"
         && it->second.find('x') != std::string::npos) {

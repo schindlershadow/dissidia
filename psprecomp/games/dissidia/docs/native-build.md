@@ -97,6 +97,7 @@ number of steps tuned for 480x272, and at n times the resolution those steps blu
 characters and bright objects. `PSPRECOMP_RENDER_SCALE_ALL=1` scales every target again (the old behaviour).
 
 Widescreen (generic runtime option): settings menu > System > Widescreen (saved as `widescreen=1`), or `PSPRECOMP_WIDESCREEN=1`.
+Soft Focus (generic runtime option): settings menu > System > Soft Focus (saved as `soft_focus=0`), or `PSPRECOMP_SOFT_FOCUS=0`. Some stages (Order's Sanctuary) shrink the picture to a 120x68 thumbnail and blend it back over the whole screen for a soft, dreamy look; Off drops that pass for a sharper picture. On by default (the game's own look).
 The PSP's 480x272 is already about 16:9, so this matters for windows and screens wider than that (21:9, 32:9). The displayed
 buffers become as wide as the window's shape needs (`272 x aspect` PSP pixels, even, 480..960; never narrower than 480).
 3D draws whose viewport spans the whole screen get their clip x scaled by `480 / width`, so the vertical field of view stays and the
