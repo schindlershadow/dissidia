@@ -385,6 +385,12 @@ PspDebugReply psp_debug_handle_line(const char* line,
         ge_draw_dump_targets(skip_spaces(line + 2));
         return make_ok_empty();
     }
+    if (line[0] == 'P' && line[1] == ' ') {
+        // P <0|1>: feedback prefilter (soft glow at render scale > 1) off/on at run time (A/B aid)
+        extern void ge_draw_set_fb_prefilter(bool on);
+        ge_draw_set_fb_prefilter(std::atoi(line + 2) != 0);
+        return make_ok_empty();
+    }
     if (line[0] == 'G' && line[1] == ' ') {
         // G <0|1>: switch the batched fast GE path off/on at run time (A/B aid)
         extern void ge_draw_set_fast(bool on);

@@ -466,6 +466,8 @@ void ge_texture_invalidate_all() {
 static uint64_t g_bound_pack_id = 0;
 uint64_t ge_texture_bound_pack_id() { return g_bound_pack_id; }
 
+extern float ge_draw_prefilter_bias(GLuint tex);   // psp_ge_draw.cpp
+
 GLuint ge_texture_bind_external(GLuint gl_tex, const GeState& state) {
     g_bound_pack_id = 0;
     bind_tex2d(gl_tex);
@@ -474,7 +476,8 @@ GLuint ge_texture_bind_external(GLuint gl_tex, const GeState& state) {
     // Parameters are remembered per texture so repeat binds cost nothing.
     uint32_t min_lin = state.tex_filter & 1;
     uint32_t mag_lin = (state.tex_filter >> 8) & 1;
-    const uint32_t fkey = 0x100u | min_lin | (mag_lin << 1);
+    const float bias = min_lin ? ge_draw_prefilter_bias(gl_tex) : 0.f;   // > 0: sample the mip chain, see psp_ge_draw.cpp
+    const uint32_t fkey = 0x100u | min_lin | (mag_lin << 1) | (bias > 0.f ? 0x200u | (uint32_t(bias * 4.f) << 10) : 0u);
     int slot = -1;
     for (int i = 0; i < 8; i++) {
         if (applied[i].tex == gl_tex) { slot = i; break; }
@@ -489,9 +492,10 @@ GLuint ge_texture_bind_external(GLuint gl_tex, const GeState& state) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
-                        min_lin ? GL_LINEAR : GL_NEAREST);
+                        bias > 0.f ? GL_LINEAR_MIPMAP_LINEAR : min_lin ? GL_LINEAR : GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
                         mag_lin ? GL_LINEAR : GL_NEAREST);
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_LOD_BIAS, bias);
     }
     return gl_tex;
 }

@@ -69,6 +69,20 @@ static inline uint32_t ge_fb_key(uint32_t addr) {
 static void flush_batch();
 static GLuint g_fb_scratch_tex = 0, g_fb_scratch_fbo = 0;
 
+// A pass that reads the framebuffer it draws into (Dissidia's glow: the picture shifted a pixel or two and blended
+// back over itself) relies on the PSP's bilinear filter averaging neighbouring PSP pixels. At a render scale above 1
+// one PSP pixel is rs x rs texels, so the same shift of a sharp picture draws a hard second copy a few pixels away
+// instead of a soft blur: a ghost around every character and bright object. The snapshot is therefore sampled through
+// its mipmaps at level log2(rs) (each tap covers the area of one PSP pixel, as on hardware).
+// PSPRECOMP_FB_PREFILTER=0 turns it off; the debug socket's `P <0|1>` flips it at run time.
+static std::atomic<bool> g_fb_prefilter{[] { const char* e = std::getenv("PSPRECOMP_FB_PREFILTER"); return !(e && e[0] == '0'); }()};
+void ge_draw_set_fb_prefilter(bool on) { g_fb_prefilter.store(on); std::fprintf(stderr, "[DRAW] feedback prefilter %s\n", on ? "on" : "off"); }
+/// LOD bias for sampling `tex`: log2(render scale) for the feedback snapshot while the prefilter is on, else 0.
+float ge_draw_prefilter_bias(GLuint tex) {
+    if (!tex || tex != g_fb_scratch_tex || g_rs <= 1 || !g_fb_prefilter.load()) return 0.f;
+    return std::log2(static_cast<float>(g_rs));
+}
+
 // The GE reads a texture from the very buffer it is rendering into (in-place
 // blur / shift passes: Dissidia's bloom strips draw 0xCC000 into 0xCC000). The
 // hardware samples the pre-draw contents; GL forbids sampling an attachment
@@ -101,6 +115,11 @@ static GLuint feedback_snapshot(int* w, int* h) {
     glBlitFramebuffer(0, 0, W, H, 0, 0, W, H, GL_COLOR_BUFFER_BIT, GL_NEAREST);
     if (sc) glEnable(GL_SCISSOR_TEST);
     glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)cur);
+    if (g_rs > 1 && g_fb_prefilter.load()) {   // the mip chain the sampler reads (see g_fb_prefilter)
+        glBindTexture(GL_TEXTURE_2D, g_fb_scratch_tex);
+        glGenerateMipmap(GL_TEXTURE_2D);
+        ge_texture_invalidate_bind_cache();
+    }
     if (w) *w = W;
     if (h) *h = H;
     return g_fb_scratch_tex;

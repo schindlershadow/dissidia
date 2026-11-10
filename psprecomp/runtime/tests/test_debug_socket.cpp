@@ -28,6 +28,7 @@ void ge_draw_dyn_trace(int) {}
 void psp_dump_func_counts(const char*) {}
 void psp_mem_watch_set(uint32_t) {}
 void ge_draw_set_fast(bool) {}
+void ge_draw_set_fb_prefilter(bool) {}
 void ge_draw_set_stencil_mode(int) {}
 void ge_draw_dump_targets(const char*) {}
 static int64_t g_fast_forward_ms = -1;   // what FF last asked the display for
