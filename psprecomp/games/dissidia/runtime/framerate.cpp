@@ -129,6 +129,7 @@ void skel_build_hook(uint8_t* rdram, recomp_context* ctx) {
 }
 
 void fx_log_window();
+void fighter_log_frame();
 
 // A multiplayer group agrees on a frame rate: tell the player (a few seconds, top centre), and again when it
 // changes or the group ends.
@@ -176,6 +177,7 @@ void frame_end_hook(uint8_t* rdram, recomp_context* ctx) {
         g_fx_period = rate / 30;
     }
     g_orig_frame_end(rdram, ctx);
+    fighter_log_frame();
     if (g_rate > 60 && ok(timer)) wrf(timer + 0x18u, g_ticks);   // the frame waited for one (short) vblank: dt = 60 / rate
     if (g_log && ok(timer)) {
         const int64_t t = now_ms();
@@ -231,6 +233,25 @@ void pad_set_hook(uint8_t* rdram, recomp_context* ctx) {
 // wrong speed): address, kind (actor+0x542, roster.cpp ACT_KIND: 0 fighter, 1 assist, 3 summoned), own-clock flag, both clocks, the step the game
 // gets and the global step. Capped, so a long battle does not flood the log.
 bool g_actor_log = false;
+// PSPRECOMP_FIGHTER_LOG=1: one line per frame for each fighter that is in an action (script id != 0xFFFF): height,
+// the floor height the game keeps for it (+0x2E4), flags (+0x380) and a few fields that moved while an attack
+// misbehaved. For debugging attacks that behave differently above 30 Hz (Kain's Sky Spear).
+bool g_fighter_log = false;
+int g_fighter_log_left = 40000;
+uint32_t g_fighters[4] = {};
+void fighter_log_frame() {
+    if (!g_fighter_log || g_fighter_log_left <= 0) return;
+    for (uint32_t a : g_fighters) {
+        if (!a || !ok(a)) continue;
+        const uint32_t scr = r32(a + 0x540u) & 0xFFFFu;
+        if (scr == 0xFFFFu) continue;
+        g_fighter_log_left--;
+        std::fprintf(stderr, "[FIGHTER] t=%llu %08X scr=%u step=%.3f y=%.3f floor=%.3f fl=%08X f110=%.3f f114=%.3f f134=%.3f f0F4=%.3f f104=%.3f f144=%.3f vel=%.3f,%.3f,%.3f\n",
+                     (unsigned long long)g_tick, a, scr, rdf(FRAME_STEP), rdf(a + 0x34u), rdf(a + 0x2E4u), r32(a + 0x380u), rdf(a + 0x110u),
+                     rdf(a + 0x114u), rdf(a + 0x134u), rdf(a + 0xF4u), rdf(a + 0x104u), rdf(a + 0x144u), rdf(a + 0xE0u), rdf(a + 0xE4u),
+                     rdf(a + 0xE8u));
+    }
+}
 int g_actor_log_left = 4000;
 struct ActorSeen { uint32_t actor; float res; int own; };
 ActorSeen g_actor_seen[24];
@@ -240,6 +261,11 @@ void actor_dt_hook(uint8_t* rdram, recomp_context* ctx) {
     g_orig_actor_dt(rdram, ctx);
     bool own = false;
     if (ok(actor)) own = ((r32(actor + 0x388u) & r32(OWN_MASK0)) | (r32(actor + 0x38Cu) & r32(OWN_MASK1))) != 0;
+    if (g_fighter_log && ok(actor) && g_ram[(actor + 0x542u) & 0x07FFFFFFu] == 0) {   // remember the fighters (kind 0)
+        bool known = false;
+        for (uint32_t f : g_fighters) known |= f == actor;
+        for (uint32_t& f : g_fighters) if (!known && !f) { f = actor; known = true; }
+    }
     const float before = ctx->f[0];
     if (g_ticks != 2.0f && ok(actor) && own) ctx->f[0] *= g_ticks * 0.5f;   // own clock: a fixed 2.0 per frame
     if (g_actor_log && g_actor_log_left > 0 && ok(actor)) {
@@ -437,6 +463,7 @@ void dissidia_framerate_install(uint8_t* rdram) {
     g_scope_all = (e = std::getenv("PSPRECOMP_FPS_SCOPE")) && std::strcmp(e, "all") == 0;
     g_log = (e = std::getenv("PSPRECOMP_FPS_LOG")) && e[0] && e[0] != '0';
     g_actor_log = (e = std::getenv("PSPRECOMP_ASSIST_LOG")) && e[0] && e[0] != '0';
+    g_fighter_log = (e = std::getenv("PSPRECOMP_FIGHTER_LOG")) && e[0] && e[0] != '0';
     g_orig_frame_end = psp_dispatch_probe_lookup(FRAME_END);
     g_orig_pad = psp_dispatch_probe_lookup(PAD_SET);
     g_orig_actor_dt = psp_dispatch_probe_lookup(ACTOR_DT);
