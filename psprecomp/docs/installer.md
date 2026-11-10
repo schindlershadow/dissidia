@@ -231,3 +231,13 @@ Wine (`WINEDEBUG=-all`, command line only) produced the identical ELF as well.
   (`PACKAGE_INFO.BIN` is `PACKAGE_.BIN` in the plain ISO 9660 tree). `setup_from_iso.Iso9660` now reads them.
 - **Settings menu**: Voice Language and HD Textures rows appear when `voice_jp/` / `mods/textures/` exist next to `ms0`.
 - **Saves are shared between regions** (`psp_savedata_set_shared_ids`); see games/dissidia/docs/savedata.md.
+
+
+## Single-file release
+
+Besides the archives, each release carries `psprecomp-setup-<version>-windows-x86_64.exe` and `psprecomp-setup-<version>-linux-x86_64`:
+the wizard program with the assembled release folder appended as a zip (`release/make_single.py`, `setup/payload.{h,cpp}`, miniz).
+On its first start the wizard unpacks the zip into `%LOCALAPPDATA%\psprecomp\v<version>` (Linux: `~/.local/share/psprecomp/v<version>`;
+a small progress window, first start only) and runs from there; the unpacked folder contains the plain wizard, so it never unpacks
+twice. `--unpack DIR` unpacks into DIR and exits (CI uses it to check the Linux file). The updater keeps working on the unpacked
+folder. Downloading a newer single file unpacks next to the old one; the old folder can be deleted. Unpacked size is about 530 MB.

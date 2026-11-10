@@ -33,6 +33,7 @@
 #include "../runtime/src/hle/psp_savemgr.h"
 #include "install.h"
 #include "proc.h"
+#include "payload.h"
 #include "third_party/portable-file-dialogs.h"
 
 namespace fs = std::filesystem;
@@ -917,10 +918,50 @@ static int import_saves_cli(const std::string& from, const std::string& workdir)
     return failed ? 1 : 0;
 }
 
+// Unpacks the bundled release, with a small window that only shows a progress bar (title carries the text).
+static std::string unpack_payload_with_window(const std::filesystem::path& exe, const setup::Payload& pl,
+                                              const std::filesystem::path& dest, bool quiet) {
+    if (std::filesystem::exists(dest / ".payload-ok")) return "";
+    SDL_Window* win = nullptr;
+    SDL_Renderer* ren = nullptr;
+    if (!quiet && SDL_Init(SDL_INIT_VIDEO) == 0) {
+        win = SDL_CreateWindow("psprecomp setup: unpacking (first start only)", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 520, 70, 0);
+        if (win) ren = SDL_CreateRenderer(win, -1, 0);
+    }
+    int last = -1;
+    std::string err = setup::extract_payload(exe, pl, dest, [&](double f) {
+        int pct = (int)(f * 100);
+        if (pct == last) return true;
+        last = pct;
+        if (quiet) { std::fprintf(stderr, "\runpacking %d%%", pct); if (pct == 100) std::fprintf(stderr, "\n"); }
+        if (win) {
+            SDL_Event ev;
+            while (SDL_PollEvent(&ev)) {}
+            std::string t = "psprecomp setup: unpacking (first start only) " + std::to_string(pct) + "%";
+            SDL_SetWindowTitle(win, t.c_str());
+            if (ren) {
+                SDL_SetRenderDrawColor(ren, 30, 30, 30, 255);
+                SDL_RenderClear(ren);
+                SDL_Rect bg{20, 25, 480, 20}, fg{20, 25, (int)(480 * f), 20};
+                SDL_SetRenderDrawColor(ren, 70, 70, 70, 255);
+                SDL_RenderFillRect(ren, &bg);
+                SDL_SetRenderDrawColor(ren, 90, 170, 255, 255);
+                SDL_RenderFillRect(ren, &fg);
+                SDL_RenderPresent(ren);
+            }
+        }
+        return true;
+    });
+    if (ren) SDL_DestroyRenderer(ren);
+    if (win) SDL_DestroyWindow(win);
+    return err;
+}
+
 int main(int argc, char** argv) {
     attach_parent_console();
     std::string root, iso, dir, play_dir, shots, import_from, saves_from;
     bool headless = false, play = false, launch = false;
+    std::string unpack_to;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         auto next = [&](std::string& out) { if (i + 1 < argc) out = argv[++i]; };
@@ -929,6 +970,7 @@ int main(int argc, char** argv) {
         else if (a == "--dir") next(dir);
         else if (a == "--import-saves") next(import_from);
         else if (a == "--saves") next(saves_from);
+        else if (a == "--unpack") next(unpack_to);   // single-file release: unpack the bundled release folder there and exit
         else if (a == "--headless") headless = true;
         else if (a == "--launch") launch = true;
         else if (a == "--screenshots") next(shots);
@@ -940,6 +982,22 @@ int main(int argc, char** argv) {
         return import_saves_cli(import_from, dir);
     }
     SDL_SetMainReady();
+    // Single-file release: the release folder is appended to this program (payload.h); unpack it once, then run from there.
+    if (root.empty() || !unpack_to.empty()) {
+        setup::Payload pl;
+        std::filesystem::path self = setup::self_exe();
+        if (!self.empty() && setup::find_payload(self, pl)) {
+            std::filesystem::path dest = unpack_to.empty() ? setup::data_dir() / ("v" + pl.version) : std::filesystem::path(unpack_to);
+            std::string err = unpack_payload_with_window(self, pl, dest, headless || !unpack_to.empty());
+            if (!err.empty()) {
+                std::fprintf(stderr, "error: %s\n", err.c_str());
+                if (unpack_to.empty()) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "psprecomp setup", ("Could not unpack the setup files:\n" + err).c_str(), nullptr);
+                return 1;
+            }
+            if (!unpack_to.empty()) { std::printf("unpacked to %s\n", dest.string().c_str()); return 0; }
+            root = dest.string();
+        } else if (!unpack_to.empty()) { std::fprintf(stderr, "this program has no bundled release (use the single-file download)\n"); return 2; }
+    }
     if (root.empty()) {
         char* base = SDL_GetBasePath();
         root = base ? base : ".";

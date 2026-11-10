@@ -64,6 +64,10 @@ jobs:
         run: |
           mkdir dist
           cp work/psprecomp-*.tar.xz* work/psprecomp-*.zip* dist/
+          cp work/psprecomp-setup-*-linux-x86_64 work/psprecomp-setup-*-windows-x86_64.exe dist/
+          # the Linux single file must unpack itself and hold a working release
+          work/psprecomp-setup-*-linux-x86_64 --unpack "$RUNNER_TEMP/unpacked"
+          test -x "$RUNNER_TEMP/unpacked/psprecomp_setup" && test -f "$RUNNER_TEMP/unpacked/toolchain/toolchain.cmake" 
           python3 release/make_manifest.py --version "${VERSION#v}" --repo "${{ github.repository }}" --tag "$VERSION" \
             --assets dist -o dist/manifest.json
           # Signed manifest (docs/installer.md "Signed manifests"). A committed public key without the secret would ship
@@ -94,4 +98,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: >
           gh release create "$VERSION" dist/* --repo "${{ github.repository }}"
-          --title "$VERSION" --notes "Installable build of the game's runtime. Download the archive for your system, unpack it and run psprecomp_setup. You need your own copy of the game (ISO or CSO)."
+          --title "$VERSION" --notes "Installable build of the game's runtime. Download psprecomp-setup-<version>-windows-x86_64.exe (Windows) or psprecomp-setup-<version>-linux-x86_64 (Linux: chmod +x it) and run it: it unpacks itself on the first start. The tar.xz / zip archives hold the same files if you prefer to unpack them yourself. You need your own copy of the game (ISO or CSO)."

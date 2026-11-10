@@ -120,6 +120,12 @@ def main():
         cmd.append("--no-archive")
     run(cmd)
 
+    # 6. single-file release: the wizard with the assembled folder appended (setup/payload.h); the archives stay too
+    asm = os.path.join(work, "psprecomp-%s-%s" % (a.version, plat))
+    single = os.path.join(work, "psprecomp-setup-%s-%s%s" % (a.version, plat, ".exe" if win else ""))
+    run([sys.executable, "-I", os.path.join(HERE, "make_single.py"), "--wizard", wizard, "--release-dir", asm,
+         "--version", a.version, "-o", single])
+
 
 if __name__ == "__main__":
     main()

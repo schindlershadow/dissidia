@@ -163,6 +163,7 @@ def main():
     os.makedirs(os.path.join(out, "licenses"))
     for src, name in ((os.path.join(a.repo, "LICENSE"), "psprecomp-LICENSE.txt"),
                       (os.path.join(a.repo, "setup", "third_party", "LICENSE-pfd.txt"), "portable-file-dialogs-LICENSE.txt"),
+                      (os.path.join(a.repo, "setup", "third_party", "LICENSE-miniz.txt"), "miniz-LICENSE.txt"),
                       (os.path.join(out, "toolchain", "bin", "pspdecrypt-LICENSE.txt"), "pspdecrypt-LICENSE.txt")):
         if os.path.isfile(src):
             shutil.copy2(src, os.path.join(out, "licenses", name))
