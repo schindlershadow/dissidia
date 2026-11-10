@@ -3,7 +3,7 @@
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.hardware.gamepad" android:required="false" />
-    <application android:label="psprecomp hello" android:hasCode="true" android:allowBackup="false" android:debuggable="true" android:extractNativeLibs="true" android:largeHeap="true" android:hardwareAccelerated="true">
+    <application android:label="psprecomp hello" android:icon="@mipmap/ic_launcher" android:hasCode="true" android:allowBackup="false" android:debuggable="true" android:extractNativeLibs="true" android:largeHeap="true" android:hardwareAccelerated="true">
         <activity android:name="org.libsdl.app.SDLActivity" android:exported="true" android:launchMode="singleTask"
             android:configChanges="orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
             android:screenOrientation="sensorLandscape" android:theme="@android:style/Theme.NoTitleBar.Fullscreen">

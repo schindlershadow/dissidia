@@ -23,6 +23,8 @@ folder only exists after the app was started once). Then make sure the app can w
 Command line (what the wizard runs): `psp_build.py <install folder> --sdk sdk --toolchain toolchain --psprecomp bin/psprecomp
 --game game --android android` (add `--progress` for machine-readable lines).
 
+The launcher icon is original artwork (a crystal), drawn by `android/icon/make_icon.py` (Pillow); `android/icon/icon_512.png` is the full-size version, `make_skeleton.py` compiles the sized copies into the APK.
+
 ## On the device
 
 - **Touch controls**: shown after the first touch (Auto), hidden when a controller button is pressed; Settings > System > Touch Controls

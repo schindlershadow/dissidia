@@ -32,7 +32,9 @@ def main():
     txt = open(here + "/hello/AndroidManifest.xml").read().replace("org.psprecomp.hello", a.package).replace("psprecomp hello", a.label)
     open(man, "w").write(txt)
     base = work + "/base.apk"
-    run([bt + "/aapt2", "link", "-o", base, "-I", jar, "--manifest", man, "--min-sdk-version", a.api, "--target-sdk-version", "34"])
+    compiled = work + "/res.zip"
+    run([bt + "/aapt2", "compile", "--dir", here + "/icon/res", "-o", compiled])   # launcher icon (icon/make_icon.py)
+    run([bt + "/aapt2", "link", "-o", base, "-I", jar, "--manifest", man, "-R", compiled, "--min-sdk-version", a.api, "--target-sdk-version", "34"])
     import zipfile
     unaligned = work + "/unaligned.apk"
     shutil.copy(base, unaligned)
