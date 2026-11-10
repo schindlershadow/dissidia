@@ -690,9 +690,9 @@ void ge_transform_vertices(
             }
             // PSPRECOMP_WIDE_LOG=1: each distinct screen-sized through draw once (to find draws that nearly cover the screen)
             static const bool wide_log = std::getenv("PSPRECOMP_WIDE_LOG") != nullptr;
-            static int wide_log_left = 300;
+            static int wide_log_left = 120;
             static std::vector<std::array<int, 7>> wide_seen;
-            if (wide_log && wide_log_left > 0 && maxx - minx >= 380.0f) {
+            if (wide_log && wide_log_left > 0 && maxx - minx >= 470.0f && maxx - minx <= 500.0f && maxy - miny >= 200.0f) {
                 std::array<int, 7> k = {int(minx), int(maxx), int(miny), int(maxy), g_wide_cover ? 1 : 0, g_wide_extend ? 1 : 0, extend_u ? 1 : 0};
                 bool seen = false;
                 for (const auto& o : wide_seen) seen |= o == k;
