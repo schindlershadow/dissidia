@@ -3,7 +3,9 @@
 #include "psp_ge_constants.h"
 #include "recomp.h"
 
+#include <array>
 #include <cstdio>
+#include <vector>
 #include <cstring>
 #include <cmath>
 #include <algorithm>
@@ -685,6 +687,21 @@ void ge_transform_vertices(
             if (minx <= 0.5f && maxx >= 479.5f && miny <= 0.5f && maxy >= 271.5f) {
                 extend_u = g_wide_extend;
                 wx = 1.0f;
+            }
+            // PSPRECOMP_WIDE_LOG=1: each distinct screen-sized through draw once (to find draws that nearly cover the screen)
+            static const bool wide_log = std::getenv("PSPRECOMP_WIDE_LOG") != nullptr;
+            static int wide_log_left = 300;
+            static std::vector<std::array<int, 7>> wide_seen;
+            if (wide_log && wide_log_left > 0 && maxx - minx >= 380.0f) {
+                std::array<int, 7> k = {int(minx), int(maxx), int(miny), int(maxy), g_wide_cover ? 1 : 0, g_wide_extend ? 1 : 0, extend_u ? 1 : 0};
+                bool seen = false;
+                for (const auto& o : wide_seen) seen |= o == k;
+                if (!seen) {
+                    wide_seen.push_back(k);
+                    wide_log_left--;
+                    std::fprintf(stderr, "[WIDE_LOG] x[%.1f,%.1f] y[%.1f,%.1f] n=%zu cover=%d fbtex=%d -> %s\n", minx, maxx, miny, maxy, verts.size(),
+                                 g_wide_cover ? 1 : 0, g_wide_extend ? 1 : 0, wx == 1.0f ? (extend_u ? "full width + u extend" : "full width") : "centred");
+                }
             }
         }
         const float wide_wx = g_wide_x;
