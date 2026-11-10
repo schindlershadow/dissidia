@@ -64,11 +64,12 @@ constexpr uint32_t PAD_MGR_PTR = 0x089D6008u;   // EBOOT: pad manager pointer (+
 constexpr uint32_t ACTOR_DT = 0x08838300u;      // EBOOT: an actor's time step
 constexpr uint32_t SLOWMO_FRAME = 0x08864DD8u;  // EBOOT: per-frame update of the slow-motion object, writes the global step
 constexpr uint32_t SLOWMO_PTR = 0x089D5EA8u;    // EBOOT: pointer to that object (+0 step value, +4 time left, +8 flags)
+constexpr uint32_t ROOT_MOTION = 0x0882F784u;   // EBOOT: adds (bone pose now - pose last tick) to the motion player's accumulator
 constexpr uint32_t OWN_MASK0 = 0x089C7FD8u, OWN_MASK1 = 0x089C7FDCu;
 constexpr uint32_t CAM_DT = 0x08B3B4FCu;        // battle overlay: a camera's time step
 
 uint8_t* g_ram = nullptr;
-FuncPtr g_orig_slowmo = nullptr, g_orig_frame_end = nullptr, g_orig_pad = nullptr, g_orig_actor_dt = nullptr, g_orig_cam_dt = nullptr;
+FuncPtr g_orig_rootmotion = nullptr, g_orig_slowmo = nullptr, g_orig_frame_end = nullptr, g_orig_pad = nullptr, g_orig_actor_dt = nullptr, g_orig_cam_dt = nullptr;
 std::atomic<int> g_target{30};     // requested rate (settings / env)
 int g_interval = 2;                // interval written on the last frame end (2 = 30 Hz, 1 = 60 Hz and above)
 int g_rate = 30;                   // logic rate in effect (30, 60, 90, ... one frame per vblank above 30)
@@ -76,6 +77,7 @@ float g_ticks = 2.0f;              // 1/60 s ticks one frame advances: 60 / g_ra
 int g_fx_period = 1;               // updates per effect-component step at 30 Hz pacing: g_rate / 30
 bool g_scope_all = false, g_log = false;
 int g_switch_logs = 0;
+bool g_fighter_log = false;   // PSPRECOMP_FIGHTER_LOG (see fighter_log_frame)
 uint64_t g_tick = 1;               // frame ends seen (the effect system updates once per frame)
 // logic-rate log
 int64_t g_win_t0 = 0;
@@ -214,6 +216,28 @@ void slowmo_frame_hook(uint8_t* rdram, recomp_context* ctx) {
     wrf(obj, was);
 }
 
+// Root motion across a loop. A looping motion (Kain's Sky Spear dive: 12 ticks of descent, then back to its first
+// pose) moves the fighter by the change of the root bone's pose each tick. On the tick the motion wraps, the pose
+// goes back to the start and the change is minus the whole loop's travel: every 12 ticks the fighter was thrown back
+// up by what he had just fallen (5.3 of 5.8), so the dive hardly moved. At 30 Hz the same tick never shows this
+// (the player's own wrap handling covers it), above 30 Hz it does. On a tick where the player's time went backwards
+// the accumulated change is dropped: that tick's movement is lost (about 1 tick in 12), the pose is still taken as
+// the new reference, so the next tick continues from the start of the loop. Player layout (FUN_08830444): +116
+// previous time, +120 time, +16..31 accumulated root motion (actor+0x140).
+void root_motion_hook(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t player = static_cast<uint32_t>(ctx->r[4]);
+    if (g_ticks == 2.0f || !ok(player)) { g_orig_rootmotion(rdram, ctx); return; }
+    const bool wrapped = rdf(player + 120u) < rdf(player + 116u) - 0.001f;
+    uint8_t saved[16];
+    if (wrapped) std::memcpy(saved, g_ram + ((player + 16u) & 0x07FFFFFFu), 16);
+    g_orig_rootmotion(rdram, ctx);
+    if (wrapped) {
+        std::memcpy(g_ram + ((player + 16u) & 0x07FFFFFFu), saved, 16);
+        static int logged = 0;
+        if (g_fighter_log && logged < 50) { logged++; std::fprintf(stderr, "[FPS] root motion dropped on a loop wrap (player %08X)\n", player); }
+    }
+}
+
 void pad_set_hook(uint8_t* rdram, recomp_context* ctx) {
     const float step = rdf(FRAME_STEP);
     const uint32_t mgr = r32(PAD_MGR_PTR);
@@ -236,7 +260,6 @@ bool g_actor_log = false;
 // PSPRECOMP_FIGHTER_LOG=1: one line per frame for each fighter that is in an action (script id != 0xFFFF): height,
 // the floor height the game keeps for it (+0x2E4), flags (+0x380) and a few fields that moved while an attack
 // misbehaved. For debugging attacks that behave differently above 30 Hz (Kain's Sky Spear).
-bool g_fighter_log = false;
 int g_fighter_log_left = 40000;
 uint32_t g_fighters[4] = {};
 void fighter_log_frame() {
@@ -477,6 +500,8 @@ void dissidia_framerate_install(uint8_t* rdram) {
     psp_dispatch_register(PAD_SET, pad_set_hook);
     psp_dispatch_register(ACTOR_DT, actor_dt_hook);
     psp_dispatch_register(CAM_DT, cam_dt_hook);
+    if ((g_orig_rootmotion = psp_dispatch_probe_lookup(ROOT_MOTION))) psp_dispatch_register(ROOT_MOTION, root_motion_hook);
+    else std::fprintf(stderr, "[FPS] root motion hook NOT installed (no function at %08X)\n", ROOT_MOTION);
     if ((g_orig_slowmo = psp_dispatch_probe_lookup(SLOWMO_FRAME))) psp_dispatch_register(SLOWMO_FRAME, slowmo_frame_hook);
     else std::fprintf(stderr, "[FPS] slow-motion hook NOT installed (no function at %08X)\n", SLOWMO_FRAME);
     if (g_log && (g_orig_skel = psp_dispatch_probe_lookup(SKEL_BUILD))) psp_dispatch_register(SKEL_BUILD, skel_build_hook);
