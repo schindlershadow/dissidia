@@ -134,6 +134,7 @@ void skel_build_hook(uint8_t* rdram, recomp_context* ctx) {
 
 void fx_log_window();
 void fighter_log_frame();
+void fighter_dump_frame();
 
 // A multiplayer group agrees on a frame rate: tell the player (a few seconds, top centre), and again when it
 // changes or the group ends.
@@ -283,6 +284,36 @@ uint64_t g_fighter_seen[4] = {};   // g_tick when the fighter's step was last as
 uint32_t g_objects[12] = {};      // assists (kind 1), summoned / thrown objects (3, 6 ...): PSPRECOMP_FIGHTER_LOG logs their motion time
 float g_object_time[12] = {};
 int g_object_log_left = 30000;
+// PSPRECOMP_FIGHTER_DUMP=1: every update, each fighter's state words that changed since the last update (offset, old -> new, as
+// hex and float) over the position, input-flag and action-state ranges. Finds counters that tick once per update instead of by dt
+// (input windows that shrink above 30 Hz) and the fields behind a move's speed. Needs PSPRECOMP_FIGHTER_LOG=1 as well.
+bool g_fighter_dump = false;
+int g_fighter_dump_left = 400000;
+uint32_t g_dump_prev[4][0x700 / 4] = {};
+uint32_t g_dump_prev_actor[4] = {};
+void fighter_dump_frame() {
+    if (!g_fighter_dump) return;
+    static const uint32_t ranges[][2] = {{0x20, 0x60}, {0x180, 0x200}, {0x380, 0x3A0}, {0x540, 0x600}, {0x1A0, 0x1C0}};
+    for (int i = 0; i < 4 && g_fighter_dump_left > 0; i++) {
+        const uint32_t a = g_fighters[i];
+        if (!a || !ok(a)) continue;
+        const uint32_t scr = r32(a + 0x540u) & 0xFFFFu;
+        if (scr == 0xFFFFu) continue;
+        const bool fresh = g_dump_prev_actor[i] != a;
+        g_dump_prev_actor[i] = a;
+        for (const auto& rg : ranges)
+            for (uint32_t off = rg[0]; off < rg[1] && g_fighter_dump_left > 0; off += 4) {
+                const uint32_t v = r32(a + off);
+                uint32_t& prev = g_dump_prev[i][off / 4];
+                if (!fresh && v != prev) {
+                    float fo, fn; const uint32_t po = prev; std::memcpy(&fo, &po, 4); std::memcpy(&fn, &v, 4);
+                    std::fprintf(stderr, "[FDUMP] t=%llu %08X scr=%u +%03X %08X -> %08X (%g -> %g)\n", (unsigned long long)g_tick, a, scr, off, po, v, fo, fn);
+                    g_fighter_dump_left--;
+                }
+                prev = v;
+            }
+    }
+}
 void fighter_log_frame() {
     if (!g_fighter_log) return;
     for (int i = 0; i < 12 && g_object_log_left > 0; i++) {   // motion time of the other actors, whenever it changes
@@ -296,6 +327,7 @@ void fighter_log_frame() {
                      (unsigned)g_ram[(a + 0x542u) & 0x07FFFFFFu], rdf(FRAME_STEP), t, rdf(a + 0x1A4u), rdf(a + 0x1A0u), rdf(a + 0x1BCu),
                      r32(a + 0x540u) & 0xFFFFu);
     }
+    fighter_dump_frame();
     if (g_fighter_log_left <= 0) return;
     for (uint32_t a : g_fighters) {
         if (!a || !ok(a)) continue;
@@ -544,6 +576,7 @@ void dissidia_framerate_install(uint8_t* rdram) {
     g_log = (e = std::getenv("PSPRECOMP_FPS_LOG")) && e[0] && e[0] != '0';
     g_actor_log = (e = std::getenv("PSPRECOMP_ASSIST_LOG")) && e[0] && e[0] != '0';
     g_fighter_log = (e = std::getenv("PSPRECOMP_FIGHTER_LOG")) && e[0] && e[0] != '0';
+    g_fighter_dump = g_fighter_log && (e = std::getenv("PSPRECOMP_FIGHTER_DUMP")) && e[0] && e[0] != '0';
     g_orig_frame_end = psp_dispatch_probe_lookup(FRAME_END);
     g_orig_pad = psp_dispatch_probe_lookup(PAD_SET);
     g_orig_actor_dt = psp_dispatch_probe_lookup(ACTOR_DT);
