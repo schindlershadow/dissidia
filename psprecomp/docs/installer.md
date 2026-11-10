@@ -53,7 +53,12 @@ of the fork.
    - Open for milestone 5: the core configure needs the four small generated headers of an output dir (`recomp_module.h`,
      `recomp_game_config.h`, `recomp_fingerprint.h`, `recomp.h`; binary facts and addresses, no game code) and CI has no game; the
      release workflow has to supply them (a committed header-only stub, or hydrate the shipped analysis).
-4. **Wizard** (`psprecomp_setup`, SDL + the SdTheme screens): language-free, controller friendly. Pages: welcome, pick game file (ISO /
+4. **Wizard** (requirement, user 2026-11-10: it must run on **Windows as well as Linux**; so it is a C++/SDL2 program built with the
+   bundle for each platform, using only portable APIs (std::filesystem, SDL file dialogs/own browser, no bash or POSIX calls), and the
+   build step it drives must run there too: `psp_build.py` needs Python 3 (an embedded Python ships in the Windows bundle, Python
+   stdlib only), or is ported into the wizard binary later. The wizard reuses the runtime's SdTheme screens, so it depends on the
+   core building for Windows: task 19 (Windows port of the core) comes before the Windows wizard. Plan: write the wizard portable
+   from the start and test it on Linux first.) `psprecomp_setup`, SDL + the SdTheme screens): language-free, controller friendly. Pages: welcome, pick game file (ISO /
    CSO; a file browser), install folder, options (HD textures source, Japanese voices, update check), build progress with cancel/resume,
    done (Play). Repair and "rebuild" entries when already installed.
 5. **Release workflow** (GitHub Actions, in the fork): per platform (Linux x86_64 AppImage-like folder, Windows x86_64 zip + installer
@@ -65,6 +70,11 @@ of the fork.
    changed) it says so and reruns the build step; otherwise only the core is swapped and relinked (fast).
 7. **HD textures** (task 5) hooks in as an options page and a download step (Niosa / D012FFRT pack into `mods/textures`).
 8. **Android**: runtime-only app; the PC wizard exports a game bundle (compiled `libpsprecomp_game.so` + data) to copy over. Separate task.
+   Findings: zig can target `aarch64-linux-android`, so the same bundle idea cross-compiles the generated code and the core on the PC
+   (the player's PC, not the phone; no on-device compiler). The large items are not the toolchain: the renderer uses desktop
+   OpenGL 3.3 core (glad) and would need a GLES 3 path, SDL2 needs its Java activity and an APK (Gradle + Android SDK for packaging, or
+   a prebuilt APK shell that loads `libpsprecomp_game.so` from app storage so no SDK is needed on the player's PC), touch/gamepad
+   input, and a bionic port of the core's POSIX use (overlaps with task 19). Order: after Windows.
 
 ## Verification of milestone 1
 
