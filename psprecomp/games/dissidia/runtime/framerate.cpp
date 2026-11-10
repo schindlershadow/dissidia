@@ -67,11 +67,12 @@ constexpr uint32_t ACTOR_DT = 0x08838300u;      // EBOOT: an actor's time step
 constexpr uint32_t SLOWMO_FRAME = 0x08864DD8u;  // EBOOT: per-frame update of the slow-motion object, writes the global step
 constexpr uint32_t SLOWMO_PTR = 0x089D5EA8u;    // EBOOT: pointer to that object (+0 step value, +4 time left, +8 flags)
 constexpr uint32_t ROOT_MOTION = 0x0882F784u;   // EBOOT: adds (bone pose now - pose last tick) to the motion player's accumulator
+constexpr uint32_t MOVE_TOWARD = 0x08834E08u;  // EBOOT: moves an actor toward a point by at most f12 metres per call (timeline op 0x0219 ranged: Revolver Drive's rush)
 constexpr uint32_t OWN_MASK0 = 0x089C7FD8u, OWN_MASK1 = 0x089C7FDCu;
 constexpr uint32_t CAM_DT = 0x08B3B4FCu;        // battle overlay: a camera's time step
 
 uint8_t* g_ram = nullptr;
-FuncPtr g_orig_pressed = nullptr, g_orig_rootmotion = nullptr, g_orig_slowmo = nullptr, g_orig_frame_end = nullptr, g_orig_pad = nullptr, g_orig_actor_dt = nullptr, g_orig_cam_dt = nullptr;
+FuncPtr g_orig_move_toward = nullptr, g_orig_pressed = nullptr, g_orig_rootmotion = nullptr, g_orig_slowmo = nullptr, g_orig_frame_end = nullptr, g_orig_pad = nullptr, g_orig_actor_dt = nullptr, g_orig_cam_dt = nullptr;
 std::atomic<int> g_target{30};     // requested rate (settings / env)
 int g_interval = 2;                // interval written on the last frame end (2 = 30 Hz, 1 = 60 Hz and above)
 int g_rate = 30;                   // logic rate in effect (30, 60, 90, ... one frame per vblank above 30)
@@ -260,6 +261,16 @@ void root_motion_hook(uint8_t* rdram, recomp_context* ctx) {
 }
 
 
+// FUN_08834E08(actor, point, f12 = max distance): the 'move toward target' timeline event (op 0x0219 ranged, 137 uses, e.g.
+// Squall's Revolver Drive rush) and a second caller step the actor by f12 metres on every call, not f12 x dt, so at 120
+// updates a second the rush covered four times the ground per second. Scale the allowance by the frame time (dt 2 = 30 Hz).
+void move_toward_hook(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t timer = r32(TIMER_PTR);
+    const float dt = ok(timer) ? rdf(timer + 0x18u) : 2.f;
+    if (dt > 0.f && dt < 2.f) ctx->f[12] *= dt * 0.5f;
+    g_orig_move_toward(rdram, ctx);
+}
+
 void pad_set_hook(uint8_t* rdram, recomp_context* ctx) {
     const float step = rdf(FRAME_STEP);
     const uint32_t mgr = r32(PAD_MGR_PTR);
@@ -383,8 +394,8 @@ void fighter_log_frame() {
         const uint32_t scr = r32(a + 0x540u) & 0xFFFFu;
         if (scr == 0xFFFFu) continue;
         g_fighter_log_left--;
-        std::fprintf(stderr, "[FIGHTER] t=%llu %08X scr=%u step=%.3f y=%.3f floor=%.3f fl=%08X f110=%.3f f114=%.3f f134=%.3f f0F4=%.3f f104=%.3f f144=%.3f vel=%.3f,%.3f,%.3f\n",
-                     (unsigned long long)g_tick, a, scr, rdf(FRAME_STEP), rdf(a + 0x34u), rdf(a + 0x2E4u), r32(a + 0x380u), rdf(a + 0x110u),
+        std::fprintf(stderr, "[FIGHTER] t=%llu %08X scr=%u step=%.3f pos=%.3f,%.3f y=%.3f floor=%.3f fl=%08X f110=%.3f f114=%.3f f134=%.3f f0F4=%.3f f104=%.3f f144=%.3f vel=%.3f,%.3f,%.3f\n",
+                     (unsigned long long)g_tick, a, scr, rdf(FRAME_STEP), rdf(a + 0x30u), rdf(a + 0x38u), rdf(a + 0x34u), rdf(a + 0x2E4u), r32(a + 0x380u), rdf(a + 0x110u),
                      rdf(a + 0x114u), rdf(a + 0x134u), rdf(a + 0xF4u), rdf(a + 0x104u), rdf(a + 0x144u), rdf(a + 0xE0u), rdf(a + 0xE4u),
                      rdf(a + 0xE8u));
     }
@@ -648,6 +659,8 @@ void dissidia_framerate_install(uint8_t* rdram) {
     else std::fprintf(stderr, "[FPS] root motion hook NOT installed (no function at %08X)\n", ROOT_MOTION);
     if ((g_orig_slowmo = psp_dispatch_probe_lookup(SLOWMO_FRAME))) psp_dispatch_register(SLOWMO_FRAME, slowmo_frame_hook);
     else std::fprintf(stderr, "[FPS] slow-motion hook NOT installed (no function at %08X)\n", SLOWMO_FRAME);
+    if ((g_orig_move_toward = psp_dispatch_probe_lookup(MOVE_TOWARD))) psp_dispatch_register(MOVE_TOWARD, move_toward_hook);
+    else std::fprintf(stderr, "[FPS] move-toward hook NOT installed (no function at %08X)\n", MOVE_TOWARD);
     if (g_log && (g_orig_skel = psp_dispatch_probe_lookup(SKEL_BUILD))) psp_dispatch_register(SKEL_BUILD, skel_build_hook);
     fx_install();
     psp_settings_set_frame_rate_hook({k_rates, static_cast<int>(std::size(k_rates)), fps_get, fps_set});
