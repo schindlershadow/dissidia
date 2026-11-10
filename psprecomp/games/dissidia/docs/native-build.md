@@ -103,8 +103,9 @@ buffers become as wide as the window's shape needs (`272 x aspect` PSP pixels, e
 horizontal one grows: the scene shows more to the sides (objects the game never submits outside its own view pop in at the edges
 of the extra width). Every through-mode (2D) draw is scaled the same way, so the HUD and menus stay centred at their original size.
 A through-mode draw that covers the whole 480x272 screen without a render-target texture (a menu background, a fade) is stretched
-over the whole width instead, so menus show their background on the side parts. Draws that read a render target (the glow chain's
-add-back) stay centred; offscreen buffers stay 480x272, so the glow does not reach the side parts. The savedata dialog and the
+over the whole width instead, so menus show their background on the side parts. One that does read a render target (the glow
+chain's add-back) covers the full width too but keeps its scale (its u is scaled about its centre; the texture's clamped edge fills
+the sides, so no hard edge shows where the middle ends); other draws that read a render target stay centred; offscreen buffers stay 480x272, so the glow does not reach the side parts. The savedata dialog and the
 settings menu are drawn centred. A buffer that was 480 wide when widescreen was switched on is grown without losing its picture.
 
 Input: keyboard and SDL game controllers (`PSPRECOMP_SWAP_AB`, `PSPRECOMP_GAMECONTROLLERDB`, `PSPRECOMP_PAD_LOG=1`; key/button
@@ -115,7 +116,7 @@ wraps the battle camera update (`ovl_battle FUN_08B3CA24`, once per frame) and r
 around the fighter you control (the fighter nearest to the game's own eye; the whole rig, eye and look-at, turns about him, so he keeps his place on the screen; `PSPRECOMP_CAM_PIVOT=0` orbits the game's look-at point instead, the old way) by an accumulated yaw/pitch offset, so the game's own d-pad camera, lock-on framing,
 auto-centring and collision pull-in keep working underneath (the stick is an offset on top: when you let go of the stick it
 eases back to the game's camera after 0.5 s, with a time constant of 1 s; `PSPRECOMP_CAM_RECENTER=<s>` changes the time constant,
-`PSPRECOMP_CAM_RECENTER_DELAY=<s>` the pause, `PSPRECOMP_CAM_RECENTER=0` holds the offset until you move it again); R3 (right stick click) or the C key puts the camera back at once. Outside battle (menus) the right stick acts as the
+`PSPRECOMP_CAM_RECENTER_DELAY=<s>` the pause, `PSPRECOMP_CAM_RECENTER=0` holds the offset until you move it again); R3 (right stick click) or the C key puts the camera back at once. Stick right turns the view right (`PSPRECOMP_CAM_INVERT_X=1` for the other way). While the view is turned, the left stick is turned by the same angle (`PSPRECOMP_CAM_MOVE_REL=0` turns that off), so "up" goes into the screen instead of towards the opponent. Outside battle (menus) the right stick acts as the
 D-pad. Options: `PSPRECOMP_CAM_FREE=0` (stick is a plain D-pad everywhere, the game's own camera), `PSPRECOMP_CAM_SENS`
 (default 1.0 = ~150 deg/s at full deflection), `PSPRECOMP_CAM_INVERT_Y=1`, `PSPRECOMP_CAM_PITCH_MIN/MAX` (eye elevation
 limits in degrees, default -5..80), `PSPRECOMP_RSTICK_DEADZONE` (default 0.20), `PSPRECOMP_RSTICK_DPAD=0` (right stick

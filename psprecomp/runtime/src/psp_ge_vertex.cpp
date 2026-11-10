@@ -550,9 +550,9 @@ static bool ge_mvp_collapses(
 
 // Widescreen state for the draw being transformed (see psp_ge_vertex.h).
 static float g_wide_x = 1.0f;
-static bool g_wide_cover = false;
+static bool g_wide_cover = false, g_wide_extend = false;
 static float g_fb_u_scale = 1.0f, g_fb_u_off = 0.0f;
-void ge_set_wide(float wx, bool cover) { g_wide_x = wx; g_wide_cover = cover; }
+void ge_set_wide(float wx, bool cover, bool extend_fb) { g_wide_x = wx; g_wide_cover = cover; g_wide_extend = extend_fb; }
 void ge_set_fb_u(float u_scale, float u_off) { g_fb_u_scale = u_scale; g_fb_u_off = u_off; }
 
 // Game-module degenerate-matrix fallback slot (#47 P5 seam).
@@ -675,14 +675,19 @@ void ge_transform_vertices(
         // Widescreen: a through draw is centred (x scaled by wx), except one that covers the whole screen without
         // a render-target texture, which is stretched across the whole width (menu backgrounds, fades).
         float wx = g_wide_x;
-        if (wx != 1.0f && g_wide_cover && !verts.empty()) {
+        bool extend_u = false;   // a covering render-target draw: full width, u scaled about its centre (see ge_set_wide)
+        if (wx != 1.0f && (g_wide_cover || g_wide_extend) && !verts.empty()) {
             float minx = 1e9f, maxx = -1e9f, miny = 1e9f, maxy = -1e9f;
             for (const auto& v : verts) {
                 minx = std::min(minx, v.pos[0]); maxx = std::max(maxx, v.pos[0]);
                 miny = std::min(miny, v.pos[1]); maxy = std::max(maxy, v.pos[1]);
             }
-            if (minx <= 0.5f && maxx >= 479.5f && miny <= 0.5f && maxy >= 271.5f) wx = 1.0f;
+            if (minx <= 0.5f && maxx >= 479.5f && miny <= 0.5f && maxy >= 271.5f) {
+                extend_u = g_wide_extend;
+                wx = 1.0f;
+            }
         }
+        const float wide_wx = g_wide_x;
         const float fu_scale = g_fb_u_scale, fu_off = g_fb_u_off;
         for (auto& v : verts) {
             v.pos[0] = (v.pos[0] / 240.0f - 1.0f) * wx;
@@ -701,6 +706,14 @@ void ge_transform_vertices(
                     if (texh > 0.0f) v.uv[1] /= texh;
                     v.uv[0] = v.uv[0] * fu_scale + fu_off;   // a wide render target as the texture
                 }
+            }
+        }
+        if (extend_u && wide_wx > 0.0f) {   // scale u about the draw's centre by 1/wx (clamped texture edge fills the sides)
+            float umin = 1e9f, umax = -1e9f;
+            for (const auto& v : verts) if (v.has_uv) { umin = std::min(umin, v.uv[0]); umax = std::max(umax, v.uv[0]); }
+            if (umax > umin) {
+                const float c = 0.5f * (umin + umax);
+                for (auto& v : verts) if (v.has_uv) v.uv[0] = c + (v.uv[0] - c) / wide_wx;
             }
         }
     } else {

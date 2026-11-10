@@ -32,6 +32,8 @@
 #include <cstdlib>
 #include <cstring>
 
+float dissidia_camera_turn();   // camera.cpp
+
 namespace {
 
 constexpr uint32_t STICK_PROCESS = 0x08872138u;
@@ -51,14 +53,28 @@ void wrf(uint32_t a, float f) { std::memcpy(g_ram + (a & 0x07FFFFFFu), &f, 4); }
 // PSPRECOMP_ANALOG_8WAY=0 turns this off.
 constexpr uint32_t OVL_BASE = 0x089DD4C0u;      // resident overlay id (1 = battle)
 constexpr uint32_t PAD_DEADZONE = 0x258u;       // float in the pad object (stick vector is at pad + 0x20)
-bool g_8way = true;
+bool g_8way = true, g_move_rel = true;   // g_move_rel: PSPRECOMP_CAM_MOVE_REL=0 leaves the stick in the game's own frame
 float g_dpad_zone = 0.35f;
 
 void dissidia_stick_process(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t out = static_cast<uint32_t>(ctx->r[4]), in = static_cast<uint32_t>(ctx->r[5]);
-    const float lx = rdf(in), ly = rdf(in + 4);
+    float lx = rdf(in), ly = rdf(in + 4);
     uint32_t id = 0;
     std::memcpy(&id, g_ram + (OVL_BASE & 0x07FFFFFFu), 4);
+    if (g_move_rel && id == 1) {
+        // The free camera (camera.cpp) turns the view away from the game's own camera, but the game still reads the stick
+        // in its own frame (behind the fighter, towards the opponent): without this "up" would not go into the screen.
+        // The stick is turned by the same angle the view was turned to the right (right and forward are the stick's x and -y).
+        const float psi = dissidia_camera_turn();
+        if (psi != 0.f) {
+            const float sx = (lx - 127.5f) / 127.5f, sf = -(ly - 127.5f) / 127.5f;   // right, forward
+            const float c = std::cos(psi), sn = std::sin(psi);
+            const float mx = sx * c + sf * sn, mf = -sx * sn + sf * c;
+            lx = 127.5f + mx * 127.5f;
+            ly = 127.5f - mf * 127.5f;
+            wrf(in, lx); wrf(in + 4, ly);
+        }
+    }
     if (g_8way && id == 1) {
         const float dx = lx - 127.5f, dy = ly - 127.5f;
         const float ax = std::fabs(dx), ay = std::fabs(dy), linf = ax > ay ? ax : ay;
@@ -103,6 +119,7 @@ void dissidia_input_install(uint8_t* rdram) {
     if (e && e[0] == '0') { std::fprintf(stderr, "[INPUT] analogue stick: original 8-way processing (PSPRECOMP_ANALOG_FULL=0)\n"); return; }
     g_ram = rdram;
     if ((e = std::getenv("PSPRECOMP_ANALOG_8WAY")) && e[0] == '0') g_8way = false;
+    if ((e = std::getenv("PSPRECOMP_CAM_MOVE_REL")) && e[0] == '0') g_move_rel = false;
     if ((e = std::getenv("PSPRECOMP_ANALOG_DPAD_ZONE"))) g_dpad_zone = static_cast<float>(std::atof(e));
     if (g_dpad_zone < 0.05f) g_dpad_zone = 0.05f; else if (g_dpad_zone > 0.78f) g_dpad_zone = 0.78f;
     if ((e = std::getenv("PSPRECOMP_ANALOG_DEADZONE"))) g_dz = static_cast<float>(std::atof(e));

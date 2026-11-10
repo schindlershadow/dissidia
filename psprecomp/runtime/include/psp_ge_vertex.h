@@ -50,9 +50,11 @@ void ge_transform_vertices(
 /// transformed position (clip or NDC) so the PSP's 480-wide picture occupies the middle of a wider target (wx =
 /// 480 / target width in PSP pixels; 1 = off). `cover` = true: a through-mode draw that covers the whole 480x272
 /// screen with no render-target texture (a background, a fade) is stretched over the full width instead (wx is not
-/// applied to it). `u_scale`/`u_off` remap the normalised u of a texture that is a wide render target, so the
+/// applied to it). `extend_fb`: such a draw WITH a render-target texture (the glow chain's add-back) covers the full
+/// width too, but is not stretched: its u is scaled about its centre by 1/wx, so the picture keeps its size in the
+/// middle and the side parts show the texture's edge (clamped), with no hard edge where the middle ends. `u_scale`/`u_off` remap the normalised u of a texture that is a wide render target, so the
 /// PSP's 0..480 stays on the middle of it: u' = u * u_scale + u_off (1, 0 = off).
-void ge_set_wide(float wx, bool cover);
+void ge_set_wide(float wx, bool cover, bool extend_fb);
 void ge_set_fb_u(float u_scale, float u_off);
 
 using GeDegenerateFallbackFn = void (*)(const float wpos[3], float out[3]);

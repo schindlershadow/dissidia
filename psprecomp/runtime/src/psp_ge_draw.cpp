@@ -2437,7 +2437,7 @@ static void ge_draw_prim_one(
         }
     }
     // Widescreen: tell the vertex transform how this draw is placed (psp_ge_vertex.h)
-    ge_set_wide(draw_wide_x(state), fbo_tex == 0);
+    ge_set_wide(draw_wide_x(state), fbo_tex == 0, fbo_tex != 0);
     if (fbo_tex && g_fbtex_w480 > 480) ge_set_fb_u(480.0f / float(g_fbtex_w480), 0.5f * float(g_fbtex_w480 - 480) / float(g_fbtex_w480));
     else ge_set_fb_u(1.0f, 0.0f);
     // PSPRECOMP_DRAW_TRACE=1: GE state behind each non-clear PRIM (first 64).

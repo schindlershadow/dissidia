@@ -17,7 +17,7 @@
 //     rotation, lock-on, auto-centring, collision pull-in) is untouched: the stick is an offset on top.
 //
 // Options: PSPRECOMP_CAM_FREE=0 disables (stick then acts as D-pad, see psp_hle_ctrl.cpp), PSPRECOMP_CAM_SENS
-// (1.0 = 150 deg/s yaw at full deflection), PSPRECOMP_CAM_INVERT_Y=1, PSPRECOMP_CAM_PITCH_MIN/MAX (deg,
+// (1.0 = 150 deg/s yaw at full deflection), PSPRECOMP_CAM_INVERT_X=1 / PSPRECOMP_CAM_INVERT_Y=1, PSPRECOMP_CAM_PITCH_MIN/MAX (deg,
 // elevation of the eye above the target; default -5..80), R3 (right stick click, or the C key) puts the camera back at once;
 // PSPRECOMP_CAM_RECENTER=<seconds> (time constant
 // for the offset to drift back to zero once the stick has been idle for PSPRECOMP_CAM_RECENTER_DELAY seconds;
@@ -59,7 +59,7 @@ float g_sens = 1.0f, g_pitch_min = -5.f, g_pitch_max = 80.f, g_recenter = 1.0f, 
 float g_yaw = 0.f, g_pitch = 0.f;   // accumulated offsets (radians)
 double g_last_t = 0;
 int g_log_left = 0;
-bool g_pivot_on = true;   // orbit the fighter (PSPRECOMP_CAM_PIVOT=0: orbit the game's look-at point, the old way)
+bool g_pivot_on = true, g_invert_x = false;   // orbit the fighter (PSPRECOMP_CAM_PIVOT=0: orbit the game's look-at point, the old way)
 // hitcam= framing (roster.cpp posts the request when a hitact= action starts)
 bool g_cine_on = true;
 uint32_t g_cine_seen = 0, g_cine_actor = 0;
@@ -132,6 +132,16 @@ bool cine_frame(const float* eye, const float* tgt, float* E, float* F, float* w
 
 uint32_t overlay_id() { uint32_t id; std::memcpy(&id, g_ram + (OVL_BASE & 0x07FFFFFFu), 4); return id; }
 
+}   // namespace
+
+// How far the free camera has turned the view to the RIGHT of the game's own camera, radians (negative: to the left); 0 when
+// the camera module is not running (menus, no battle). input.cpp turns the left stick by this so "up" goes into the screen.
+float dissidia_camera_turn() {
+    return (now_s() - g_last_t < 0.5 && g_last_t != 0) ? -g_yaw : 0.f;
+}
+
+namespace {
+
 // CAM_UPDATE is a battle-overlay address; the menu/extra overlays map other code there.
 void dissidia_cam_update(uint8_t* rdram, recomp_context* ctx) {
     uint32_t id = overlay_id();
@@ -153,7 +163,7 @@ void dissidia_cam_update(uint8_t* rdram, recomp_context* ctx) {
     constexpr float kRate = 2.6f;   // rad/s at full deflection and sens 1.0
     if (active) {
         g_idle = 0.f;
-        g_yaw   += sx * g_sens * kRate * static_cast<float>(dt);
+        g_yaw   -= (g_invert_x ? -sx : sx) * g_sens * kRate * static_cast<float>(dt);   // stick right: the view turns right
         g_pitch += (g_invert ? -sy : sy) * g_sens * kRate * 0.6f * static_cast<float>(dt);
     } else {
         g_idle += static_cast<float>(dt);
@@ -276,6 +286,7 @@ void dissidia_camera_install(uint8_t* rdram) {
     if ((e = std::getenv("PSPRECOMP_CAM_PITCH_MIN"))) g_pitch_min = static_cast<float>(std::atof(e));
     if ((e = std::getenv("PSPRECOMP_CAM_PITCH_MAX"))) g_pitch_max = static_cast<float>(std::atof(e));
     if ((e = std::getenv("PSPRECOMP_CAM_PIVOT"))) g_pivot_on = e[0] != '0';
+    g_invert_x = (e = std::getenv("PSPRECOMP_CAM_INVERT_X")) && e[0] && e[0] != '0';
     if ((e = std::getenv("PSPRECOMP_CAM_RECENTER"))) g_recenter = static_cast<float>(std::atof(e));
     if ((e = std::getenv("PSPRECOMP_CAM_RECENTER_DELAY"))) g_recenter_delay = static_cast<float>(std::atof(e));
     if ((e = std::getenv("PSPRECOMP_CAMX_LOG"))) g_log_left = std::atoi(e);
