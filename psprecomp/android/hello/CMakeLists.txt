@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(psprecomp_hello C CXX)
+set(SDL_SHARED ON CACHE BOOL "" FORCE)
+set(SDL_STATIC OFF CACHE BOOL "" FORCE)
+set(SDL_TEST OFF CACHE BOOL "" FORCE)
+add_subdirectory(${SDL2_SRC} sdl2 EXCLUDE_FROM_ALL)
+add_library(main SHARED hello.c)
+target_link_libraries(main PRIVATE SDL2::SDL2 GLESv3 log android)

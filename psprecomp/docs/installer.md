@@ -142,6 +142,15 @@ of the fork.
    a prebuilt APK shell that loads `libpsprecomp_game.so` from app storage so no SDK is needed on the player's PC), touch/gamepad
    input, and a bionic port of the core's POSIX use (overlaps with task 19). Order: after Windows.
 
+### Android progress (task 20)
+
+Milestone 1, hello APK (2026-11-10): `android/build_hello.py` builds SDL2 (shared, from the pinned 2.32.10 source) and a tiny `libmain.so`
+(`android/hello/hello.c`: GLES 3.0 context, background colour follows touch, flash on pad buttons, GL strings / drawable size / pad
+and touch events in logcat) for arm64-v8a with the Android NDK 27 (the NDK is needed: zig has no bionic headers), packs SDL's Java
+activity (javac + d8), aapt2, zipalign and a debug-signed apk. Tools live outside the repo (desktop `~/dissidia/android/{sdk,jdk,sdl2src}`:
+cmdline-tools sdkmanager `build-tools;34.0.0`, `platforms;android-34`, `ndk;27.2.12479018`; Corretto JDK 17). Built: `hello.apk`, 2.4 MB;
+awaiting a run on a device. Next milestones: GLES 3 path in the renderer, bionic port of the core, the generated game for aarch64-android, APK shell.
+
 ## Verification of milestone 1
 
 The dev build (`pipeline.sh`) still produces the same `build/psprecomp_runtime` (it now links `psprecomp_core` + the generated
