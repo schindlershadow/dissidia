@@ -1,0 +1,97 @@
+name: Release (psprecomp)
+
+# Builds the installable releases of this fork (design: docs/installer.md) and publishes them as a GitHub Release:
+#   psprecomp-<version>-linux-x86_64.tar.xz, psprecomp-<version>-windows-x86_64.zip, manifest.json
+# Each archive holds the setup wizard, the recompiler, the portable compiler bundle, the prebuilt runtime core (SDK) and the
+# game's tools. No game data or game-derived code is in a release: the player's machine builds the game from their own disc.
+#
+# Trigger: push a tag vX.Y.Z (publishes a release) or run it by hand (builds and uploads workflow artifacts only).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version string for a manual build (no release is published)'
+        default: '0.0.0-dev'
+
+defaults:
+  run:
+    working-directory: psprecomp
+
+env:
+  VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+
+jobs:
+  recompiler-windows:
+    # the Rust recompiler for the Windows release is built natively (the rest is cross-built from Linux with the zig bundle)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release -p psp-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: recompiler-windows
+          path: psprecomp/target/release/psprecomp.exe
+
+  build:
+    runs-on: ubuntu-22.04
+    needs: recompiler-windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build dependencies of the bundle (SDL2 loads these libraries at run time; only their headers are needed here)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends perl make python3 \
+            libx11-dev libxext-dev libxcursor-dev libxi-dev libxfixes-dev libxrandr-dev libxss-dev libxkbcommon-dev \
+            libwayland-dev wayland-protocols libdecor-0-dev libasound2-dev libpulse-dev libpipewire-0.3-dev \
+            libdrm-dev libgbm-dev libudev-dev libdbus-1-dev libgl-dev libegl-dev
+      - uses: actions/download-artifact@v4
+        with:
+          name: recompiler-windows
+          path: psprecomp/recompiler-windows
+      - name: Linux release
+        run: python3 release/build_release.py --platform linux-x86_64 --version "${VERSION#v}" --work work
+      - name: Windows release (cross-built with the same zig)
+        run: >
+          python3 release/build_release.py --platform windows-x86_64 --version "${VERSION#v}" --work work
+          --recompiler recompiler-windows/psprecomp.exe
+      - name: Collect
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          mkdir dist
+          cp work/psprecomp-*.tar.xz* work/psprecomp-*.zip* dist/
+          python3 release/make_manifest.py --version "${VERSION#v}" --repo "${{ github.repository }}" --tag "$VERSION" \
+            --assets dist -o dist/manifest.json
+          # Signed manifest (docs/installer.md "Signed manifests"). A committed public key without the secret would ship
+          # releases that no install accepts, so that combination fails here.
+          if [ -f games/dissidia/update_key.pub ] && [ -z "$RELEASE_SIGNING_KEY" ]; then
+            echo "games/dissidia/update_key.pub is committed but the RELEASE_SIGNING_KEY secret is not set"; exit 1
+          fi
+          if [ -n "$RELEASE_SIGNING_KEY" ]; then python3 release/sign_manifest.py sign dist/manifest.json; fi
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: psprecomp/dist/*
+
+  publish:
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-files
+          path: psprecomp/dist
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$VERSION" dist/* --repo "${{ github.repository }}"
+          --title "$VERSION" --notes "Installable build of the game's runtime. Download the archive for your system, unpack it and run psprecomp_setup. You need your own copy of the game (ISO or CSO)."
