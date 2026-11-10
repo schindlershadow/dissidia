@@ -44,15 +44,25 @@ jobs:
             libx11-dev libxext-dev libxcursor-dev libxi-dev libxfixes-dev libxrandr-dev libxss-dev libxkbcommon-dev \
             libwayland-dev wayland-protocols libdecor-0-dev libasound2-dev libpulse-dev libpipewire-0.3-dev \
             libdrm-dev libgbm-dev libudev-dev libdbus-1-dev libgl-dev libegl-dev
+      - name: Android SDK pieces for the Android part of the release (the runner's JDK compiles SDL's Java activity; installing them accepts Google's Android SDK license)
+        run: |
+          export ANDROID_SDK_ROOT="$HOME/android-sdk"
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+          curl -sL -o cmdline.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q cmdline.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"
+          mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "build-tools;34.0.0" "platforms;android-34" "ndk;27.2.12479018"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v4
         with:
           name: recompiler-windows
           path: recompiler-windows
       - name: Linux release
-        run: python3 release/build_release.py --platform linux-x86_64 --version "${VERSION#v}" --work work
+        run: python3 release/build_release.py --platform linux-x86_64 --version "${VERSION#v}" --work work --android-sdk "$ANDROID_SDK_ROOT"
       - name: Windows release (cross-built with the same zig)
         run: >
-          python3 release/build_release.py --platform windows-x86_64 --version "${VERSION#v}" --work work
+          python3 release/build_release.py --platform windows-x86_64 --version "${VERSION#v}" --work work --android-sdk "$ANDROID_SDK_ROOT"
           --recompiler recompiler-windows/psprecomp.exe
       - name: Collect
         env:
