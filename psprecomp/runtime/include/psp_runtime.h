@@ -22,6 +22,12 @@ extern std::atomic<uint32_t> g_host_buttons;
 // Packed host analogue stick: lx | (ly << 8), 128 = centre (default 0x8080).
 extern std::atomic<uint32_t> g_host_analog;
 
+/// Scripted pad (test driver, games/dissidia/runtime/framerate.cpp): while on, the sceCtrl HLE reports exactly this state
+/// (buttons, packed lx | ly << 8) and ignores the keyboard, pad and debug-socket input. psp_ctrl_last_sample gives the state
+/// the game was last handed (for recording a play session).
+void psp_ctrl_set_script(bool on, uint32_t buttons, uint32_t analog);
+void psp_ctrl_last_sample(uint32_t* buttons, uint32_t* analog);
+
 /// Debug-socket injected button mask + expiry (steady_clock milliseconds).
 /// Set by the `B <hexmask> <ms>` debug-socket command; the sceCtrl HLE ORs
 /// the mask in only while now < deadline (one-shot timed overlay).

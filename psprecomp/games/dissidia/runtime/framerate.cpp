@@ -34,6 +34,7 @@
 // 5 s, plus each switch), PSPRECOMP_FX60=0 (leave the effect components below as they are, for A/B checks).
 
 #include "psp_game_module.h"
+#include "psp_runtime.h"
 #include "psp_settings.h"
 #include "recomp.h"
 #include "hle/psp_hle.h"
@@ -47,6 +48,10 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
 #include <iterator>
 #include <unordered_map>
 
@@ -135,7 +140,138 @@ void skel_build_hook(uint8_t* rdram, recomp_context* ctx) {
     g_orig_skel(rdram, ctx);
 }
 
-void fx_log_window();
+void fx_log_window();uint32_t g_fighters[4] = {};
+uint64_t g_fighter_seen[4] = {};   // g_tick when the fighter's step was last asked for (stale = left the battle)
+
+// ---- Test driver (PSPRECOMP_TEST_SCRIPT / PSPRECOMP_INPUT_RECORD): scripted pad input in GAME time ----
+// A script is a text file, one event per line:  <ms> set <BUTTONS|-> [ax ay]   hold exactly that pad state (and stick, 128 = centre)
+//                                               <ms> tap <BUTTONS> [ms]         press, release after ms (default 100)
+//                                               <ms> analog <ax> <ay>           stick only
+//                                               <ms> mark <text>                 [TEST] line in the log
+//                                               <ms> quit                        exit the game
+// BUTTONS: CROSS CIRCLE SQUARE TRIANGLE L R UP DOWN LEFT RIGHT START SELECT joined by '+', or a 0x hex mask. The clock is game
+// time in ms since the battle began (the first fighter in an action), advanced by 1/60 s x dt per update, so the same script
+// plays identically at 30 and 120 fps and the [FIGHTER] logs (gt=) of two rates can be compared line by line (tools/rate_test.py).
+// The scripted pad replaces every other input while a script runs in battle. PSPRECOMP_INPUT_RECORD=<file> writes the pad
+// state the game was given as such a script (play the move once by hand, replay it at any rate).
+struct TestEvent { double t; int kind; uint32_t a, b; std::string text; };   // kind 0 set, 1 analog, 2 mark, 3 quit
+std::vector<TestEvent> g_test_events;
+size_t g_test_next = 0;
+double g_gt_ms = 0;                     // game time in the battle, ms
+bool g_gt_started = false, g_test_on = false;
+uint32_t g_test_buttons = 0, g_test_analog = 0x8080;
+FILE* g_record = nullptr;
+uint32_t g_rec_buttons = 0xFFFFFFFFu, g_rec_analog = 0;
+
+uint32_t parse_buttons(const std::string& s) {
+    static const struct { const char* n; uint32_t m; } k[] = {{"SELECT", 0x1}, {"START", 0x8}, {"UP", 0x10}, {"RIGHT", 0x20}, {"DOWN", 0x40}, {"LEFT", 0x80},
+        {"L", 0x100}, {"R", 0x200}, {"TRIANGLE", 0x1000}, {"CIRCLE", 0x2000}, {"CROSS", 0x4000}, {"SQUARE", 0x8000}};
+    if (s == "-" || s == "NONE") return 0;
+    if (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) return static_cast<uint32_t>(std::strtoul(s.c_str(), nullptr, 16));
+    uint32_t m = 0;
+    size_t i = 0;
+    while (i <= s.size()) {
+        size_t j = s.find('+', i);
+        if (j == std::string::npos) j = s.size();
+        const std::string w = s.substr(i, j - i);
+        bool hit = false;
+        for (const auto& e : k) if (w == e.n) { m |= e.m; hit = true; }
+        if (!hit && !w.empty()) std::fprintf(stderr, "[TEST] unknown button '%s'\n", w.c_str());
+        i = j + 1;
+    }
+    return m;
+}
+
+void testdrive_load(const char* path) {
+    std::ifstream in(path);
+    if (!in) { std::fprintf(stderr, "[TEST] cannot read script %s\n", path); return; }
+    std::string line;
+    while (std::getline(in, line)) {
+        const size_t h = line.find('#');
+        if (h != std::string::npos) line.resize(h);
+        std::istringstream ss(line);
+        double t; std::string cmd;
+        if (!(ss >> t >> cmd)) continue;
+        if (cmd == "set" || cmd == "tap") {
+            std::string b; ss >> b;
+            const uint32_t m = parse_buttons(b);
+            if (cmd == "tap") {
+                double d = 100; ss >> d;
+                g_test_events.push_back({t, 0, m, 0x8080, ""});
+                g_test_events.push_back({t + d, 0, 0, 0x8080, "tap"});   // 'tap' release keeps the stick: marked by text
+            } else {
+                unsigned ax = 128, ay = 128; ss >> ax >> ay;
+                g_test_events.push_back({t, 0, m, (ay & 255u) << 8 | (ax & 255u), "set"});
+            }
+        } else if (cmd == "analog") {
+            unsigned ax = 128, ay = 128; ss >> ax >> ay;
+            g_test_events.push_back({t, 1, 0, (ay & 255u) << 8 | (ax & 255u), ""});
+        } else if (cmd == "mark") {
+            std::string rest; std::getline(ss, rest);
+            g_test_events.push_back({t, 2, 0, 0, rest});
+        } else if (cmd == "quit") g_test_events.push_back({t, 3, 0, 0, ""});
+        else std::fprintf(stderr, "[TEST] unknown command '%s'\n", cmd.c_str());
+    }
+    std::stable_sort(g_test_events.begin(), g_test_events.end(), [](const TestEvent& x, const TestEvent& y) { return x.t < y.t; });
+    std::fprintf(stderr, "[TEST] script %s: %zu events\n", path, g_test_events.size());
+}
+
+bool battle_running() {
+    if (overlay_id() != 1) return false;
+    for (int i = 0; i < 4; i++) {
+        const uint32_t a = g_fighters[i];
+        if (a && ok(a) && g_tick - g_fighter_seen[i] < 30 && (r32(a + 0x540u) & 0xFFFFu) != 0xFFFFu) return true;
+    }
+    return false;
+}
+
+// once per logic update, after the frame end
+void testdrive_frame() {
+    if (!g_test_on) return;
+    const bool run = battle_running();
+    if (!run) {
+        if (g_gt_started) {
+            std::fprintf(stderr, "[TEST] battle ended at gt=%.0f ms\n", g_gt_ms);
+            g_gt_started = false;
+            psp_ctrl_set_script(false, 0, 0x8080);
+            if (g_record) { std::fclose(g_record); g_record = nullptr; }
+        }
+        return;
+    }
+    if (!g_gt_started) {
+        g_gt_started = true; g_gt_ms = 0; g_test_next = 0; g_test_buttons = 0; g_test_analog = 0x8080;
+        std::fprintf(stderr, "[TEST] battle started (tick %llu)\n", (unsigned long long)g_tick);
+    } else {
+        g_gt_ms += g_ticks * (1000.0 / 60.0);
+    }
+    if (g_record) {
+        uint32_t b, a; psp_ctrl_last_sample(&b, &a);
+        if (b != g_rec_buttons || a != g_rec_analog) {
+            std::fprintf(g_record, "%.0f set 0x%X %u %u\n", g_gt_ms, b, a & 255u, (a >> 8) & 255u);
+            std::fflush(g_record);
+            g_rec_buttons = b; g_rec_analog = a;
+        }
+    }
+    if (g_test_events.empty()) return;
+    while (g_test_next < g_test_events.size() && g_test_events[g_test_next].t <= g_gt_ms) {
+        const TestEvent& e = g_test_events[g_test_next++];
+        if (e.kind == 0) { g_test_buttons = e.a; if (e.text == "set") g_test_analog = e.b; }
+        else if (e.kind == 1) g_test_analog = e.b;
+        else if (e.kind == 2) std::fprintf(stderr, "[TEST] gt=%.0f mark%s\n", g_gt_ms, e.text.c_str());
+        else if (e.kind == 3) { std::fprintf(stderr, "[TEST] quit at gt=%.0f ms\n", g_gt_ms); g_should_exit.store(true); }
+    }
+    psp_ctrl_set_script(true, g_test_buttons, g_test_analog);
+}
+
+void testdrive_install() {
+    const char* e = std::getenv("PSPRECOMP_TEST_SCRIPT");
+    if (e && e[0]) { testdrive_load(e); g_test_on = true; }
+    if ((e = std::getenv("PSPRECOMP_INPUT_RECORD")) && e[0]) {
+        g_record = std::fopen(e, "w");
+        if (g_record) { std::fprintf(g_record, "# recorded pad input, game-time ms (PSPRECOMP_TEST_SCRIPT=this file)\n"); g_test_on = true; }
+    }
+}
+
 void fighter_log_frame();
 void fighter_dump_frame();
 
@@ -185,6 +321,7 @@ void frame_end_hook(uint8_t* rdram, recomp_context* ctx) {
         g_fx_period = rate / 30;
     }
     g_orig_frame_end(rdram, ctx);
+    testdrive_frame();
     fighter_log_frame();
     if (g_rate > 60 && ok(timer)) wrf(timer + 0x18u, g_ticks);   // the frame waited for one (short) vblank: dt = 60 / rate
     if (g_log && ok(timer)) {
@@ -294,8 +431,6 @@ bool g_actor_log = false;
 // the floor height the game keeps for it (+0x2E4), flags (+0x380) and a few fields that moved while an attack
 // misbehaved. For debugging attacks that behave differently above 30 Hz (Kain's Sky Spear).
 int g_fighter_log_left = 40000;
-uint32_t g_fighters[4] = {};
-uint64_t g_fighter_seen[4] = {};   // g_tick when the fighter's step was last asked for (stale = left the battle)
 
 // Press latch (PSPRECOMP_PRESS_LATCH=0 turns it off). The fighter code asks the virtual pad "was bit B pressed this update"
 // (FUN_08AB399C: state & ~previous state). The PSP ran 30 updates a second, so a press was seen for 33 ms; at 120 it is seen for
@@ -383,7 +518,7 @@ void fighter_log_frame() {
         if (t == g_object_time[i]) continue;
         g_object_time[i] = t;
         g_object_log_left--;
-        std::fprintf(stderr, "[MOTION] t=%llu %08X kind=%u step=%.3f time=%.3f prev=%.3f end=%.3f len=%.3f scr=%u\n", (unsigned long long)g_tick, a,
+        std::fprintf(stderr, "[MOTION] gt=%.0f pos=%.3f,%.3f,%.3f t=%llu %08X kind=%u step=%.3f time=%.3f prev=%.3f end=%.3f len=%.3f scr=%u\n", g_gt_ms, rdf(a + 0x30u), rdf(a + 0x34u), rdf(a + 0x38u), (unsigned long long)g_tick, a,
                      (unsigned)g_ram[(a + 0x542u) & 0x07FFFFFFu], rdf(FRAME_STEP), t, rdf(a + 0x1A4u), rdf(a + 0x1A0u), rdf(a + 0x1BCu),
                      r32(a + 0x540u) & 0xFFFFu);
     }
@@ -394,8 +529,8 @@ void fighter_log_frame() {
         const uint32_t scr = r32(a + 0x540u) & 0xFFFFu;
         if (scr == 0xFFFFu) continue;
         g_fighter_log_left--;
-        std::fprintf(stderr, "[FIGHTER] t=%llu %08X scr=%u step=%.3f pos=%.3f,%.3f y=%.3f floor=%.3f fl=%08X f110=%.3f f114=%.3f f134=%.3f f0F4=%.3f f104=%.3f f144=%.3f vel=%.3f,%.3f,%.3f\n",
-                     (unsigned long long)g_tick, a, scr, rdf(FRAME_STEP), rdf(a + 0x30u), rdf(a + 0x38u), rdf(a + 0x34u), rdf(a + 0x2E4u), r32(a + 0x380u), rdf(a + 0x110u),
+        std::fprintf(stderr, "[FIGHTER] gt=%.0f t=%llu %08X scr=%u step=%.3f pos=%.3f,%.3f y=%.3f floor=%.3f fl=%08X f110=%.3f f114=%.3f f134=%.3f f0F4=%.3f f104=%.3f f144=%.3f vel=%.3f,%.3f,%.3f\n",
+                     g_gt_ms, (unsigned long long)g_tick, a, scr, rdf(FRAME_STEP), rdf(a + 0x30u), rdf(a + 0x38u), rdf(a + 0x34u), rdf(a + 0x2E4u), r32(a + 0x380u), rdf(a + 0x110u),
                      rdf(a + 0x114u), rdf(a + 0x134u), rdf(a + 0xF4u), rdf(a + 0x104u), rdf(a + 0x144u), rdf(a + 0xE0u), rdf(a + 0xE4u),
                      rdf(a + 0xE8u));
     }
@@ -638,6 +773,7 @@ void dissidia_framerate_install(uint8_t* rdram) {
     g_fighter_log = (e = std::getenv("PSPRECOMP_FIGHTER_LOG")) && e[0] && e[0] != '0';
     if ((e = std::getenv("PSPRECOMP_PRESS_LATCH")) && e[0]) { g_press_ms = float(std::atof(e)); if (g_press_ms == 1.0f) g_press_ms = 33.4f; }
     g_press_latch = g_press_ms > 0.5f;
+    testdrive_install();
     g_fighter_dump = g_fighter_log && (e = std::getenv("PSPRECOMP_FIGHTER_DUMP")) && e[0] && e[0] != '0';
     g_orig_frame_end = psp_dispatch_probe_lookup(FRAME_END);
     g_orig_pad = psp_dispatch_probe_lookup(PAD_SET);

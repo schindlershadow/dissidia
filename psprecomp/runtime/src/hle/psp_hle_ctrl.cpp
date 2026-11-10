@@ -71,6 +71,18 @@ static uint32_t right_stick_dpad_bits() {
 // offset 10-15: reserved
 // Total: 16 bytes per sample
 
+static std::atomic<bool> g_script_on{false};
+static std::atomic<uint32_t> g_script_buttons{0}, g_script_analog{0x8080}, g_last_buttons{0}, g_last_analog{0x8080};
+void psp_ctrl_set_script(bool on, uint32_t buttons, uint32_t analog) {
+    g_script_buttons.store(buttons, std::memory_order_relaxed);
+    g_script_analog.store(analog, std::memory_order_relaxed);
+    g_script_on.store(on, std::memory_order_relaxed);
+}
+void psp_ctrl_last_sample(uint32_t* buttons, uint32_t* analog) {
+    *buttons = g_last_buttons.load(std::memory_order_relaxed);
+    *analog = g_last_analog.load(std::memory_order_relaxed);
+}
+
 static void write_ctrl_data(
     uint8_t* rdram, uint32_t ptr
 ) {
@@ -95,7 +107,10 @@ static void write_ctrl_data(
             std::memory_order_relaxed);
     }
     buttons |= right_stick_dpad_bits();
+    const bool scripted = g_script_on.load(std::memory_order_relaxed);
+    if (scripted) buttons = g_script_buttons.load(std::memory_order_relaxed);
     psp_mem_write<uint32_t>(rdram, ptr + 4, buttons);
+    g_last_buttons.store(buttons, std::memory_order_relaxed);
 
     // Analog stick: host pad/keyboard stick (128 = centre)
     uint32_t analog = g_host_analog.load(std::memory_order_relaxed);
@@ -103,6 +118,8 @@ static void write_ctrl_data(
             std::memory_order_relaxed)) {
         analog = g_injected_analog.load(std::memory_order_relaxed);
     }
+    if (scripted) analog = g_script_analog.load(std::memory_order_relaxed);
+    g_last_analog.store(analog, std::memory_order_relaxed);
     psp_mem_write<uint8_t>(rdram, ptr + 8,
         static_cast<uint8_t>(analog & 0xFF));
     psp_mem_write<uint8_t>(rdram, ptr + 9,
