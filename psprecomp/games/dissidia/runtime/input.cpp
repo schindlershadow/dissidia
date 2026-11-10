@@ -43,10 +43,42 @@ int g_log = 0;
 float rdf(uint32_t a) { float f; std::memcpy(&f, g_ram + (a & 0x07FFFFFFu), 4); return f; }
 void wrf(uint32_t a, float f) { std::memcpy(g_ram + (a & 0x07FFFFFFu), &f, 4); }
 
+// The game's own 8-way processing (the virtual D-pad bits it returns, which battle movement and the dash / step
+// commands read) needs a PSP nub's square gate: a modern stick's circular gate never reaches 78% on both axes at
+// a diagonal, so only the four cardinal bits ever fire. In battle the original is run on a square-gate version of
+// the stick (the circle stretched to the square: same angle, same size by the max norm) with the game's per-axis
+// dead zone lowered to PSPRECOMP_ANALOG_DPAD_ZONE (default 0.35 of travel), which makes eight even sectors.
+// PSPRECOMP_ANALOG_8WAY=0 turns this off.
+constexpr uint32_t OVL_BASE = 0x089DD4C0u;      // resident overlay id (1 = battle)
+constexpr uint32_t PAD_DEADZONE = 0x258u;       // float in the pad object (stick vector is at pad + 0x20)
+bool g_8way = true;
+float g_dpad_zone = 0.35f;
+
 void dissidia_stick_process(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t out = static_cast<uint32_t>(ctx->r[4]), in = static_cast<uint32_t>(ctx->r[5]);
     const float lx = rdf(in), ly = rdf(in + 4);
-    g_orig(rdram, ctx);   // v0/v1 (virtual D-pad bits) are left exactly as the game computed them
+    uint32_t id = 0;
+    std::memcpy(&id, g_ram + (OVL_BASE & 0x07FFFFFFu), 4);
+    if (g_8way && id == 1) {
+        const float dx = lx - 127.5f, dy = ly - 127.5f;
+        const float ax = std::fabs(dx), ay = std::fabs(dy), linf = ax > ay ? ax : ay;
+        float sx = dx, sy = dy;
+        if (linf > 1e-3f) {
+            const float k = std::sqrt(dx * dx + dy * dy) / linf;   // 1 on an axis, up to sqrt 2 on a diagonal
+            sx = dx * k; sy = dy * k;
+            if (sx > 127.5f) sx = 127.5f; else if (sx < -127.5f) sx = -127.5f;
+            if (sy > 127.5f) sy = 127.5f; else if (sy < -127.5f) sy = -127.5f;
+        }
+        const uint32_t dz_addr = out - 0x20u + PAD_DEADZONE;
+        const float dz_was = rdf(dz_addr);
+        wrf(in, 127.5f + sx); wrf(in + 4, 127.5f + sy);
+        wrf(dz_addr, g_dpad_zone * 127.5f);
+        g_orig(rdram, ctx);
+        wrf(dz_addr, dz_was);
+        wrf(in, lx); wrf(in + 4, ly);
+    } else {
+        g_orig(rdram, ctx);   // v0/v1 (virtual D-pad bits) are left exactly as the game computed them
+    }
     const float dx = lx - 127.5f, dy = ly - 127.5f;
     const float len = std::sqrt(dx * dx + dy * dy);
     const float m = len / 127.5f;
@@ -70,6 +102,9 @@ void dissidia_input_install(uint8_t* rdram) {
     const char* e = std::getenv("PSPRECOMP_ANALOG_FULL");
     if (e && e[0] == '0') { std::fprintf(stderr, "[INPUT] analogue stick: original 8-way processing (PSPRECOMP_ANALOG_FULL=0)\n"); return; }
     g_ram = rdram;
+    if ((e = std::getenv("PSPRECOMP_ANALOG_8WAY")) && e[0] == '0') g_8way = false;
+    if ((e = std::getenv("PSPRECOMP_ANALOG_DPAD_ZONE"))) g_dpad_zone = static_cast<float>(std::atof(e));
+    if (g_dpad_zone < 0.05f) g_dpad_zone = 0.05f; else if (g_dpad_zone > 0.78f) g_dpad_zone = 0.78f;
     if ((e = std::getenv("PSPRECOMP_ANALOG_DEADZONE"))) g_dz = static_cast<float>(std::atof(e));
     if (g_dz < 0.f) g_dz = 0.f; else if (g_dz > 0.9f) g_dz = 0.9f;
     if ((e = std::getenv("PSPRECOMP_ANALOG_LOG"))) g_log = std::atoi(e);
