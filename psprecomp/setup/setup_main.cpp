@@ -412,6 +412,7 @@ struct App {
         const setup::Options& o = (rebuild || update) ? state.options : opt;
         if (update) plan = setup::plan_update(layout, state.workdir, o, upd);
         else plan = rebuild ? setup::plan_rebuild(layout, state.workdir, o) : setup::plan_install(layout, iso, workdir, o);
+        log_open((rebuild || update) ? state.workdir : workdir);
         prog = setup::Progress();
         prog.stage = plan[0].label;
         prog.explain = plan[0].explain;
@@ -429,7 +430,21 @@ struct App {
         }
     }
 
+    // setup.log in the install folder: every build line plus the failure reason (the wizard has no console on Windows)
+    FILE* logf = nullptr;
+    void log_open(const std::string& dir) {
+        if (logf) { std::fclose(logf); logf = nullptr; }
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        logf = std::fopen((std::filesystem::path(dir) / "setup.log").string().c_str(), "ab");
+        if (logf) { std::fprintf(logf, "\n===== psprecomp_setup run =====\n"); std::fflush(logf); }
+    }
+    void log_line(const std::string& l) {
+        if (logf) { std::fprintf(logf, "%s\n", l.c_str()); std::fflush(logf); }
+    }
+
     void fail(const std::string& msg) {
+        log_line("FAILED: " + msg);
         building = false;
         fail_msg = msg;
         go(Screen::Failed);
@@ -439,13 +454,14 @@ struct App {
         std::string line;
         while (proc.read_line(line)) {
             std::fprintf(stderr, "%s\n", line.c_str());
+            log_line(line);
             setup::feed_line(prog, plan, line, now_ms());
             dirty = true;
         }
         if (building && !proc.busy()) {
             int code = proc.exit_code();
             if (code != 0 || !prog.error.empty()) {
-                fail(prog.error.empty() ? "A step failed (exit code " + std::to_string(code) + "); see the terminal output." : prog.error + ".");
+                fail(prog.error.empty() ? "A step failed (exit code " + std::to_string(code) + "); see setup.log in the install folder." : prog.error + ".");
                 return;
             }
             prog.fraction = std::max(prog.fraction, setup::step_done_fraction(plan, prog.step));

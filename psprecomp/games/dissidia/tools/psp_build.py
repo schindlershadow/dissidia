@@ -73,6 +73,10 @@ def sha256_files(paths):
 def run(cmd, env=None, cwd=None, filt=None):
     """Run a command, streaming its output; `filt(line)` sees every line (progress parsing). Dies on failure."""
     say("$ " + " ".join(cmd))
+    # Windows' CreateProcess looks a bare name up in the PARENT's PATH, not in env["PATH"] (where the bundle's cmake lives)
+    exe = shutil.which(cmd[0], path=(env or os.environ).get("PATH"))
+    if exe:
+        cmd = [exe] + list(cmd[1:])
     p = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
     for line in p.stdout:
         sys.stdout.write(line)
