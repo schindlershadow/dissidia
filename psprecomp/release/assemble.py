@@ -6,7 +6,7 @@
 
 The result is what the wizard (setup/install.h "Layout") expects, flat:
 
-  psprecomp_setup[.exe]   the wizard           bin/psprecomp[.exe]   the recompiler
+  DissidiaRecomp[.exe]   the wizard           bin/psprecomp[.exe]   the recompiler
   toolchain/              the portable compiler bundle (toolchain/build_bundle.py), trimmed
   sdk/                    prebuilt runtime core + headers + link project + toolchain.json
   game/                   games/dissidia: game.toml, overlay tomls, analysis/, features.ini, fx_shaders/, tools/*.py
@@ -86,9 +86,9 @@ def main():
         shutil.rmtree(out)
     os.makedirs(os.path.join(out, "bin"))
 
-    shutil.copy2(a.wizard, os.path.join(out, "psprecomp_setup" + exe))
+    shutil.copy2(a.wizard, os.path.join(out, "DissidiaRecomp" + exe))
     shutil.copy2(a.recompiler, os.path.join(out, "bin", "psprecomp" + exe))
-    os.chmod(os.path.join(out, "psprecomp_setup" + exe), 0o755)
+    os.chmod(os.path.join(out, "DissidiaRecomp" + exe), 0o755)
     os.chmod(os.path.join(out, "bin", "psprecomp" + exe), 0o755)
 
     # the bundle without what only developers read (cmake's help/manuals, zig's docs)

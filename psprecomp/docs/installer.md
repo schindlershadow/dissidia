@@ -53,7 +53,7 @@ of the fork.
    - Open for milestone 5: the core configure needs the four small generated headers of an output dir (`recomp_module.h`,
      `recomp_game_config.h`, `recomp_fingerprint.h`, `recomp.h`; binary facts and addresses, no game code) and CI has no game; the
      release workflow has to supply them (a committed header-only stub, or hydrate the shipped analysis).
-4. **Wizard** (`setup/`, program `psprecomp_setup`; first version built and driven on Linux 2026-11-10). Requirement (user): it
+4. **Wizard** (`setup/`, program `DissidiaRecomp`; first version built and driven on Linux 2026-11-10). Requirement (user): it
    runs on **Windows as well as Linux**. It is a C++/SDL2 program built with the bundle for each platform, using portable code
    only (`std::filesystem`, a small process helper `setup/proc.cpp` with POSIX fork/pipes or Win32 CreateProcess + a job object so
    Cancel kills ninja/zig too), and it reuses the runtime's menu renderer (`render_menu`, `KeyboardDialog` from
@@ -71,13 +71,13 @@ of the fork.
      of what the current stage does in the information panel. The step weights live in `setup/install.cpp`.
    - **Options**: check for updates; HD texture pack; Japanese voices (undub; asks for the undub disc image first); Android
      version; **Import saves** (cycles Off / each PPSSPP or memory-stick SAVEDATA folder found with Dissidia 012 saves, found by
-     `psp_savemgr::detect_sources`; it adds the last install step, `psprecomp_setup --import-saves FROM --dir WORK`, which copies the
+     `psp_savemgr::detect_sources`; it adds the last install step, `DissidiaRecomp --import-saves FROM --dir WORK`, which copies the
      saves under the installed game's disc ID, re-signed, and never replaces a save that already exists in the install; verified
      2026-11-10 with a headless install from the US ISO, `--headless ... --saves DIR`). A release declares which of the optional features it implements in `game/features.ini` (`hd_textures=1`,
      `jp_audio=1`, `android=1`); until a feature exists its row shows "Not yet" and cannot be switched on. The commands the
      wizard runs for them are fixed in `install.cpp` (`tools/fetch_textures.py <work>`, `tools/jp_audio.py --iso <undub>
      --work <work>`, `psp_build.py ... --android`), so those tasks only have to provide the scripts and flip the line.
-   - Release layout the wizard expects (see `setup/install.h`): `psprecomp_setup`, `bin/psprecomp`, `toolchain/`, `sdk/`,
+   - Release layout the wizard expects (see `setup/install.h`): `DissidiaRecomp`, `bin/psprecomp`, `toolchain/`, `sdk/`,
      `game/` (= `games/dissidia`), `python/` on Windows. It remembers the install in the user's pref dir (`install.ini`).
    - Command line: `--play [DIR]` starts the installed game; `--headless --iso F --dir D` runs the install steps without a window
      (used for tests); `--root DIR`; `--screenshots DIR` renders every page to PPM without a display (look checks).
@@ -85,7 +85,7 @@ of the fork.
      shortcut.
 5. **Release workflow** (written 2026-11-10; the local run below works, the GitHub Actions run itself has not been run yet because nothing is pushed).
    - `release/build_release.py --platform P --version V --work DIR` is the whole build for one platform on a Linux host: bundle
-     (`toolchain/build_bundle.py`) -> header stub -> core + SDK -> wizard -> `release/assemble.py` -> `psprecomp-V-P.tar.xz`
+     (`toolchain/build_bundle.py`) -> header stub -> core + SDK -> wizard -> `release/assemble.py` -> `DissidiaRecomp-V-P.tar.xz`
      (Linux) / `.zip` (Windows) + `.sha256`. Windows is cross-built; `build_bundle.py` keeps `<bundle>.host/` (host-runnable zig,
      cmake, ninja + `toolchain-cross.cmake`) for that, and the Windows recompiler comes from a Windows runner.
    - **Header stub** (the open question of milestone 3, solved): `psprecomp recompile <shipped analysis> --config game.toml
@@ -121,7 +121,7 @@ of the fork.
      settings.ini, mods) is outside the release folder and untouched. A different toolchain bundle is guarded by the SDK
      `toolchain.json` check.
    - In the wizard: with an install present it checks at start (background, 15 s cap) and shows an "Update available" page (Update
-     now / Not now) and, from the start page, "Check for updates" on demand. `psprecomp_setup --launch` is the shortcut mode for
+     now / Not now) and, from the start page, "Check for updates" on demand. `DissidiaRecomp --launch` is the shortcut mode for
      starting the game: check, then play at once when there is nothing to do.
    - **Opt-out**: `check_updates=0` in the work folder's `settings.ini` (the wizard writes the player's choice from the Options
      page at install time), or `PSPRECOMP_UPDATE_CHECK=0`. In-game: Settings > System > Check for Updates writes the same `check_updates=` line (built 2026-11-10). Signed manifests: see below. Not yet: delta downloads, wizard self-restart after
@@ -236,7 +236,7 @@ Wine (`WINEDEBUG=-all`, command line only) produced the identical ELF as well.
 
 - **Menu entry**: after an install the wizard writes `~/.local/share/applications/dissidia-012.desktop` (Linux; icon = the disc's
   ICON0.PNG copied to `<workdir>/icon.png`) or a Start Menu `.lnk` (Windows, created through PowerShell's WScript.Shell). It runs
-  `psprecomp_setup --launch`, so an update check comes first. An existing install gets the entry the next time the wizard starts.
+  `DissidiaRecomp --launch`, so an update check comes first. An existing install gets the entry the next time the wizard starts.
 - **Window title**: a game module names its window with `psp_set_window_title()` (Dissidia: "Dissidia 012 Duodecim Final Fantasy").
 - **Undub disc images made with xorriso/mkisofs**: file names longer than 8.3 live only in the Rock Ridge `NM` records
   (`PACKAGE_INFO.BIN` is `PACKAGE_.BIN` in the plain ISO 9660 tree). `setup_from_iso.Iso9660` now reads them.
@@ -246,9 +246,12 @@ Wine (`WINEDEBUG=-all`, command line only) produced the identical ELF as well.
 
 ## Single-file release
 
-Besides the archives, each release carries `psprecomp-setup-<version>-windows-x86_64.exe` and `psprecomp-setup-<version>-linux-x86_64`:
+Besides the archives, each release carries `DissidiaRecomp-Setup-<version>-windows-x86_64.exe` and `DissidiaRecomp-Setup-<version>-linux-x86_64`:
 the wizard program with the assembled release folder appended as a zip (`release/make_single.py`, `setup/payload.{h,cpp}`, miniz).
 On its first start the wizard unpacks the zip into `%LOCALAPPDATA%\psprecomp\v<version>` (Linux: `~/.local/share/psprecomp/v<version>`;
 a small progress window, first start only) and runs from there; the unpacked folder contains the plain wizard, so it never unpacks
 twice. `--unpack DIR` unpacks into DIR and exits (CI uses it to check the Linux file). The updater keeps working on the unpacked
 folder. Downloading a newer single file unpacks next to the old one; the old folder can be deleted. Unpacked size is about 530 MB.
+
+Naming: players see **Dissidia Recomp** (window titles, release files `DissidiaRecomp-*`, program `DissidiaRecomp[.exe]`, unpack folder
+`DissidiaRecomp`). Internal names (crates, `psprecomp` recompiler binary, `PSPRECOMP_*` variables, CMake targets) are unchanged.

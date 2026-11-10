@@ -5,7 +5,7 @@
 
 OUT = wizard bytes + zip of DIR's contents (paths relative to DIR, unix modes and symlinks kept) + 48-byte trailer
 (version[32], zip size u64 LE, "PSPRPAY1"). The wizard unpacks the zip into a per-user folder on its first start and runs from
-there, so the player downloads and starts one file. DIR must contain the plain wizard (psprecomp_setup[.exe]) too.
+there, so the player downloads and starts one file. DIR must contain the plain wizard (DissidiaRecomp[.exe]) too.
 """
 import argparse
 import os

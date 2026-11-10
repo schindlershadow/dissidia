@@ -3,7 +3,7 @@
 
   make_manifest.py --version V --repo owner/name --assets DIR [--tag vV] [-o manifest.json]
 
-DIR holds psprecomp-<version>-<platform>.tar.xz / .zip (+ .sha256). The manifest is what the updater downloads first (a few KB):
+DIR holds DissidiaRecomp-<version>-<platform>.tar.xz / .zip (+ .sha256). The manifest is what the updater downloads first (a few KB):
 
   {"schema": 1, "version": "...", "min_wizard_version": 1, "published": "<utc>",
    "platforms": {"linux-x86_64": {"asset": name, "url": ..., "sha256": ..., "size": ..., "bundle_version": N,
@@ -56,7 +56,7 @@ def main():
     tag = a.tag or "v" + a.version
     plats = {}
     for fn in sorted(os.listdir(a.assets)):
-        m = re.fullmatch(r"psprecomp-(.+)-((?:linux|windows)-x86_64)\.(tar\.xz|zip)", fn)
+        m = re.fullmatch(r"DissidiaRecomp-(.+)-((?:linux|windows)-x86_64)\.(tar\.xz|zip)", fn)
         if not m:
             continue
         if m.group(1) != a.version:

@@ -42,11 +42,11 @@ fs::path self_exe() {
 
 fs::path data_dir() {
 #ifdef _WIN32
-    if (const char* d = std::getenv("LOCALAPPDATA")) return fs::path(d) / "psprecomp";
-    if (const char* d = std::getenv("APPDATA")) return fs::path(d) / "psprecomp";
-    return fs::path("psprecomp");
+    if (const char* d = std::getenv("LOCALAPPDATA")) return fs::path(d) / "DissidiaRecomp";
+    if (const char* d = std::getenv("APPDATA")) return fs::path(d) / "DissidiaRecomp";
+    return fs::path("DissidiaRecomp");
 #else
-    if (const char* d = std::getenv("XDG_DATA_HOME")) if (*d) return fs::path(d) / "psprecomp";
+    if (const char* d = std::getenv("XDG_DATA_HOME")) if (*d) return fs::path(d) / "DissidiaRecomp";
     if (const char* h = std::getenv("HOME")) return fs::path(h) / ".local/share/psprecomp";
     return fs::path("/tmp/psprecomp");
 #endif

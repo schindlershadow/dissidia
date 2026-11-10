@@ -9,8 +9,8 @@ import subprocess
 import sys
 
 INSTALL = """## Install
-- **Windows:** download `psprecomp-setup-{v}-windows-x86_64.exe` and run it. It unpacks itself on the first start.
-- **Linux:** download `psprecomp-setup-{v}-linux-x86_64`, `chmod +x` it and run it.
+- **Windows:** download `DissidiaRecomp-Setup-{v}-windows-x86_64.exe` and run it. It unpacks itself on the first start.
+- **Linux:** download `DissidiaRecomp-Setup-{v}-linux-x86_64`, `chmod +x` it and run it.
 - The `.tar.xz` / `.zip` archives hold the same files if you prefer to unpack them yourself.
 - You need your own copy of the game (ISO or CSO). The wizard writes `setup.log` into the install folder; attach it to bug reports.
 """

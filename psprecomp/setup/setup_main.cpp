@@ -935,7 +935,7 @@ static std::string unpack_payload_with_window(const std::filesystem::path& exe, 
     SDL_Window* win = nullptr;
     SDL_Renderer* ren = nullptr;
     if (!quiet && SDL_Init(SDL_INIT_VIDEO) == 0) {
-        win = SDL_CreateWindow("psprecomp setup: unpacking (first start only)", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 520, 70, 0);
+        win = SDL_CreateWindow("Dissidia Recomp: unpacking (first start only)", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 520, 70, 0);
         if (win) ren = SDL_CreateRenderer(win, -1, 0);
     }
     int last = -1;
@@ -947,7 +947,7 @@ static std::string unpack_payload_with_window(const std::filesystem::path& exe, 
         if (win) {
             SDL_Event ev;
             while (SDL_PollEvent(&ev)) {}
-            std::string t = "psprecomp setup: unpacking (first start only) " + std::to_string(pct) + "%";
+            std::string t = "Dissidia Recomp: unpacking (first start only) " + std::to_string(pct) + "%";
             SDL_SetWindowTitle(win, t.c_str());
             if (ren) {
                 SDL_SetRenderDrawColor(ren, 30, 30, 30, 255);
@@ -1001,7 +1001,7 @@ int main(int argc, char** argv) {
             std::string err = unpack_payload_with_window(self, pl, dest, headless || !unpack_to.empty());
             if (!err.empty()) {
                 std::fprintf(stderr, "error: %s\n", err.c_str());
-                if (unpack_to.empty()) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "psprecomp setup", ("Could not unpack the setup files:\n" + err).c_str(), nullptr);
+                if (unpack_to.empty()) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Dissidia Recomp", ("Could not unpack the setup files:\n" + err).c_str(), nullptr);
                 return 1;
             }
             if (!unpack_to.empty()) { std::printf("unpacked to %s\n", dest.string().c_str()); return 0; }
@@ -1085,7 +1085,7 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    app.win = SDL_CreateWindow("Dissidia 012 Setup", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 480 * SCALE, 272 * SCALE,
+    app.win = SDL_CreateWindow("Dissidia Recomp", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 480 * SCALE, 272 * SCALE,
                                SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
     if (!app.win) { std::fprintf(stderr, "cannot create a window: %s\n", SDL_GetError()); return 1; }
     if (SDL_Surface* ic = SDL_CreateRGBSurfaceWithFormatFrom((void*)k_app_icon_rgba, k_app_icon_w, k_app_icon_h, 32, k_app_icon_w * 4, SDL_PIXELFORMAT_RGBA32)) {

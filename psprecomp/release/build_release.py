@@ -125,7 +125,7 @@ def main():
 
     # 5. assemble
     cmd = [sys.executable, "-I", os.path.join(HERE, "assemble.py"), "--platform", plat, "--version", a.version,
-           "--out", os.path.join(work, "psprecomp-%s-%s" % (a.version, plat)), "--wizard", wizard, "--recompiler", rec,
+           "--out", os.path.join(work, "DissidiaRecomp-%s-%s" % (a.version, plat)), "--wizard", wizard, "--recompiler", rec,
            "--toolchain", bundle, "--sdk", sdk, "--cache", os.path.join(work, "cache")]
     if a.no_archive:
         cmd.append("--no-archive")
@@ -134,8 +134,8 @@ def main():
     run(cmd)
 
     # 6. single-file release: the wizard with the assembled folder appended (setup/payload.h); the archives stay too
-    asm = os.path.join(work, "psprecomp-%s-%s" % (a.version, plat))
-    single = os.path.join(work, "psprecomp-setup-%s-%s%s" % (a.version, plat, ".exe" if win else ""))
+    asm = os.path.join(work, "DissidiaRecomp-%s-%s" % (a.version, plat))
+    single = os.path.join(work, "DissidiaRecomp-Setup-%s-%s%s" % (a.version, plat, ".exe" if win else ""))
     run([sys.executable, "-I", os.path.join(HERE, "make_single.py"), "--wizard", wizard, "--release-dir", asm,
          "--version", a.version, "-o", single])
 

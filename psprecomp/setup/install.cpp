@@ -52,7 +52,7 @@ Layout find_layout(const std::string& root) {
     Layout l;
     l.root = root;
     l.recompiler = join(root, std::string("bin/psprecomp") + EXE);
-    l.self = join(root, std::string("psprecomp_setup") + EXE);
+    l.self = join(root, std::string("DissidiaRecomp") + EXE);
     l.toolchain = join(root, "toolchain");
     l.sdk = join(root, "sdk");
     l.game_dir = join(root, "game");

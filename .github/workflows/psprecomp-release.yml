@@ -1,7 +1,7 @@
-name: Release (psprecomp)
+name: Release (Dissidia Recomp)
 
 # Builds the installable releases of this fork (design: docs/installer.md) and publishes them as a GitHub Release:
-#   psprecomp-<version>-linux-x86_64.tar.xz, psprecomp-<version>-windows-x86_64.zip, manifest.json
+#   DissidiaRecomp-<version>-linux-x86_64.tar.xz, DissidiaRecomp-<version>-windows-x86_64.zip, the DissidiaRecomp-Setup-* single files, manifest.json
 # Each archive holds the setup wizard, the recompiler, the portable compiler bundle, the prebuilt runtime core (SDK) and the
 # game's tools. No game data or game-derived code is in a release: the player's machine builds the game from their own disc.
 #
@@ -63,11 +63,11 @@ jobs:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
         run: |
           mkdir dist
-          cp work/psprecomp-*.tar.xz* work/psprecomp-*.zip* dist/
-          cp work/psprecomp-setup-*-linux-x86_64 work/psprecomp-setup-*-windows-x86_64.exe dist/
+          cp work/DissidiaRecomp-*.tar.xz* work/DissidiaRecomp-*.zip* dist/
+          cp work/DissidiaRecomp-Setup-*-linux-x86_64 work/DissidiaRecomp-Setup-*-windows-x86_64.exe dist/
           # the Linux single file must unpack itself and hold a working release
-          work/psprecomp-setup-*-linux-x86_64 --unpack "$RUNNER_TEMP/unpacked"
-          test -x "$RUNNER_TEMP/unpacked/psprecomp_setup" && test -f "$RUNNER_TEMP/unpacked/toolchain/toolchain.cmake" 
+          work/DissidiaRecomp-Setup-*-linux-x86_64 --unpack "$RUNNER_TEMP/unpacked"
+          test -x "$RUNNER_TEMP/unpacked/DissidiaRecomp" && test -f "$RUNNER_TEMP/unpacked/toolchain/toolchain.cmake" 
           python3 release/make_manifest.py --version "${VERSION#v}" --repo "${{ github.repository }}" --tag "$VERSION" \
             --assets dist -o dist/manifest.json
           # Signed manifest (docs/installer.md "Signed manifests"). A committed public key without the secret would ship
