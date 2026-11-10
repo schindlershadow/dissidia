@@ -730,6 +730,16 @@ void ge_transform_vertices(
                 }
             }
         }
+        {
+            extern bool ge_draw_frame_trace_on();
+            if (ge_draw_frame_trace_on() && state.texture_enable && !verts.empty()) {
+                std::fprintf(stderr, "[FTRACE]    verts(after):");
+                for (size_t i = 0; i < verts.size() && i < 4; i++)
+                    std::fprintf(stderr, " (%.3f,%.3f uv %.4f,%.4f)", verts[i].pos[0], verts[i].pos[1], verts[i].has_uv ? verts[i].uv[0] : -1.f, verts[i].has_uv ? verts[i].uv[1] : -1.f);
+                std::fprintf(stderr, "  texw=%.0f texh=%.0f tscale=%.3f,%.3f toff=%.3f,%.3f fu=%.3f,%.3f\n", texw, texh, state.tex_scale_u, state.tex_scale_v,
+                             state.tex_offset_u, state.tex_offset_v, fu_scale, fu_off);
+            }
+        }
         if (extend_u && wide_wx > 0.0f) {   // scale u about the draw's centre by 1/wx (clamped texture edge fills the sides)
             float umin = 1e9f, umax = -1e9f;
             for (const auto& v : verts) if (v.has_uv) { umin = std::min(umin, v.uv[0]); umax = std::max(umax, v.uv[0]); }
