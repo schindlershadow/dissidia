@@ -1,6 +1,6 @@
 #pragma once
 #include "psp_ge.h"
-#include <glad/glad.h>
+#include "psp_gl.h"
 #include <cstdint>
 #include <array>
 

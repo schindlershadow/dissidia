@@ -12,7 +12,7 @@
 #include "psp_memory.h"
 
 #include <SDL.h>
-#include <glad/glad.h>
+#include "psp_gl.h"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>

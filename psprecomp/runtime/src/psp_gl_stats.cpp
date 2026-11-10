@@ -12,7 +12,13 @@
 // Output, once per second on the GL thread (hooked into ge_present_frame):
 //   [GLSTATS] 28.4 frames/s | calls/frame=412 draws=96 uniforms=130 bufupload=12 \
 //             binds=88 state=40 sync=4 | top: glUniform1i=90 ...
-#include <glad/glad.h>
+#include "psp_gl.h"
+
+#ifdef PSP_GLES   // the counters wrap glad's function pointers: not available through libGLESv3
+bool gl_stats_enabled() { return false; }
+void gl_stats_install() {}
+void gl_stats_frame() {}
+#else
 
 #include <algorithm>
 #include <chrono>
@@ -135,3 +141,4 @@ void gl_stats_frame() {
     frames = 0;
     t0 = now;
 }
+#endif  // PSP_GLES

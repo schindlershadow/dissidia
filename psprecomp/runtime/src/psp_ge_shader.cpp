@@ -2,7 +2,7 @@
 #include "psp_ge.h"
 #include "psp_ge_constants.h"
 
-#include <glad/glad.h>
+#include "psp_gl.h"
 #include <cstdio>
 #include <cstring>
 
@@ -12,7 +12,8 @@
 // which compile the same body with PSP_FX defined to get extra outputs. The
 // #version line is passed as a separate source string so a #define can go
 // between it and the body.
-static const char* const k_vertex_version = "#version 330 core\n";
+static const char* const k_vertex_version = PSP_GLSL_VERSION;
+float g_psp_gles_point_size = 1.0f;   // see psp_gl.h (read on Android only)
 static const char* const k_vertex_shader_src = R"GLSL(
 layout(location = 0) in vec4 a_position;
 layout(location = 1) in vec2 a_texcoord;
@@ -35,6 +36,7 @@ out vec2 v_fx_uv;       // raw vertex UV
 // u_xform == 1: a_position is model space; the GE transform pipeline runs
 // here (bone skinning -> world -> lighting -> view -> proj -> tex xform).
 uniform int u_xform;
+uniform float u_psize;        // point size (Android: ES has no glPointSize); 0 = unset -> 1
 // GE matrices are 4x3; they are uploaded padded to square mat4 (last row
 // 0,0,0,1). Square mat4 uniforms and plain vec4 math are the best-trodden
 // path on every driver (Apple's GLSL compiler has a history of non-square
@@ -110,6 +112,7 @@ vec4 ge_lighting(vec3 wpos, vec3 nrm, vec4 vcol) {
 }
 
 void main() {
+    gl_PointSize = u_psize > 0.0 ? u_psize : 1.0;
     if (u_xform == 0) {
         gl_Position = a_position;
         v_texcoord = a_texcoord;
@@ -154,7 +157,6 @@ void main() {
 )GLSL";
 
 static const char* const k_fragment_shader_src = R"GLSL(
-#version 330 core
 
 in vec2 v_texcoord;
 in vec4 v_color;
@@ -334,8 +336,8 @@ static GLuint compile_shader_n(GLenum type, const char* const* srcs, int n) {
 void ge_shader_init() {
     const char* const vsrc[2] = {k_vertex_version, k_vertex_shader_src};
     GLuint vert = compile_shader_n(GL_VERTEX_SHADER, vsrc, 2);
-    GLuint frag = compile_shader(
-        GL_FRAGMENT_SHADER, k_fragment_shader_src);
+    const char* const fsrc[2] = {k_vertex_version, k_fragment_shader_src};   // same #version (+ ES precisions) as the vertex stage
+    GLuint frag = compile_shader_n(GL_FRAGMENT_SHADER, fsrc, 2);
 
     if (!vert || !frag) {
         std::fprintf(stderr,
@@ -445,9 +447,18 @@ void ge_shader_set_alpha_double(bool enable) {
     u1i(g_uniforms.u_alpha_double, enable ? 1 : 0);
 }
 
+static void upload_point_size(GLint loc) {
+#ifdef PSP_GLES
+    if (loc >= 0) { const float v = g_psp_gles_point_size; if (u_changed(loc, &v, sizeof v)) glUniform1f(loc, v); }
+#else
+    (void)loc;
+#endif
+}
+
 void ge_shader_set_xform_passthrough() {
     if (!g_program) return;
     u1i(g_uniforms.u_xform, 0);
+    upload_point_size(g_uniforms.u_psize);
 }
 
 // 4x3 column-major (12 floats) -> padded 4x4 column-major (16 floats).
@@ -463,6 +474,7 @@ static inline void pad43(const float* m, float* o) {
 void ge_shader_set_xform_3d(const GeXform3D& x) {
     if (!g_program) return;
     u1i(g_uniforms.u_xform, 1);
+    upload_point_size(g_uniforms.u_psize);
     float m4[16];
     pad43(x.world, m4);
     if (u_changed(g_uniforms.u_world, m4, sizeof m4))
@@ -523,6 +535,7 @@ void ge_shader_query_locations(GLuint prog, ShaderUniforms* u) {
     u->u_alpha_double = L("u_alpha_double");
     u->u_alpha_override = L("u_alpha_override");
     u->u_xform = L("u_xform");
+    u->u_psize = L("u_psize");
     u->u_world = L("u_world");
     u->u_view = L("u_view");
     u->u_proj = L("u_proj");
@@ -551,6 +564,9 @@ void ge_shader_upload_to(const ShaderUniforms& u, const GeState& state, const Ge
                     ((state.tex_env_color >> 8) & 0xFF) / 255.0f,
                     ((state.tex_env_color >> 16) & 0xFF) / 255.0f);
     if (u.u_alpha_double >= 0) glUniform1i(u.u_alpha_double, alpha_double ? 1 : 0);
+#ifdef PSP_GLES
+    if (u.u_psize >= 0) glUniform1f(u.u_psize, g_psp_gles_point_size);
+#endif
     if (!x) {
         if (u.u_xform >= 0) glUniform1i(u.u_xform, 0);
         return;

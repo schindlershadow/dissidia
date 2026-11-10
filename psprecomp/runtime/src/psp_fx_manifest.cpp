@@ -1,6 +1,7 @@
 // psp_fx_manifest.cpp -- FX shader manifest parsing, matching, effect ages and
 // the program registry. No GL here (host-tested by tests/test_fx_shader.cpp);
 // the GL side is psp_fx_shader.cpp. Format: FX_SHADERS.md.
+#include "psp_gl.h"
 #include "psp_fx_shader.h"
 
 #include <cctype>
@@ -399,8 +400,7 @@ int Registry::build(const Manifest& m, const ReadFn& read, const CompileFn& comp
 
 // ------------------------------------------------------------ GLSL frame ----
 const char* fragment_preamble() {
-    return R"GLSL(#version 330 core
-// ---- psprecomp FX shader preamble (psp_fx_manifest.cpp) ----
+    return PSP_GLSL_VERSION R"GLSL(// ---- psprecomp FX shader preamble (psp_fx_manifest.cpp) ----
 in vec2 v_texcoord;     // GE texture coordinates (after the GE UV scale/offset)
 in vec4 v_color;        // GE vertex colour (after lighting): the FEP colour/alpha keys
 in vec3 v_fx_opos;      // model-space position (GPU-transform draws; clip-space xyz otherwise)

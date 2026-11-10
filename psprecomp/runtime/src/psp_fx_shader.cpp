@@ -11,7 +11,7 @@
 #include "psp_tex_pack.h"
 #include "hle/psp_hle_io.h"
 
-#include <glad/glad.h>
+#include "psp_gl.h"
 #include <sys/stat.h>
 #include <algorithm>
 #include <chrono>
@@ -407,12 +407,16 @@ void psp_fx_timer_begin() {
     }
     g_q_active = g_q_free.back();
     g_q_free.pop_back();
+#ifndef PSP_GLES   // GPU timer queries need EXT_disjoint_timer_query on ES
     glBeginQuery(GL_TIME_ELAPSED, g_q_active);
+#endif
 }
 
 void psp_fx_timer_end() {
     if (!g_q_active) return;
+#ifndef PSP_GLES
     glEndQuery(GL_TIME_ELAPSED);
+#endif
     g_q_pending.push_back(g_q_active);
     g_q_active = 0;
 }
@@ -424,10 +428,14 @@ void psp_fx_end_frame() {
     // Collect finished GPU timer queries.
     for (size_t i = 0; i < g_q_pending.size();) {
         GLint avail = 0;
+        GLuint64 ns = 0;
+#ifdef PSP_GLES   // no GPU timer queries on ES: the pending queries never begin, so nothing to collect
+        avail = 1;
+#else
         glGetQueryObjectiv(g_q_pending[i], GL_QUERY_RESULT_AVAILABLE, &avail);
         if (!avail) { i++; continue; }
-        GLuint64 ns = 0;
         glGetQueryObjectui64v(g_q_pending[i], GL_QUERY_RESULT, &ns);
+#endif
         g_gpu_ns += ns;
         g_gpu_n++;
         g_q_free.push_back(g_q_pending[i]);

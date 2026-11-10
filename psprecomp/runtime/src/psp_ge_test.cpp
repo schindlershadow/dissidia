@@ -5,7 +5,7 @@
 #include "psp_memory.h"
 #include "recomp.h"
 
-#include <glad/glad.h>
+#include "psp_gl.h"
 #include <cstdio>
 #include <cstring>
 #include <cmath>

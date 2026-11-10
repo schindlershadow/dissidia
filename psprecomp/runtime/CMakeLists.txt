@@ -186,7 +186,8 @@ set(RUNTIME_SOURCES
     src/hle/psp_hle_mpeg.cpp
     src/hle/psp_audio_sink.cpp
     ${PSP_VFPU_SOURCES}
-    src/glad.c
+    $<$<NOT:$<PLATFORM_ID:Android>>:src/glad.c>   # Android uses libGLESv3 directly (include/psp_gl.h)
+    $<$<PLATFORM_ID:Android>:src/psp_android.cpp>
     src/psp_debug_socket.cpp
     src/psp_gl_stats.cpp
 )
@@ -287,7 +288,8 @@ target_link_libraries(psprecomp_core PUBLIC
     PkgConfig::FREETYPE
     $<TARGET_NAME_IF_EXISTS:OpenGL::GL>
     ZLIB::ZLIB
-    $<$<NOT:$<PLATFORM_ID:Windows>>:pthread>
+    $<$<NOT:$<OR:$<PLATFORM_ID:Windows>,$<PLATFORM_ID:Android>>>:pthread>
+    $<$<PLATFORM_ID:Android>:GLESv3 log android>
     $<$<PLATFORM_ID:Windows>:ws2_32>   # debug socket + ad-hoc (Winsock)
 )
 # The core calls into the recompiled code (dispatch tables) and the recompiled code calls the HLE in the core: one group.

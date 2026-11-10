@@ -7,7 +7,7 @@
 #include "hle/psp_savedata_dialog.h"   // on-screen keyboard: host typing
 
 #include <SDL.h>
-#include <glad/glad.h>
+#include "psp_gl.h"
 void gl_stats_install();
 #include <csignal>
 #include <cstdio>
@@ -507,11 +507,19 @@ int psp_runtime_init_sdl() {
     }
 
     // 2. Set GL attributes: OpenGL 3.3 core profile, double-buffered
+#ifdef PSP_GLES
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);   // Android: OpenGL ES 3.2 (3.0 is the floor the renderer needs)
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
+#else
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_GL_SetAttribute(
         SDL_GL_CONTEXT_PROFILE_MASK,
         SDL_GL_CONTEXT_PROFILE_CORE);
+#endif
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     // PSPRECOMP_GL_DEBUG=1: ask for a debug context so the driver reports
     // errors, undefined behaviour and performance notes (KHR_debug) to the log.
@@ -548,6 +556,10 @@ int psp_runtime_init_sdl() {
     uint32_t wflags = SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE |
                       SDL_WINDOW_ALLOW_HIGHDPI;
     if (fs_env && fs_env[0] && fs_env[0] != '0') wflags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+#ifdef PSP_GLES
+    wflags |= SDL_WINDOW_FULLSCREEN;   // Android: one full-screen window; SDL sizes it to the display
+    win_w = win_h = 0;
+#endif
     g_window = SDL_CreateWindow(
         g_window_title.c_str(),
         SDL_WINDOWPOS_CENTERED,
@@ -575,7 +587,11 @@ int psp_runtime_init_sdl() {
 
     // 5. Load GL function pointers via GLAD2 (MUST be after context creation)
     //    GLAD2 requires a loader function; SDL2 provides SDL_GL_GetProcAddress.
+#ifdef PSP_GLES
+    if (false) {   // libGLESv3 exports the ES 3.2 entry points directly
+#else
     if (!gladLoadGL((GLADloadfunc)SDL_GL_GetProcAddress)) {
+#endif
         std::fprintf(stderr, "[RT] gladLoadGL failed\n");
         SDL_GL_DeleteContext(g_gl_context);
         SDL_DestroyWindow(g_window);

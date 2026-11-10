@@ -1,6 +1,6 @@
 #pragma once
 #include "psp_ge.h"
-#include <glad/glad.h>
+#include "psp_gl.h"
 
 /// Shader uniform locations cache.
 struct ShaderUniforms {
@@ -22,7 +22,7 @@ struct ShaderUniforms {
     GLint u_color_test_ref;
     GLint u_color_test_mask;
     // Vertex-stage GE transform (psp_ge_shader.cpp)
-    GLint u_xform, u_world, u_view, u_proj, u_uvxf, u_skin, u_bones;
+    GLint u_psize, u_xform, u_world, u_view, u_proj, u_uvxf, u_skin, u_bones;
     GLint u_lit, u_lflags, u_nl, u_lc, u_lt;
 };
 

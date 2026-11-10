@@ -58,16 +58,22 @@ foreach(ovl_dir ${PSPRECOMP_OVERLAY_DIRS})
 endforeach()
 
 # The prebuilt runtime core (next to this file in the SDK layout).
-find_library(PSPRECOMP_CORE psprecomp_core PATHS "${CMAKE_CURRENT_LIST_DIR}/lib" NO_DEFAULT_PATH REQUIRED)
+find_library(PSPRECOMP_CORE psprecomp_core PATHS "${CMAKE_CURRENT_LIST_DIR}/lib" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH REQUIRED)
 add_library(psprecomp_core STATIC IMPORTED)
 set_target_properties(psprecomp_core PROPERTIES IMPORTED_LOCATION "${PSPRECOMP_CORE}")
 target_link_libraries(psprecomp_core INTERFACE PkgConfig::SDL2 PkgConfig::FREETYPE $<TARGET_NAME_IF_EXISTS:OpenGL::GL> ZLIB::ZLIB
-    $<$<NOT:$<PLATFORM_ID:Windows>>:pthread> $<$<PLATFORM_ID:Windows>:ws2_32>)
+    $<$<NOT:$<OR:$<PLATFORM_ID:Windows>,$<PLATFORM_ID:Android>>>:pthread> $<$<PLATFORM_ID:Android>:GLESv3 log android> $<$<PLATFORM_ID:Windows>:ws2_32>)
 if(AVCODEC_FOUND)
     target_link_libraries(psprecomp_core INTERFACE PkgConfig::AVCODEC)
 endif()
 
-add_executable(psprecomp_runtime "${CMAKE_CURRENT_LIST_DIR}/src/main.cpp")
+if(ANDROID)
+    # SDL's Java activity loads libmain.so and calls SDL_main (src/main.cpp); android/build_game.py packs it into the APK.
+    add_library(psprecomp_runtime SHARED "${CMAKE_CURRENT_LIST_DIR}/src/main.cpp")
+    set_target_properties(psprecomp_runtime PROPERTIES OUTPUT_NAME main)
+else()
+    add_executable(psprecomp_runtime "${CMAKE_CURRENT_LIST_DIR}/src/main.cpp")
+endif()
 target_include_directories(psprecomp_runtime PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/include"
     "${PSPRECOMP_OUTPUT_DIR}/include"   # recomp.h

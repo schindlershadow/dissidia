@@ -4,6 +4,7 @@
 #include "recomp.h"
 #include "funcs.h"
 #include "psp_memory.h"
+#include "psp_android.h"
 #include "psp_scheduler.h"
 #include "psp_render_queue.h"
 #include "psp_event_loop.h"
@@ -70,10 +71,18 @@ extern RECOMP_FUNC void entry(uint8_t* rdram, recomp_context* ctx);
 /// - Constructors run BEFORE module_start (static initializers set up vtables)
 /// - SDL/GL initialized BEFORE module_start (render queue can accept requests)
 /// - Event loop runs AFTER module_start returns (module_start spawns threads)
+#ifdef __ANDROID__
+// SDL's Java activity loads libmain.so and calls SDL_main on its own thread.
+extern "C" __attribute__((visibility("default"))) int SDL_main(int argc, char* argv[]) {
+#else
 int main(int argc, char* argv[]) {
+#endif
     (void)argc;
     (void)argv;
     SDL_SetMainReady();
+#ifdef __ANDROID__
+    psp_android_init();
+#endif
 
     // 0. Identify the output/ this binary was built against (issue #36).
     //    One grep-stable line; the configure-time fingerprint check is the

@@ -10,7 +10,7 @@
 #include "psp_memory.h"
 #include "recomp.h"
 
-#include <glad/glad.h>
+#include "psp_gl.h"
 #include <array>
 #include <vector>
 #include <string>
@@ -496,7 +496,9 @@ GLuint ge_texture_bind_external(GLuint gl_tex, const GeState& state) {
                         mip ? GL_LINEAR_MIPMAP_LINEAR : min_lin ? GL_LINEAR : GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
                         mag_lin ? GL_LINEAR : GL_NEAREST);
+#ifndef PSP_GLES   // ES has no per-texture LOD bias
         glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_LOD_BIAS, bias);
+#endif
     }
     return gl_tex;
 }
