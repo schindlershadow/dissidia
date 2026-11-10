@@ -474,6 +474,7 @@ struct Pp {
     bool tried = false, on = false, ignore_addr = false, log = false;
     int kind = 2;                                  // hash = xxh64 (2) | xxh32 (1)
     std::unordered_map<std::string, std::string> files;   // 24 hex chars (lowercase) -> path relative to the pack folder
+    std::unordered_multimap<std::string, std::string> by_content, by_key;   // diagnostics only: last 8 / first 16 hex chars -> name
     uint64_t lookups = 0, hits = 0, logged = 0;
 };
 Pp pp;
@@ -521,6 +522,10 @@ void pp_init() {
         return;
     }
     pp.on = !pp.files.empty();
+    for (auto& kv : pp.files) {
+        pp.by_content.emplace(kv.first.substr(16), kv.first);
+        pp.by_key.emplace(kv.first.substr(8, 8), kv.first);
+    }
     if (pp.on)
         std::fprintf(stderr, "[TEXPACK] PPSSPP-style pack %s: %zu texture(s), hash=%s%s\n", g.dir.c_str(), pp.files.size(),
                      pp.kind == 2 ? "xxh64" : "xxh32", pp.ignore_addr ? ", ignoreAddress" : "");
@@ -571,11 +576,21 @@ bool psp_texpack_ppsspp_lookup(const PspPpssppTex& t, std::vector<uint8_t>& rgba
     auto it = pp.files.find(full);
     if (it == pp.files.end() && pp.ignore_addr) it = pp.files.find(noaddr);
     const bool hit = it != pp.files.end();
-    if (pp.log && pp.logged < 400) {
+    // The first lookups are always logged (so a log tells whether the pack matches); PSPRECOMP_TEXPACK_LOG=1 logs more.
+    if (pp.logged < (pp.log ? 400u : 40u)) {
         pp.logged++;
-        std::fprintf(stderr, "[TEXPACK] ppsspp %s fmt=%d %dx%d bufw=%d addr=%08X %s\n", noaddr, t.fmt, t.width, t.height, t.bufw, t.addr,
-                     hit ? ("HIT " + it->second).c_str() : "miss");
+        std::string hint;
+        if (!hit) {
+            auto c = pp.by_content.find(noaddr + 16);
+            auto k = pp.by_key.find(noaddr + 8);
+            if (c != pp.by_content.end()) hint += std::string(" [content hash matches ") + c->second + "]";
+            if (k != pp.by_key.end()) hint += std::string(" [key matches ") + k->second + "]";
+        }
+        std::fprintf(stderr, "[TEXPACK] ppsspp %s fmt=%d %dx%d bufw=%d addr=%08X clut=%d %s%s\n", noaddr, t.fmt, t.width, t.height, t.bufw,
+                     t.addr, t.has_clut ? 1 : 0, hit ? ("HIT " + it->second).c_str() : "miss", hint.c_str());
     }
+    if ((pp.lookups % 500) == 0)
+        std::fprintf(stderr, "[TEXPACK] ppsspp: %llu of %llu lookups hit\n", (unsigned long long)pp.hits, (unsigned long long)pp.lookups);
     if (!hit) return false;
     pp.hits++;
     if (pp.log && (pp.hits % 100) == 0)
