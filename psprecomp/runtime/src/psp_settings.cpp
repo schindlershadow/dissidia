@@ -72,7 +72,7 @@ bool g_wait_release = false;           // after closing: game input stays blocke
 bool g_confirm_cross = true;
 PspFrameRateHook g_fps{nullptr, 0, nullptr, nullptr};
 
-enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_WIDE, ROW_SOFT, ROW_FPS, ROW_QUIT,
+enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_QUIT,
            ROW_NET_MODE, ROW_NET_SERVER, ROW_NET_ROOM, ROW_NET_PEERS, ROW_NET_STATUS,   // Network page
            ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS };   // the last six: Debug page
 std::vector<Row> g_rows;
@@ -576,8 +576,10 @@ void build_rows() {
     } else if (g_page == PAGE_DEBUG) {
         g_rows = {ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS};
     } else {
-        g_rows = {ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_WIDE, ROW_SOFT};
+        g_rows = {ROW_DISPLAY, ROW_RES, ROW_SCALE};
         if (g_fps.get && g_fps.count > 1) g_rows.push_back(ROW_FPS);
+        g_rows.push_back(ROW_WIDE);
+        g_rows.push_back(ROW_SOFT);
         g_rows.push_back(ROW_QUIT);
     }
     g_sel = std::min(std::max(g_sel_page[g_page], 0), int(g_rows.size()) - 1);
