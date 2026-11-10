@@ -121,7 +121,7 @@ of the fork.
      now / Not now) and, from the start page, "Check for updates" on demand. `psprecomp_setup --launch` is the shortcut mode for
      starting the game: check, then play at once when there is nothing to do.
    - **Opt-out**: `check_updates=0` in the work folder's `settings.ini` (the wizard writes the player's choice from the Options
-     page at install time), or `PSPRECOMP_UPDATE_CHECK=0`. Not yet: a row for it in the in-game settings menu, signed manifests
+     page at install time), or `PSPRECOMP_UPDATE_CHECK=0`. In-game: Settings > System > Check for Updates writes the same `check_updates=` line (built 2026-11-10). Not yet: signed manifests
      (integrity today is the sha256 in a manifest served over HTTPS from the fork's release), delta downloads, wizard self-restart after
      an update.
 7. **HD textures** (task 5) hooks in as an options page and a download step (Niosa / D012FFRT pack into `mods/textures`).

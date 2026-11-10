@@ -77,10 +77,11 @@ PspTexPackHook g_texpack{nullptr};
 
 bool voice_jp_choice();
 bool voice_at_start();
+bool updates_choice();
 bool texpack_choice();
 bool texpack_at_start();
 
-enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_VOICE, ROW_TEXPACK, ROW_QUIT,
+enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_VOICE, ROW_TEXPACK, ROW_UPDATES, ROW_QUIT,
            ROW_NET_MODE, ROW_NET_SERVER, ROW_NET_ROOM, ROW_NET_PEERS, ROW_NET_STATUS,   // Network page
            ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS };   // the last six: Debug page
 std::vector<Row> g_rows;
@@ -355,6 +356,15 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.help = "Texture pack\nReplaces the game's textures with the installed HD pack (mods/textures). Takes effect the next time the game starts.";
             break;
         }
+        case ROW_UPDATES: {
+            const bool on = updates_choice();
+            m.label = "Check for Updates";
+            m.value = on ? "On" : "Off";
+            m.can_dec = on;
+            m.can_inc = !on;
+            m.help = "Update check\nWhen on, the launcher (psprecomp_setup --launch) looks for a new release when you start the game and asks before installing it. Never checks while you play. Saved.";
+            break;
+        }
         case ROW_NET_MODE:
             m.label = "Network";
             m.value = g_net_internet ? "Internet" : "LAN";
@@ -529,6 +539,15 @@ bool texpack_at_start() {
 bool texpack_row_wanted() { return g_texpack.available && g_texpack.available(); }
 void apply_texpack(bool on) { save("hd_textures", on ? "1" : "0"); }
 
+// Update check: read by the launcher (setup/install.cpp update_check_enabled) from settings.ini; PSPRECOMP_UPDATE_CHECK=0 forces it off.
+bool updates_choice() {
+    auto it = g_saved.find("check_updates");
+    if (it != g_saved.end()) return it->second != "0";
+    const char* e = std::getenv("PSPRECOMP_UPDATE_CHECK");
+    return !(e && e[0] == '0');
+}
+void apply_updates(bool on) { save("check_updates", on ? "1" : "0"); }
+
 void build_rows();
 
 void change(int d) {   // left / right on the selected row
@@ -580,6 +599,7 @@ void change(int d) {   // left / right on the selected row
     }
     case ROW_VOICE: apply_voice(d > 0); break;   // left: English, right: Japanese
     case ROW_TEXPACK: apply_texpack(d > 0); break;
+    case ROW_UPDATES: apply_updates(d > 0); break;
     case ROW_QUIT: break;
     case ROW_NET_MODE:
         if (g_net_internet != (d < 0)) {   // left: Internet, right: LAN
@@ -638,6 +658,7 @@ void build_rows() {
         g_rows.push_back(ROW_SOFT);
         if (voice_row_wanted()) g_rows.push_back(ROW_VOICE);
         if (texpack_row_wanted()) g_rows.push_back(ROW_TEXPACK);
+        g_rows.push_back(ROW_UPDATES);
         g_rows.push_back(ROW_QUIT);
     }
     g_sel = std::min(std::max(g_sel_page[g_page], 0), int(g_rows.size()) - 1);
@@ -723,6 +744,7 @@ void confirm() {
         break;
     case ROW_VOICE: apply_voice(!voice_jp_choice()); break;
     case ROW_TEXPACK: apply_texpack(!texpack_choice()); break;
+    case ROW_UPDATES: apply_updates(!updates_choice()); break;
     case ROW_NET_MODE: change(g_net_internet ? 1 : -1); return;
     case ROW_NET_SERVER: edit_begin(0); return;
     case ROW_NET_ROOM: edit_begin(1); return;
