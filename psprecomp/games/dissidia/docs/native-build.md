@@ -101,7 +101,7 @@ tables and Steam Input setup in `docs/steamdeck.md`).
 
 Controls, right stick (the PSP has none): in battle it is a free camera. `games/dissidia/runtime/camera.cpp`
 wraps the battle camera update (`ovl_battle FUN_08B3CA24`, once per frame) and rotates the final eye position
-around the camera target by an accumulated yaw/pitch offset, so the game's own d-pad camera, lock-on framing,
+around the fighter you control (the fighter nearest to the game's own eye; the whole rig, eye and look-at, turns about him, so he keeps his place on the screen; `PSPRECOMP_CAM_PIVOT=0` orbits the game's look-at point instead, the old way) by an accumulated yaw/pitch offset, so the game's own d-pad camera, lock-on framing,
 auto-centring and collision pull-in keep working underneath (the stick is an offset on top: when you let go of the stick it
 eases back to the game's camera after 0.5 s, with a time constant of 1 s; `PSPRECOMP_CAM_RECENTER=<s>` changes the time constant,
 `PSPRECOMP_CAM_RECENTER_DELAY=<s>` the pause, `PSPRECOMP_CAM_RECENTER=0` holds the offset until you move it again); R3 (right stick click) or the C key puts the camera back at once. Outside battle (menus) the right stick acts as the

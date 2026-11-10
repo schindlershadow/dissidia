@@ -279,6 +279,7 @@ bool g_actor_log = false;
 // misbehaved. For debugging attacks that behave differently above 30 Hz (Kain's Sky Spear).
 int g_fighter_log_left = 40000;
 uint32_t g_fighters[4] = {};
+uint64_t g_fighter_seen[4] = {};   // g_tick when the fighter's step was last asked for (stale = left the battle)
 uint32_t g_objects[12] = {};      // assists (kind 1), summoned / thrown objects (3, 6 ...): PSPRECOMP_FIGHTER_LOG logs their motion time
 float g_object_time[12] = {};
 int g_object_log_left = 30000;
@@ -316,13 +317,18 @@ void actor_dt_hook(uint8_t* rdram, recomp_context* ctx) {
     g_orig_actor_dt(rdram, ctx);
     bool own = false;
     if (ok(actor)) own = ((r32(actor + 0x388u) & r32(OWN_MASK0)) | (r32(actor + 0x38Cu) & r32(OWN_MASK1))) != 0;
-    if (g_fighter_log && ok(actor)) {   // remember the fighters (kind 0) and the other actors
+    if (ok(actor)) {   // remember the fighters (kind 0: camera.cpp pivots on one) and, for the log, the other actors
         const bool fighter = g_ram[(actor + 0x542u) & 0x07FFFFFFu] == 0;
-        bool known = false;
-        for (uint32_t f : g_fighters) known |= f == actor;
-        for (uint32_t f : g_objects) known |= f == actor;
-        if (fighter) { for (uint32_t& f : g_fighters) if (!known && !f) { f = actor; known = true; } }
-        else for (uint32_t& f : g_objects) if (!known && !f) { f = actor; known = true; }
+        if (fighter) {
+            int slot = -1;
+            for (int i = 0; i < 4; i++) if (g_fighters[i] == actor) slot = i;
+            if (slot < 0) for (int i = 0; i < 4 && slot < 0; i++) if (!g_fighters[i] || g_tick - g_fighter_seen[i] > 120) slot = i;   // free or stale
+            if (slot >= 0) { g_fighters[slot] = actor; g_fighter_seen[slot] = g_tick; }
+        } else if (g_fighter_log) {
+            bool known = false;
+            for (uint32_t f : g_objects) known |= f == actor;
+            for (uint32_t& f : g_objects) if (!known && !f) { f = actor; known = true; }
+        }
     }
     const float before = ctx->f[0];
     if (g_ticks != 2.0f && ok(actor) && own) ctx->f[0] *= g_ticks * 0.5f;   // own clock: a fixed 2.0 per frame
@@ -508,6 +514,22 @@ void fps_set(int fps) {
 const int k_rates[] = {30, 60, 90, 120, 150, 180, 210, 240};
 
 }  // namespace
+
+// The position (actor+0x80, vec3) of the fighter nearest to `eye` among those that were updated in the last two
+// seconds, for camera.cpp: the game's own camera sits behind the fighter you control, so that is the one the free camera
+// pivots on. false when no fighter is known.
+bool dissidia_nearest_fighter(const float eye[3], float pos[3]) {
+    float best = 1e30f;
+    bool found = false;
+    for (int i = 0; i < 4; i++) {
+        const uint32_t a = g_fighters[i];
+        if (!a || !ok(a) || g_tick - g_fighter_seen[i] > 120) continue;
+        float p[3] = {rdf(a + 0x80u), rdf(a + 0x84u), rdf(a + 0x88u)};
+        const float d = (p[0] - eye[0]) * (p[0] - eye[0]) + (p[1] - eye[1]) * (p[1] - eye[1]) + (p[2] - eye[2]) * (p[2] - eye[2]);
+        if (d < best) { best = d; found = true; pos[0] = p[0]; pos[1] = p[1]; pos[2] = p[2]; }
+    }
+    return found;
+}
 
 // Ticks (1/60 s) one game frame advances: 2 at 30 Hz, 1 at 60 Hz, 2/3 at 90 Hz, 0.5 at 120 Hz.
 float dissidia_frame_ticks() { return g_ticks; }

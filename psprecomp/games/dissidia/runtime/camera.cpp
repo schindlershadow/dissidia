@@ -22,6 +22,7 @@
 // PSPRECOMP_CAM_RECENTER=<seconds> (time constant
 // for the offset to drift back to zero once the stick has been idle for PSPRECOMP_CAM_RECENTER_DELAY seconds;
 // defaults 1.0 and 0.5; 0 = hold the offset),
+// PSPRECOMP_CAM_PIVOT=0 orbits the game's look-at point instead of the fighter (the old way);
 // PSPRECOMP_CAM_LOG=1 is the GE-level log; PSPRECOMP_CAMX_LOG=<n> logs n updates of this module.
 
 #include "psp_game_module.h"
@@ -38,6 +39,7 @@
 extern FuncPtr ovl_battle_lookup(uint32_t vaddr);
 extern FuncPtr ovl_menu_lookup(uint32_t vaddr);
 extern FuncPtr ovl_extra_lookup(uint32_t vaddr);
+bool dissidia_nearest_fighter(const float eye[3], float pos[3]);   // framerate.cpp
 extern uint32_t g_dissidia_cine_actor, g_dissidia_cine_seq;   // roster.cpp (hitcam=)
 extern int g_dissidia_cine_ticks;
 
@@ -57,6 +59,7 @@ float g_sens = 1.0f, g_pitch_min = -5.f, g_pitch_max = 80.f, g_recenter = 1.0f, 
 float g_yaw = 0.f, g_pitch = 0.f;   // accumulated offsets (radians)
 double g_last_t = 0;
 int g_log_left = 0;
+bool g_pivot_on = true;   // orbit the fighter (PSPRECOMP_CAM_PIVOT=0: orbit the game's look-at point, the old way)
 // hitcam= framing (roster.cpp posts the request when a hitact= action starts)
 bool g_cine_on = true;
 uint32_t g_cine_seen = 0, g_cine_actor = 0;
@@ -189,6 +192,42 @@ void dissidia_cam_seteye(uint8_t* rdram, recomp_context* ctx) {
             g_eye_calls++;
         }
     }
+    float pivot[3];
+    if (g_in_update && cam == g_mgr && g_eye_calls == 0 && (g_yaw != 0.f || g_pitch != 0.f) && g_pivot_on) {
+        // Orbit the fighter, not the game's look-at point (which sits in front of him): the whole rig, eye and look-at,
+        // turns about a vertical axis through the fighter, and tilts about a horizontal one, so he keeps his place on the
+        // screen and can't be lost behind the lens. The pivot is the fighter nearest to the game's own eye.
+        const float ev[3] = {rdf(eye), rdf(eye + 4), rdf(eye + 8)};
+        if (dissidia_nearest_fighter(ev, pivot)) {
+            g_eye_calls++;
+            pivot[1] += 1.0f;   // about the chest
+            float E[3] = {ev[0] - pivot[0], ev[1] - pivot[1], ev[2] - pivot[2]};
+            float T[3] = {rdf(eye + 0x10) - pivot[0], rdf(eye + 0x14) - pivot[1], rdf(eye + 0x18) - pivot[2]};
+            const float horiz = std::sqrt(E[0] * E[0] + E[2] * E[2]);
+            if (horiz > 1e-3f) {
+                const float d2r = 3.14159265f / 180.f;
+                float el = std::atan2(E[1], horiz), nel = el + g_pitch;
+                const float lo = g_pitch_min * d2r, hi = g_pitch_max * d2r, lo_e = std::fmin(lo, el), hi_e = std::fmax(hi, el);
+                if (nel < lo_e) nel = lo_e; else if (nel > hi_e) nel = hi_e;
+                g_pitch = nel - el;                    // keep the accumulator inside the window (no wind-up)
+                const float cy = std::cos(g_yaw), sy = std::sin(g_yaw);
+                auto yaw = [&](float v[3]) { const float x = v[0] * cy + v[2] * sy, z = v[2] * cy - v[0] * sy; v[0] = x; v[2] = z; };
+                yaw(E); yaw(T);
+                // tilt about the horizontal axis (perpendicular to the eye's horizontal direction): +angle lowers the eye
+                const float hx = E[0] / horiz, hz = E[2] / horiz;
+                const float ax = hz, az = -hx;         // (0,1,0) x (hx,0,hz)
+                const float th = -(nel - el), ct = std::cos(th), st = std::sin(th);
+                auto tilt = [&](float v[3]) {
+                    const float dot = ax * v[0] + az * v[2];
+                    const float cx = -az * v[1], cyv = az * v[0] - ax * v[2], cz = ax * v[1];   // a x v (a has no y part)
+                    float o[3] = {v[0] * ct + cx * st + ax * dot * (1 - ct), v[1] * ct + cyv * st, v[2] * ct + cz * st + az * dot * (1 - ct)};
+                    v[0] = o[0]; v[1] = o[1]; v[2] = o[2];
+                };
+                tilt(E); tilt(T);
+                for (int i = 0; i < 3; i++) { wrf(eye + 4 * i, pivot[i] + E[i]); wrf(eye + 0x10 + 4 * i, pivot[i] + T[i]); }
+            }
+        }
+    }
     if (g_in_update && cam == g_mgr && g_eye_calls++ == 0 && (g_yaw != 0.f || g_pitch != 0.f)) {
         const uint32_t tg = eye + 0x10;
         float ex = rdf(eye), ey = rdf(eye + 4), ez = rdf(eye + 8);
@@ -236,6 +275,7 @@ void dissidia_camera_install(uint8_t* rdram) {
     g_invert = (e = std::getenv("PSPRECOMP_CAM_INVERT_Y")) && e[0] && e[0] != '0';
     if ((e = std::getenv("PSPRECOMP_CAM_PITCH_MIN"))) g_pitch_min = static_cast<float>(std::atof(e));
     if ((e = std::getenv("PSPRECOMP_CAM_PITCH_MAX"))) g_pitch_max = static_cast<float>(std::atof(e));
+    if ((e = std::getenv("PSPRECOMP_CAM_PIVOT"))) g_pivot_on = e[0] != '0';
     if ((e = std::getenv("PSPRECOMP_CAM_RECENTER"))) g_recenter = static_cast<float>(std::atof(e));
     if ((e = std::getenv("PSPRECOMP_CAM_RECENTER_DELAY"))) g_recenter_delay = static_cast<float>(std::atof(e));
     if ((e = std::getenv("PSPRECOMP_CAMX_LOG"))) g_log_left = std::atoi(e);
