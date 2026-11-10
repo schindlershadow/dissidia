@@ -3,6 +3,7 @@
 #include "recomp.h"
 
 #include <cstdint>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -587,7 +588,13 @@ void hle_sceSasSetKeyOn(uint8_t* rdram, recomp_context* ctx) {
                 v->vol_l, v->vol_r);
         }
         voice_key_on(*v);
-        SAS_TRACE("KeyOn v=%d", ctx->r[5]);
+        {   // PSPRECOMP_SAS_TRACE=1: when (ms on the host clock) and from where (return address) a voice is started,
+            // so a sound that repeats too fast can be traced to the game code that retriggers it
+            using namespace std::chrono;
+            SAS_TRACE("KeyOn v=%d t=%lld ms ra=%08x", ctx->r[5],
+                      (long long)duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count(),
+                      static_cast<uint32_t>(ctx->r[31]));
+        }
     }
     ctx->r[2] = 0;
     (void)rdram;
