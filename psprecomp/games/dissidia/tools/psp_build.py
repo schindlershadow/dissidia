@@ -119,6 +119,7 @@ def main():
             run(["cargo", "build", "--release"], env=env, cwd=repo)
         if not os.path.isfile(psprecomp):
             die("the recompiler %s was not found (pass --psprecomp, or install Rust to build it)" % psprecomp)
+    env["PSPRECOMP_BIN"] = os.path.abspath(psprecomp)   # build_overlay.py runs the recompiler too
     for tool in ("cmake",):
         if not shutil.which(tool, path=env["PATH"]):
             die("%s not found in PATH (a release bundles it; pass --toolchain)" % tool)
