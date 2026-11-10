@@ -9,7 +9,7 @@
 //   g++ -std=c++17 -I<repo>/runtime/include -I<repo>/work/output/include -I<repo>/games/dissidia/runtime
 //       -o /tmp/test_arm_trail test_arm_trail.cpp; /tmp/test_arm_trail
 #include "../runtime/roster.cpp"
-int dissidia_frame_ticks() { return 2; }              // framerate.cpp (30 fps logic) is not linked into this host test
+float dissidia_frame_ticks() { return 2.0f; }              // framerate.cpp (30 fps logic) is not linked into this host test
 float dissidia_own_clock_scale() { return 1.0f; }
 #include <map>
 #include <cstdlib>

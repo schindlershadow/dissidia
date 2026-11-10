@@ -222,3 +222,7 @@ void psp_hle_register_atrac();
 // sceMpeg movie playback (PSMF/MPEG-PS, H.264 + ATRAC3+) via libavcodec
 void psp_hle_register_mpeg();
 
+
+/// Rate of the simulated vblank clock (default 60). A game that waits for one vblank per frame then runs at this
+/// rate. The vblank count carries on without a jump. 30..480.
+void psp_display_set_vblank_hz(int hz);

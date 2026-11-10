@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <thread>
 #include <chrono>
+#include <mutex>
 
 // ---- State ----
 static uint32_t g_fb_addr = 0;
@@ -61,6 +62,16 @@ static const std::chrono::steady_clock::time_point g_vblank_epoch =
     std::chrono::steady_clock::now();
 static constexpr std::chrono::microseconds k_vblank_period(16667);
 
+// The vblank rate can be raised above 60 Hz (psp_display_set_vblank_hz) so a game frame loop that waits for one
+// vblank per frame runs faster. Boundaries are anchor + k * period; a change re-anchors at the current game time and
+// keeps the count going from where it was, so the vcount never goes back. Only the frame loop's guest thread
+// normally waits, but the state is behind a mutex because any guest thread may call.
+static std::mutex g_vb_mutex;
+static std::chrono::steady_clock::time_point g_vb_anchor = g_vblank_epoch;   // game-clock time of count g_vb_base
+static uint64_t g_vb_base = 0;
+static std::chrono::nanoseconds g_vb_period = k_vblank_period;
+static int g_vb_hz = 60;
+
 // PSPRECOMP_VCLOCK=1: virtual clock advancing exactly one period per vblank
 // wait return; all time HLE (system time, vcount) derives from it so the game
 // sees a steady 60 Hz even when rendering is slow.
@@ -91,7 +102,21 @@ void psp_display_fast_forward(int64_t ms, int factor) {
 static uint32_t vblank_count_now() {
     if (g_vclock_on) return static_cast<uint32_t>(g_vclock_us.load() / 16667);
     const auto game_now = std::chrono::steady_clock::now() + std::chrono::microseconds(g_clock_skew_us.load());
-    return static_cast<uint32_t>((game_now - g_vblank_epoch) / k_vblank_period);
+    std::lock_guard<std::mutex> lk(g_vb_mutex);
+    return static_cast<uint32_t>(g_vb_base + (game_now - g_vb_anchor) / g_vb_period);
+}
+
+void psp_display_set_vblank_hz(int hz) {
+    if (hz < 30) hz = 30;
+    if (hz > 480) hz = 480;
+    std::lock_guard<std::mutex> lk(g_vb_mutex);
+    if (hz == g_vb_hz) return;
+    const auto game_now = std::chrono::steady_clock::now() + std::chrono::microseconds(g_clock_skew_us.load());
+    g_vb_base += (game_now - g_vb_anchor) / g_vb_period;
+    g_vb_anchor = game_now;
+    g_vb_hz = hz;
+    g_vb_period = std::chrono::nanoseconds(1000000000LL / hz);
+    std::fprintf(stderr, "[HLE] vblank rate %d Hz\n", hz);
 }
 
 static void hle_sceDisplayWaitVblankStart(
@@ -108,7 +133,11 @@ static void hle_sceDisplayWaitVblankStart(
     psp_prof::seq("vblank-begin");
     const auto now = std::chrono::steady_clock::now();
     const auto skew = std::chrono::microseconds(g_clock_skew_us.load());
-    const auto next = g_vblank_epoch + ((now + skew - g_vblank_epoch) / k_vblank_period + 1) * k_vblank_period;
+    std::chrono::steady_clock::time_point next;
+    {
+        std::lock_guard<std::mutex> lk(g_vb_mutex);
+        next = g_vb_anchor + ((now + skew - g_vb_anchor) / g_vb_period + 1) * g_vb_period;
+    }
     const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
     if (now_ms < g_fast_forward_until_ms.load(std::memory_order_relaxed)) {
         // Capped at x: the game time from this thread's last wait to the boundary takes 1/x of it on the host

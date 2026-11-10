@@ -16,7 +16,7 @@
 
 static std::vector<uint8_t> g_ram(0x08000000u);
 std::string dissidia_mods_dir() { return "/nonexistent"; }
-int dissidia_frame_ticks() { return 2; }              // framerate.cpp (30 fps logic) is not linked into this host test
+float dissidia_frame_ticks() { return 2.0f; }              // framerate.cpp (30 fps logic) is not linked into this host test
 float dissidia_own_clock_scale() { return 1.0f; }
 FuncPtr ovl_menu_lookup(uint32_t) { return nullptr; }
 FuncPtr ovl_extra_lookup(uint32_t) { return nullptr; }

@@ -14,7 +14,7 @@ std::string dissidia_mods_dir() { return "/nonexistent"; }
 FuncPtr ovl_menu_lookup(uint32_t) { return nullptr; }
 FuncPtr ovl_battle_lookup(uint32_t) { return nullptr; }
 FuncPtr ovl_extra_lookup(uint32_t) { return nullptr; }
-int dissidia_frame_ticks() { return 2; }              // framerate.cpp (30 fps logic) is not linked into this host test
+float dissidia_frame_ticks() { return 2.0f; }              // framerate.cpp (30 fps logic) is not linked into this host test
 float dissidia_own_clock_scale() { return 1.0f; }
 thread_local uint32_t g_func_ring[32];
 thread_local uint32_t g_func_ring_pos;

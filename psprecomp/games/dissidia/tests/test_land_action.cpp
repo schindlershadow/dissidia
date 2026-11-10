@@ -6,7 +6,7 @@
 //   g++ -std=c++17 -I<repo>/runtime/include -I<repo>/work/output/include -I<repo>/games/dissidia/runtime
 //       -o /tmp/test_land_action test_land_action.cpp; /tmp/test_land_action
 #include "../runtime/roster.cpp"
-int dissidia_frame_ticks() { return 2; }              // the 60 fps clock (dissidia_main.cpp): not used here
+float dissidia_frame_ticks() { return 2.0f; }              // the 60 fps clock (dissidia_main.cpp): not used here
 float dissidia_own_clock_scale() { return 1.0f; }
 #include <map>
 #include <cstdlib>

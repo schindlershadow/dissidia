@@ -310,7 +310,7 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.value = buf;
             m.can_dec = i > 0;
             m.can_inc = i + 1 < g_fps.count;
-            m.help = "Battle logic rate\n60 runs battles at 60 updates a second (twice the PSP's work). Menus stay at 30.";
+            m.help = "Battle logic rate (multiples of 30)\nBattles run at this many updates a second; the PSP ran 30. Costs CPU and GPU time in proportion. Menus stay at 30.";
             break;
         }
         case ROW_NET_MODE:

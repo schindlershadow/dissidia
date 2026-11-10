@@ -39,6 +39,7 @@
 #include "hle/psp_hle.h"
 #include "hle/psp_hle_adhoc.h"
 #include "psp_ge_draw.h"
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -67,7 +68,10 @@ constexpr uint32_t CAM_DT = 0x08B3B4FCu;        // battle overlay: a camera's ti
 uint8_t* g_ram = nullptr;
 FuncPtr g_orig_frame_end = nullptr, g_orig_pad = nullptr, g_orig_actor_dt = nullptr, g_orig_cam_dt = nullptr;
 std::atomic<int> g_target{30};     // requested rate (settings / env)
-int g_interval = 2;                // interval written on the last frame end (2 = 30 Hz, 1 = 60 Hz)
+int g_interval = 2;                // interval written on the last frame end (2 = 30 Hz, 1 = 60 Hz and above)
+int g_rate = 30;                   // logic rate in effect (30, 60, 90, ... one frame per vblank above 30)
+float g_ticks = 2.0f;              // 1/60 s ticks one frame advances: 60 / g_rate
+int g_fx_period = 1;               // updates per effect-component step at 30 Hz pacing: g_rate / 30
 bool g_scope_all = false, g_log = false;
 int g_switch_logs = 0;
 uint64_t g_tick = 1;               // frame ends seen (the effect system updates once per frame)
@@ -149,19 +153,28 @@ void frame_end_hook(uint8_t* rdram, recomp_context* ctx) {
         // lock-step battle stays in sync (psp_adhoc_group_fps_cap() is 0 when not connected).
         const int cap = psp_adhoc_group_fps_cap();
         note_negotiated_rate(cap);
-        const bool want60 = g_target.load(std::memory_order_relaxed) == 60 && cap != 30 && (g_scope_all || overlay_id() == 1);
-        const int interval = want60 ? 1 : 2;
-        if (r32(timer + 0x10u) != static_cast<uint32_t>(interval)) {
+        int rate = 30;
+        if (g_scope_all || overlay_id() == 1) {
+            rate = g_target.load(std::memory_order_relaxed);
+            if (cap > 0 && cap < rate) rate = cap;   // never above what the slowest player asked for
+        }
+        if (rate < 30) rate = 30;
+        const int interval = rate > 30 ? 1 : 2;      // vblanks per frame: the vblank clock itself runs faster above 60
+        psp_display_set_vblank_hz(rate > 60 ? rate : 60);
+        if (r32(timer + 0x10u) != static_cast<uint32_t>(interval) || g_rate != rate) {
             w32(timer + 0x10u, static_cast<uint32_t>(interval));
             if (g_log || g_switch_logs < 12) {
                 g_switch_logs++;
-                std::fprintf(stderr, "[FPS] game logic now %d Hz (frame interval %d, overlay %u)\n", 60 / interval, interval,
-                             overlay_id());
+                std::fprintf(stderr, "[FPS] game logic now %d Hz (frame interval %d, overlay %u)\n", rate, interval, overlay_id());
             }
         }
         g_interval = interval;
+        g_rate = rate;
+        g_ticks = 60.0f / static_cast<float>(rate);
+        g_fx_period = rate / 30;
     }
     g_orig_frame_end(rdram, ctx);
+    if (g_rate > 60 && ok(timer)) wrf(timer + 0x18u, g_ticks);   // the frame waited for one (short) vblank: dt = 60 / rate
     if (g_log && ok(timer)) {
         const int64_t t = now_ms();
         if (!g_win_t0) g_win_t0 = t;
@@ -199,9 +212,9 @@ void pad_set_hook(uint8_t* rdram, recomp_context* ctx) {
 void actor_dt_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t actor = static_cast<uint32_t>(ctx->r[4]);
     g_orig_actor_dt(rdram, ctx);
-    if (g_interval != 2 && ok(actor)) {
+    if (g_ticks != 2.0f && ok(actor)) {
         const bool own = ((r32(actor + 0x388u) & r32(OWN_MASK0)) | (r32(actor + 0x38Cu) & r32(OWN_MASK1))) != 0;
-        if (own) ctx->f[0] *= static_cast<float>(g_interval) * 0.5f;   // own clock: a fixed 2.0 per frame
+        if (own) ctx->f[0] *= g_ticks * 0.5f;   // own clock: a fixed 2.0 per frame
     }
 }
 
@@ -214,7 +227,7 @@ void cam_dt_hook(uint8_t* rdram, recomp_context* ctx) {
     }
     const uint32_t cam = static_cast<uint32_t>(ctx->r[4]);
     g_orig_cam_dt(rdram, ctx);
-    if (g_interval != 2 && ok(cam) && r32(cam + 0x100u) == 2u) ctx->f[0] *= static_cast<float>(g_interval) * 0.5f;
+    if (g_ticks != 2.0f && ok(cam) && r32(cam + 0x100u) == 2u) ctx->f[0] *= g_ticks * 0.5f;
 }
 
 // ---- Effect components ------------------------------------------------------------------------------------------
@@ -256,17 +269,20 @@ FuncPtr g_fx_orig[kFxHooks] = {};
 FuncPtr g_orig_locus_hist = nullptr;
 bool g_fx60 = true;
 
-struct FxStep { uint64_t tick = 0; bool ran = false, have = false; uint8_t pos0[32] = {}; };
+struct FxStep { uint64_t tick = 0; int phase = 0; bool ran = false, have = false; uint8_t pos0[32] = {}; };
 std::unordered_map<uint32_t, FxStep> g_fx_step;
 uint64_t g_fx_pruned = 0;
 int g_fx_runs = 0, g_fx_holds = 0;
 
-// Run this update? Alternates per state block; a second call in the same frame repeats the first decision.
+// Run this update? One update in every g_fx_period (2 at 60 Hz, 3 at 90 Hz, 4 at 120 Hz...) per state block; a new
+// block, or one not seen on the previous update, runs at once. A second call in the same frame repeats the decision.
 bool fx_step_due(FxStep& s) {
-    const bool run = s.tick == g_tick ? s.ran : !(s.tick + 1 == g_tick && s.ran);
+    if (s.tick == g_tick) return s.ran;
+    if (s.tick + 1 == g_tick) s.phase = (s.phase + 1) % (g_fx_period > 1 ? g_fx_period : 1);
+    else s.phase = 0;
     s.tick = g_tick;
-    s.ran = run;
-    return run;
+    s.ran = s.phase == 0;
+    return s.ran;
 }
 FxStep& fx_step_of(uint32_t key) {
     if (g_tick - g_fx_pruned >= 1024) {   // forget blocks not seen for a while (ended effects)
@@ -293,7 +309,7 @@ struct DtScale {
     }
     ~DtScale() { for (int i = n - 1; i >= 0; i--) wrf(addr[i], was[i]); }
 };
-bool fx_fix_on() { return g_interval != 2 && g_fx60; }
+bool fx_fix_on() { return g_rate > 30 && g_fx60; }
 
 template <int I>
 void fx_every_other_hook(uint8_t* rdram, recomp_context* ctx) {
@@ -363,23 +379,23 @@ void fx_install() {
 
 int fps_get() { return g_target.load(); }
 void fps_set(int fps) {
-    fps = fps == 60 ? 60 : 30;
+    fps = fps < 30 ? 30 : fps > 240 ? 240 : (fps + 15) / 30 * 30;   // a multiple of 30
     if (g_target.exchange(fps) != fps) std::fprintf(stderr, "[FPS] target frame rate %d\n", fps);
     psp_adhoc_set_local_fps(fps);   // told to the other players
 }
-const int k_rates[] = {30, 60};
+const int k_rates[] = {30, 60, 90, 120, 150, 180, 210, 240};
 
 }  // namespace
 
-// Ticks (1/60 s) one game frame advances: 2 at 30 Hz, 1 at 60 Hz.
-int dissidia_frame_ticks() { return g_interval; }
+// Ticks (1/60 s) one game frame advances: 2 at 30 Hz, 1 at 60 Hz, 2/3 at 90 Hz, 0.5 at 120 Hz.
+float dissidia_frame_ticks() { return g_ticks; }
 // Factor for a value the game keeps as "ticks per 30 Hz frame" (the actor own clock): 1 at 30 Hz, 0.5 at 60 Hz.
-float dissidia_own_clock_scale() { return static_cast<float>(g_interval) * 0.5f; }
+float dissidia_own_clock_scale() { return g_ticks * 0.5f; }
 
 void dissidia_framerate_install(uint8_t* rdram) {
     g_ram = rdram;
     const char* e = std::getenv("PSPRECOMP_FPS");
-    if (e && std::atoi(e) == 60) g_target = 60;
+    if (e && std::atoi(e) >= 30) g_target = (std::min(std::atoi(e), 240) + 15) / 30 * 30;
     g_scope_all = (e = std::getenv("PSPRECOMP_FPS_SCOPE")) && std::strcmp(e, "all") == 0;
     g_log = (e = std::getenv("PSPRECOMP_FPS_LOG")) && e[0] && e[0] != '0';
     g_orig_frame_end = psp_dispatch_probe_lookup(FRAME_END);
@@ -397,7 +413,7 @@ void dissidia_framerate_install(uint8_t* rdram) {
     psp_dispatch_register(CAM_DT, cam_dt_hook);
     if (g_log && (g_orig_skel = psp_dispatch_probe_lookup(SKEL_BUILD))) psp_dispatch_register(SKEL_BUILD, skel_build_hook);
     fx_install();
-    psp_settings_set_frame_rate_hook({k_rates, 2, fps_get, fps_set});
+    psp_settings_set_frame_rate_hook({k_rates, static_cast<int>(std::size(k_rates)), fps_get, fps_set});
     psp_adhoc_set_local_fps(g_target.load());
     std::fprintf(stderr, "[FPS] frame rate %d (battle logic; scope %s)\n", g_target.load(), g_scope_all ? "all" : "battle");
 }

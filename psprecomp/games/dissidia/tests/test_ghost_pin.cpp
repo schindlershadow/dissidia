@@ -13,7 +13,7 @@
 #define CHECK(c) do { if (!(c)) { std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); std::exit(1); } } while (0)
 
 static std::vector<uint8_t> g_ram(0x08000000u);
-int dissidia_frame_ticks() { return 2; }              // the 60 fps clock (dissidia_main.cpp): not used by ghostpin
+float dissidia_frame_ticks() { return 2.0f; }              // the 60 fps clock (dissidia_main.cpp): not used by ghostpin
 float dissidia_own_clock_scale() { return 1.0f; }
 std::string dissidia_mods_dir() { return "/nonexistent"; }
 FuncPtr ovl_menu_lookup(uint32_t) { return nullptr; }

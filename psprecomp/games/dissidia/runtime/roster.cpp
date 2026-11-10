@@ -51,7 +51,7 @@ int g_dissidia_cine_ticks = 0;
 void psp_dump_func_ring(const char*);
 
 // framerate.cpp: ticks per game frame (2 at 30 Hz, 1 at 60 Hz) and the scale for per-30-Hz-frame values.
-int dissidia_frame_ticks();
+float dissidia_frame_ticks();
 float dissidia_own_clock_scale();
 
 namespace {
@@ -3900,7 +3900,7 @@ FuncPtr g_dash_start = nullptr, g_dash_target = nullptr, g_airborne = nullptr, g
         g_lock_target = nullptr, g_enemy_of = nullptr, g_hit_land = nullptr;
 bool g_wd_log = false, g_wd_reached = false;
 int g_wd_dash_logs = 0, g_wd_hit_logs = 0, g_wd_link_logs = 0;
-struct WdState { uint32_t actor = 0, frames = 0, armed_until = 0, dash_rec = 0, dash_caller = 0; int act = -1; bool in_dash = false, hit = false, used = false; };
+struct WdState { uint32_t actor = 0, dash_rec = 0, dash_caller = 0; float frames = 0, armed_until = 0; int act = -1; bool in_dash = false, hit = false, used = false; };
 WdState g_wd[8];
 int g_wd_next = 0;
 int wd_char_id(const uint8_t* rdram, uint32_t actor, uint32_t* info_out = nullptr) {
@@ -4164,7 +4164,7 @@ void warpdash_on_hit(const uint8_t* rdram, uint32_t hitrec, uint32_t hit) {
     const bool arm = on_enemy && !s.used, again = arm && s.hit;
     if (arm) {
         s.hit = true;
-        s.armed_until = s.frames + 2u * static_cast<uint32_t>(e->wd_link);   // wd_link in 30 Hz frames, s.frames in ticks
+        s.armed_until = s.frames + 2.0f * static_cast<float>(e->wd_link);   // wd_link in 30 Hz frames, s.frames in ticks
     }
     if (g_wd_log || g_wd_hit_logs < kWdFirstLogs) {
         g_wd_hit_logs++;
@@ -4184,7 +4184,7 @@ void warpdash_tick(uint8_t* rdram, uint32_t actor) {
     const Entry* e = wd_entry(rdram, actor);
     if (!e) return;
     WdState& s = wd_state(actor);
-    s.frames += static_cast<uint32_t>(dissidia_frame_ticks());   // ticks: 2 per 30 Hz frame, 1 per 60 Hz frame
+    s.frames += dissidia_frame_ticks();   // ticks: 2 per 30 Hz frame, 1 per 60 Hz frame, 0.5 per 120 Hz frame
     const int id = wd_record_id(rdram, wd_current_record(rdram, actor));
     if (!(id >= 0 && (id == e->wd_ground || id == e->wd_air))) s.in_dash = false;
 }

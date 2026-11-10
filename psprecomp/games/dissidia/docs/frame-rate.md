@@ -41,6 +41,17 @@ In an ad-hoc session ([multiplayer.md](multiplayer.md)) the game runs at the low
 60 fps player and a 30 fps player both run at 30; the setting returns to normal when the session ends. Every player
 shares the wanted rate in their beacons; `frame_end_hook` in `runtime/framerate.cpp` applies the cap. A toast (`ge_draw_toast`, top centre, 5 s) shows the agreed rate when it changes.
 
+## Above 60 (90, 120 ... 240)
+
+Any multiple of 30 up to 240 can be chosen (Frame Rate row, or `PSPRECOMP_FPS=120`). Above 60 the simulated vblank
+clock itself runs at the chosen rate (`psp_display_set_vblank_hz`, the vblank count carries on without a jump), the
+frame timer keeps interval 1 so each frame waits for one short vblank, and `frame_end_hook` writes
+`dt = 60 / rate` ticks (0.667 at 90, 0.5 at 120) into the timer after the original frame end. Everything that was
+scaled for 60 Hz uses the same factor (`interval / 2` became `ticks / 2`), and the effect components that step once per
+update run one update in `rate / 30` with dt 2. **Not yet tested in play**: expect the unknown, such as integer
+fades that truncate at a small dt. There is no vsync, so a rate above the monitor's refresh tears or drops frames.
+In multiplayer the lowest rate any player asked for wins, whatever the values.
+
 ## What 60 fps means here
 
 It is **native**: the battle simulation runs 60 updates a second. Nothing is interpolated, and there's no extra
