@@ -99,6 +99,10 @@ std::string game_binary(const std::string& workdir);
 EnvList game_env(const std::string& workdir);
 bool launch_game(const std::string& workdir, std::string* error);
 
+// A menu entry that starts the game: ~/.local/share/applications/dissidia-012.desktop (GNOME/KDE launchers) on Linux,
+// a Start Menu shortcut on Windows. It runs this program with --launch, so updates are checked first. `where` gets the path.
+bool create_shortcut(const std::string& workdir, std::string* where, std::string* error);
+
 // default install folder suggestion (~/Games/Dissidia012 or %USERPROFILE%\Games\Dissidia012)
 std::string default_install_dir();
 std::string home_dir();

@@ -36,7 +36,7 @@ runtime (5650/5551/4444/8888/CLUT4/CLUT8) take part; DXT is not used by this gam
    (`-n realesrgan-x4plus-anime` for the UI art), `waifu2x-ncnn-vulkan -n 1 -s 2`, or ImageMagick
    `convert {in} -filter Lanczos -resize 400% {out}`. The tool installs and downloads nothing. If an upscaler
    drops the alpha channel it is restored from the original when Pillow is available.
-3. Run normally: replacement is on whenever the directory has `<id>.png` files (`PSPRECOMP_TEX_REPLACE=0` turns it off).
+3. Run normally: replacement is on whenever the directory has `<id>.png` files (`PSPRECOMP_TEX_REPLACE=0` turns it off; the in-game settings menu has an **HD Textures** On/Off row whenever `<workdir>/mods/textures` exists, saved as `hd_textures=` in `settings.ini`, applied at the next start). The pack is looked up next to the Memory Stick folder: `<parent of ms0>/mods/textures`, so `PSPRECOMP_MS0` pointing somewhere else moves the pack, the Japanese voice folders and `mods/` with it.
    The file list is read once at start (no per-bind stat); a replacement is decoded on the cache miss and uploaded
    at its own size. UVs are normalised, so TEXSCALE/TEXOFFSET, REPEAT/CLAMP and both draw paths
    (batched GPU-skinning path, the default on every platform, and `PSPRECOMP_GE_FAST=0` for the legacy renderer) work unchanged; render scale is independent.

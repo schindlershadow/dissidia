@@ -89,6 +89,24 @@ int main() {
     State r = load_state((tmp / "state.ini").string());
     CHECK(r.workdir == s.workdir && r.options.android && r.options.undub_iso == "/u.iso" && !r.options.check_updates);
 
+#ifndef _WIN32
+    {   // the menu entry
+        fs::path data = tmp / "xdg", wd = tmp / "my game dir";
+        fs::create_directories(wd / "disc0/PSP_GAME");
+        { std::ofstream(wd / "disc0/PSP_GAME/ICON0.PNG") << "png"; }
+        setenv("XDG_DATA_HOME", data.string().c_str(), 1);
+        std::string where, err;
+        CHECK(create_shortcut(wd.string(), &where, &err));
+        CHECK(where == (data / "applications/dissidia-012.desktop").string());
+        std::ifstream df(where);
+        std::string txt((std::istreambuf_iterator<char>(df)), std::istreambuf_iterator<char>());
+        CHECK(txt.find("Exec=\"") == 0 || txt.find("\nExec=\"") != std::string::npos);
+        CHECK(txt.find("--launch") != std::string::npos);
+        CHECK(txt.find("Icon=" + (wd / "icon.png").string()) != std::string::npos);
+        CHECK(txt.find("Categories=Game;") != std::string::npos);
+    }
+#endif
+
     fs::remove_all(tmp);
     std::printf(failures ? "%d FAILED\n" : "all setup tests passed\n", failures);
     return failures ? 1 : 0;

@@ -7,6 +7,9 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -368,6 +371,65 @@ bool launch_game(const std::string& workdir, std::string* error) {
     fs::create_directories(join(workdir, "ms0/PSP/SAVEDATA"), ec);
     fs::create_directories(join(workdir, "ms0/PSP/GAME"), ec);
     return spawn_detached({game_binary(workdir)}, game_env(workdir), workdir, error);
+}
+
+// Path of the running program (the wizard), "" if unknown.
+static std::string self_exe() {
+#ifdef _WIN32
+    char buf[4096];
+    DWORD n = GetModuleFileNameA(nullptr, buf, sizeof buf);
+    return n > 0 && n < sizeof buf ? std::string(buf, n) : std::string();
+#else
+    std::error_code ec;
+    fs::path p = fs::read_symlink("/proc/self/exe", ec);
+    return ec ? std::string() : p.string();
+#endif
+}
+
+bool create_shortcut(const std::string& workdir, std::string* where, std::string* error) {
+    const std::string exe = self_exe();
+    if (exe.empty()) { if (error) *error = "cannot find the setup program's own path"; return false; }
+    std::error_code ec;
+    // The game's icon, from the disc metadata the installer kept (ICON0.PNG, 144x80).
+    std::string icon = join(workdir, "disc0/PSP_GAME/ICON0.PNG");
+    std::string icon_copy = join(workdir, "icon.png");
+    if (is_file(icon)) fs::copy_file(icon, icon_copy, fs::copy_options::overwrite_existing, ec);
+    const std::string name = "Dissidia 012 Duodecim Final Fantasy";
+#ifdef _WIN32
+    const char* appdata = std::getenv("APPDATA");
+    if (!appdata) { if (error) *error = "APPDATA is not set"; return false; }
+    std::string dir = join(appdata, "Microsoft\\Windows\\Start Menu\\Programs");
+    std::string lnk = join(dir, name + ".lnk");
+    // A .lnk is a binary format; the WScript.Shell COM object writes one (present on every Windows).
+    auto q = [](const std::string& x) { std::string r = "'"; for (char c : x) { if (c == '\'') r += "''"; else r += c; } return r + "'"; };
+    std::string ps = "$s=(New-Object -ComObject WScript.Shell).CreateShortcut(" + q(lnk) + ");$s.TargetPath=" + q(exe) +
+                     ";$s.Arguments='--launch';$s.WorkingDirectory=" + q(workdir) +
+                     ";$s.Description=" + q(name) + ";$s.Save()";
+    if (std::system(("powershell -NoProfile -NonInteractive -Command \"" + ps + "\"").c_str()) != 0 || !is_file(lnk)) {
+        if (error) *error = "could not create " + lnk;
+        return false;
+    }
+    if (where) *where = lnk;
+    return true;
+#else
+    const char* xdg = std::getenv("XDG_DATA_HOME");
+    std::string base = xdg && *xdg ? xdg : join(home_dir(), ".local/share");
+    std::string dir = join(base, "applications");
+    fs::create_directories(dir, ec);
+    std::string file = join(dir, "dissidia-012.desktop");
+    auto esc = [](const std::string& x) { std::string r = "\""; for (char c : x) { if (c == '"' || c == '\\' || c == '$' || c == '`') r += '\\'; r += c; } return r + "\""; };
+    std::ofstream f(file, std::ios::trunc);
+    if (!f) { if (error) *error = "cannot write " + file; return false; }
+    f << "[Desktop Entry]\nType=Application\nName=" << name << "\nComment=Dissidia 012 native build\n"
+      << "Exec=" << esc(exe) << " --launch\n"
+      << "Path=" << workdir << "\n"
+      << (is_file(icon_copy) ? "Icon=" + icon_copy + "\n" : std::string())
+      << "Terminal=false\nCategories=Game;\nStartupWMClass=Dissidia\n";
+    f.close();
+    fs::permissions(file, fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::add, ec);
+    if (where) *where = file;
+    return (bool)f;
+#endif
 }
 
 std::string home_dir() {

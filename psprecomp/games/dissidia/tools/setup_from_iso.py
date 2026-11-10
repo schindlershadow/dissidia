@@ -228,7 +228,31 @@ class Iso9660:
                 name = name.split(";", 1)[0]
             if name.endswith(".") and len(name) > 1:
                 name = name[:-1]
+        if raw not in (b"\x00", b"\x01"):
+            rr = Iso9660._rock_ridge_name(buf, off, ln, 33 + nlen)
+            if rr:
+                name = rr           # the real name; the ISO 9660 one is cut to 8.3
         return {"name": name, "extent": extent, "size": size, "is_dir": bool(flags & 2)}, ln
+
+    @staticmethod
+    def _rock_ridge_name(buf, off, ln, start):
+        """The Rock Ridge (NM) alternate name in a directory record's system-use area, or None. Discs made with
+        xorriso/mkisofs keep long names only there (the ISO 9660 name is truncated, e.g. PACKAGE_INFO.BIN ->
+        PACKAGE_.BIN). Continuation areas (CE) are not followed; names that long do not occur on a PSP disc."""
+        if start % 2:                      # the system-use area starts on an even offset
+            start += 1
+        pos, end = off + start, off + ln
+        name = b""
+        while pos + 4 <= end:
+            sig, elen = bytes(buf[pos:pos + 2]), buf[pos + 2]
+            if elen < 4 or pos + elen > end:
+                break
+            if sig == b"NM":
+                flags = buf[pos + 4]
+                if not flags & 0x06:       # not the "." / ".." forms
+                    name += bytes(buf[pos + 5: pos + elen])
+            pos += elen
+        return name.decode("utf-8", "replace") if name else None
 
     def listdir(self, rec):
         key = rec["extent"]

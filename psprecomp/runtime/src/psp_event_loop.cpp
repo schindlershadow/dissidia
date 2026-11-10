@@ -461,6 +461,13 @@ static void handle_sdl_event(const SDL_Event& ev) {
 
 // --- Static state (SDL window + GL context, module-private) ---
 static SDL_Window*  g_window     = nullptr;
+static std::string  g_window_title = "PSPrecomp Runtime";
+// A game module names its window (the title shown in the taskbar / window list).
+void psp_set_window_title(const char* title) {
+    if (!title || !*title) return;
+    g_window_title = title;
+    if (g_window) SDL_SetWindowTitle(g_window, title);
+}
 static SDL_GLContext g_gl_context = nullptr;
 
 // ---------------------------------------------------------------------------
@@ -542,7 +549,7 @@ int psp_runtime_init_sdl() {
                       SDL_WINDOW_ALLOW_HIGHDPI;
     if (fs_env && fs_env[0] && fs_env[0] != '0') wflags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
     g_window = SDL_CreateWindow(
-        "PSPrecomp Runtime",
+        g_window_title.c_str(),
         SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,
         win_w, win_h, wflags);

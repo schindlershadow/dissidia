@@ -312,6 +312,7 @@ void dissidia_install_mod_io() {
     psp_io_set_policy(policy);
     // The settings menu offers a Voice row once a Japanese voice pack has been extracted (tools/jp_audio.py).
     psp_settings_set_voice_hook({+[]() { return is_dir(work_parent() + "/voice_jp"); }});
+    psp_settings_set_texpack_hook({+[]() { return is_dir(mods_dir() + "/textures"); }});
     // Texture packs (runtime/include/psp_tex_pack.h) live under <mods>/textures.
     psp_texpack_set_dir_provider([]() -> std::string { return mods_dir() + "/textures"; });
     // FX shader overrides (runtime/include/psp_fx_shader.h, FX_SHADERS.md) live under <mods>/fx_shaders.

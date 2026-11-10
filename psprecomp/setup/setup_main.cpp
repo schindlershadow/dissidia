@@ -215,6 +215,7 @@ struct App {
     setup::Proc check_proc;
     setup::UpdateInfo upd;
     bool checking = false, manual_check = false, launch_mode = false;
+    std::string shortcut_note;
     int64_t check_start = 0;
     std::string check_result;
     std::string msg_title, msg_text;
@@ -375,7 +376,7 @@ struct App {
         case Screen::Done:
             p.title = "ALL DONE";
             p.tab = "Finished";
-            p.rows = {row("Play now", "Start the game."), row("Quit", "The game can be started with this program any time.")};
+            p.rows = {row("Play now", "Start the game."), row("Quit", (shortcut_note.empty() ? std::string() : shortcut_note + ". ") + "The game can also be started with this program any time.")};
             break;
         case Screen::Failed:
             p.title = "NOT FINISHED";
@@ -452,6 +453,11 @@ struct App {
                     write_settings();
                 }
                 setup::save_state(state_file, state);
+                if (!rebuild_only) {
+                    std::string where, serr;
+                    if (setup::create_shortcut(workdir, &where, &serr)) shortcut_note = "A menu entry was added: " + where;
+                    else shortcut_note = "No menu entry (" + serr + ")";
+                }
                 go(Screen::Done);
             }
             dirty = true;
@@ -894,6 +900,10 @@ int main(int argc, char** argv) {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_TIMER) != 0) {
         std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 1;
+    }
+    if (shots.empty() && !state.workdir.empty() && setup::game_installed(state.workdir)) {
+        std::string where, serr;   // installs from before the menu entry existed get one at the next start
+        setup::create_shortcut(state.workdir, &where, &serr);
     }
     App app;
     app.layout = layout;

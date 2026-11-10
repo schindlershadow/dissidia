@@ -186,3 +186,14 @@ UCRT forwarders (no mingw DLLs). `setup_from_iso.py` finds it through `PSPRECOMP
 Verification (2026-11-10, desktop): Linux with a PATH holding no compiler, `bin/pspdecrypt -o out.elf EBOOT.enc.bin` output is
 byte-identical (`cmp`) to the earlier decrypted ELF made by the source-built binary. The Windows `pspdecrypt.exe` (PE32+) run under
 Wine (`WINEDEBUG=-all`, command line only) produced the identical ELF as well.
+
+## Fixes after the first desktop test (2026-11-10)
+
+- **Menu entry**: after an install the wizard writes `~/.local/share/applications/dissidia-012.desktop` (Linux; icon = the disc's
+  ICON0.PNG copied to `<workdir>/icon.png`) or a Start Menu `.lnk` (Windows, created through PowerShell's WScript.Shell). It runs
+  `psprecomp_setup --launch`, so an update check comes first. An existing install gets the entry the next time the wizard starts.
+- **Window title**: a game module names its window with `psp_set_window_title()` (Dissidia: "Dissidia 012 Duodecim Final Fantasy").
+- **Undub disc images made with xorriso/mkisofs**: file names longer than 8.3 live only in the Rock Ridge `NM` records
+  (`PACKAGE_INFO.BIN` is `PACKAGE_.BIN` in the plain ISO 9660 tree). `setup_from_iso.Iso9660` now reads them.
+- **Settings menu**: Voice Language and HD Textures rows appear when `voice_jp/` / `mods/textures/` exist next to `ms0`.
+- **Saves are shared between regions** (`psp_savedata_set_shared_ids`); see games/dissidia/docs/savedata.md.

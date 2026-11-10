@@ -73,11 +73,14 @@ bool g_wait_release = false;           // after closing: game input stays blocke
 bool g_confirm_cross = true;
 PspFrameRateHook g_fps{nullptr, 0, nullptr, nullptr};
 PspVoiceHook g_voice{nullptr};
+PspTexPackHook g_texpack{nullptr};
 
 bool voice_jp_choice();
 bool voice_at_start();
+bool texpack_choice();
+bool texpack_at_start();
 
-enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_VOICE, ROW_QUIT,
+enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_VOICE, ROW_TEXPACK, ROW_QUIT,
            ROW_NET_MODE, ROW_NET_SERVER, ROW_NET_ROOM, ROW_NET_PEERS, ROW_NET_STATUS,   // Network page
            ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS };   // the last six: Debug page
 std::vector<Row> g_rows;
@@ -343,6 +346,15 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.help = "Character voices and movie audio\nJapanese needs the voice pack made by tools/jp_audio.py from an undub or Japanese disc. Takes effect the next time the game starts.";
             break;
         }
+        case ROW_TEXPACK: {
+            const bool on = texpack_choice();
+            m.label = "HD Textures";
+            m.value = std::string(on ? "On" : "Off") + (on != texpack_at_start() ? "  (next start)" : "");
+            m.can_dec = on;
+            m.can_inc = !on;
+            m.help = "Texture pack\nReplaces the game's textures with the installed HD pack (mods/textures). Takes effect the next time the game starts.";
+            break;
+        }
         case ROW_NET_MODE:
             m.label = "Network";
             m.value = g_net_internet ? "Internet" : "LAN";
@@ -503,6 +515,20 @@ bool voice_at_start() {   // what this run was started with (the environment is 
 bool voice_row_wanted() { return g_voice.available && g_voice.available(); }
 void apply_voice(bool jp) { save("voice", jp ? "jp" : "en"); }
 
+// HD textures: the saved choice, else the launch environment (PSPRECOMP_TEX_REPLACE=0 turns them off), else on.
+bool texpack_choice() {
+    auto it = g_saved.find("hd_textures");
+    if (it != g_saved.end()) return it->second != "0";
+    const char* e = std::getenv("PSPRECOMP_TEX_REPLACE");
+    return !(e && e[0] == '0');
+}
+bool texpack_at_start() {
+    static const bool v = [] { const char* e = std::getenv("PSPRECOMP_TEX_REPLACE"); return !(e && e[0] == '0'); }();
+    return v;
+}
+bool texpack_row_wanted() { return g_texpack.available && g_texpack.available(); }
+void apply_texpack(bool on) { save("hd_textures", on ? "1" : "0"); }
+
 void build_rows();
 
 void change(int d) {   // left / right on the selected row
@@ -553,6 +579,7 @@ void change(int d) {   // left / right on the selected row
         break;
     }
     case ROW_VOICE: apply_voice(d > 0); break;   // left: English, right: Japanese
+    case ROW_TEXPACK: apply_texpack(d > 0); break;
     case ROW_QUIT: break;
     case ROW_NET_MODE:
         if (g_net_internet != (d < 0)) {   // left: Internet, right: LAN
@@ -610,6 +637,7 @@ void build_rows() {
         g_rows.push_back(ROW_WIDE);
         g_rows.push_back(ROW_SOFT);
         if (voice_row_wanted()) g_rows.push_back(ROW_VOICE);
+        if (texpack_row_wanted()) g_rows.push_back(ROW_TEXPACK);
         g_rows.push_back(ROW_QUIT);
     }
     g_sel = std::min(std::max(g_sel_page[g_page], 0), int(g_rows.size()) - 1);
@@ -694,6 +722,7 @@ void confirm() {
         apply_fps((fps_index() + 1) % g_fps.count);
         break;
     case ROW_VOICE: apply_voice(!voice_jp_choice()); break;
+    case ROW_TEXPACK: apply_texpack(!texpack_choice()); break;
     case ROW_NET_MODE: change(g_net_internet ? 1 : -1); return;
     case ROW_NET_SERVER: edit_begin(0); return;
     case ROW_NET_ROOM: edit_begin(1); return;
@@ -747,6 +776,7 @@ uint32_t dpad_bit(uint8_t b) {
 
 void psp_settings_set_frame_rate_hook(const PspFrameRateHook& hook) { g_fps = hook; }
 void psp_settings_set_voice_hook(const PspVoiceHook& hook) { g_voice = hook; }
+void psp_settings_set_texpack_hook(const PspTexPackHook& hook) { g_texpack = hook; }
 
 void psp_settings_load_early() {
     const char* e = std::getenv("PSPRECOMP_SETTINGS_MENU");
@@ -774,6 +804,8 @@ void psp_settings_load_early() {
     if ((it = g_saved.find("fps")) != g_saved.end() && std::atoi(it->second.c_str()) > 0) put("PSPRECOMP_FPS", it->second);
     if ((it = g_saved.find("voice")) != g_saved.end() && (it->second == "jp" || it->second == "en"))
         put("PSPRECOMP_VOICE", it->second);
+    if ((it = g_saved.find("hd_textures")) != g_saved.end() && (it->second == "0" || it->second == "1"))
+        put("PSPRECOMP_TEX_REPLACE", it->second);
     if ((it = g_saved.find("window_size")) != g_saved.end() && g_saved.count("display") && g_saved["display"] == "window"
         && it->second.find('x') != std::string::npos) {
         put("PSPRECOMP_WINDOW", it->second);

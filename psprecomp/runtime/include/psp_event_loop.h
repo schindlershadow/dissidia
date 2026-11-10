@@ -22,3 +22,6 @@ struct SDL_Window;
 
 /// Get the SDL window pointer (for FBO blit and swap).
 SDL_Window* psp_get_sdl_window();
+
+// Window title (default "PSPrecomp Runtime"); may be called before or after the window exists.
+void psp_set_window_title(const char* title);

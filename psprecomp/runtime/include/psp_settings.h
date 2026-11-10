@@ -38,6 +38,13 @@ struct PspVoiceHook {
 };
 void psp_settings_set_voice_hook(const PspVoiceHook& hook);
 
+/// Same idea for a texture pack: while `available` says a pack is installed, the menu has an HD Textures
+/// row (saved as `hd_textures=0|1`, exported as PSPRECOMP_TEX_REPLACE at the next start).
+struct PspTexPackHook {
+    bool (*available)();
+};
+void psp_settings_set_texpack_hook(const PspTexPackHook& hook);
+
 /// First thing in main(): read settings.ini and export the saved values as
 /// the PSPRECOMP_* variables the window, renderer and game module read.
 void psp_settings_load_early();
