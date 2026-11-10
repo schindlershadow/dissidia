@@ -262,6 +262,7 @@ static std::string g_dump_dir;
 static std::atomic<bool> g_dump_armed{false};
 // Debug socket `FT <n>`: trace every draw of the next n presented frames ([FTRACE] lines, see ge_draw_prim_one).
 static std::atomic<int> g_ftrace_frames{0};
+static bool g_ftrace_drawn = false;   // a draw was traced since the last frame end
 void ge_draw_frame_trace(int n) { g_ftrace_frames.store(n); }
 bool ge_draw_frame_trace_on() { return g_ftrace_frames.load(std::memory_order_relaxed) > 0; }
 void ge_draw_dump_targets(const char* dir) {
@@ -2482,6 +2483,7 @@ static void ge_draw_prim_one(
 
     if (g_ftrace_frames.load(std::memory_order_relaxed) > 0 && !state.clear_mode) {
         const GeViewportDepth fvp = compute_state_viewport_depth(state);
+        g_ftrace_drawn = true;
         std::fprintf(stderr, "[FTRACE] #%d type=%d n=%d vtype=0x%06X thru=%d dest=0x%08X(w%d, curkey=%06X) tex=%d addr=0x%08X fbotex=%d(w480=%d) blend=%d mode=0x%X fixA=%06X vp=%d,%d,%d,%d wx=%.3f\n",
             prim_call_count, prim_type, count, state.vertex_type, ge_vtype_through(state.vertex_type) ? 1 : 0, state.framebuf_ptr,
             cur_w480(), g_current_target >= 0 ? g_targets[g_current_target].key : 0xFFFFFFu, state.texture_enable ? 1 : 0, state.tex_addr[0],
@@ -3496,7 +3498,7 @@ void ge_present_frame(
     ge_draw_flush();
     if (g_fx_on == 1 && g_fx_live.load(std::memory_order_relaxed)) psp_fx_end_frame();
     if (g_ab) ab_compare_all();
-    if (g_ftrace_frames.load() > 0) { std::fprintf(stderr, "[FTRACE] ---- end of frame ----\n"); g_ftrace_frames.fetch_sub(1); }
+    if (g_ftrace_frames.load() > 0 && g_ftrace_drawn) { std::fprintf(stderr, "[FTRACE] ---- end of frame ----\n"); g_ftrace_drawn = false; g_ftrace_frames.fetch_sub(1); }
     if (g_dump_armed.exchange(false)) {
         std::string dir;
         { std::lock_guard<std::mutex> lk(g_dump_mu); dir = g_dump_dir; }
