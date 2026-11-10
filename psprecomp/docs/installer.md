@@ -160,6 +160,11 @@ builds `libmain.so` (SHARED, `SDL_main` in `src/main.cpp`) when `ANDROID` is set
 stderr to logcat tag `psprecomp` and `last_run.log` there. Android 13 `adb push` into Android/data fails on nested folders: copy with
 `tar cf - disc0 | adb shell "tar xf - -C <dir>"`. Result on the Retroid Pocket 6: boots, loads the save, 30 GE frames/s, ATRAC audio decodes, the uber-shader
 compiles first time; picture/audio/input quality awaiting the user.
+Fixes after the first look (2026-11-10): (1) no TrueType font on Android -> every sceFont string blank: `psp_font_host_files` now uses `/system/fonts/DroidSans.ttf` (+ Bold);
+(2) Adreno does not honour buffer orphaning: wrapping the vertex ring with `glBufferData(NULL)` while earlier draws were still pending made them read the NEW
+storage (streaks, sprites from other screens, text swapped). On ES the ring now waits (`glFinish`) at a wrap and reuses the buffer, 512 K vertices per ring
+(found by bisecting: legacy renderer fine, `PSPRECOMP_GE_SYNC=1` fine, a ring that never wraps fine). `<work folder>/env.txt` (KEY=VALUE lines) sets `PSPRECOMP_*` flags on Android.
+`android/redeploy.sh <adb serial>` rebuilds the library + APK on the build machine and reinstalls.
 
 ## Verification of milestone 1
 

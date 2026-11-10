@@ -1255,7 +1255,11 @@ static Stream g_s2d, g_s3d;
 // Sized for several frames of high-poly characters; small enough for an APU
 // (Steam Deck) where it is carved from shared system memory. A single batch
 // bigger than the ring grows it (see flush_batch).
+#ifdef PSP_GLES
+static constexpr size_t RING_VERTS = 1u << 19;   // see the wrap comment in flush_batch: a wrap costs a glFinish here, so wrap rarely
+#else
 static constexpr size_t RING_VERTS = 131072;
+#endif
 
 static bool g_fast_enabled = true;    // PSPRECOMP_GE_FAST=0 / PSPRECOMP_GE_LEGACY=1 disables
 static bool g_cpu_xform = false;      // PSPRECOMP_GE_CPU3D=1: CPU transform, still batched
@@ -1503,11 +1507,21 @@ static void flush_batch() {
         if (n > s.cap) {
             // Single batch larger than the ring: re-specify (orphan) at the new size.
             s.cap = n;
+#ifdef PSP_GLES
+            glFinish();
+#endif
             glBufferData(GL_COPY_WRITE_BUFFER, (GLsizeiptr)(s.cap * s.stride), nullptr, GL_STREAM_DRAW);
             s.write = 0;
         } else if (s.write + n > s.cap) {
+#ifdef PSP_GLES
+            // Adreno does not honour orphaning: draws still pending when the buffer is re-specified read the NEW storage
+            // (menus drawn with other screens' vertices, 2026-11-10, Adreno 740). Wait for the GPU instead and reuse the
+            // buffer; once per ring, which is rare.
+            glFinish();
+#else
             // Ring wrapped: orphan so in-flight draws keep the old storage.
             glBufferData(GL_COPY_WRITE_BUFFER, (GLsizeiptr)(s.cap * s.stride), nullptr, GL_STREAM_DRAW);
+#endif
             s.write = 0;
         }
         bool done = false;

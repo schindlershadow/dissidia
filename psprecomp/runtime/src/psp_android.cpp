@@ -57,6 +57,19 @@ void psp_android_init() {
         pthread_detach(t);
     }
     if (chdir(wd.c_str()) != 0) std::fprintf(stderr, "[ANDROID] cannot enter %s (copy the game's work folder there)\n", wd.c_str());
+    // <workdir>/env.txt: one KEY=VALUE per line (# comments) becomes an environment variable: the Android way to set PSPRECOMP_* flags.
+    if (FILE* ef = std::fopen((wd + "/env.txt").c_str(), "r")) {
+        char l[512];
+        while (std::fgets(l, sizeof l, ef)) {
+            std::string t(l);
+            while (!t.empty() && (t.back() == '\n' || t.back() == '\r' || t.back() == ' ')) t.pop_back();
+            size_t eq = t.find('=');
+            if (t.empty() || t[0] == '#' || eq == std::string::npos) continue;
+            setenv(t.substr(0, eq).c_str(), t.substr(eq + 1).c_str(), 1);
+            std::fprintf(stderr, "[ANDROID] env %s\n", t.c_str());
+        }
+        std::fclose(ef);
+    }
     setenv("PSPRECOMP_DISC0", (wd + "/disc0").c_str(), 0);
     setenv("PSPRECOMP_MS0", (wd + "/ms0").c_str(), 0);
     setenv("PSPRECOMP_FULLSCREEN", "1", 0);

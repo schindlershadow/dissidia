@@ -44,6 +44,14 @@ bool psp_font_host_files(std::string* regular, std::string* bold) {
             if (exists(p)) { reg = p; break; }
         }
     }
+#ifdef __ANDROID__
+    // Android: the system's Droid Sans (present on every device back to Android 4; Roboto is a variable font there).
+    if (reg.empty() && exists("/system/fonts/DroidSans.ttf")) {
+        if (regular) *regular = "/system/fonts/DroidSans.ttf";
+        if (bold) *bold = exists("/system/fonts/DroidSans-Bold.ttf") ? "/system/fonts/DroidSans-Bold.ttf" : "";
+        return true;
+    }
+#endif
 #ifdef _WIN32
     // Windows has no DejaVu: use the system's Arial (a release can also ship DejaVuSans.ttf and point PSPRECOMP_FONT at it).
     if (reg.empty() && exists("C:/Windows/Fonts/arial.ttf")) {
