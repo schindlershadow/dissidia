@@ -62,11 +62,13 @@ constexpr uint32_t FRAME_STEP = 0x089D5EACu;    // EBOOT: global frame step (flo
 constexpr uint32_t PAD_SET = 0x08871BD0u;       // EBOOT: pad button state + auto-repeat
 constexpr uint32_t PAD_MGR_PTR = 0x089D6008u;   // EBOOT: pad manager pointer (+0x25C delay, +0x260 interval)
 constexpr uint32_t ACTOR_DT = 0x08838300u;      // EBOOT: an actor's time step
+constexpr uint32_t SLOWMO_FRAME = 0x08864DD8u;  // EBOOT: per-frame update of the slow-motion object, writes the global step
+constexpr uint32_t SLOWMO_PTR = 0x089D5EA8u;    // EBOOT: pointer to that object (+0 step value, +4 time left, +8 flags)
 constexpr uint32_t OWN_MASK0 = 0x089C7FD8u, OWN_MASK1 = 0x089C7FDCu;
 constexpr uint32_t CAM_DT = 0x08B3B4FCu;        // battle overlay: a camera's time step
 
 uint8_t* g_ram = nullptr;
-FuncPtr g_orig_frame_end = nullptr, g_orig_pad = nullptr, g_orig_actor_dt = nullptr, g_orig_cam_dt = nullptr;
+FuncPtr g_orig_slowmo = nullptr, g_orig_frame_end = nullptr, g_orig_pad = nullptr, g_orig_actor_dt = nullptr, g_orig_cam_dt = nullptr;
 std::atomic<int> g_target{30};     // requested rate (settings / env)
 int g_interval = 2;                // interval written on the last frame end (2 = 30 Hz, 1 = 60 Hz and above)
 int g_rate = 30;                   // logic rate in effect (30, 60, 90, ... one frame per vblank above 30)
@@ -192,6 +194,22 @@ void frame_end_hook(uint8_t* rdram, recomp_context* ctx) {
             fx_log_window();
         }
     }
+}
+
+// Slow motion (hit stops, assist and summon cut-ins, EX bursts). While it is on, the global step is not the frame's
+// dt but the slow-motion object's own value (+0: 0.4, 0.15 ...), in the PSP's units where a normal 30 Hz frame is
+// 2.0; the same value is also what the time left (+4) drops by every frame. Left alone at 60 Hz and above the world
+// is twice as fast as meant (0.4 against a normal 1.0, not against 2.0) and the slow motion is over in half the time.
+// Worst for an assist: it runs on a clock of 5.0 (5 x 0.4 = 2.0, the normal PSP speed), so it ran at twice normal
+// speed while everything else crawled. The value is scaled by ticks / 2 for the update, then put back, so the
+// code that reads it elsewhere (the setters) sees what it stored.
+void slowmo_frame_hook(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t obj = r32(SLOWMO_PTR);
+    if (g_ticks == 2.0f || !ok(obj)) { g_orig_slowmo(rdram, ctx); return; }
+    const float was = rdf(obj);
+    wrf(obj, was * g_ticks * 0.5f);
+    g_orig_slowmo(rdram, ctx);
+    wrf(obj, was);
 }
 
 void pad_set_hook(uint8_t* rdram, recomp_context* ctx) {
@@ -432,6 +450,8 @@ void dissidia_framerate_install(uint8_t* rdram) {
     psp_dispatch_register(PAD_SET, pad_set_hook);
     psp_dispatch_register(ACTOR_DT, actor_dt_hook);
     psp_dispatch_register(CAM_DT, cam_dt_hook);
+    if ((g_orig_slowmo = psp_dispatch_probe_lookup(SLOWMO_FRAME))) psp_dispatch_register(SLOWMO_FRAME, slowmo_frame_hook);
+    else std::fprintf(stderr, "[FPS] slow-motion hook NOT installed (no function at %08X)\n", SLOWMO_FRAME);
     if (g_log && (g_orig_skel = psp_dispatch_probe_lookup(SKEL_BUILD))) psp_dispatch_register(SKEL_BUILD, skel_build_hook);
     fx_install();
     psp_settings_set_frame_rate_hook({k_rates, static_cast<int>(std::size(k_rates)), fps_get, fps_set});
