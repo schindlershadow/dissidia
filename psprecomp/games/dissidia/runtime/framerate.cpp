@@ -44,6 +44,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
@@ -77,6 +78,7 @@ float g_ticks = 2.0f;              // 1/60 s ticks one frame advances: 60 / g_ra
 int g_fx_period = 1;               // updates per effect-component step at 30 Hz pacing: g_rate / 30
 bool g_scope_all = false, g_log = false;
 int g_switch_logs = 0;
+int g_rm_log_left = 300;
 bool g_fighter_log = false;   // PSPRECOMP_FIGHTER_LOG (see fighter_log_frame)
 uint64_t g_tick = 1;               // frame ends seen (the effect system updates once per frame)
 // logic-rate log
@@ -216,26 +218,41 @@ void slowmo_frame_hook(uint8_t* rdram, recomp_context* ctx) {
     wrf(obj, was);
 }
 
-// Root motion across a loop. A looping motion (Kain's Sky Spear dive: 12 ticks of descent, then back to its first
-// pose) moves the fighter by the change of the root bone's pose each tick. On the tick the motion wraps, the pose
-// goes back to the start and the change is minus the whole loop's travel: every 12 ticks the fighter was thrown back
-// up by what he had just fallen (5.3 of 5.8), so the dive hardly moved. At 30 Hz the same tick never shows this
-// (the player's own wrap handling covers it), above 30 Hz it does. On a tick where the player's time went backwards
-// the accumulated change is dropped: that tick's movement is lost (about 1 tick in 12), the pose is still taken as
-// the new reference, so the next tick continues from the start of the loop. Player layout (FUN_08830444): +116
-// previous time, +120 time, +16..31 accumulated root motion (actor+0x140).
+// Root motion across a loop. A looping motion (Kain's Sky Spear dive, Sky Rave: a 12-tick loop of travel) moves the
+// fighter by the change of the root bone's pose each tick. On the last tick before the loop wraps (time 31 of a loop
+// that ends at 32, with the player's end at +112) the change is minus the whole loop's travel (5.3 against 0.48 on
+// every other tick): every 12 ticks the fighter was thrown back by what he had just covered, so the move hardly
+// moved. The player's own timing at 30 Hz steps by 2 and never lands on that tick; at 60 Hz and above it does. On that
+// tick a change far larger than the previous tick's is dropped (that tick's travel is lost, about 1 in 12; the pose is
+// still taken as the new reference, so the next tick continues normally). Player layout (FUN_08830444): +112 end of
+// the played range, +116 previous time, +120 time, +16..31 accumulated root motion (actor+0x140, cleared every tick).
 void root_motion_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t player = static_cast<uint32_t>(ctx->r[4]);
-    if (g_ticks == 2.0f || !ok(player)) { g_orig_rootmotion(rdram, ctx); return; }
-    const bool wrapped = rdf(player + 120u) < rdf(player + 116u) - 0.001f;
+    if (!ok(player)) { g_orig_rootmotion(rdram, ctx); return; }
+    static struct { uint32_t player; float mag; } last[8];
+    static int next = 0;
+    auto slot = [&]() -> float& {
+        for (auto& l : last) if (l.player == player) return l.mag;
+        last[next & 7] = {player, 0.f};
+        return last[next++ & 7].mag;
+    };
+    const float t = rdf(player + 120u), pt = rdf(player + 116u), end = rdf(player + 112u);
     uint8_t saved[16];
-    if (wrapped) std::memcpy(saved, g_ram + ((player + 16u) & 0x07FFFFFFu), 16);
+    std::memcpy(saved, g_ram + ((player + 16u) & 0x07FFFFFFu), 16);
     g_orig_rootmotion(rdram, ctx);
-    if (wrapped) {
-        std::memcpy(g_ram + ((player + 16u) & 0x07FFFFFFu), saved, 16);
-        static int logged = 0;
-        if (g_fighter_log && logged < 50) { logged++; std::fprintf(stderr, "[FPS] root motion dropped on a loop wrap (player %08X)\n", player); }
+    float d[3];
+    for (int i = 0; i < 3; i++) d[i] = rdf(player + 16u + 4u * i) - [&] { float f; std::memcpy(&f, saved + 4 * i, 4); return f; }();
+    const float mag = std::max(std::fabs(d[0]), std::max(std::fabs(d[1]), std::fabs(d[2])));
+    float& prev_mag = slot();
+    const bool last_before_wrap = g_ticks != 2.0f && t >= pt && t + g_ticks >= end - 0.001f && end > 0.f;
+    const bool spike = last_before_wrap && mag > 0.5f && mag > 3.f * std::max(prev_mag, 0.05f);
+    if (g_fighter_log && g_rm_log_left > 0 && (spike || mag > 2.f)) {
+        g_rm_log_left--;
+        std::fprintf(stderr, "[ROOTMOTION] player %08X tick=%llu time=%.3f prev=%.3f end=%.3f delta=(%.3f,%.3f,%.3f) last_mag=%.3f spike=%d\n", player,
+                     (unsigned long long)g_tick, t, pt, end, d[0], d[1], d[2], prev_mag, spike ? 1 : 0);
     }
+    if (spike) std::memcpy(g_ram + ((player + 16u) & 0x07FFFFFFu), saved, 16);   // keep what was accumulated before
+    else prev_mag = mag;
 }
 
 void pad_set_hook(uint8_t* rdram, recomp_context* ctx) {
