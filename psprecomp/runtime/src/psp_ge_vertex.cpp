@@ -553,9 +553,9 @@ static bool ge_mvp_collapses(
 // Widescreen state for the draw being transformed (see psp_ge_vertex.h).
 static float g_wide_x = 1.0f;
 static bool g_wide_cover = false, g_wide_extend = false;
-static float g_fb_u_scale = 1.0f, g_fb_u_off = 0.0f;
+static float g_fb_u_scale = 1.0f, g_fb_u_off = 0.0f, g_fb_u_remap = 1.0f;   // remap: the shader's declared-width / 480 factor
 void ge_set_wide(float wx, bool cover, bool extend_fb) { g_wide_x = wx; g_wide_cover = cover; g_wide_extend = extend_fb; }
-void ge_set_fb_u(float u_scale, float u_off) { g_fb_u_scale = u_scale; g_fb_u_off = u_off; }
+void ge_set_fb_u(float u_scale, float u_off, float shader_remap) { g_fb_u_scale = u_scale; g_fb_u_off = u_off; g_fb_u_remap = shader_remap; }
 
 // Game-module degenerate-matrix fallback slot (#47 P5 seam).
 static GeDegenerateFallbackFn g_degenerate_fallback = nullptr;
@@ -684,7 +684,13 @@ void ge_transform_vertices(
                 minx = std::min(minx, v.pos[0]); maxx = std::max(maxx, v.pos[0]);
                 miny = std::min(miny, v.pos[1]); maxy = std::max(maxy, v.pos[1]);
             }
-            if (minx <= 0.5f && maxx >= 479.5f && miny <= 0.5f && maxy >= 271.5f) {
+            bool src_fills = true;   // a render-target source that only fills part of its buffer cannot be stretched past its edge
+            if (g_wide_extend && state.texture_enable && texw > 0.0f) {
+                float u0 = 1e9f, u1 = -1e9f;
+                for (const auto& v : verts) if (v.has_uv) { const float u = (v.uv[0] * state.tex_scale_u + state.tex_offset_u) / texw * g_fb_u_remap; u0 = std::min(u0, u); u1 = std::max(u1, u); }
+                src_fills = !(u1 > u0) || (u0 <= 0.02f && u1 >= 0.98f);
+            }
+            if (src_fills && minx <= 0.5f && maxx >= 479.5f && miny <= 0.5f && maxy >= 271.5f) {
                 static const bool no_extend = [] { const char* v = std::getenv("PSPRECOMP_WIDE_EXTEND"); return v && v[0] == '0'; }();
                 extend_u = g_wide_extend && !no_extend;   // PSPRECOMP_WIDE_EXTEND=0: diagnostic, draw these centred as before f36f89c
                 if (!(g_wide_extend && no_extend)) wx = 1.0f;
@@ -743,7 +749,9 @@ void ge_transform_vertices(
         if (extend_u && wide_wx > 0.0f) {   // scale u about the draw's centre by 1/wx (clamped texture edge fills the sides)
             float umin = 1e9f, umax = -1e9f;
             for (const auto& v : verts) if (v.has_uv) { umin = std::min(umin, v.uv[0]); umax = std::max(umax, v.uv[0]); }
-            if (umax > umin) {
+            // only when the source fills its buffer (u 0..1 after the shader remap): a partial source (the glow chain's 120 x 68 thumbnail) would
+            // be read past its edge, so such a draw stays centred (see below)
+            if (umax > umin && umin * g_fb_u_remap <= 0.02f && umax * g_fb_u_remap >= 0.98f) {
                 const float c = 0.5f * (umin + umax);
                 for (auto& v : verts) if (v.has_uv) v.uv[0] = c + (v.uv[0] - c) / wide_wx;
             }

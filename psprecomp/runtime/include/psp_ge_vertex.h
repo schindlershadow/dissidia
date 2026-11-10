@@ -55,7 +55,7 @@ void ge_transform_vertices(
 /// middle and the side parts show the texture's edge (clamped), with no hard edge where the middle ends. `u_scale`/`u_off` remap the normalised u of a texture that is a wide render target, so the
 /// PSP's 0..480 stays on the middle of it: u' = u * u_scale + u_off (1, 0 = off).
 void ge_set_wide(float wx, bool cover, bool extend_fb);
-void ge_set_fb_u(float u_scale, float u_off);
+void ge_set_fb_u(float u_scale, float u_off, float shader_remap);
 
 using GeDegenerateFallbackFn = void (*)(const float wpos[3], float out[3]);
 void ge_vertex_set_degenerate_fallback(GeDegenerateFallbackFn fn);

@@ -2465,8 +2465,11 @@ static void ge_draw_prim_one(
     }
     // Widescreen: tell the vertex transform how this draw is placed (psp_ge_vertex.h)
     ge_set_wide(draw_wide_x(state), fbo_tex == 0, fbo_tex != 0);
-    if (fbo_tex && g_fbtex_w480 > 480) ge_set_fb_u(480.0f / float(g_fbtex_w480), 0.5f * float(g_fbtex_w480 - 480) / float(g_fbtex_w480));
-    else ge_set_fb_u(1.0f, 0.0f);
+    if (fbo_tex && g_fbtex_w480 > 480) {   // the shader multiplies u by declared_width / 480 afterwards (ge_shader_set_tex_remap): pre-divide the offset
+        const float dw = float(1 << (state.tex_size[0] & 0xFF));
+        ge_set_fb_u(480.0f / float(g_fbtex_w480), 0.5f * float(g_fbtex_w480 - 480) / float(g_fbtex_w480) * (480.0f / dw), dw / 480.0f);
+    }
+    else ge_set_fb_u(1.0f, 0.0f, 1.0f);
     // PSPRECOMP_DRAW_TRACE=1: GE state behind each non-clear PRIM (first 64).
     // PSPRECOMP_DRAW_TRACE_FROM=<draw#>: only trace draws numbered >= N (to
     // reach the battle), PSPRECOMP_DRAW_TRACE_MAX=<n>: how many to trace.
