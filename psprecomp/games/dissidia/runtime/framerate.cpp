@@ -209,12 +209,32 @@ void pad_set_hook(uint8_t* rdram, recomp_context* ctx) {
     g_orig_pad(rdram, ctx);
 }
 
+// PSPRECOMP_ASSIST_LOG=1: log each actor's time step whenever it changes (debug aid for actors that run at the
+// wrong speed): address, kind (actor+0x542, roster.cpp ACT_KIND: 0 fighter, 1 assist, 3 summoned), own-clock flag, both clocks, the step the game
+// gets and the global step. Capped, so a long battle does not flood the log.
+bool g_actor_log = false;
+int g_actor_log_left = 400;
+struct ActorSeen { uint32_t actor; float res; int own; };
+ActorSeen g_actor_seen[24];
+
 void actor_dt_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t actor = static_cast<uint32_t>(ctx->r[4]);
     g_orig_actor_dt(rdram, ctx);
-    if (g_ticks != 2.0f && ok(actor)) {
-        const bool own = ((r32(actor + 0x388u) & r32(OWN_MASK0)) | (r32(actor + 0x38Cu) & r32(OWN_MASK1))) != 0;
-        if (own) ctx->f[0] *= g_ticks * 0.5f;   // own clock: a fixed 2.0 per frame
+    bool own = false;
+    if (ok(actor)) own = ((r32(actor + 0x388u) & r32(OWN_MASK0)) | (r32(actor + 0x38Cu) & r32(OWN_MASK1))) != 0;
+    const float before = ctx->f[0];
+    if (g_ticks != 2.0f && ok(actor) && own) ctx->f[0] *= g_ticks * 0.5f;   // own clock: a fixed 2.0 per frame
+    if (g_actor_log && g_actor_log_left > 0 && ok(actor)) {
+        ActorSeen* slot = nullptr;
+        for (auto& a : g_actor_seen) if (a.actor == actor) { slot = &a; break; }
+        if (!slot) for (auto& a : g_actor_seen) if (!a.actor) { slot = &a; a.res = -1.f; a.own = -1; a.actor = actor; break; }
+        if (slot && (slot->res != ctx->f[0] || slot->own != (own ? 1 : 0))) {
+            slot->res = ctx->f[0]; slot->own = own ? 1 : 0;
+            g_actor_log_left--;
+            std::fprintf(stderr, "[ACTOR] %08X kind=%u master=%08X own=%d clock=%.3f ownclock=%.3f game=%.3f ours=%.3f step=%.3f ticks=%.3f overlay=%u\n",
+                         actor, (unsigned)(g_ram[(actor + 0x542u) & 0x07FFFFFFu]), r32(actor + 0x1108u), own ? 1 : 0, rdf(actor + 0x3C8u),
+                         rdf(actor + 0x3CCu), before, ctx->f[0], rdf(FRAME_STEP), g_ticks, overlay_id());
+        }
     }
 }
 
@@ -398,6 +418,7 @@ void dissidia_framerate_install(uint8_t* rdram) {
     if (e && std::atoi(e) >= 30) g_target = (std::min(std::atoi(e), 240) + 15) / 30 * 30;
     g_scope_all = (e = std::getenv("PSPRECOMP_FPS_SCOPE")) && std::strcmp(e, "all") == 0;
     g_log = (e = std::getenv("PSPRECOMP_FPS_LOG")) && e[0] && e[0] != '0';
+    g_actor_log = (e = std::getenv("PSPRECOMP_ASSIST_LOG")) && e[0] && e[0] != '0';
     g_orig_frame_end = psp_dispatch_probe_lookup(FRAME_END);
     g_orig_pad = psp_dispatch_probe_lookup(PAD_SET);
     g_orig_actor_dt = psp_dispatch_probe_lookup(ACTOR_DT);
