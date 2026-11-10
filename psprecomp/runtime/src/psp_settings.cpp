@@ -74,6 +74,9 @@ bool g_confirm_cross = true;
 PspFrameRateHook g_fps{nullptr, 0, nullptr, nullptr};
 PspVoiceHook g_voice{nullptr};
 
+bool voice_jp_choice();
+bool voice_at_start();
+
 enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_VOICE, ROW_QUIT,
            ROW_NET_MODE, ROW_NET_SERVER, ROW_NET_ROOM, ROW_NET_PEERS, ROW_NET_STATUS,   // Network page
            ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS };   // the last six: Debug page

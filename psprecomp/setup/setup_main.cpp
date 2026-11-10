@@ -834,7 +834,24 @@ int run_headless(const setup::Layout& l, const std::string& iso, const std::stri
 
 }  // namespace
 
+#ifdef _WIN32
+#include <windows.h>
+#include <cstdio>
+// The wizard is a GUI-subsystem program (no console window when started from Explorer). When started from a terminal its
+// --headless / --play output still goes there: attach to the parent console.
+static void attach_parent_console() {
+    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+        FILE* f;
+        freopen_s(&f, "CONOUT$", "w", stdout);
+        freopen_s(&f, "CONOUT$", "w", stderr);
+    }
+}
+#else
+static void attach_parent_console() {}
+#endif
+
 int main(int argc, char** argv) {
+    attach_parent_console();
     std::string root, iso, dir, play_dir, shots;
     bool headless = false, play = false, launch = false;
     for (int i = 1; i < argc; i++) {
@@ -996,3 +1013,8 @@ int main(int argc, char** argv) {
     SDL_Quit();
     return 0;
 }
+
+#ifdef _WIN32
+// GUI subsystem entry (SDL_MAIN_HANDLED keeps our own main()).
+int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) { return main(__argc, __argv); }
+#endif

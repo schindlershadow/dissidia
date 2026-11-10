@@ -152,3 +152,18 @@ Not yet heard in game (28 Oct).
 Slots 0-1 are the most frequently played short grunts (hit/damage); 2-9 are reaction clips; 10-37 are voiced lines, often longer
 and at 14 kHz. VOLD kind-2 indices 1..32 correspond to in-bank slots, and cue `18000NN` corresponds to the streamed `<abbr>_battle_NN`.
 No per-action attribution was made.
+
+
+## Japanese voices (undub)
+
+`tools/jp_audio.py --iso <undub.iso|cso> --work <install folder>` takes the voices of an undub (or Japanese) disc image and makes them an
+option of the installed game (the installer wizard runs it when "Japanese voices (undub)" is switched on). It compares the undub disc's
+`DATA/PACKAGE.BIN` with the installed one and extracts only audio that differs: the `voice/en/*` entries into `<work>/voice_jp/` (same
+asset paths: the game asks for the English path and the loose-file layer serves the Japanese file), audio entries whose path is not in
+`package_paths.txt` (RIFF / SSCF data) into `<work>/voice_jp/by_crc/<crc>.bin`, and the `DATA/MOVIE/*.PMF` that differ into
+`<work>/movie_jp/`. Menus, text and other languages stay as they are. Checked on the EU image with the USA undub: 5,663 voice files
+(177 MB), 316 by-CRC audio entries and 34 movies (488 MB); a second run extracts nothing new.
+
+In the game: Settings > System > Voice (appears once `voice_jp/` exists; `voice=jp|en` in settings.ini, `PSPRECOMP_VOICE=jp|en`), applied at the
+next start. The runtime side is `games/dissidia/runtime/hooks_io.cpp` (`extra_dirs` voice pack in `PackageMods::build`, `remap_disc_path`
+for movies). Built and linked 2026-11-10; **not yet heard in game**.
