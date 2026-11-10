@@ -1,6 +1,6 @@
 # Installer, releases and updates (design)
 
-Status: **milestone 1 done** (runtime split into a prebuilt core + a link project). The rest is planned below.
+Status: **milestones 1 and 2 done and verified on a machine with no Rust installed** (runtime split into a prebuilt core + a link project; `psp_build.py` runs the whole build from the SDK). The rest is planned below.
 
 ## The constraint
 
@@ -27,10 +27,10 @@ of the fork.
    the dev executable from it; `cmake --install <build> --component sdk` writes the SDK (`lib/`, `include/`, `src/main.cpp`,
    `CMakeLists.txt` from `runtime/sdk/`). `runtime/sdk/CMakeLists.txt` builds a game from a recompiled output directory and the
    SDK. Verified by building a game from the installed SDK (see "Verification").
-2. **Build step as one command**: a script/tool `psp-build` that runs extract -> analysis -> recompile -> compile -> link using the SDK,
+2. **Build step as one command** (done): `games/dissidia/tools/psp_build.py <workdir> --sdk <sdk> --psprecomp <bin> [--toolchain <dir>] --progress`. Verified 2026-11-10 on the desktop (no Rust, no repo build): hydrates the shipped analysis against the player's files, recompiles, builds the overlays, configures from the SDK and compiles; the result is the same size as the dev build and boots. Original plan: a script/tool `psp-build` that runs extract -> analysis -> recompile -> compile -> link using the SDK,
    resumable (the existing `pipeline.sh` stamps), progress as machine-readable lines (`STEP n/m`, `PROGRESS percent`) for the wizard.
    Replace the bash with Python (or C++) so Windows needs no bash.
-3. **Toolchain bundle**: pinned clang + lld + cmake + ninja (zig cc is the candidate: one small archive per platform, cross-targets,
+3. **Toolchain bundle** (next). ABI warning found while planning: the prebuilt core and the player's generated code must come from the same compiler and C++ library (gcc/libstdc++ and clang/libc++ do not link together), so the release's core is built by CI with the very toolchain it ships. Plan: pinned clang + lld + cmake + ninja (zig cc is the candidate: one small archive per platform, cross-targets,
    bundled libc++/mingw headers) and SDL2 / FreeType / libavcodec (static or shared, with `.pc` files for the SDK's pkg-config
    lookups). A script builds the bundle per platform and checks its hash.
 4. **Wizard** (`psprecomp_setup`, SDL + the SdTheme screens): language-free, controller friendly. Pages: welcome, pick game file (ISO /
