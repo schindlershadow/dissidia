@@ -1,6 +1,6 @@
 # Installer, releases and updates (design)
 
-Status: **milestones 1 and 2 done and verified on a machine with no Rust installed** (runtime split into a prebuilt core + a link project; `psp_build.py` runs the whole build from the SDK). **Milestone 3 (toolchain bundle): Linux built and verified with the system compiler hidden; Windows cross-build not yet run.** The rest is planned below.
+Status: **milestones 1 and 2 done and verified on a machine with no Rust installed** (runtime split into a prebuilt core + a link project; `psp_build.py` runs the whole build from the SDK). **Milestone 3 (toolchain bundle): Linux built and verified with the system compiler hidden (user-confirmed in game); the Windows bundle builds from a Linux host, but the runtime core is not ported to Windows yet (see below).** The rest is planned below.
 
 ## The constraint
 
@@ -49,8 +49,7 @@ of the fork.
      `<work>/.zig-cache`, links with `-s`, and wipes a build dir configured with another compiler.
    - Known limits: ffmpeg is built with `--disable-x86asm` (no nasm in the bundle; fine for 480x272 H.264, revisit if movie
      playback is slow); `sysctl` is patched out of ffmpeg's config.h (zig's glibc 2.28 stubs export it but the headers do not);
-     the bundle is ~630 MB unpacked (cmake docs and zig extras can be trimmed); Windows (`x86_64-windows-gnu`, static SDL2) is
-     written but not yet built or run; macOS is not covered.
+     the bundle is ~630 MB unpacked (cmake docs and zig extras can be trimmed); macOS is not covered.
    - Open for milestone 5: the core configure needs the four small generated headers of an output dir (`recomp_module.h`,
      `recomp_game_config.h`, `recomp_fingerprint.h`, `recomp.h`; binary facts and addresses, no game code) and CI has no game; the
      release workflow has to supply them (a committed header-only stub, or hydrate the shipped analysis).
@@ -81,3 +80,19 @@ ninja/pkg-config, only the bundle: the core built (`psprecomp_core`), `cmake --i
 `psp_build.py work --sdk sdk --toolchain bundle --psprecomp bin` ran all five steps in a fresh work folder (82 s on 12 cores
 including libc++, 50 MB stripped binary needing only libc/libm/libpthread/libdl). The earlier game build with zig and the system
 libraries was played by the user (boots, loads the save).
+
+## Windows status (2026-11-10)
+
+`build_bundle.py windows-x86_64` (run on a Linux host) produces a bundle of Windows executables (zig, cmake, ninja, the `zig-*.exe`
+launchers) and static mingw `libSDL2.a`, `libfreetype.a`, `libz.a`, `libavcodec.a`/`libavutil.a`; two Windows-only workarounds are in the
+script (zlib static target only; ffmpeg configure's `--pic-executable` link flag). With the bundle's compiler (run through the host
+launchers) the generated game code compiles for `x86_64-windows-gnu` (eboot library, 0 errors, 1 min). What is **not** done:
+
+- Nothing Windows was run (the `.exe` tools and a Windows game binary are untested; wine is installed on the desktop and could run
+  the tool executables, a real Windows machine is needed for the game).
+- **The runtime core does not build for Windows**: it uses POSIX APIs (`sys/mman.h`, `sys/socket.h`/`arpa/inet.h` in the debug socket
+  and ad-hoc code, `sigaction`, `statvfs`, `sys/syscall.h` in `psp_prof.h`, `setenv`/`unsetenv`, `pread`, `localtime_r`, `st_mtim`,
+  two-argument `mkdir`) in about 15 files (`psp_memory.cpp`, `psp_event_loop.cpp`, `psp_debug_socket.cpp`, `psp_settings.cpp`,
+  `psp_fx_shader.cpp`, `psp_tex_pack.cpp`, `hle/psp_hle_io.cpp`, `hle/psp_hle_adhoc.cpp`, `hle/psp_hle_utility.cpp`,
+  `hle/psp_savedata_dialog.cpp`, `vfpu_ppsspp/...`, `games/dissidia/runtime/{hooks_io,package_mods,roster}.cpp`). Porting those is a
+  separate task (task 19); the bundle does not change with it.

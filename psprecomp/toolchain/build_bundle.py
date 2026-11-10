@@ -262,7 +262,21 @@ def main():
 
     # ---------------------------------------------------------------- 3. dependencies, all built with the bundled zig
     log("building zlib")
-    cmake_build("zlib", src("zlib"), ["-DZLIB_BUILD_EXAMPLES=OFF", "-DBUILD_SHARED_LIBS=OFF"])
+    # zlib 1.3.1's CMake always builds the shared library too (on Windows that needs a resource compiler); only the static one
+    # is wanted, so build that target and install its three files by hand.
+    zsrc = src("zlib")
+    zbd = os.path.join(work, "build-zlib")
+    run(["cmake", "-S", zsrc, "-B", zbd, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_TOOLCHAIN_FILE=" + tcf,
+         "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"], env=env)
+    run(["cmake", "--build", zbd, "-j", j, "--target", "zlibstatic"], env=env)
+    os.makedirs(os.path.join(deps, "lib"), exist_ok=True)
+    os.makedirs(os.path.join(deps, "include"), exist_ok=True)
+    built = [f for f in os.listdir(zbd) if f in ("libz.a", "libzlibstatic.a", "libzlib.a")]
+    if not built:
+        die("zlib static library not found in " + zbd)
+    shutil.copy2(os.path.join(zbd, built[0]), os.path.join(deps, "lib", "libz.a"))
+    shutil.copy2(os.path.join(zsrc, "zlib.h"), os.path.join(deps, "include", "zlib.h"))
+    shutil.copy2(os.path.join(zbd, "zconf.h"), os.path.join(deps, "include", "zconf.h"))
     log("building FreeType")
     cmake_build("freetype", src("freetype"), [
         "-DBUILD_SHARED_LIBS=OFF", "-DFT_DISABLE_ZLIB=ON", "-DFT_DISABLE_BZIP2=ON", "-DFT_DISABLE_PNG=ON",
@@ -276,6 +290,14 @@ def main():
     if not a.skip_ffmpeg:
         log("building FFmpeg (libavcodec: ATRAC3/ATRAC3+/H.264 decoders only)")
         fsrc = src("ffmpeg")
+        if plat.startswith("windows"):
+            # configure adds "-Wl,--pic-executable,-e,mainCRTStartup" for its own executables (none are built here); zig's lld
+            # front end rejects --pic-executable, which makes every link test in configure fail.
+            cfgp = os.path.join(fsrc, "configure")
+            txt = open(cfgp).read()
+            if "-Wl,--pic-executable," not in txt:
+                die("ffmpeg configure no longer has the --pic-executable flag: drop this workaround")
+            open(cfgp, "w").write(txt.replace("-Wl,--pic-executable,", "-Wl,"))
         fbd = os.path.join(work, "build-ffmpeg")
         os.makedirs(fbd)
         thr = "--enable-w32threads" if plat.startswith("windows") else "--enable-pthreads"
@@ -286,7 +308,7 @@ def main():
              "--disable-network", "--disable-avformat", "--disable-avdevice", "--disable-avfilter",
              "--disable-swscale", "--disable-swresample", "--disable-x86asm",
              "--enable-avcodec", "--enable-avutil", "--enable-decoder=atrac3,atrac3p,h264", thr,
-             "--enable-static", "--disable-shared", "--enable-pic",
+             "--enable-static", "--disable-shared"] + ([] if plat.startswith("windows") else ["--enable-pic"]) + [   # mingw: no PIC (configure then passes lld an option zig rejects)
              "--extra-cflags=-fno-sanitize=undefined"], env=env, cwd=fbd)
         # configure finds sysctl() in zig's glibc stubs (glibc 2.28 still exported it) but the headers no longer have
         # <sys/sysctl.h>; nothing in a decoder-only build needs it.
