@@ -106,6 +106,11 @@ std::atomic<uint32_t> g_host_buttons{0};
 std::atomic<uint32_t> g_host_analog{0x8080};
 std::atomic<uint32_t> g_host_ranalog{0x8080};
 std::atomic<int64_t> g_rstick_consumed_until_ms{0};
+// Camera re-center request: R3 (right stick click) on a pad, or the C key. Taken once by the game module that owns
+// a free camera (psp_ctrl_take_camera_recenter). L3 together with R3 is the settings menu hotkey, so a press
+// while L3 is down, or while the menu is open, is not a request.
+static std::atomic<bool> g_recenter_request{false};
+bool psp_ctrl_take_camera_recenter() { return g_recenter_request.exchange(false); }
 
 namespace {
 constexpr uint32_t P_SELECT = 0x0001, P_START = 0x0008, P_UP = 0x0010,
@@ -397,6 +402,8 @@ static void handle_sdl_event(const SDL_Event& ev) {
             if (down) g_kb_buttons |= bit; else g_kb_buttons &= ~bit;
         }
         if (bit || arrow) publish_input();
+        if (down && k == SDLK_c && !psp_settings_menu_open() && !(ev.key.keysym.mod & (KMOD_ALT | KMOD_GUI | KMOD_CTRL)))
+            g_recenter_request.store(true);
         return;
     }
     case SDL_CONTROLLERDEVICEADDED:
@@ -408,6 +415,13 @@ static void handle_sdl_event(const SDL_Event& ev) {
         return;
     case SDL_CONTROLLERBUTTONDOWN:
     case SDL_CONTROLLERBUTTONUP: {
+        {   // R3 / L3: camera re-center request (see g_recenter_request)
+            static bool l3 = false;
+            if (ev.cbutton.button == SDL_CONTROLLER_BUTTON_LEFTSTICK) l3 = ev.type == SDL_CONTROLLERBUTTONDOWN;
+            if (ev.cbutton.button == SDL_CONTROLLER_BUTTON_RIGHTSTICK && ev.type == SDL_CONTROLLERBUTTONDOWN && !l3 &&
+                !psp_settings_menu_open() && (env_flag("PSPRECOMP_PAD_BACKGROUND") || SDL_GetKeyboardFocus() != nullptr))
+                g_recenter_request.store(true);
+        }
         uint32_t bit = pad_button_to_psp(ev.cbutton.button);
         static const bool pad_log = env_flag("PSPRECOMP_PAD_LOG");
         if (pad_log)

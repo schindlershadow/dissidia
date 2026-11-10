@@ -38,6 +38,8 @@ extern std::atomic<int64_t>  g_injected_ranalog_deadline_ms;
 /// Right stick as a normalised vector: x right+, y UP+ (both -1..1, radial dead
 /// zone removed and rescaled). Returns true when outside the dead zone.
 bool psp_ctrl_right_stick(float* x, float* y);
+/// True once per camera re-center request (R3 on a pad, or the C key); false otherwise.
+bool psp_ctrl_take_camera_recenter();
 /// A game module pushes this deadline forward while it consumes the right stick itself
 /// (analogue camera); until it expires the sceCtrl HLE does not turn the stick into D-pad bits.
 extern std::atomic<int64_t> g_rstick_consumed_until_ms;   // steady_clock ms

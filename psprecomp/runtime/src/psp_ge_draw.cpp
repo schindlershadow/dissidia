@@ -43,12 +43,28 @@ struct GeTarget {
     GLuint depth_rb = 0;
     GLuint ab_fbo = 0, ab_tex = 0, ab_depth = 0;   // PSPRECOMP_GE_AB twin (legacy-path shadow)
     uint64_t last_use = 0;     // LRU stamp (monotonic counter)
+    int rs = 1;                // this target is 480*rs x 272*rs: g_rs for the buffers shown on screen, 1 for the others
 };
 
 // Render scale (PSPRECOMP_RENDER_SCALE, 1..8 or auto): targets are 480*g_rs x 272*g_rs.
 static int g_rs = 1;
 static GeTarget g_targets[GE_MAX_TARGETS];
+// Only the buffers that reach the screen are rendered at the render scale. Every other target the game draws into
+// (the chain of smaller buffers it blurs for glow / bloom) stays at the PSP's own resolution, as in PPSSPP: games
+// assume 480x272 and run a fixed number of blur steps, which at 4x are too few for a smooth blur and leave a hard,
+// ghosted copy around bright objects and characters. Only the first copy from the big picture into the first small
+// buffer aliases; the later steps blur normally. PSPRECOMP_RENDER_SCALE_ALL=1 scales every target again.
+static uint32_t g_main_keys[8];
+static int g_main_n = 0;
+static const bool g_scale_all = [] { const char* e = std::getenv("PSPRECOMP_RENDER_SCALE_ALL"); return e && e[0] && e[0] != '0'; }();
+static bool is_main_key(uint32_t key) {
+    if (g_scale_all) return true;
+    for (int i = 0; i < g_main_n; i++) if (g_main_keys[i] == key) return true;
+    return false;
+}
+
 static int g_current_target = -1;   // slot the GE is rendering into
+static int cur_rs();                // scale of that target (g_rs when none)
 static int g_front_target = -1;     // slot last presented / most recent render
 static uint64_t g_target_clock = 0; // monotonic LRU counter
 
@@ -66,8 +82,12 @@ static inline uint32_t ge_fb_key(uint32_t addr) {
 // texture (and its pixel size). Returns 0 when the texture should come from
 // memory (not VRAM, no such target, or the target is the one being rendered
 // into -- a feedback loop, logged once).
+static int cur_rs() { return (g_current_target >= 0 && g_targets[g_current_target].fbo) ? g_targets[g_current_target].rs : g_rs; }
 static void flush_batch();
-static GLuint g_fb_scratch_tex = 0, g_fb_scratch_fbo = 0;
+// One scratch copy per target scale (the blur chain at 1x and the main picture at g_rs alternate every frame).
+static GLuint g_fb_scratch_tex = 0, g_fb_scratch_fbo = 0;       // the one for the current target's scale
+static GLuint g_scratch_tex_by_rs[9] = {}, g_scratch_fbo_by_rs[9] = {};
+static int g_scratch_rs = 0;
 
 // A pass that reads the framebuffer it draws into (Dissidia's glow: the picture shifted a pixel or two and blended
 // back over itself) relies on the PSP's bilinear filter averaging neighbouring PSP pixels. At a render scale above 1
@@ -84,8 +104,8 @@ void ge_draw_set_fb_snapshot(bool on) { g_fb_snapshot_on.store(on); std::fprintf
 bool ge_draw_fb_snapshot() { return g_fb_snapshot_on.load(); }
 /// LOD bias for sampling `tex`: log2(render scale) for the feedback snapshot while the prefilter is on, else 0.
 float ge_draw_prefilter_bias(GLuint tex) {
-    if (!tex || tex != g_fb_scratch_tex || g_rs <= 1 || !g_fb_prefilter.load()) return 0.f;
-    return std::log2(static_cast<float>(g_rs));
+    if (!tex || tex != g_fb_scratch_tex || g_scratch_rs <= 1 || !g_fb_prefilter.load()) return 0.f;
+    return std::log2(static_cast<float>(g_scratch_rs));
 }
 
 // The GE reads a texture from the very buffer it is rendering into (in-place
@@ -98,7 +118,11 @@ float ge_draw_prefilter_bias(GLuint tex) {
 static GLuint feedback_snapshot(int* w, int* h) {
     if (!g_fb_snapshot_on.load()) return 0;
     flush_batch();
-    const int W = 480 * g_rs, H = 272 * g_rs;
+    const int rs = cur_rs();
+    const int W = 480 * rs, H = 272 * rs;
+    g_fb_scratch_tex = g_scratch_tex_by_rs[rs];
+    g_fb_scratch_fbo = g_scratch_fbo_by_rs[rs];
+    g_scratch_rs = rs;
     if (!g_fb_scratch_tex) {
         glGenTextures(1, &g_fb_scratch_tex);
         glBindTexture(GL_TEXTURE_2D, g_fb_scratch_tex);
@@ -108,6 +132,8 @@ static GLuint feedback_snapshot(int* w, int* h) {
         glGenFramebuffers(1, &g_fb_scratch_fbo);
         glBindFramebuffer(GL_FRAMEBUFFER, g_fb_scratch_fbo);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_fb_scratch_tex, 0);
+        g_scratch_tex_by_rs[rs] = g_fb_scratch_tex;
+        g_scratch_fbo_by_rs[rs] = g_fb_scratch_fbo;
         ge_texture_invalidate_bind_cache();
     }
     GLint cur = 0;
@@ -119,7 +145,7 @@ static GLuint feedback_snapshot(int* w, int* h) {
     glBlitFramebuffer(0, 0, W, H, 0, 0, W, H, GL_COLOR_BUFFER_BIT, GL_NEAREST);
     if (sc) glEnable(GL_SCISSOR_TEST);
     glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)cur);
-    if (g_rs > 1 && g_fb_prefilter.load()) {   // the mip chain the sampler reads (see g_fb_prefilter)
+    if (rs > 1 && g_fb_prefilter.load()) {   // the mip chain the sampler reads (see g_fb_prefilter)
         glBindTexture(GL_TEXTURE_2D, g_fb_scratch_tex);
         glGenerateMipmap(GL_TEXTURE_2D);
         ge_texture_invalidate_bind_cache();
@@ -150,8 +176,8 @@ unsigned int ge_draw_find_target_texture(uint32_t key, int* w, int* h) {
             return 0;
         }
         g_targets[i].last_use = ++g_target_clock;
-        if (w) *w = 480 * g_rs;
-        if (h) *h = 272 * g_rs;
+        if (w) *w = 480 * g_targets[i].rs;
+        if (h) *h = 272 * g_targets[i].rs;
         return g_targets[i].color_tex;
     }
     return 0;
@@ -408,8 +434,12 @@ static GLuint front_fbo_id() {
 /// nearest), so `S` captures stay comparable across scales; PSPRECOMP_SHOT_FULL=1
 /// returns the full (480n x 272n) image instead (w/h report the size).
 /// Render (GL) thread only.
+static int rs_of_fbo(GLuint fbo) {
+    for (int i = 0; i < GE_MAX_TARGETS; ++i) if (g_targets[i].fbo == fbo || (g_targets[i].ab_fbo && g_targets[i].ab_fbo == fbo)) return g_targets[i].rs;
+    return g_rs;
+}
 static void read_fbo_native(GLuint fbo, std::vector<uint8_t>& out, int* ow = nullptr, int* oh = nullptr) {
-    const int n = g_rs;
+    const int n = rs_of_fbo(fbo);
     const int fw = 480 * n, fh = 272 * n;
     glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
     std::vector<uint8_t> pixels(size_t(fw) * fh * 4);
@@ -665,15 +695,16 @@ static int g_ab_dumped = 0;
 // Create one render target (FBO + RGBA8 color texture + Depth24 renderbuffer,
 // 480x272, NEAREST) for the given normalized key. Clears it to black. The
 // pool owns the GL objects; ge_draw_shutdown deletes them.
-static GeTarget make_target(uint32_t key) {
+static GeTarget make_target(uint32_t key, int rs) {
     GeTarget t;
     t.key = key;
+    t.rs = rs;
     glGenFramebuffers(1, &t.fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, t.fbo);
 
     glGenTextures(1, &t.color_tex);
     glBindTexture(GL_TEXTURE_2D, t.color_tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 480 * g_rs, 272 * g_rs, 0,
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 480 * rs, 272 * rs, 0,
                  GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -685,7 +716,7 @@ static GeTarget make_target(uint32_t key) {
     // Depth + 8-bit stencil: the GE stencil buffer is the framebuffer's alpha
     // channel (STENCILTEST / STENCILOP), emulated with a real GL stencil
     // buffer next to the colour alpha (see apply_gl_pipeline_impl).
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, 480 * g_rs, 272 * g_rs);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, 480 * rs, 272 * rs);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
                               GL_RENDERBUFFER, t.depth_rb);
     if (g_ab) {
@@ -693,14 +724,14 @@ static GeTarget make_target(uint32_t key) {
         glBindFramebuffer(GL_FRAMEBUFFER, t.ab_fbo);
         glGenTextures(1, &t.ab_tex);
         glBindTexture(GL_TEXTURE_2D, t.ab_tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 480 * g_rs, 272 * g_rs, 0,
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 480 * rs, 272 * rs, 0,
                      GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t.ab_tex, 0);
         glGenRenderbuffers(1, &t.ab_depth);
         glBindRenderbuffer(GL_RENDERBUFFER, t.ab_depth);
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, 480 * g_rs, 272 * g_rs);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, 480 * rs, 272 * rs);
         glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, t.ab_depth);
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         glDepthMask(GL_TRUE);
@@ -723,6 +754,41 @@ static GeTarget make_target(uint32_t key) {
     ge_texture_invalidate_bind_cache();  // glBindTexture above
     t.last_use = ++g_target_clock;
     return t;
+}
+
+// A buffer that is shown on screen (or is the first one the game draws into) is a main buffer: it is rendered at the
+// render scale from now on. One that was created at 1x before the game first displayed it is grown, keeping its
+// picture (scaled up), so no black frame shows.
+static void mark_main_key(uint32_t key) {
+    if (g_scale_all) return;
+    bool known = false;
+    for (int i = 0; i < g_main_n; i++) known |= g_main_keys[i] == key;
+    if (!known) {
+        if (g_main_n >= 8) return;
+        g_main_keys[g_main_n++] = key;
+        std::fprintf(stderr, "[DRAW] main buffer key=0x%06X (rendered at %dx)\n", key, g_rs);
+    }
+    for (int i = 0; i < GE_MAX_TARGETS; ++i) {
+        GeTarget& t = g_targets[i];
+        if (!t.fbo || t.key != key || t.rs == g_rs) continue;
+        flush_batch();
+        GeTarget n = make_target(key, g_rs);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, t.fbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, n.fbo);
+        const GLboolean sc = glIsEnabled(GL_SCISSOR_TEST);
+        if (sc) glDisable(GL_SCISSOR_TEST);
+        glBlitFramebuffer(0, 0, 480 * t.rs, 272 * t.rs, 0, 0, 480 * n.rs, 272 * n.rs, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+        if (sc) glEnable(GL_SCISSOR_TEST);
+        glDeleteFramebuffers(1, &t.fbo);
+        glDeleteTextures(1, &t.color_tex);
+        glDeleteRenderbuffers(1, &t.depth_rb);
+        n.last_use = t.last_use;
+        t = n;
+        glBindFramebuffer(GL_FRAMEBUFFER, i == g_current_target ? t.fbo : (g_current_target >= 0 ? g_targets[g_current_target].fbo : 0));
+        glc::invalidate();
+        ge_texture_invalidate_bind_cache();
+        std::fprintf(stderr, "[DRAW] target key=0x%06X grown to %dx\n", key, g_rs);
+    }
 }
 
 // Find the pool slot for key, or allocate one (LRU-evicting if full).
@@ -754,9 +820,9 @@ static int acquire_target(uint32_t key) {
             glDeleteRenderbuffers(1, &g_targets[slot].ab_depth);
         }
     }
-    g_targets[slot] = make_target(key);
-    std::fprintf(stderr, "[DRAW] FBO target created key=0x%06X slot=%d\n",
-                 key, slot);
+    g_targets[slot] = make_target(key, is_main_key(key) ? g_rs : 1);
+    std::fprintf(stderr, "[DRAW] FBO target created key=0x%06X slot=%d (%dx)\n",
+                 key, slot, g_targets[slot].rs);
     return slot;
 }
 
@@ -778,6 +844,7 @@ void ge_draw_select_target(uint32_t fb_addr_raw) {
         glBindFramebuffer(GL_FRAMEBUFFER, g_targets[g_current_target].fbo);
         return;
     }
+    if (g_front_target < 0) mark_main_key(key);   // the first buffer the game draws into is shown
     int slot = acquire_target(key);
     if (std::getenv("PSPRECOMP_MOVIE_TEXDBG"))
         std::fprintf(stderr, "[SELTGT] fb=%08X key=%06X slot=%d\n", fb_addr_raw, key, slot);
@@ -847,11 +914,12 @@ static bool apply_gl_pipeline_impl(uint8_t* rdram, const GeState& state, int pri
     bool depth_reversed = false;
     if (!ge_vtype_through(state.vertex_type)) {
         const GeViewportDepth vp = compute_state_viewport_depth(state);
-        gl_viewport(vp.x * g_rs, vp.y * g_rs, vp.w * g_rs, vp.h * g_rs);
+        const int crs = cur_rs();
+        gl_viewport(vp.x * crs, vp.y * crs, vp.w * crs, vp.h * crs);
         gl_depth_range(vp.near_z, vp.far_z);
         depth_reversed = depth_range_reversed(vp);
     } else {
-        gl_viewport(0, 0, PSP_FB_WIDTH * g_rs, PSP_FB_HEIGHT * g_rs);
+        gl_viewport(0, 0, PSP_FB_WIDTH * cur_rs(), PSP_FB_HEIGHT * cur_rs());
         gl_depth_range(0.0, 1.0);
     }
 
@@ -1489,7 +1557,7 @@ static int g_fx_screen_w = 0, g_fx_screen_h = 0;
 // distortion). The batch about to draw is still empty, so every earlier draw
 // is in it. psp_fx_shader.cpp calls this at most once per frame and target.
 static unsigned fx_screen_copy(int* w, int* h) {
-    const int W = 480 * g_rs, H = 272 * g_rs;
+    const int W = 480 * cur_rs(), H = 272 * cur_rs();
     if (!g_fx_screen_tex || g_fx_screen_w != W || g_fx_screen_h != H) {
         if (!g_fx_screen_tex) glGenTextures(1, &g_fx_screen_tex);
         glBindTexture(GL_TEXTURE_2D, g_fx_screen_tex);   // caller's unit (not unit 0)
@@ -1543,8 +1611,8 @@ static void fx_batch(const GeState& state, GLuint fbo_tex, const GeXform3D* g) {
     in.tex_id = id;
     in.state = &state;
     in.xform = g;
-    in.target_w = 480 * g_rs;
-    in.target_h = 272 * g_rs;
+    in.target_w = 480 * cur_rs();
+    in.target_h = 272 * cur_rs();
     for (int i = 0; i < 4; i++) in.vp[i] = glc::vp[i];
     in.alpha_double = g_pipe_alpha_double;
     in.screen_copy = fx_screen_copy;
@@ -2072,7 +2140,7 @@ void ge_draw_begin_list() {
     // Full-buffer default; the precise PSP viewport (scale/offset + depth
     // range) is applied per-PRIM in ge_draw_prim from the live registers,
     // which may be set after begin_list (issue #23).
-    gl_viewport(0, 0, PSP_FB_WIDTH * g_rs, PSP_FB_HEIGHT * g_rs);
+    gl_viewport(0, 0, PSP_FB_WIDTH * cur_rs(), PSP_FB_HEIGHT * cur_rs());
     g_frame_counter++;
 }
 
@@ -3189,6 +3257,7 @@ static void present_blit(GLuint fbo, const char* why = "flip") {
     psp_sddialog::set_output_scale(std::max({g_rs, (pr.x1 - pr.x0 + 479) / 480, 1}));
     glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    const int srs = rs_of_fbo(fbo);   // the shown buffer's scale
     if (pr.bars) {
         GLboolean sc = glIsEnabled(GL_SCISSOR_TEST);
         GLfloat cc[4]; glGetFloatv(GL_COLOR_CLEAR_VALUE, cc);
@@ -3209,13 +3278,13 @@ static void present_blit(GLuint fbo, const char* why = "flip") {
         // Integer-scale presentation: crisp only when source and output differ by a whole factor
         // (render scale 2 shown at 2x = 1:1; render scale 1 shown at 2x; render scale 2 at 1x is a 2:1
         // downscale, also whole). Otherwise (e.g. 2x target on a 3x output) bilinear avoids uneven pixels.
-        const int sw = 480 * g_rs, ow = pr.x1 - pr.x0;
+        const int sw = 480 * srs, ow = pr.x1 - pr.x0;
         const bool whole = (ow >= sw) ? (ow % sw == 0) : (sw % ow == 0);
         pf = whole ? GL_NEAREST : GL_LINEAR;
-    } else if (g_rs > 1 && pf == GL_NEAREST && (pr.x1 - pr.x0) != 480 * g_rs) {
+    } else if (srs > 1 && pf == GL_NEAREST && (pr.x1 - pr.x0) != 480 * srs) {
         if (!(fl && (!std::strcmp(fl, "nearest") || !std::strcmp(fl, "integer")))) pf = GL_LINEAR;
     }
-    glBlitFramebuffer(0, 0, 480 * g_rs, 272 * g_rs, pr.x0, pr.y0, pr.x1, pr.y1,
+    glBlitFramebuffer(0, 0, 480 * srs, 272 * srs, pr.x0, pr.y0, pr.x1, pr.y1,
                       GL_COLOR_BUFFER_BIT, pf);
     if (!std::strcmp(why, "flip")) perf_note_flip();
     if (std::strcmp(why, "menu") != 0) { present_perf_hud(pr); present_toast(pr); }
@@ -3336,6 +3405,7 @@ void ge_present_frame(
     // present strictly per-address: a fresh flip shows a clean buffer, and any
     // geometry the GE later renders into this address lands in the same FBO.
     uint32_t key = ge_fb_key(fb_addr);
+    mark_main_key(key);   // a buffer that is displayed is rendered at the render scale
     if (g_dyn_trace_n.load() > 0)
         std::fprintf(stderr, "[DT] ---- PRESENT fb=0x%08X\n", fb_addr);
     int slot = -1;
@@ -3403,7 +3473,7 @@ bool ge_draw_set_render_scale(int n) {
     if (n == g_rs) return true;
     if (g_ab) return false;
     flush_batch();
-    const int ow = 480 * g_rs, oh = 272 * g_rs, nw = 480 * n, nh = 272 * n;
+    const int nw = 480 * n, nh = 272 * n;
     const GLboolean sc = glIsEnabled(GL_SCISSOR_TEST);
     if (sc) glDisable(GL_SCISSOR_TEST);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
@@ -3414,7 +3484,8 @@ bool ge_draw_set_render_scale(int n) {
     int resized = 0;
     for (int i = 0; i < GE_MAX_TARGETS; ++i) {
         GeTarget& t = g_targets[i];
-        if (!t.fbo) continue;
+        if (!t.fbo || t.rs != g_rs) continue;   // the 1x buffers of the blur chain stay as they are
+        const int ow = 480 * t.rs, oh = 272 * t.rs;
         GLuint tex = 0, rb = 0;
         glGenTextures(1, &tex);
         glBindTexture(GL_TEXTURE_2D, tex);
@@ -3437,14 +3508,15 @@ bool ge_draw_set_render_scale(int n) {
         glDeleteRenderbuffers(1, &t.depth_rb);
         t.color_tex = tex;
         t.depth_rb = rb;
+        t.rs = n;
         resized++;
     }
     glDeleteFramebuffers(1, &tmp);
-    if (g_fb_scratch_tex) {   // feedback_snapshot allocates at the current size once
-        glDeleteTextures(1, &g_fb_scratch_tex);
-        glDeleteFramebuffers(1, &g_fb_scratch_fbo);
-        g_fb_scratch_tex = g_fb_scratch_fbo = 0;
+    for (int r = 1; r <= 8; r++) {   // feedback_snapshot allocates one scratch copy per scale, lazily
+        if (g_scratch_tex_by_rs[r]) { glDeleteTextures(1, &g_scratch_tex_by_rs[r]); glDeleteFramebuffers(1, &g_scratch_fbo_by_rs[r]); }
+        g_scratch_tex_by_rs[r] = g_scratch_fbo_by_rs[r] = 0;
     }
+    g_fb_scratch_tex = g_fb_scratch_fbo = 0;
     g_rs = n;
     glLineWidth(float(g_rs));
     glPointSize(float(g_rs));

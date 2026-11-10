@@ -18,7 +18,8 @@
 //
 // Options: PSPRECOMP_CAM_FREE=0 disables (stick then acts as D-pad, see psp_hle_ctrl.cpp), PSPRECOMP_CAM_SENS
 // (1.0 = 150 deg/s yaw at full deflection), PSPRECOMP_CAM_INVERT_Y=1, PSPRECOMP_CAM_PITCH_MIN/MAX (deg,
-// elevation of the eye above the target; default -5..80), PSPRECOMP_CAM_RECENTER=<seconds> (time constant
+// elevation of the eye above the target; default -5..80), R3 (right stick click, or the C key) puts the camera back at once;
+// PSPRECOMP_CAM_RECENTER=<seconds> (time constant
 // for the offset to drift back to zero once the stick has been idle for PSPRECOMP_CAM_RECENTER_DELAY seconds;
 // defaults 1.0 and 0.5; 0 = hold the offset),
 // PSPRECOMP_CAM_LOG=1 is the GE-level log; PSPRECOMP_CAMX_LOG=<n> logs n updates of this module.
@@ -144,6 +145,7 @@ void dissidia_cam_update(uint8_t* rdram, recomp_context* ctx) {
     g_mgr = static_cast<uint32_t>(ctx->r[4]);
     float sx = 0, sy = 0;
     bool active = psp_ctrl_right_stick(&sx, &sy);
+    if (psp_ctrl_take_camera_recenter()) { g_yaw = g_pitch = 0.f; g_idle = 0.f; }   // R3 / C: back to the game's camera now
     g_rstick_consumed_until_ms.store(now_ms() + 400, std::memory_order_relaxed);
     constexpr float kRate = 2.6f;   // rad/s at full deflection and sens 1.0
     if (active) {

@@ -90,6 +90,12 @@ working because their UVs are normalised; the window blit uses bilinear unless t
 not scaled. Wide lines/points are requested at n pixels (best effort; core profiles may clamp). Scale 1 is
 bit-identical to the previous output. Cost is roughly proportional to n^2 in fill rate.
 
+Only the buffers that are shown on screen are rendered at n (a buffer becomes one when the game first displays it, or is the
+first it draws into, and is then grown without losing its picture). Every other target the game draws into stays at 480x272, as in
+PPSSPP (https://www.ppsspp.org/docs/troubleshooting/the-bloom-problem): the game's glow copies the picture, blurs it with a fixed
+number of steps tuned for 480x272, and at n times the resolution those steps blur too little and leave a hard ghost around
+characters and bright objects. `PSPRECOMP_RENDER_SCALE_ALL=1` scales every target again (the old behaviour).
+
 Input: keyboard and SDL game controllers (`PSPRECOMP_SWAP_AB`, `PSPRECOMP_GAMECONTROLLERDB`, `PSPRECOMP_PAD_LOG=1`; key/button
 tables and Steam Input setup in `docs/steamdeck.md`).
 
@@ -98,7 +104,7 @@ wraps the battle camera update (`ovl_battle FUN_08B3CA24`, once per frame) and r
 around the camera target by an accumulated yaw/pitch offset, so the game's own d-pad camera, lock-on framing,
 auto-centring and collision pull-in keep working underneath (the stick is an offset on top: when you let go of the stick it
 eases back to the game's camera after 0.5 s, with a time constant of 1 s; `PSPRECOMP_CAM_RECENTER=<s>` changes the time constant,
-`PSPRECOMP_CAM_RECENTER_DELAY=<s>` the pause, `PSPRECOMP_CAM_RECENTER=0` holds the offset until you move it again). Outside battle (menus) the right stick acts as the
+`PSPRECOMP_CAM_RECENTER_DELAY=<s>` the pause, `PSPRECOMP_CAM_RECENTER=0` holds the offset until you move it again); R3 (right stick click) or the C key puts the camera back at once. Outside battle (menus) the right stick acts as the
 D-pad. Options: `PSPRECOMP_CAM_FREE=0` (stick is a plain D-pad everywhere, the game's own camera), `PSPRECOMP_CAM_SENS`
 (default 1.0 = ~150 deg/s at full deflection), `PSPRECOMP_CAM_INVERT_Y=1`, `PSPRECOMP_CAM_PITCH_MIN/MAX` (eye elevation
 limits in degrees, default -5..80), `PSPRECOMP_RSTICK_DEADZONE` (default 0.20), `PSPRECOMP_RSTICK_DPAD=0` (right stick
