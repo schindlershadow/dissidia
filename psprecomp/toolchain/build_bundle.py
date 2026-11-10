@@ -353,6 +353,8 @@ def main():
     run([os.path.join(hb, "zig-c++"), "-o", os.path.join(out, "bin", "pspdecrypt" + exe)] + objs +
         [os.path.join(deps, "lib", "libz.a"), os.path.join(osrc, "libcrypto.a")] + (["-lws2_32", "-lcrypt32"] if plat.startswith("windows") else []),
         env=env)
+    if os.path.isfile(os.path.join(out, "bin", "pspdecrypt.pdb")):   # lld's debug-info file next to the Windows exe
+        os.remove(os.path.join(out, "bin", "pspdecrypt.pdb"))
     shutil.copy2(os.path.join(psrc, "LICENSE.TXT"), os.path.join(out, "bin", "pspdecrypt-LICENSE.txt"))
 
     # ---------------------------------------------------------------- 4. static libraries only

@@ -56,6 +56,9 @@ enum Commands {
         /// Fail (exit nonzero) unless the final mid-entry count equals N
         #[arg(long)]
         expect_mid_entries: Option<usize>,
+        /// Write only the small generated headers and a stub CMakeLists (release CI: builds the runtime core without game code)
+        #[arg(long)]
+        headers_only: bool,
     },
     /// Dump analysis.json fields, or one function's generated C++ (0xADDR)
     Dump {
@@ -95,7 +98,7 @@ fn main() -> anyhow::Result<()> {
             crate::analyze::run_analyze(&binary, &output, ghidra_dir.as_ref(), &nid_db, load_base)?;
         }
         Commands::Recompile {
-            analysis, output, config, batch_size, expect_functions, expect_mid_entries,
+            analysis, output, config, batch_size, expect_functions, expect_mid_entries, headers_only,
         } => {
             tracing_subscriber::fmt()
                 .with_env_filter(
@@ -108,6 +111,7 @@ fn main() -> anyhow::Result<()> {
                 batch_size,
                 expect_functions,
                 expect_mid_entries,
+                headers_only,
             };
             crate::recompile::run_recompile(&analysis, &output, &opts)?;
         }

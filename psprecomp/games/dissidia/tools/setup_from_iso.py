@@ -13,7 +13,7 @@ Creates, under <workdir>:
   OVL_{BATTLE,MENU,EXTRA}_APP.bin   flat overlay blobs (ELF file offset 0x54 onward; load at 0x089DD4C0)
   eboot_image.bin                   flat EBOOT image 0x08804000..0x089DD4C0 (for jumptables.py / gapfuncs.py)
   ms0/PSP/{SAVEDATA,GAME}           Memory Stick root for the runtime
-  tools/pspdecrypt                  built from source if not already available
+  tools/pspdecrypt                  taken from $PSPRECOMP_TOOLCHAIN/bin (the toolchain bundle) or built from source
 
 Pure Python 3, standard library only. Supported inputs: a plain 2048-byte-sector ISO 9660 image, or a
 CSO (CISO v1, zlib) image, which is read transparently. NOT supported: ZSO (LZ4), DAX, raw 2352-byte
@@ -362,6 +362,9 @@ def find_pspdecrypt(workdir, explicit=None):
         cands.append(explicit)
     if os.environ.get("PSPDECRYPT"):
         cands.append(os.environ["PSPDECRYPT"])
+    tc = os.environ.get("PSPRECOMP_TOOLCHAIN")   # the toolchain bundle ships a prebuilt static pspdecrypt
+    if tc:
+        cands += [os.path.join(tc, "bin", "pspdecrypt"), os.path.join(tc, "bin", "pspdecrypt.exe")]
     cands.append(os.path.join(workdir, "tools", "pspdecrypt"))
     w = shutil.which("pspdecrypt")
     if w:

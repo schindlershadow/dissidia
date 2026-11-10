@@ -128,3 +128,24 @@ Not verified: **no Windows binary has been run.** Open questions only a run show
 rules in `psp_path_to_host`), GL context creation through static SDL2 on Windows, the audio sink, threads/fibers in the scheduler, `getenv`
 based settings (settings.ini applies them with `_putenv_s`), Winsock UDP error codes (e.g. `WSAECONNRESET` on ICMP port unreachable).
 Wine is installed on the desktop for a first look; a Windows machine is the real test.
+
+## pspdecrypt in the bundle (bundle_version 2)
+
+The installer needs `pspdecrypt` to decrypt the game's `EBOOT.BIN`; `setup_from_iso.py` used to build it from source with a system
+compiler plus OpenSSL headers. `build_bundle.py` now builds it for both platforms with the bundle's own zig and installs it as
+`<bundle>/bin/pspdecrypt[.exe]` (plus `bin/pspdecrypt-LICENSE.txt`). Inputs pinned in `toolchain/versions.json`:
+
+- `pspdecrypt` John-K/pspdecrypt at commit `c156627db7634d395c380c0a9589130f603307fc` (archive tarball, sha256 pinned). License:
+  **GPL-3.0** (`LICENSE.TXT` in the source, copied next to the binary). It is a separate executable the installer runs, not linked
+  into the runtime; shipping the binary means offering the source, which is the pinned URL above.
+- `openssl` 3.0.18 (Apache-2.0). Only SHA-256 and DES-CBC are used by pspdecrypt, but the real libcrypto is built (static, `no-shared
+  no-asm no-threads no-tls ...`, `Configure linux-x86_64` / `mingw64` with `CC=zig-cc`) in the scratch dir and linked in; it is not
+  installed into the bundle. Needs `perl` and `make` on the build host, like ffmpeg needs `make`.
+
+The executables are self-contained: Linux needs only libc (zig target glibc 2.28), Windows imports only KERNEL32 and the `api-ms-win-crt-*`
+UCRT forwarders (no mingw DLLs). `setup_from_iso.py` finds it through `PSPRECOMP_TOOLCHAIN=<bundle>` (order: `--pspdecrypt`,
+`$PSPDECRYPT`, `$PSPRECOMP_TOOLCHAIN/bin/pspdecrypt[.exe]`, `<workdir>/tools/pspdecrypt`, `PATH`, then build from source).
+
+Verification (2026-11-10, desktop): Linux with a PATH holding no compiler, `bin/pspdecrypt -o out.elf EBOOT.enc.bin` output is
+byte-identical (`cmp`) to the earlier decrypted ELF made by the source-built binary. The Windows `pspdecrypt.exe` (PE32+) run under
+Wine (`WINEDEBUG=-all`, command line only) produced the identical ELF as well.

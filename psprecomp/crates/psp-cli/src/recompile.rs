@@ -88,6 +88,9 @@ pub struct RecompileOptions {
     pub expect_functions: Option<usize>,
     /// If set, fail when the final mid-entry count differs (`--expect-mid-entries`).
     pub expect_mid_entries: Option<usize>,
+    /// Only write the small generated headers (`include/*.h`) and a stub CMakeLists.txt defining `psp::recomp`: what the
+    /// release CI needs to build the prebuilt runtime core without any game code (`--headers-only`).
+    pub headers_only: bool,
 }
 
 /// Everything the per-function emit closure consumes, computed once from
@@ -358,6 +361,25 @@ pub fn run_recompile(
     .with_context(|| {
         format!("Failed to write {}", inc_dir.join("recomp_game_config.h").display())
     })?;
+
+    if opts.headers_only {
+        // The runtime core is built once per release without any translated code; it needs these headers (binary facts: addresses
+        // and flags) and the psp::recomp target the runtime CMake looks for. The player's machine links the real one later.
+        std::fs::write(inc_dir.join("recomp.h"), CppGenerator::emit_recomp_h())?;
+        let fp = fingerprint::build_fingerprint(fingerprint::FingerprintInputs {
+            analysis_path,
+            cross_mid: std::env::var("PSPRECOMP_CROSS_MID").as_deref() == Ok("1"),
+            counts: fingerprint::FingerprintCounts { functions: 0, mid_entries: 0, batch_files: 0 },
+        });
+        fingerprint::write_outputs(output_dir, &fp)?;
+        std::fs::write(
+            output_dir.join("CMakeLists.txt"),
+            "# Header-only stand-in for a recompiled output (psprecomp recompile --headers-only): enough to build psprecomp_core.\n\
+             add_library(psp_recomp_stub INTERFACE)\nadd_library(psp::recomp ALIAS psp_recomp_stub)\n",
+        )?;
+        tracing::info!("Headers only: wrote {}", inc_dir.display());
+        return Ok(());
+    }
 
     // Emit mid-entry wrappers
     let parent_name_map = build_parent_name_map(&prep.analysis.functions);
