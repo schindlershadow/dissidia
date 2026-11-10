@@ -108,6 +108,8 @@ Analogue stick direction: the game's own stick processing (`FUN_08872138`, pad o
 per-axis dead zone of 100/127.5 and then normalises, so a stick at 20 degrees reads as straight up and 60 degrees
 as straight right: 8 directions on a PSP nub, only 4 on a circular-gate stick. `games/dissidia/runtime/input.cpp`
 wraps it and replaces the stick vector (unit direction + magnitude, same layout) with a radial dead zone and the
-true angle; the virtual D-pad bits the original returns are untouched. `PSPRECOMP_ANALOG_FULL=0` restores the
+true angle. The virtual D-pad bits the original returns (what battle movement reads) need a square gate and 78% on both
+axes, so in battle the original runs on a square-gate version of the stick with its per-axis dead zone lowered
+(`PSPRECOMP_ANALOG_DPAD_ZONE`, default 0.35 of travel; `PSPRECOMP_ANALOG_8WAY=0` turns it off). `PSPRECOMP_ANALOG_FULL=0` restores the
 original 8-way behaviour, `PSPRECOMP_ANALOG_DEADZONE` (default 0.20 of travel) sets the radial dead zone,
 `PSPRECOMP_ANALOG_LOG=<n>` logs raw / game / replacement vectors.
