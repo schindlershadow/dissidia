@@ -44,6 +44,14 @@ bool psp_font_host_files(std::string* regular, std::string* bold) {
             if (exists(p)) { reg = p; break; }
         }
     }
+#ifdef _WIN32
+    // Windows has no DejaVu: use the system's Arial (a release can also ship DejaVuSans.ttf and point PSPRECOMP_FONT at it).
+    if (reg.empty() && exists("C:/Windows/Fonts/arial.ttf")) {
+        if (regular) *regular = "C:/Windows/Fonts/arial.ttf";
+        if (bold) *bold = exists("C:/Windows/Fonts/arialbd.ttf") ? "C:/Windows/Fonts/arialbd.ttf" : "";
+        return true;
+    }
+#endif
     if (reg.empty()) return false;
     std::string b;
     size_t dot = reg.rfind(".ttf");
