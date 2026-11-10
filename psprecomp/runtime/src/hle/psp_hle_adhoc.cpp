@@ -155,6 +155,7 @@ struct Ptp {
 std::mutex g_mu;
 std::condition_variable_any* g_unused = nullptr;
 bool g_enabled = true;
+const char* g_off_reason = "Off (PSPRECOMP_ADHOC=0)";
 bool g_net_ready = false;
 std::atomic<bool> g_stop{false};
 int g_sock = -1;
@@ -865,7 +866,7 @@ bool ensure_net() {
         load_cfg_from_env();
         psp_plat::net_init();
         g_sock = (int)socket(AF_INET, SOCK_DGRAM, 0);
-        if (g_sock < 0) { ANOTE("socket() failed; ad-hoc networking off"); g_enabled = false; return; }
+        if (g_sock < 0) { ANOTE("socket() failed; ad-hoc networking off"); g_off_reason = "Off: cannot open a socket (Android: INTERNET permission missing?)"; g_enabled = false; return; }
         int one = 1;
         setsockopt(g_sock, SOL_SOCKET, SO_BROADCAST, PSP_SOCKOPT_CAST(&one), sizeof one);
         psp_plat::set_nonblocking(g_sock);
@@ -880,7 +881,7 @@ bool ensure_net() {
                 g_my_port = ntohs(got.sin_port);
             }
         }
-        if (!g_my_port) { ANOTE("could not bind UDP ports %d-%d; ad-hoc networking off", g_base_port, g_base_port + g_span - 1); psp_plat::close_socket(g_sock); g_sock = -1; g_enabled = false; return; }
+        if (!g_my_port) { ANOTE("could not bind UDP ports %d-%d; ad-hoc networking off", g_base_port, g_base_port + g_span - 1); psp_plat::close_socket(g_sock); g_sock = -1; g_off_reason = "Off: could not bind a UDP port"; g_enabled = false; return; }
 
         const char* mc = std::getenv("PSPRECOMP_ADHOC_MAC");
         unsigned m[6];
@@ -1524,7 +1525,7 @@ void psp_adhoc_configure(bool internet, const char* server, const char* room, co
 void psp_adhoc_status(char* out, size_t n) {
     load_cfg_from_env();
     std::lock_guard<std::mutex> lk(g_mu);
-    if (!g_enabled) { std::snprintf(out, n, "Off (PSPRECOMP_ADHOC=0)"); return; }
+    if (!g_enabled) { std::snprintf(out, n, "%s", g_off_reason); return; }
     if (!g_net_ready) { std::snprintf(out, n, "Starts in Communications mode"); return; }
     if (g_relay_mode) {
         if (g_relay_resolve_failed) std::snprintf(out, n, "Cannot find %s", g_cfg_server.c_str());
