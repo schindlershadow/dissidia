@@ -80,10 +80,12 @@ public:
     /// package_size = size of the real PACKAGE.BIN. Returns false (and err) if the
     /// original index is malformed; returns true with zero overrides if the
     /// directory is missing or empty. index_capacity = bytes the game-side index buffer can hold; NEW
-    /// entries beyond it are dropped (loudly), the first ones kept.
+    /// entries beyond it are dropped (loudly), the first ones kept. extra_dirs are scanned after mods_dir
+    /// (the voice pack): an asset present in both is taken from mods_dir.
     bool build(const std::vector<uint8_t>& original_index, uint64_t package_size,
                const std::string& mods_dir, std::string* log, std::string* err,
-               uint32_t index_capacity = kIndexBufferBytes);
+               uint32_t index_capacity = kIndexBufferBytes,
+               const std::vector<std::string>& extra_dirs = {});
 
     bool empty() const { return overrides_.empty(); }
     const std::vector<Override>& overrides() const { return overrides_; }

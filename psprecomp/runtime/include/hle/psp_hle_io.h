@@ -102,6 +102,10 @@ struct PspIoPolicy {
     /// any guest thread; the cooperative scheduler serializes calls.
     bool (*overlay_read)(int tag, int host_fd, int64_t offset, uint32_t size,
                          uint8_t* dest, uint32_t* nread);
+    /// Redirect a file of the disc to another host file (an alternative-language movie, say). Called with the
+    /// host path psp_path_to_host made for a disc0: / umd0: path; return the path to use instead, or "" to
+    /// keep it. Applies to every use of the path (open, stat, directory listing), so sizes stay consistent.
+    std::string (*remap_disc_path)(const std::string& host_path);
 };
 void psp_io_set_policy(const PspIoPolicy& policy);
 

@@ -14,6 +14,7 @@
 
 #include "package_mods.h"
 #include "psp_platform.h"
+#include "psp_settings.h"
 #include "hle/psp_hle_io.h"
 #include "psp_fx_shader.h"
 #include "psp_tex_pack.h"
@@ -149,12 +150,45 @@ std::string mods_dir() {
     return parent + "/mods";
 }
 
+// Voice language (settings "Voice", PSPRECOMP_VOICE=en|jp). `jp` serves the Japanese voice pack that
+// tools/jp_audio.py extracted from an undub / Japanese disc: archive entries from <workdir>/voice_jp (loose
+// files, scanned after the mods) and movies from <workdir>/movie_jp.
+bool voice_jp_on() {
+    const char* e = std::getenv("PSPRECOMP_VOICE");
+    return e && (e[0] == 'j' || e[0] == 'J');
+}
+std::string work_parent() {
+    std::string ms0 = psp_io_ms0_host_path();
+    while (ms0.size() > 1 && ms0.back() == '/') ms0.pop_back();
+    size_t slash = ms0.find_last_of('/');
+    return slash == std::string::npos ? "." : ms0.substr(0, slash);
+}
+bool is_dir(const std::string& d) { struct stat st; return ::stat(d.c_str(), &st) == 0 && S_ISDIR(st.st_mode); }
+
+// DATA/MOVIE/X.PMF of the disc -> movie_jp/X.PMF when the voice is Japanese and that file exists
+std::string remap_disc_path(const std::string& host) {
+    if (!voice_jp_on() || !ends_with_nocase(host, ".pmf")) return "";
+    const size_t slash = host.find_last_of('/');
+    if (slash == std::string::npos) return "";
+    std::string dirpart = host.substr(0, slash);
+    for (char& c : dirpart) c = (char)std::tolower((unsigned char)c);
+    if (dirpart.size() < 11 || dirpart.compare(dirpart.size() - 11, 11, "/data/movie") != 0) return "";
+    std::string other = work_parent() + "/movie_jp/" + host.substr(slash + 1);
+    struct stat st;
+    return ::stat(other.c_str(), &st) == 0 && S_ISREG(st.st_mode) ? other : "";
+}
+
 void ensure_built(const std::string& host_info_path) {
     if (g_built) return;
     g_built = true;
     std::string dir = mods_dir();
-    struct stat st;
-    if (::stat(dir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+    std::vector<std::string> extra;
+    if (voice_jp_on()) {
+        const std::string vd = work_parent() + "/voice_jp";
+        if (is_dir(vd)) { extra.push_back(vd); std::fprintf(stderr, "[VOICE] Japanese voice pack: %s\n", vd.c_str()); }
+        else std::fprintf(stderr, "[VOICE] Japanese voice selected but %s does not exist (run tools/jp_audio.py): English voices\n", vd.c_str());
+    }
+    if (!is_dir(dir) && extra.empty()) {
         std::fprintf(stderr, "[MODS] no mods directory (%s): loose-file overrides off\n", dir.c_str());
         return;
     }
@@ -169,7 +203,7 @@ void ensure_built(const std::string& host_info_path) {
     std::ifstream f(host_info_path, std::ios::binary);
     std::vector<uint8_t> orig((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     std::string log, err;
-    if (!g_mods.build(orig, (uint64_t)pst.st_size, dir, &log, &err, g_index_capacity)) {
+    if (!g_mods.build(orig, (uint64_t)pst.st_size, dir, &log, &err, g_index_capacity, extra)) {
         std::fprintf(stderr, "[MODS] cannot parse %s: %s (overrides off)\n", host_info_path.c_str(), err.c_str());
         return;
     }
@@ -274,7 +308,10 @@ void dissidia_install_mod_io() {
     PspIoPolicy policy{};
     policy.classify_open = classify_open;
     policy.overlay_read = overlay_read;
+    policy.remap_disc_path = remap_disc_path;
     psp_io_set_policy(policy);
+    // The settings menu offers a Voice row once a Japanese voice pack has been extracted (tools/jp_audio.py).
+    psp_settings_set_voice_hook({+[]() { return is_dir(work_parent() + "/voice_jp"); }});
     // Texture packs (runtime/include/psp_tex_pack.h) live under <mods>/textures.
     psp_texpack_set_dir_provider([]() -> std::string { return mods_dir() + "/textures"; });
     // FX shader overrides (runtime/include/psp_fx_shader.h, FX_SHADERS.md) live under <mods>/fx_shaders.

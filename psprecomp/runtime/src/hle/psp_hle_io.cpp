@@ -128,18 +128,18 @@ std::string psp_path_to_host(const char* psp_path) {
         return "";
     }
 
-    // disc0:/ -> host directory
-    if (p.substr(0, 7) == "disc0:/") {
-        return g_disc0_path + "/" + p.substr(7);
-    }
-    if (p.substr(0, 6) == "disc0:") {
-        return g_disc0_path + "/" + p.substr(6);
-    }
-
-    // umd0:/ -> same as disc0
-    if (p.substr(0, 6) == "umd0:/") {
-        return g_disc0_path + "/" + p.substr(6);
-    }
+    // disc0:/ (and umd0:/, the same disc) -> host directory; the game module may redirect single files
+    auto disc = [](const std::string& rel) {
+        std::string host = g_disc0_path + "/" + rel;
+        if (g_io_policy.remap_disc_path) {
+            std::string other = g_io_policy.remap_disc_path(host);
+            if (!other.empty()) return other;
+        }
+        return host;
+    };
+    if (p.substr(0, 7) == "disc0:/") return disc(p.substr(7));
+    if (p.substr(0, 6) == "disc0:") return disc(p.substr(6));
+    if (p.substr(0, 6) == "umd0:/") return disc(p.substr(6));
 
     // ms0: -> host Memory Stick directory (writable)
     if (p.substr(0, 5) == "ms0:/") {

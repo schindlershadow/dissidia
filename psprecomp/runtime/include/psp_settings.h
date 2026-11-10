@@ -30,6 +30,14 @@ struct PspFrameRateHook {
 };
 void psp_settings_set_frame_rate_hook(const PspFrameRateHook& hook);
 
+/// A game module with an alternative voice language registers this; without it (or while `available`
+/// says no, i.e. no voice pack is installed) the menu has no Voice row. The choice is saved as `voice=en|jp`
+/// and exported as PSPRECOMP_VOICE at the next start (the game reads it once, while loading).
+struct PspVoiceHook {
+    bool (*available)();
+};
+void psp_settings_set_voice_hook(const PspVoiceHook& hook);
+
 /// First thing in main(): read settings.ini and export the saved values as
 /// the PSPRECOMP_* variables the window, renderer and game module read.
 void psp_settings_load_early();

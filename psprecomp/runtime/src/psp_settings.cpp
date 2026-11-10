@@ -72,8 +72,9 @@ bool g_enabled = true;
 bool g_wait_release = false;           // after closing: game input stays blocked until all released
 bool g_confirm_cross = true;
 PspFrameRateHook g_fps{nullptr, 0, nullptr, nullptr};
+PspVoiceHook g_voice{nullptr};
 
-enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_QUIT,
+enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_VOICE, ROW_QUIT,
            ROW_NET_MODE, ROW_NET_SERVER, ROW_NET_ROOM, ROW_NET_PEERS, ROW_NET_STATUS,   // Network page
            ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS };   // the last six: Debug page
 std::vector<Row> g_rows;
@@ -330,6 +331,15 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.help = "Battle logic rate (multiples of 30)\nBattles run at this many updates a second; the PSP ran 30. Costs CPU and GPU time in proportion. Menus stay at 30.";
             break;
         }
+        case ROW_VOICE: {
+            const bool jp = voice_jp_choice();
+            m.label = "Voice Language";
+            m.value = std::string(jp ? "Japanese" : "English") + (jp != voice_at_start() ? "  (next start)" : "");
+            m.can_dec = jp;
+            m.can_inc = !jp;
+            m.help = "Character voices and movie audio\nJapanese needs the voice pack made by tools/jp_audio.py from an undub or Japanese disc. Takes effect the next time the game starts.";
+            break;
+        }
         case ROW_NET_MODE:
             m.label = "Network";
             m.value = g_net_internet ? "Internet" : "LAN";
@@ -476,6 +486,20 @@ void apply_fps(int i) {
     save("fps", std::to_string(g_fps.rates[i]));
 }
 
+// Voice language: the saved choice, else the launch environment; changes apply at the next start.
+bool voice_jp_choice() {
+    auto it = g_saved.find("voice");
+    if (it != g_saved.end()) return it->second == "jp";
+    const char* e = std::getenv("PSPRECOMP_VOICE");
+    return e && (e[0] == 'j' || e[0] == 'J');
+}
+bool voice_at_start() {   // what this run was started with (the environment is final once the menu exists)
+    static const bool v = [] { const char* e = std::getenv("PSPRECOMP_VOICE"); return e && (e[0] == 'j' || e[0] == 'J'); }();
+    return v;
+}
+bool voice_row_wanted() { return g_voice.available && g_voice.available(); }
+void apply_voice(bool jp) { save("voice", jp ? "jp" : "en"); }
+
 void build_rows();
 
 void change(int d) {   // left / right on the selected row
@@ -525,6 +549,7 @@ void change(int d) {   // left / right on the selected row
         if (i >= 0 && i < g_fps.count) apply_fps(i);
         break;
     }
+    case ROW_VOICE: apply_voice(d > 0); break;   // left: English, right: Japanese
     case ROW_QUIT: break;
     case ROW_NET_MODE:
         if (g_net_internet != (d < 0)) {   // left: Internet, right: LAN
@@ -581,6 +606,7 @@ void build_rows() {
         if (g_fps.get && g_fps.count > 1) g_rows.push_back(ROW_FPS);
         g_rows.push_back(ROW_WIDE);
         g_rows.push_back(ROW_SOFT);
+        if (voice_row_wanted()) g_rows.push_back(ROW_VOICE);
         g_rows.push_back(ROW_QUIT);
     }
     g_sel = std::min(std::max(g_sel_page[g_page], 0), int(g_rows.size()) - 1);
@@ -664,6 +690,7 @@ void confirm() {
     case ROW_FPS:
         apply_fps((fps_index() + 1) % g_fps.count);
         break;
+    case ROW_VOICE: apply_voice(!voice_jp_choice()); break;
     case ROW_NET_MODE: change(g_net_internet ? 1 : -1); return;
     case ROW_NET_SERVER: edit_begin(0); return;
     case ROW_NET_ROOM: edit_begin(1); return;
@@ -716,6 +743,7 @@ uint32_t dpad_bit(uint8_t b) {
 }  // namespace
 
 void psp_settings_set_frame_rate_hook(const PspFrameRateHook& hook) { g_fps = hook; }
+void psp_settings_set_voice_hook(const PspVoiceHook& hook) { g_voice = hook; }
 
 void psp_settings_load_early() {
     const char* e = std::getenv("PSPRECOMP_SETTINGS_MENU");
@@ -741,6 +769,8 @@ void psp_settings_load_early() {
     if ((it = g_saved.find("widescreen")) != g_saved.end()) put("PSPRECOMP_WIDESCREEN", it->second == "1" ? "1" : "0");
     if ((it = g_saved.find("soft_focus")) != g_saved.end()) put("PSPRECOMP_SOFT_FOCUS", it->second == "0" ? "0" : "1");
     if ((it = g_saved.find("fps")) != g_saved.end() && std::atoi(it->second.c_str()) > 0) put("PSPRECOMP_FPS", it->second);
+    if ((it = g_saved.find("voice")) != g_saved.end() && (it->second == "jp" || it->second == "en"))
+        put("PSPRECOMP_VOICE", it->second);
     if ((it = g_saved.find("window_size")) != g_saved.end() && g_saved.count("display") && g_saved["display"] == "window"
         && it->second.find('x') != std::string::npos) {
         put("PSPRECOMP_WINDOW", it->second);

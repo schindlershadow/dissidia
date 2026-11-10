@@ -130,15 +130,25 @@ const IndexEntry* PackageIndex::find(uint32_t crc) const {
 
 bool PackageMods::build(const std::vector<uint8_t>& original_index, uint64_t package_size,
                         const std::string& mods_dir, std::string* log, std::string* err,
-                        uint32_t index_capacity) {
+                        uint32_t index_capacity, const std::vector<std::string>& extra_dirs) {
     overrides_.clear();
     patched_ = original_index;
     PackageIndex idx;
     if (!idx.parse(original_index.data(), original_index.size(), err)) return false;
     auto note = [&](const std::string& s) { if (log) { *log += s; *log += '\n'; } };
 
-    std::vector<std::string> files;
-    walk(mods_dir, "", &files);
+    // mods_dir first, then the extra directories (the voice pack): an asset found in an earlier one wins
+    struct Src { std::string dir, rel; };
+    std::vector<Src> files;
+    {
+        std::vector<std::string> dirs{mods_dir};
+        dirs.insert(dirs.end(), extra_dirs.begin(), extra_dirs.end());
+        for (const std::string& d : dirs) {
+            std::vector<std::string> r;
+            walk(d, "", &r);
+            for (auto& x : r) files.push_back({d, x});
+        }
+    }
     if (files.empty()) return true;
 
     uint64_t next_virtual = (package_size + kSectorSize - 1) / kSectorSize;   // sectors
@@ -146,9 +156,10 @@ bool PackageMods::build(const std::vector<uint8_t>& original_index, uint64_t pac
     uint32_t added = 0;
     std::vector<IndexEntry> new_entries;
 
-    for (const std::string& rel : files) {
+    for (const Src& src : files) {
+        const std::string& rel = src.rel;
         struct stat st;
-        if (::stat((mods_dir + "/" + rel).c_str(), &st) != 0) continue;
+        if (::stat((src.dir + "/" + rel).c_str(), &st) != 0) continue;
         std::string norm = normalize_asset_path(rel);
         uint32_t crc = 0;
         std::string asset = norm;
@@ -171,7 +182,7 @@ bool PackageMods::build(const std::vector<uint8_t>& original_index, uint64_t pac
         if (dup) continue;
 
         Override ov;
-        ov.crc = crc; ov.asset = asset; ov.file = mods_dir + "/" + rel; ov.size = (uint32_t)st.st_size;
+        ov.crc = crc; ov.asset = asset; ov.file = src.dir + "/" + rel; ov.size = (uint32_t)st.st_size;
         uint64_t need = (ov.size + kSectorSize - 1) / kSectorSize;
         const IndexEntry* e = idx.find(crc);
         if (e) {
