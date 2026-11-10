@@ -77,6 +77,11 @@ static GLuint g_fb_scratch_tex = 0, g_fb_scratch_fbo = 0;
 // PSPRECOMP_FB_PREFILTER=0 turns it off; the debug socket's `P <0|1>` flips it at run time.
 static std::atomic<bool> g_fb_prefilter{[] { const char* e = std::getenv("PSPRECOMP_FB_PREFILTER"); return !(e && e[0] == '0'); }()};
 void ge_draw_set_fb_prefilter(bool on) { g_fb_prefilter.store(on); std::fprintf(stderr, "[DRAW] feedback prefilter %s\n", on ? "on" : "off"); }
+bool ge_draw_fb_prefilter() { return g_fb_prefilter.load(); }
+// PSPRECOMP_GE_FEEDBACK=0 / the settings menu: a pass reading the buffer it draws into takes the old memory path
+static std::atomic<bool> g_fb_snapshot_on{[] { const char* e = std::getenv("PSPRECOMP_GE_FEEDBACK"); return !(e && e[0] == '0'); }()};
+void ge_draw_set_fb_snapshot(bool on) { g_fb_snapshot_on.store(on); std::fprintf(stderr, "[DRAW] feedback snapshot %s\n", on ? "on" : "off"); }
+bool ge_draw_fb_snapshot() { return g_fb_snapshot_on.load(); }
 /// LOD bias for sampling `tex`: log2(render scale) for the feedback snapshot while the prefilter is on, else 0.
 float ge_draw_prefilter_bias(GLuint tex) {
     if (!tex || tex != g_fb_scratch_tex || g_rs <= 1 || !g_fb_prefilter.load()) return 0.f;
@@ -91,8 +96,7 @@ float ge_draw_prefilter_bias(GLuint tex) {
 // and every feedback draw takes its own snapshot (find is called once per PRIM).
 // PSPRECOMP_GE_FEEDBACK=0 restores the old behaviour (memory path).
 static GLuint feedback_snapshot(int* w, int* h) {
-    static const bool off = std::getenv("PSPRECOMP_GE_FEEDBACK") && std::getenv("PSPRECOMP_GE_FEEDBACK")[0] == '0';
-    if (off) return 0;
+    if (!g_fb_snapshot_on.load()) return 0;
     flush_batch();
     const int W = 480 * g_rs, H = 272 * g_rs;
     if (!g_fb_scratch_tex) {

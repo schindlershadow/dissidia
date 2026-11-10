@@ -73,7 +73,7 @@ PspFrameRateHook g_fps{nullptr, 0, nullptr, nullptr};
 
 enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_QUIT,
            ROW_NET_MODE, ROW_NET_SERVER, ROW_NET_ROOM, ROW_NET_PEERS, ROW_NET_STATUS,   // Network page
-           ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING };   // the last four: Debug page
+           ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS };   // the last six: Debug page
 std::vector<Row> g_rows;
 int g_sel = 0;
 constexpr int PAGE_SYSTEM = 0, PAGE_NETWORK = 1, PAGE_DEBUG = 2, PAGES = 3;
@@ -372,6 +372,22 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.help = "Flicker test (--ge-sync)\nWaits for the GPU at each step: slower, rules out timing. This session only.";
             break;
         }
+        case ROW_GLOWSOFT: {
+            const bool on = ge_draw_fb_prefilter();
+            m.label = "Glow Softening";
+            m.value = ge_draw_render_scale() > 1 ? (on ? "On" : "Off") : "On  (render scale 1x: no effect)";
+            m.can_dec = on; m.can_inc = !on;
+            m.help = "Ghost test (PSPRECOMP_FB_PREFILTER)\nAt render scale above 1, the glow passes sample the picture through its mipmaps. Flip it while looking at a ghost. This session only.";
+            break;
+        }
+        case ROW_GLOWPASS: {
+            const bool on = ge_draw_fb_snapshot();
+            m.label = "Glow Passes";
+            m.value = on ? "On" : "Off";
+            m.can_dec = on; m.can_inc = !on;
+            m.help = "Ghost test (PSPRECOMP_GE_FEEDBACK)\nOff skips the passes that read the picture they draw into (the glow). If the ghost goes, it comes from there. This session only.";
+            break;
+        }
         case ROW_RING: {
             const int cur = ge_draw_ring_mode(), nx = g_ring_next >= 0 ? g_ring_next : cur;
             m.label = "Vertex Upload";
@@ -503,6 +519,8 @@ void change(int d) {   // left / right on the selected row
         if (s >= 0 && s <= 4) ge_draw_set_sync_mode(s);
         break;
     }
+    case ROW_GLOWSOFT: ge_draw_set_fb_prefilter(d > 0); break;
+    case ROW_GLOWPASS: ge_draw_set_fb_snapshot(d > 0); break;
     case ROW_RING: {
         const int nx = d > 0 ? 1 : 0;
         const int cur = g_ring_next >= 0 ? g_ring_next : ge_draw_ring_mode();
@@ -524,7 +542,7 @@ void build_rows() {
         else g_rows.push_back(ROW_NET_PEERS);
         g_rows.push_back(ROW_NET_STATUS);
     } else if (g_page == PAGE_DEBUG) {
-        g_rows = {ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING};
+        g_rows = {ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS};
     } else {
         g_rows = {ROW_DISPLAY, ROW_RES, ROW_SCALE};
         if (g_fps.get && g_fps.count > 1) g_rows.push_back(ROW_FPS);
@@ -619,6 +637,8 @@ void confirm() {
     case ROW_FX: change(ge_draw_fx_shaders() ? -1 : 1); return;
     case ROW_SYNC: ge_draw_set_sync_mode((ge_draw_sync_mode() + 1) % 5); break;
     case ROW_RING: change((g_ring_next >= 0 ? g_ring_next : ge_draw_ring_mode()) ? -1 : 1); return;
+    case ROW_GLOWSOFT: change(ge_draw_fb_prefilter() ? -1 : 1); return;
+    case ROW_GLOWPASS: change(ge_draw_fb_snapshot() ? -1 : 1); return;
     }
     g_dirty = true;
 }

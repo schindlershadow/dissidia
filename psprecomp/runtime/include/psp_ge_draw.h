@@ -35,6 +35,14 @@ bool ge_draw_set_render_scale(int n);
 /// display list, 3 per present, 4 glFlush per batch.
 int ge_draw_sync_mode();
 void ge_draw_set_sync_mode(int mode);
+
+/// Glow debugging (settings menu, Debug page). The fb prefilter softens the game's in-place glow passes at render
+/// scale > 1 (see psp_ge_draw.cpp); the snapshot is what lets such a pass read the buffer it draws into (off: the
+/// old memory path). Both default on; flipped live to find what makes a ghost around bright objects.
+bool ge_draw_fb_prefilter();
+void ge_draw_set_fb_prefilter(bool on);
+bool ge_draw_fb_snapshot();
+void ge_draw_set_fb_snapshot(bool on);
 /// Vertex upload mode in use: 1 map, 0 sub (PSPRECOMP_GE_RING; changes at launch).
 int ge_draw_ring_mode();
 /// FX shader overrides: available = a manifest with usable entries was loaded
