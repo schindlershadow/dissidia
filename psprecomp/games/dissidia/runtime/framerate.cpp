@@ -279,8 +279,23 @@ bool g_actor_log = false;
 // misbehaved. For debugging attacks that behave differently above 30 Hz (Kain's Sky Spear).
 int g_fighter_log_left = 40000;
 uint32_t g_fighters[4] = {};
+uint32_t g_objects[12] = {};      // assists (kind 1), summoned / thrown objects (3, 6 ...): PSPRECOMP_FIGHTER_LOG logs their motion time
+float g_object_time[12] = {};
+int g_object_log_left = 30000;
 void fighter_log_frame() {
-    if (!g_fighter_log || g_fighter_log_left <= 0) return;
+    if (!g_fighter_log) return;
+    for (int i = 0; i < 12 && g_object_log_left > 0; i++) {   // motion time of the other actors, whenever it changes
+        const uint32_t a = g_objects[i];
+        if (!a || !ok(a)) continue;
+        const float t = rdf(a + 0x1A8u);   // motion player (actor+0x130) time
+        if (t == g_object_time[i]) continue;
+        g_object_time[i] = t;
+        g_object_log_left--;
+        std::fprintf(stderr, "[MOTION] t=%llu %08X kind=%u step=%.3f time=%.3f prev=%.3f end=%.3f len=%.3f scr=%u\n", (unsigned long long)g_tick, a,
+                     (unsigned)g_ram[(a + 0x542u) & 0x07FFFFFFu], rdf(FRAME_STEP), t, rdf(a + 0x1A4u), rdf(a + 0x1A0u), rdf(a + 0x1BCu),
+                     r32(a + 0x540u) & 0xFFFFu);
+    }
+    if (g_fighter_log_left <= 0) return;
     for (uint32_t a : g_fighters) {
         if (!a || !ok(a)) continue;
         const uint32_t scr = r32(a + 0x540u) & 0xFFFFu;
@@ -301,10 +316,13 @@ void actor_dt_hook(uint8_t* rdram, recomp_context* ctx) {
     g_orig_actor_dt(rdram, ctx);
     bool own = false;
     if (ok(actor)) own = ((r32(actor + 0x388u) & r32(OWN_MASK0)) | (r32(actor + 0x38Cu) & r32(OWN_MASK1))) != 0;
-    if (g_fighter_log && ok(actor) && g_ram[(actor + 0x542u) & 0x07FFFFFFu] == 0) {   // remember the fighters (kind 0)
+    if (g_fighter_log && ok(actor)) {   // remember the fighters (kind 0) and the other actors
+        const bool fighter = g_ram[(actor + 0x542u) & 0x07FFFFFFu] == 0;
         bool known = false;
         for (uint32_t f : g_fighters) known |= f == actor;
-        for (uint32_t& f : g_fighters) if (!known && !f) { f = actor; known = true; }
+        for (uint32_t f : g_objects) known |= f == actor;
+        if (fighter) { for (uint32_t& f : g_fighters) if (!known && !f) { f = actor; known = true; } }
+        else for (uint32_t& f : g_objects) if (!known && !f) { f = actor; known = true; }
     }
     const float before = ctx->f[0];
     if (g_ticks != 2.0f && ok(actor) && own) ctx->f[0] *= g_ticks * 0.5f;   // own clock: a fixed 2.0 per frame
