@@ -413,10 +413,14 @@ bool create_shortcut(const std::string& workdir, std::string* where, std::string
     const std::string exe = self_exe();
     if (exe.empty()) { if (error) *error = "cannot find the setup program's own path"; return false; }
     std::error_code ec;
-    // The game's icon, from the disc metadata the installer kept (ICON0.PNG, 144x80).
-    std::string icon = join(workdir, "disc0/PSP_GAME/ICON0.PNG");
+    // The game's icon: the release's own (game/icon/icon.png + icon.ico, next to this program), else the disc's ICON0.PNG (144x80).
+    const std::string exe_dir = fs::path(exe).parent_path().string();
+    const std::string icon_png = join(exe_dir, "game/icon/icon.png"), icon_ico = join(exe_dir, "game/icon/icon.ico");
+    std::string icon = is_file(icon_png) ? icon_png : join(workdir, "disc0/PSP_GAME/ICON0.PNG");
     std::string icon_copy = join(workdir, "icon.png");
     if (is_file(icon)) fs::copy_file(icon, icon_copy, fs::copy_options::overwrite_existing, ec);
+    std::string ico_copy = join(workdir, "icon.ico");
+    if (is_file(icon_ico)) fs::copy_file(icon_ico, ico_copy, fs::copy_options::overwrite_existing, ec);
     const std::string name = "Dissidia 012 Duodecim Final Fantasy";
 #ifdef _WIN32
     const char* appdata = std::getenv("APPDATA");
@@ -427,7 +431,7 @@ bool create_shortcut(const std::string& workdir, std::string* where, std::string
     auto q = [](const std::string& x) { std::string r = "'"; for (char c : x) { if (c == '\'') r += "''"; else r += c; } return r + "'"; };
     std::string ps = "$s=(New-Object -ComObject WScript.Shell).CreateShortcut(" + q(lnk) + ");$s.TargetPath=" + q(exe) +
                      ";$s.Arguments='--launch';$s.WorkingDirectory=" + q(workdir) +
-                     ";$s.Description=" + q(name) + ";$s.Save()";
+                     ";$s.Description=" + q(name) + (is_file(ico_copy) ? ";$s.IconLocation=" + q(ico_copy) : std::string()) + ";$s.Save()";
     if (std::system(("powershell -NoProfile -NonInteractive -Command \"" + ps + "\"").c_str()) != 0 || !is_file(lnk)) {
         if (error) *error = "could not create " + lnk;
         return false;

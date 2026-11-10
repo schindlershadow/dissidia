@@ -25,3 +25,5 @@ SDL_Window* psp_get_sdl_window();
 
 // Window title (default "PSPrecomp Runtime"); may be called before or after the window exists.
 void psp_set_window_title(const char* title);
+// A game module gives its window an icon: w x h RGBA8 pixels (copied). Applied now if the window exists, else when it is created.
+void psp_set_window_icon(const unsigned char* rgba, int w, int h);

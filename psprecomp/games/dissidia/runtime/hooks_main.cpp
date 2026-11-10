@@ -1,3 +1,4 @@
+#include "psp_app_icon_dissidia.h"
 #include "psp_event_loop.h"
 #include <cmath>
 // games/dissidia/runtime/hooks_main.cpp — Dissidia 012 Duodecim game module.
@@ -283,6 +284,7 @@ void dissidia_register_hooks(uint8_t* rdram) {
     static const char* const kIds[] = {"ULUS10566", "ULES01505", "ULJM05681"};
     psp_savedata_set_shared_ids(kIds, 3);
     psp_set_window_title("Dissidia 012 Duodecim Final Fantasy");
+    psp_set_window_icon(k_app_icon_rgba, k_app_icon_w, k_app_icon_h);
     psp_dispatch_register(0x089E0A88u, dissidia_menu_flag_cb<4>);
     psp_dispatch_register(0x089E0AA4u, dissidia_menu_flag_cb<2>);
     dissidia_index_install();    // package-index buffer relocation (hooks_index.cpp); before the first build

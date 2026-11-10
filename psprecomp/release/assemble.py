@@ -118,7 +118,7 @@ def main():
 
     def game_keep(rel):
         top = rel.split("/")[0]
-        if top in ("analysis", "fx_shaders"):
+        if top in ("analysis", "fx_shaders", "icon") and not rel.endswith(".py"):
             return True
         if rel in ("game.toml", "features.ini", "package_paths.txt", "README.md") or (rel.startswith("overlay_") and rel.endswith(".toml")):
             return True

@@ -32,6 +32,7 @@
 #include "../runtime/src/hle/psp_savedata_dialog.h"
 #include "../runtime/src/hle/psp_savemgr.h"
 #include "install.h"
+#include "../runtime/include/psp_app_icon_dissidia.h"
 #include "proc.h"
 #include "payload.h"
 #include "third_party/portable-file-dialogs.h"
@@ -1087,6 +1088,10 @@ int main(int argc, char** argv) {
     app.win = SDL_CreateWindow("Dissidia 012 Setup", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 480 * SCALE, 272 * SCALE,
                                SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
     if (!app.win) { std::fprintf(stderr, "cannot create a window: %s\n", SDL_GetError()); return 1; }
+    if (SDL_Surface* ic = SDL_CreateRGBSurfaceWithFormatFrom((void*)k_app_icon_rgba, k_app_icon_w, k_app_icon_h, 32, k_app_icon_w * 4, SDL_PIXELFORMAT_RGBA32)) {
+        SDL_SetWindowIcon(app.win, ic);
+        SDL_FreeSurface(ic);
+    }
     app.ren = SDL_CreateRenderer(app.win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!app.ren) app.ren = SDL_CreateRenderer(app.win, -1, SDL_RENDERER_SOFTWARE);
     if (!app.ren) { std::fprintf(stderr, "cannot create a renderer: %s\n", SDL_GetError()); return 1; }

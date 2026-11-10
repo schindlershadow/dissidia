@@ -43,6 +43,7 @@ static void gl_debug_install() {
     std::fprintf(stderr, "[GL_DEBUG] driver debug output on\n");
 }
 #include <chrono>
+#include <vector>
 #include <thread>
 #include <map>
 #include <cstdlib>
@@ -470,6 +471,21 @@ void psp_set_window_title(const char* title) {
     g_window_title = title;
     if (g_window) SDL_SetWindowTitle(g_window, title);
 }
+static std::vector<unsigned char> g_icon_px;
+static int g_icon_w = 0, g_icon_h = 0;
+static void apply_window_icon(SDL_Window* w) {
+    if (!w || g_icon_px.empty()) return;
+    if (SDL_Surface* s = SDL_CreateRGBSurfaceWithFormatFrom(g_icon_px.data(), g_icon_w, g_icon_h, 32, g_icon_w * 4, SDL_PIXELFORMAT_RGBA32)) {
+        SDL_SetWindowIcon(w, s);   // SDL copies the pixels
+        SDL_FreeSurface(s);
+    }
+}
+void psp_set_window_icon(const unsigned char* rgba, int w, int h) {
+    if (!rgba || w <= 0 || h <= 0) return;
+    g_icon_px.assign(rgba, rgba + size_t(w) * h * 4);
+    g_icon_w = w; g_icon_h = h;
+    apply_window_icon(g_window);
+}
 static SDL_GLContext g_gl_context = nullptr;
 
 // ---------------------------------------------------------------------------
@@ -570,6 +586,7 @@ int psp_runtime_init_sdl() {
         SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,
         win_w, win_h, wflags);
+    apply_window_icon(g_window);
     if (!g_window) {
         std::fprintf(stderr,
             "[RT] SDL_CreateWindow failed: %s\n", SDL_GetError());
