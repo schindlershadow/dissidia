@@ -4,7 +4,7 @@ scripted pad input in game time, quit, and compare the same script at several fr
 
   battle_test.py run     --work DIR --script FILE [--fps 120] [--out DIR] [--char Squall] [--timeout 240]
   battle_test.py compare --work DIR --script FILE [--rates 30,120] [--out DIR]
-  battle_test.py actions --work DIR --actions 2422,2423,... | --all [--rates 30,120] [--gap 4500] [--who 0]
+  battle_test.py actions --work DIR --actions 2422,2423,... | --all [--rates 30,120] [--gap 4500] [--who 0] [--hold TRIANGLE --stick 'x,y;x,y']
                                             start each action by id (no button presses, whatever the setup) and compare
                                             how it moves at each rate; --all lists the fighter's actions first
   battle_test.py analyze LOG30 LOG120       (compare two finished logs)
@@ -174,7 +174,7 @@ def free_port():
         return s.getsockname()[1]
 
 
-def walk_menus(g, char, tries=14):
+def walk_menus(g, char, tries=14, stage=12):
     """boot -> battle. Raises when a stage does not come up."""
     g.wait_log(r'Debug socket listening', 60)
     # title: CROSS until the save list opens
@@ -204,6 +204,13 @@ def walk_menus(g, char, tries=14):
     g.step('cross')                                    # YES
     g.step('cross')                                    # CPU Select: Lightning
     g.step('cross')                                    # YES
+    time.sleep(2.0)
+    g.settle(10)
+    if stage:                                          # battle setup: STAGE row, entry `stage` of 20 (1 = Random), back to Enter Battle
+        g.step('down', wait=0.4)
+        for _ in range(stage - 1):
+            g.step('right', wait=0.25)
+        g.step('up', wait=0.4)
     g.press('cross')                                   # Enter Battle
     # loading / opponent pages: CROSS ("Next") until the fight's HUD (dark gauge bar along the bottom) is on screen
     seen = 0
@@ -232,7 +239,7 @@ def run(a, fps=None):
     try:
         g.start()
         t0 = time.time()
-        walk_menus(g, a.char)
+        walk_menus(g, a.char, stage=getattr(a, 'stage', 12))
         print('[battle_test] %d fps: in battle after %.0f s' % (fps, time.time() - t0), file=sys.stderr)
         if a.script:
             end = time.time() + a.timeout
@@ -284,7 +291,8 @@ def action_windows(path):
 
 
 def measure(track, t0, t1):
-    """what the fighter did in game time [t0, t1): scripts in order with their length (ms), distance covered (m), peak speed (m/s)"""
+    """what the fighter did in game time [t0, t1): the scripts in order with their length (ms), and, for the FIRST script
+    (the move itself; what follows is recovery and walking), the distance covered (m) and the peak speed (m/s over 200 ms)"""
     seg = [r for r in track if t0 <= r[0] < t1]
     if len(seg) < 3:
         return None
@@ -294,14 +302,18 @@ def measure(track, t0, t1):
             scripts.append([r[3], r[0], r[0]])
             last = r[3]
         scripts[-1][2] = r[0]
-    dist = sum(math.hypot(v[1] - u[1], v[2] - u[2]) for u, v in zip(seg, seg[1:]))
-    peak, t = 0.0, seg[0][0]
-    while t + 100 <= seg[-1][0]:
-        pa, pb = at(seg, t), at(seg, t + 100)
-        if pa and pb:
-            peak = max(peak, math.hypot(pb[0] - pa[0], pb[1] - pa[1]) / 0.1)
-        t += 33.3
-    return [(s[0], s[2] - s[1]) for s in scripts if s[0] not in (65535, -1)], dist, peak
+    scripts = [x for x in scripts if x[0] not in (65535, -1)]
+    if not scripts:
+        return None
+    first = [r for r in seg if scripts[0][1] <= r[0] <= scripts[0][2]]
+    dist = sum(math.hypot(v[1] - u[1], v[2] - u[2]) for u, v in zip(first, first[1:]))
+    peak = 0.0
+    for i, u in enumerate(first):
+        for v in first[i + 1:]:
+            if v[0] - u[0] >= 200:
+                peak = max(peak, math.hypot(v[1] - u[1], v[2] - u[2]) / ((v[0] - u[0]) / 1000.0))
+                break
+    return [(x[0], x[2] - x[1]) for x in scripts], dist, peak
 
 
 def actions_compare(a):
@@ -317,10 +329,11 @@ def actions_compare(a):
     path = os.path.join(a.out, 'actions.txt')
     with open(path, 'w') as f:
         t = 3000
-        for i in ids:
+        sticks = a.stick.split(';')                     # one stick position per action in turn: '128,0;255,128'
+        for k, i in enumerate(ids):
             f.write('%d action %d %d\n' % (t, i, a.who))
             if a.hold:                                  # keep the button (and stick) down, as a player holding the move on
-                f.write('%d set %s %s\n' % (t + 40, a.hold, a.stick.replace(',', ' ')))
+                f.write('%d set %s %s\n' % (t + 40, a.hold, sticks[k % len(sticks)].replace(',', ' ')))
                 f.write('%d set - 128 128\n' % (t + 40 + a.hold_ms))
             t += a.gap
         f.write('%d quit\n' % (t + 1000))
@@ -337,7 +350,9 @@ def actions_compare(a):
         rows = {}
         for r in rates:
             wins, tracks = data[r]
-            w = [x for x in wins if x[0] == i]
+            w = [x for x in wins if x[0] == i][:]
+            same = [x for x in ids[:k] if x == i]       # the same action listed again: take its n-th run
+            w = w[len(same):] if len(w) > len(same) else []
             if not w:
                 rows[r] = 'missing'
                 continue
@@ -466,6 +481,7 @@ def main(argv):
         p.add_argument('--script')
         p.add_argument('--out', default=tempfile.mkdtemp(prefix='battle_test_'))
         p.add_argument('--char', default='squall')
+        p.add_argument('--stage', type=int, default=12, help='Quick Battle stage, 1-20 (1 = Random); default 12')
         p.add_argument('--timeout', type=int, default=240)
         if name == 'run':
             p.add_argument('--fps', type=int, default=30)
@@ -477,6 +493,7 @@ def main(argv):
     p.add_argument('--work', required=True)
     p.add_argument('--out', default=tempfile.mkdtemp(prefix='battle_test_'))
     p.add_argument('--char', default='squall')
+    p.add_argument('--stage', type=int, default=12)
     p.add_argument('--actions', default='')
     p.add_argument('--all', action='store_true')
     p.add_argument('--who', type=int, default=0)

@@ -24,8 +24,18 @@ Needs: Xvfb, python3 + Pillow, a save in `<work>/ms0` (Quick Battle unlocked) an
 - **Logs**: `[FIGHTER] gt=<game ms> ... cur=<script now> pos=<x,z of the body root, +0x110/+0x118>` for every fighter every update in test runs;
   `[MOTION]` lines for spawned objects carry `gt=` and position.
 
+## Setup the harness fixes
+
+Stage 12 (`--stage N`, 1 = Random, default 12: the STAGE row of the battle setup page), Squall vs Lightning. The CPU is a dummy
+(time step 0, HP kept at its starting value, actor +0x10B0, so a hit never ends the fight and resets the clock).
+Revolver Drive is a ground HP attack (hold the HP attack button, Triangle by default): actions 2289 (script 10004, the start) and
+2290 (script 10005, the drive); `--hold TRIANGLE --stick x,y`.
+
 ## Known limits (2026-11-10)
 
 - The stage is random and the CPU is a frozen dummy; fighters still get hit reactions (script 800) in some runs, which cuts a move short.
 - Body position (+0x110/+0x118) is what a rush changes; the actor origin (+0x80/+0x88) does not move during moves.
-- First results: the first script of most actions lasts the same at 30 and 120 fps; the rest of each window is noisy.
+- Results are taken from the move's first script only (what follows is recovery / walking).
+- First results (Revolver Drive 2290, stage 12, Triangle held, stick forward / left / right / back): 1.2 s, 2.5-3.4 m, peak ~10 m/s at both
+  30 and 120 fps; the animation clock (+0x1A8) advances 60 units per game second at both. So the drive's logic position / timing and animation
+  speed are NOT faster at 120; suspects left: the camera, effects, and turning (heading change per update).

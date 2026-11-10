@@ -654,6 +654,8 @@ def apply_ability_names(aents, chars, names, texts, log=print):
                 log("ablt names: %04X has command %03X, the name map says %s: left as is" % (rid, cmd, ent["cmd"]))
                 continue
             before = bytes(r)
+            if ent.get("set_cmd") is not None:      # re-point the record at another command of the objx comb (+12)
+                struct.pack_into("<H", r, ABLT_CMD, int(str(ent["set_cmd"]), 0))
             if "type" in ent:                       # brave / HP (+0x16): which set slots the Abilities screen offers
                 r[ABLT_TYPE] = ABLT_TYPES[str(ent["type"]).lower()]
             if "phase" in ent:                      # ground / midair / follow-up of the +6 ability (+0x17)

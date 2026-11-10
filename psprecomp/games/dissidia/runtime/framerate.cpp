@@ -163,6 +163,7 @@ size_t g_test_next = 0;
 double g_gt_ms = 0;                     // game time in the battle, ms
 bool g_gt_started = false, g_test_on = false;
 uint32_t g_test_buttons = 0, g_test_analog = 0x8080;
+bool g_test_freeze_cpu = false;   // PSPRECOMP_TEST_FREEZE_CPU=1: every fighter but the first one seen gets time step 0 while a test runs (a standing dummy)
 uint32_t g_human_vt = 0;   // vtable of the human's controller object (found at the first battle: the one a scripted press reaches)
 FILE* g_record = nullptr;
 uint32_t g_rec_buttons = 0xFFFFFFFFu, g_rec_analog = 0;
@@ -300,6 +301,15 @@ void testdrive_frame(uint8_t* rdram, recomp_context* ctx) {
     static bool described = false;
     if (!g_gt_started) described = false;
     if (!described && g_gt_ms >= 1000) { described = true; test_describe_fighters(); }
+    if (g_test_freeze_cpu) {   // the dummy keeps the HP it started with (actor +0x10B0): a hit never ends the fight
+        static uint32_t keep_actor = 0, keep_hp = 0;
+        for (int i = 1; i < 4; i++) {
+            const uint32_t a = g_fighters[i];
+            if (!a || !ok(a) || g_tick - g_fighter_seen[i] > 60) continue;
+            if (a != keep_actor || !g_gt_started || g_gt_ms < 34) { keep_actor = a; keep_hp = r32(a + 0x10B0u); }
+            else if (keep_hp) w32(a + 0x10B0u, keep_hp);
+        }
+    }
     if (g_test_events.empty()) return;
     while (g_test_next < g_test_events.size() && g_test_events[g_test_next].t <= g_gt_ms) {
         const TestEvent& e = g_test_events[g_test_next++];
@@ -317,7 +327,6 @@ void testdrive_frame(uint8_t* rdram, recomp_context* ctx) {
     psp_ctrl_set_script(true, g_test_buttons, g_test_analog);
 }
 
-bool g_test_freeze_cpu = false;   // PSPRECOMP_TEST_FREEZE_CPU=1: every fighter but the first one seen gets time step 0 while a test runs (a standing dummy)
 void testdrive_install() {
     if (const char* fz = std::getenv("PSPRECOMP_TEST_FREEZE_CPU"); fz && fz[0] && fz[0] != '0') g_test_freeze_cpu = true;
     g_test_go = std::getenv("PSPRECOMP_TEST_GO");
@@ -587,8 +596,8 @@ void fighter_log_frame() {
         const uint32_t scr = r32(a + 0x540u) & 0xFFFFu;
         if (scr == 0xFFFFu && !g_test_on) continue;   // test runs log every frame (the rush of a move can run with no action script id)
         g_fighter_log_left--;
-        std::fprintf(stderr, "[FIGHTER] gt=%.0f t=%llu %08X scr=%u cur=%d step=%.3f pos=%.3f,%.3f y=%.3f floor=%.3f fl=%08X f110=%.3f f114=%.3f f134=%.3f f0F4=%.3f f104=%.3f f144=%.3f vel=%.3f,%.3f,%.3f\n",
-                     g_gt_ms, (unsigned long long)g_tick, a, scr, (int)(int16_t)(r32(a + 0x180u) & 0xFFFFu), rdf(FRAME_STEP), rdf(a + 0x110u), rdf(a + 0x118u), rdf(a + 0x34u), rdf(a + 0x2E4u), r32(a + 0x380u), rdf(a + 0x110u),
+        std::fprintf(stderr, "[FIGHTER] gt=%.0f t=%llu %08X scr=%u cur=%d mt=%.3f step=%.3f pos=%.3f,%.3f y=%.3f floor=%.3f fl=%08X f110=%.3f f114=%.3f f134=%.3f f0F4=%.3f f104=%.3f f144=%.3f vel=%.3f,%.3f,%.3f\n",
+                     g_gt_ms, (unsigned long long)g_tick, a, scr, (int)(int16_t)(r32(a + 0x180u) & 0xFFFFu), rdf(a + 0x1A8u), rdf(FRAME_STEP), rdf(a + 0x110u), rdf(a + 0x118u), rdf(a + 0x34u), rdf(a + 0x2E4u), r32(a + 0x380u), rdf(a + 0x110u),
                      rdf(a + 0x114u), rdf(a + 0x134u), rdf(a + 0xF4u), rdf(a + 0x104u), rdf(a + 0x144u), rdf(a + 0xE0u), rdf(a + 0xE4u),
                      rdf(a + 0xE8u));
     }
