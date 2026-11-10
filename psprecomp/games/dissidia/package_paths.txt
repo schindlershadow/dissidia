@@ -942,7 +942,6 @@ menu/jp/collection/user_icon/user_icon410.gim
 menu/jp/collection/user_icon/user_icon411.gim
 menu/jp/collection/user_icon/user_icon412.gim
 menu/jp/collection/user_icon/user_icon413.gim
-menu/jp/common/chara_face_in_name/88822...png
 menu/jp/common/chara_face_in_name/d3..3999.fin
 menu/jp/common/chara_face_in_name/iisffn.at3
 menu/jp/common/chara_face_in_name/p_eht100_face_in_name.gim

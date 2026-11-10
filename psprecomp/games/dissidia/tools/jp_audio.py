@@ -126,12 +126,14 @@ def main():
     pkg_base = rec_pkg["extent"] * SECTOR
     say("undub disc: %s, %d package entries; installed: %d entries" % (iso.volume_id, len(undub), len(mine)))
 
+    # crc -> every known path with that CRC (the index is keyed by a 32-bit CRC, and a few unrelated names collide: e.g.
+    # voice/en/battle/voice_p_for100_00.scd shares its CRC with a menu image, so a plain dict lost Cecil's main voice bank)
     known = {}
     with open(os.path.join(HERE, "..", "package_paths.txt")) as f:
         for line in f:
             p = line.strip()
             if p:
-                known[pe.package_crc(p)] = p
+                known.setdefault(pe.package_crc(p), []).append(p)
 
     out_voice = os.path.join(a.work, "voice_jp")
     out_movie = os.path.join(a.work, "movie_jp")
@@ -139,10 +141,12 @@ def main():
     for crc, (sec, size) in undub.items():
         if crc not in mine:
             continue
-        path = known.get(crc)
-        if path is not None:
-            if path.lower().replace("\\", "/").startswith("voice/en/"):
-                candidates.append((crc, path, sec, size))
+        paths = known.get(crc)
+        if paths is not None:
+            voice = [q for q in paths if q.lower().replace("\\", "/").startswith("voice/en/")]
+            # A name recovered for another folder can be a CRC collision (ce_battle_25.at3 shares its CRC with
+            # dungeon/image/oq_mono_start.at3), so non-voice names are also decided by the entry's magic below.
+            candidates.append((crc, voice[0] if voice else None, sec, size))
         else:
             candidates.append((crc, None, sec, size))   # unknown path: decided by its magic below
     tag("STEP", "2/4 Comparing the voice files")
