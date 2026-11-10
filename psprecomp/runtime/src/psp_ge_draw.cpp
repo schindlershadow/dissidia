@@ -260,7 +260,7 @@ void ge_draw_set_stencil_mode(int m) { g_stencil_mode.store(m); }
 static std::mutex g_dump_mu;
 static std::string g_dump_dir;
 static std::atomic<bool> g_dump_armed{false};
-// Debug socket `W <n>`: trace every draw of the next n presented frames ([FTRACE] lines, see ge_draw_prim_one).
+// Debug socket `FT <n>`: trace every draw of the next n presented frames ([FTRACE] lines, see ge_draw_prim_one).
 static std::atomic<int> g_ftrace_frames{0};
 void ge_draw_frame_trace(int n) { g_ftrace_frames.store(n); }
 bool ge_draw_frame_trace_on() { return g_ftrace_frames.load(std::memory_order_relaxed) > 0; }
