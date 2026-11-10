@@ -158,7 +158,7 @@ statistics). The core and the player's generated game compile with the NDK uncha
 builds `libmain.so` (SHARED, `SDL_main` in `src/main.cpp`) when `ANDROID` is set; `build_hello.py --main-so ... --package org.psprecomp.game` packs the APK.
 `psp_android.cpp`: work folder = `<external storage>/Android/data/org.psprecomp.game/files/game` (the desktop work folder: disc0/, ms0/, mods/, voice_jp/ ...),
 stderr to logcat tag `psprecomp` and `last_run.log` there. Android 13 `adb push` into Android/data fails on nested folders: copy with
-`tar cf - disc0 | adb shell "tar xf - -C <dir>"`. Result on the Retroid Pocket 6: boots, loads the save, 30 GE frames/s, ATRAC audio decodes, the uber-shader
+`tar cf - disc0 | adb shell "tar xf - -C <dir>"`. Files copied by adb belong to the shell user, which the app cannot write (settings.ini and saves silently fail): run `adb shell chmod -R a+rwX <work folder>` after copying. Result on the Retroid Pocket 6: boots, loads the save, 30 GE frames/s, ATRAC audio decodes, the uber-shader
 compiles first time; picture/audio/input quality awaiting the user.
 Fixes after the first look (2026-11-10): (1) no TrueType font on Android -> every sceFont string blank: `psp_font_host_files` now uses `/system/fonts/DroidSans.ttf` (+ Bold);
 (2) Adreno does not honour buffer orphaning: wrapping the vertex ring with `glBufferData(NULL)` while earlier draws were still pending made them read the NEW
