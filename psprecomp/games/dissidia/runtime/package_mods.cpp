@@ -68,7 +68,7 @@ bool parse_hex8(const std::string& s, uint32_t* out) {
 }
 
 int64_t pread_all(const std::string& file, uint8_t* dest, uint32_t n, int64_t off) {
-    int fd = ::open(file.c_str(), O_RDONLY);
+    int fd = ::open(file.c_str(), O_RDONLY | O_BINARY);
     if (fd < 0) return -1;
     int64_t got = 0;
     while (got < n) {

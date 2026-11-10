@@ -186,7 +186,7 @@ static bool try_route_missing_async_open_to_archive(
     }
     if (host_path.empty()) return false;
 
-    int host_fd = ::open(host_path.c_str(), O_RDONLY);
+    int host_fd = ::open(host_path.c_str(), O_RDONLY | O_BINARY);
     if (host_fd < 0) return false;
 
     // Record the asset's slice [off, off+size) within the container. The game
@@ -330,7 +330,7 @@ static void hle_sceIoOpen(
     if (flags & PSP_O_TRUNC) posix_flags |= O_TRUNC;
     if (flags & PSP_O_APPEND) posix_flags |= O_APPEND;
 
-    int host_fd = ::open(host_path.c_str(), posix_flags, 0644);
+    int host_fd = ::open(host_path.c_str(), posix_flags | O_BINARY, 0644);
 
     // Always log LOADINGGROUP opens (bypass IO_LOG_LIMIT) for debugging
     if (std::string(psp_path).find("LOADINGGROUP") != std::string::npos ||
@@ -915,7 +915,7 @@ static void hle_sceIoOpenAsync(
     if (flags & PSP_O_TRUNC) posix_flags |= O_TRUNC;
     if (flags & PSP_O_APPEND) posix_flags |= O_APPEND;
 
-    int host_fd = ::open(host_path.c_str(), posix_flags, 0644);
+    int host_fd = ::open(host_path.c_str(), posix_flags | O_BINARY, 0644);
     // Faithful: a directory is not openable as a file (macOS ::open allows
     // it; PSP firmware does not) — treat as not-found, same as sync open.
     if (host_fd >= 0) {

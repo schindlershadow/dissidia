@@ -7,6 +7,13 @@
 #include <ctime>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <fcntl.h>
+
+// Windows (mingw/msvcrt) opens fds in TEXT mode by default: read() then folds CRLF and stops at 0x1A, which corrupts
+// every binary asset read. OR O_BINARY into open() flags; it does not exist on POSIX, where it is a no-op.
+#ifndef O_BINARY
+#define O_BINARY 0
+#endif
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
