@@ -17,6 +17,8 @@ glibc/mingw target), plus the libraries the runtime links, built with it.  Layou
   cmake/  bin/ninja  pinned cmake and ninja               deps/{include,lib}   SDL2, FreeType, zlib, libavcodec (static)
   toolchain.cmake    CMake toolchain file: compilers, deps, ABI-relevant flags (pass -DCMAKE_TOOLCHAIN_FILE=...)
   deps.cmake         defines the PkgConfig::SDL2 / FREETYPE / AVCODEC and ZLIB::ZLIB targets the runtime CMake uses
+  bin/pspdecrypt[.exe]  EBOOT.BIN decryptor for the installer (John-K/pspdecrypt, GPL-3.0; license copy: bin/pspdecrypt-LICENSE.txt),
+                     static, with OpenSSL libcrypto (SHA-256, DES only) built from source and linked in
   toolchain.json     what the bundle is (bundle_version, zig target, component versions): the ABI identity of a release
 
 Python 3 standard library only. Needs on the build host (CI): bash, make, tar, and for Linux SDL2 the X11/Wayland/ALSA/...
@@ -319,6 +321,39 @@ def main():
         run(["make", "-j", j], env=env, cwd=fbd)
         run(["make", "install"], env=env, cwd=fbd)
         ffver = ver["sources"]["ffmpeg"]["version"]
+
+    # ---------------------------------------------------------------- 3b. pspdecrypt (a tool for the installer, not a runtime dependency)
+    # It needs OpenSSL's libcrypto for SHA-256 (ipl_decrypt.cpp) and DES-CBC (pspdecrypt_lib.cpp) only, so a minimal static
+    # libcrypto is built in the scratch dir (never installed into the bundle) and linked into the one executable.
+    log("building OpenSSL libcrypto (static, for pspdecrypt)")
+    osrc = src("openssl")
+    ossl_target = "mingw64" if plat.startswith("windows") else "linux-x86_64"
+    run([os.path.join(osrc, "Configure"), ossl_target, "no-shared", "no-asm", "no-tests", "no-threads",
+         "no-dso", "no-engine", "no-module", "no-legacy", "no-autoload-config", "no-ssl", "no-tls", "no-dtls", "no-comp", "no-ocsp",
+         "no-cms", "no-ts", "no-ct", "no-srp", "no-psk",
+         "--prefix=" + os.path.join(work, "openssl-inst"), "--libdir=lib",
+         "CC=%s/zig-cc" % hb, "AR=%s/zig-ar" % hb, "ARFLAGS=r", "RANLIB=%s/zig-ranlib" % hb, "CFLAGS=-fno-sanitize=undefined"],
+        env=env, cwd=osrc)
+    run(["make", "-j", j, "build_libs"], env=env, cwd=osrc)
+    log("building pspdecrypt")
+    psrc = src("pspdecrypt")
+    pobj = os.path.join(work, "pspdecrypt-obj")
+    os.makedirs(pobj)
+    objs = []
+    for sub in ("", "libkirk"):
+        for fn in sorted(os.listdir(os.path.join(psrc, sub))):
+            base, ext = os.path.splitext(fn)
+            if ext not in (".c", ".cpp") or (sub == "" and base == "kl4e_test"):
+                continue
+            o = os.path.join(pobj, (sub + "_" if sub else "") + base + ".o")
+            cc = "zig-cc" if ext == ".c" else "zig-c++"
+            run([os.path.join(hb, cc), "-O3", "-fno-sanitize=undefined", "-I" + osrc + "/include", "-I" + os.path.join(deps, "include"),
+                 "-I" + psrc, "-c", os.path.join(psrc, sub, fn), "-o", o], env=env)
+            objs.append(o)
+    run([os.path.join(hb, "zig-c++"), "-o", os.path.join(out, "bin", "pspdecrypt" + exe)] + objs +
+        [os.path.join(deps, "lib", "libz.a"), os.path.join(osrc, "libcrypto.a")] + (["-lws2_32", "-lcrypt32"] if plat.startswith("windows") else []),
+        env=env)
+    shutil.copy2(os.path.join(psrc, "LICENSE.TXT"), os.path.join(out, "bin", "pspdecrypt-LICENSE.txt"))
 
     # ---------------------------------------------------------------- 4. static libraries only
     libdir = os.path.join(deps, "lib")

@@ -257,7 +257,7 @@ def main():
         cfg.append("-DCMAKE_CXX_COMPILER_LAUNCHER=ccache")
     run(cfg, env=env)
 
-    step(5, "Compiling the game (long: tens of minutes, ~1.5 GB RAM per job)")
+    step(5, "Compiling the game (the long step; about 1.5 GB RAM per job)")
     pct = re.compile(r"^\[\s*(\d+)%\]")
     ninja = re.compile(r"^\[(\d+)/(\d+)\]")
 

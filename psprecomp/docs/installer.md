@@ -53,14 +53,33 @@ of the fork.
    - Open for milestone 5: the core configure needs the four small generated headers of an output dir (`recomp_module.h`,
      `recomp_game_config.h`, `recomp_fingerprint.h`, `recomp.h`; binary facts and addresses, no game code) and CI has no game; the
      release workflow has to supply them (a committed header-only stub, or hydrate the shipped analysis).
-4. **Wizard** (requirement, user 2026-11-10: it must run on **Windows as well as Linux**; so it is a C++/SDL2 program built with the
-   bundle for each platform, using only portable APIs (std::filesystem, SDL file dialogs/own browser, no bash or POSIX calls), and the
-   build step it drives must run there too: `psp_build.py` needs Python 3 (an embedded Python ships in the Windows bundle, Python
-   stdlib only), or is ported into the wizard binary later. The wizard reuses the runtime's SdTheme screens, so it depends on the
-   core building for Windows: task 19 (Windows port of the core) comes before the Windows wizard. Plan: write the wizard portable
-   from the start and test it on Linux first.) `psprecomp_setup`, SDL + the SdTheme screens): language-free, controller friendly. Pages: welcome, pick game file (ISO /
-   CSO; a file browser), install folder, options (HD textures source, Japanese voices, update check), build progress with cancel/resume,
-   done (Play). Repair and "rebuild" entries when already installed.
+4. **Wizard** (`setup/`, program `psprecomp_setup`; first version built and driven on Linux 2026-11-10). Requirement (user): it
+   runs on **Windows as well as Linux**. It is a C++/SDL2 program built with the bundle for each platform, using portable code
+   only (`std::filesystem`, a small process helper `setup/proc.cpp` with POSIX fork/pipes or Win32 CreateProcess + a job object so
+   Cancel kills ninja/zig too), and it reuses the runtime's menu renderer (`render_menu`, `KeyboardDialog` from
+   `runtime/src/hle/psp_savedata_dialog.cpp`: the settings-menu look in its generic theme; the game's own art does not exist
+   yet before the disc is read). Keyboard or controller (d-pad/stick, A = select, B = back). Pages: welcome (or Play / Rebuild /
+   Install again once installed), choose the game file, where to install, options, progress, done / failed.
+   - **System file dialogs**: the game file, the install folder and the undub file are picked with the platform's own dialog
+     (`setup/third_party/portable-file-dialogs.h`, WTFPL, pinned commit: Win32 on Windows, `zenity` or `kdialog` on Linux). Where
+     there is none (no zenity/kdialog) or on request ("Use the simple browser instead") the wizard's built-in browser, which
+     also has a type-a-path keyboard, is used.
+   - **Install folder**: a suggested default (`~/Games/Dissidia012`, `%USERPROFILE%\Games\Dissidia012`) with a free-space check
+     (about 6 GB needed), "Choose another folder...", "Use the suggested folder".
+   - **Progress page**: stage name and step count, a bar, a detail line (ninja's "Compiled 183 of 474: file"), elapsed time, an ETA
+     ("About 6 minutes left", from ninja's file counter during the compile, from the overall fraction elsewhere) and an explanation
+     of what the current stage does in the information panel. The step weights live in `setup/install.cpp`.
+   - **Options**: check for updates; HD texture pack; Japanese voices (undub; asks for the undub disc image first); Android
+     version. A release declares which of the optional features it implements in `game/features.ini` (`hd_textures=1`,
+     `jp_audio=1`, `android=1`); until a feature exists its row shows "Not yet" and cannot be switched on. The commands the
+     wizard runs for them are fixed in `install.cpp` (`tools/fetch_textures.py <work>`, `tools/jp_audio.py --iso <undub>
+     --work <work>`, `psp_build.py ... --android`), so those tasks only have to provide the scripts and flip the line.
+   - Release layout the wizard expects (see `setup/install.h`): `psprecomp_setup`, `bin/psprecomp`, `toolchain/`, `sdk/`,
+     `game/` (= `games/dissidia`), `python/` on Windows. It remembers the install in the user's pref dir (`install.ini`).
+   - Command line: `--play [DIR]` starts the installed game; `--headless --iso F --dir D` runs the install steps without a window
+     (used for tests); `--root DIR`; `--screenshots DIR` renders every page to PPM without a display (look checks).
+   - Not yet: the update check (a welcome-page row is reserved), Windows run, per-step failure hints, an installer exe / desktop
+     shortcut.
 5. **Release workflow** (GitHub Actions, in the fork): per platform (Linux x86_64 AppImage-like folder, Windows x86_64 zip + installer
    exe), builds the core, the recompiler, the bundle, signs/hashes, and publishes a Release with a manifest (`manifest.json`: version,
    per-platform file + sha256 + size, minimum wizard version).

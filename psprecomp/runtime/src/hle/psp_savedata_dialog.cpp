@@ -1279,7 +1279,11 @@ void render_menu_plain(Canvas& c, const std::string& title, const std::string& t
     const int total = int(rows.size());
     const int first = menu_first_row(total, sel);
     const int n = std::min<int>(MENU_ROWS, total - first);
-    const float rh = n > 4 ? float(4 * ROW_H) / float(n) : float(ROW_H);
+    // With help texts (the setup wizard's pages) the list gives up its lowest rows' space to an information box.
+    bool has_help = false;
+    for (const MenuRow& r : rows) has_help = has_help || !r.help.empty();
+    const int fit = has_help ? 3 : 4;
+    const float rh = n > fit ? float(fit * ROW_H) / float(n) : float(ROW_H);
     for (int i = 0; i < n; ++i) {
         const MenuRow& r = rows[size_t(first + i)];
         const bool is_sel = first + i == sel;
@@ -1298,7 +1302,13 @@ void render_menu_plain(Canvas& c, const std::string& title, const std::string& t
         P.text(F.bodyb, 14.f, ROW_X + 22, base, r.label, tc, 200);
         menu_value(P, F.bodyb, 13.f, ROW_X + ROW_W - 16, base, r, tc, {dc.r, dc.g, dc.b, 0.35f});
     }
-    // (no room for the help line in this layout: the list panel fills the page)
+    if (has_help && sel >= 0 && sel < total && !rows[size_t(sel)].help.empty()) {
+        const float ix = PANEL_X + 10, iw = PANEL_W - 20, ih = 46, iy = PANEL_Y + PANEL_H - ih - 5;
+        P.rrect(ix - 1.f, iy - 1.f, iw + 2.f, ih + 2.f, 5, rgb(206, 208, 232));
+        P.rrect(ix, iy, iw, ih, 4, Ramp(rgb(238, 239, 250), rgb(226, 228, 244), iy, iy + ih));
+        const auto ls = wrap_text(P, F.body, 11.f, rows[size_t(sel)].help, iw - 16, 3);
+        for (size_t k = 0; k < ls.size(); ++k) P.text(F.body, 11.f, ix + 8, iy + 14.f + 13.f * float(k), ls[k], INK);
+    }
     const float by = SCREEN_H - 28.f, bh = 18.f;
     Poly p = chevron(14, by, PANEL_W, bh, 9);
     P.poly(p, 0.9f, [](float, float) { return rgb(214, 218, 240); });
