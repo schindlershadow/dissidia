@@ -171,10 +171,13 @@ labels mark scope and priority.
 - [ ] GE/render fidelity: block transfers (#21), texture sampling (#22), the per-fragment pipeline
       (#24), 3D features — lighting / skinning / patches (#25), and display-list gaps (#26).
 - [ ] Faithful kernel callback delivery (#11) and the event-flag wait-mode fix (#64).
-- [ ] Installer / releases: a prebuilt runtime core, a portable compiler bundle (`toolchain/`, zig-based, no system installs) and
-      `games/dissidia/tools/psp_build.py` build the game on the player's machine from their own disc. Linux builds end to end with
-      no system compiler; Windows, the setup wizard, the release workflow and the updater are still to do
-      ([docs/installer.md](docs/installer.md)).
+- [ ] Installer / releases: `psprecomp_setup` (SDL2 wizard, Linux + Windows) installs the game on the player's machine from their own disc
+      with a prebuilt runtime core and a portable zig-based compiler bundle (`toolchain/`); the release workflow (`release/`,
+      `.github/workflows/release.yml`) and the updater (`games/dissidia/tools/update.py`) are written. Verified on Linux with no system
+      compiler (install from the ISO, unpack-and-install of a release archive); the Windows runtime core now compiles and links but
+      has never been run, the GitHub workflow has not run yet, and Android is tabled ([docs/installer.md](docs/installer.md)).
+- [ ] Optional content: HD texture packs in PPSSPP format (Niosa's D012FFRT; `games/dissidia/docs/texture-packs.md`) and Japanese voices
+      from an undub disc (`games/dissidia/docs/audio.md`); both built and linked, neither confirmed in game yet.
 - [ ] Cross-platform: build and verify on Linux and Windows (#70 — see
       [docs/PLATFORMS.md](docs/PLATFORMS.md)).
 
