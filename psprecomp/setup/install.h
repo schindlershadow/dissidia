@@ -36,7 +36,7 @@ struct Step {
 // What the player chose besides the game file and folder.
 struct Options {
     bool check_updates = true;
-    bool hd_textures = false;           // pull the HD texture pack
+    bool hd_textures = true;            // pull the HD texture pack
     bool jp_audio = false;              // undub (Japanese voices); needs undub_iso
     bool android = false;               // also build the Android version
     std::string undub_iso;
@@ -108,7 +108,9 @@ bool launch_game(const std::string& workdir, std::string* error);
 
 // A menu entry that starts the game: ~/.local/share/applications/dissidia-012.desktop (GNOME/KDE launchers) on Linux,
 // a Start Menu shortcut on Windows. It runs this program with --launch, so updates are checked first. `where` gets the path.
-bool create_shortcut(const std::string& workdir, std::string* where, std::string* error);
+// `root` = the release folder (where DissidiaRecomp[.exe] and game/icon live): the shortcut points at the program there, which is
+// not the running one when the single-file download unpacked itself. Empty = the running program's own folder.
+bool create_shortcut(const std::string& workdir, const std::string& root, std::string* where, std::string* error);
 
 // default install folder suggestion (~/Games/Dissidia012 or %USERPROFILE%\Games\Dissidia012)
 std::string default_install_dir();

@@ -495,7 +495,7 @@ struct App {
                 setup::save_state(state_file, state);
                 if (!rebuild_only) {
                     std::string where, serr;
-                    if (setup::create_shortcut(workdir, &where, &serr)) shortcut_note = "A menu entry was added: " + where;
+                    if (setup::create_shortcut(workdir, layout.root, &where, &serr)) shortcut_note = "A menu entry was added: " + where;
                     else shortcut_note = "No menu entry (" + serr + ")";
                 }
                 go(Screen::Done);
@@ -936,7 +936,13 @@ static std::string unpack_payload_with_window(const std::filesystem::path& exe, 
     SDL_Renderer* ren = nullptr;
     if (!quiet && SDL_Init(SDL_INIT_VIDEO) == 0) {
         win = SDL_CreateWindow("Dissidia Recomp: unpacking (first start only)", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 520, 70, 0);
-        if (win) ren = SDL_CreateRenderer(win, -1, 0);
+        if (win) {
+            if (SDL_Surface* ic = SDL_CreateRGBSurfaceWithFormatFrom((void*)k_app_icon_rgba, k_app_icon_w, k_app_icon_h, 32, k_app_icon_w * 4, SDL_PIXELFORMAT_RGBA32)) {
+                SDL_SetWindowIcon(win, ic);
+                SDL_FreeSurface(ic);
+            }
+            ren = SDL_CreateRenderer(win, -1, 0);
+        }
     }
     int last = -1;
     std::string err = setup::extract_payload(exe, pl, dest, [&](double f) {
@@ -1038,7 +1044,7 @@ int main(int argc, char** argv) {
     }
     if (shots.empty() && !state.workdir.empty() && setup::game_installed(state.workdir)) {
         std::string where, serr;   // installs from before the menu entry existed get one at the next start
-        setup::create_shortcut(state.workdir, &where, &serr);
+        setup::create_shortcut(state.workdir, layout.root, &where, &serr);
     }
     App app;
     app.layout = layout;

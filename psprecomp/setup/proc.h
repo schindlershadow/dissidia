@@ -46,6 +46,7 @@ private:
 };
 
 // Starts a program that outlives the caller (the game); no output capture. Returns false on failure.
-bool spawn_detached(const std::vector<std::string>& argv, const EnvList& env, const std::string& cwd, std::string* error);
+bool spawn_detached(const std::vector<std::string>& argv, const EnvList& env, const std::string& cwd, std::string* error,
+                    const std::string& log_file = "");   // log_file: the child's stdout+stderr go there (truncated)
 
 }  // namespace setup

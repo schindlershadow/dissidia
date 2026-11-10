@@ -25,6 +25,8 @@ int main() {
     CHECK(!feature_available(l, "android"));
 
     Options o;
+    CHECK(o.hd_textures);   // on by default
+    o.hd_textures = false;
     auto plan = plan_install(l, "x.iso", "/w", o);
     CHECK(plan.size() == 2);
     double sum = 0;
@@ -96,7 +98,7 @@ int main() {
         { std::ofstream(wd / "disc0/PSP_GAME/ICON0.PNG") << "png"; }
         setenv("XDG_DATA_HOME", data.string().c_str(), 1);
         std::string where, err;
-        CHECK(create_shortcut(wd.string(), &where, &err));
+        CHECK(create_shortcut(wd.string(), "", &where, &err));
         CHECK(where == (data / "applications/dissidia-012.desktop").string());
         std::ifstream df(where);
         std::string txt((std::istreambuf_iterator<char>(df)), std::istreambuf_iterator<char>());

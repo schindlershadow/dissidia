@@ -195,7 +195,8 @@ void Proc::kill() {
 #endif
 }
 
-bool spawn_detached(const std::vector<std::string>& argv, const EnvList& env, const std::string& cwd, std::string* error) {
+bool spawn_detached(const std::vector<std::string>& argv, const EnvList& env, const std::string& cwd, std::string* error,
+                    const std::string& log_file) {
     if (argv.empty()) return false;
 #ifdef _WIN32
     apply_env(env);
@@ -203,8 +204,20 @@ bool spawn_detached(const std::vector<std::string>& argv, const EnvList& env, co
     PROCESS_INFORMATION pi{};
     std::wstring cl = quote_cmdline(argv);
     std::wstring wcwd = widen(cwd);
-    if (!CreateProcessW(nullptr, &cl[0], nullptr, nullptr, FALSE, DETACHED_PROCESS, nullptr,
-                        wcwd.empty() ? nullptr : wcwd.c_str(), &si, &pi)) {
+    HANDLE hlog = INVALID_HANDLE_VALUE;
+    if (!log_file.empty()) {
+        SECURITY_ATTRIBUTES sa{}; sa.nLength = sizeof sa; sa.bInheritHandle = TRUE;
+        hlog = CreateFileW(widen(log_file).c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (hlog != INVALID_HANDLE_VALUE) {
+            si.dwFlags = STARTF_USESTDHANDLES;
+            si.hStdInput = INVALID_HANDLE_VALUE; si.hStdOutput = hlog; si.hStdError = hlog;
+        }
+    }
+    bool ok = CreateProcessW(nullptr, &cl[0], nullptr, nullptr, hlog != INVALID_HANDLE_VALUE, DETACHED_PROCESS, nullptr,
+                             wcwd.empty() ? nullptr : wcwd.c_str(), &si, &pi) != 0;
+    if (hlog != INVALID_HANDLE_VALUE) CloseHandle(hlog);
+    if (!ok) {
         if (error) *error = "cannot start " + argv[0] + " (error " + std::to_string(GetLastError()) + ")";
         return false;
     }
@@ -216,6 +229,10 @@ bool spawn_detached(const std::vector<std::string>& argv, const EnvList& env, co
     if (pid == 0) {
         setsid();
         if (!cwd.empty() && chdir(cwd.c_str()) != 0) _exit(126);
+        if (!log_file.empty()) {
+            int fd = open(log_file.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); if (fd > 2) close(fd); }
+        }
         for (auto& kv : env) setenv(kv.first.c_str(), kv.second.c_str(), 1);
         std::vector<char*> av;
         for (auto& a : argv) av.push_back(const_cast<char*>(a.c_str()));

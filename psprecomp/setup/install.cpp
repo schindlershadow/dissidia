@@ -393,7 +393,7 @@ bool launch_game(const std::string& workdir, std::string* error) {
     std::error_code ec;
     fs::create_directories(join(workdir, "ms0/PSP/SAVEDATA"), ec);
     fs::create_directories(join(workdir, "ms0/PSP/GAME"), ec);
-    return spawn_detached({game_binary(workdir)}, game_env(workdir), workdir, error);
+    return spawn_detached({game_binary(workdir)}, game_env(workdir), workdir, error, join(workdir, "last_run.log"));
 }
 
 // Path of the running program (the wizard), "" if unknown.
@@ -409,12 +409,13 @@ static std::string self_exe() {
 #endif
 }
 
-bool create_shortcut(const std::string& workdir, std::string* where, std::string* error) {
-    const std::string exe = self_exe();
+bool create_shortcut(const std::string& workdir, const std::string& root, std::string* where, std::string* error) {
+    std::string exe = self_exe();
+    if (!root.empty() && is_file(join(root, std::string("DissidiaRecomp") + EXE))) exe = join(root, std::string("DissidiaRecomp") + EXE);
     if (exe.empty()) { if (error) *error = "cannot find the setup program's own path"; return false; }
     std::error_code ec;
     // The game's icon: the release's own (game/icon/icon.png + icon.ico, next to this program), else the disc's ICON0.PNG (144x80).
-    const std::string exe_dir = fs::path(exe).parent_path().string();
+    const std::string exe_dir = fs::path(exe).parent_path().string();   // (root when given: the program is there)
     const std::string icon_png = join(exe_dir, "game/icon/icon.png"), icon_ico = join(exe_dir, "game/icon/icon.ico");
     std::string icon = is_file(icon_png) ? icon_png : join(workdir, "disc0/PSP_GAME/ICON0.PNG");
     std::string icon_copy = join(workdir, "icon.png");
