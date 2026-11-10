@@ -171,6 +171,7 @@ labels mark scope and priority.
 - [ ] GE/render fidelity: block transfers (#21), texture sampling (#22), the per-fragment pipeline
       (#24), 3D features — lighting / skinning / patches (#25), and display-list gaps (#26).
 - [ ] Faithful kernel callback delivery (#11) and the event-flag wait-mode fix (#64).
+- [x] Android: the game runs on ARM Android 10+ (OpenGL ES 3, touch controls), built by the wizard's Android option; [docs/android.md](docs/android.md). Tested on one device (Retroid Pocket 6).
 - [ ] Installer / releases: `psprecomp_setup` (SDL2 wizard, Linux + Windows) installs the game on the player's machine from their own disc
       with a prebuilt runtime core and a portable zig-based compiler bundle (`toolchain/`); the release workflow (`release/`,
       `.github/workflows/release.yml`) and the updater (`games/dissidia/tools/update.py`) are written. Verified on Linux with no system

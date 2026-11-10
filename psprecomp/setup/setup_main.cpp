@@ -215,6 +215,7 @@ struct App {
     std::vector<psp_savemgr::Source> save_sources;   // PPSSPP / memory sticks that hold Dissidia 012 saves (found when Options opens)
     bool save_sources_scanned = false;
     bool rebuild_only = false;
+    bool android_inst = false;   // the running plan is the Android device install
     bool updating = false;
 
     // update check (game/tools/update.py check)
@@ -342,7 +343,7 @@ struct App {
             p.rows = {u,
                       toggle_row("HD texture pack", "Download the community HD texture pack for the game.", opt.hd_textures, tex),
                       toggle_row("Japanese voices (undub)", jpHelp, opt.jp_audio, jp),
-                      toggle_row("Android version", "Also build the Android version of the game (copy it to your device afterwards).", opt.android, an),
+                      toggle_row("Android version", "Also builds the Android version (an APK for phones and handhelds, 64-bit ARM). Needs a one-time download of Google's Android NDK (about 0.7 GB; by turning this on you accept its license, developer.android.com/studio/terms) and some extra minutes. Afterwards you can install it on a connected device from the last page.", opt.android, an),
                       sv,
                       row("Start installing", "Reads " + shorten_left(iso, 40) + " and builds the game in " + shorten_left(workdir, 34) +
                                                   ". You can cancel and continue later."),
@@ -350,7 +351,7 @@ struct App {
             break;
         }
         case Screen::Build: {
-            p.title = updating ? "UPDATING" : rebuild_only ? "REBUILDING" : "INSTALLING";
+            p.title = android_inst ? "ON YOUR DEVICE" : updating ? "UPDATING" : rebuild_only ? "REBUILDING" : "INSTALLING";
             char pc[16];
             std::snprintf(pc, sizeof pc, "%d%%", (int)(prog.fraction * 100 + 0.5));
             std::string bar = "[";
@@ -392,7 +393,10 @@ struct App {
         case Screen::Done:
             p.title = "ALL DONE";
             p.tab = "Finished";
-            p.rows = {row("Play now", "Start the game."), row("Quit", (shortcut_note.empty() ? std::string() : shortcut_note + ". ") + "The game can also be started with this program any time.")};
+            p.rows = {row("Play now", "Start the game.")};
+            if (setup::android_build_exists(cur_workdir()))
+                p.rows.push_back(row("Install on an Android device", "The Android version is built: " + cur_workdir() + "/android/dissidia.apk. This installs it on a device connected with USB or wireless debugging (adb in your PATH) and copies the game files to it. Or install the APK by hand and copy the folders (see docs/android.md)."));
+            p.rows.push_back(row("Quit", (shortcut_note.empty() ? std::string() : shortcut_note + ". ") + "The game can also be started with this program any time."));
             break;
         case Screen::Failed:
             p.title = "NOT FINISHED";
@@ -403,15 +407,18 @@ struct App {
         return p;
     }
 
+    std::string cur_workdir() const { return !state.workdir.empty() ? state.workdir : workdir; }
     bool is_browser() const { return screen == Screen::PickIso || screen == Screen::PickUndub || screen == Screen::BrowseDir; }
     int row_count() { return is_browser() ? (int)br.list.size() : (int)page().rows.size(); }
 
     // ---- actions ----
-    void start_plan(bool rebuild, bool update = false) {
-        rebuild_only = rebuild || update;
+    void start_plan(bool rebuild, bool update = false, bool android_install = false) {
+        rebuild_only = rebuild || update || android_install;
         updating = update;
+        android_inst = android_install;
         const setup::Options& o = (rebuild || update) ? state.options : opt;
-        if (update) plan = setup::plan_update(layout, state.workdir, o, upd);
+        if (android_install) plan = setup::plan_android_install(layout, cur_workdir());
+        else if (update) plan = setup::plan_update(layout, state.workdir, o, upd);
         else plan = rebuild ? setup::plan_rebuild(layout, state.workdir, o) : setup::plan_install(layout, iso, workdir, o);
         log_open((rebuild || update) ? state.workdir : workdir);
         prog = setup::Progress();
@@ -719,10 +726,12 @@ struct App {
             go(Screen::Welcome);
             break;
         case Screen::Done:
-            if (sel == 0) play(); else quit = true;
+            if (sel == 0) play();
+            else if (sel == 1 && setup::android_build_exists(cur_workdir())) start_plan(false, false, true);
+            else quit = true;
             break;
         case Screen::Failed:
-            if (sel == 0) { if (!plan.empty()) start_plan(rebuild_only && !updating, updating); else go(Screen::Welcome); }
+            if (sel == 0) { if (!plan.empty()) start_plan(rebuild_only && !updating && !android_inst, updating, android_inst); else go(Screen::Welcome); }
             else if (sel == 1) go(Screen::Welcome);
             else quit = true;
             break;

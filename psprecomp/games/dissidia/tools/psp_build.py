@@ -21,6 +21,8 @@ The same four steps as pipeline.sh, in Python so a Windows install needs no bash
                   needed. An SDK built with a bundle (it carries toolchain.json) is only linked with the identical bundle.
   --allow-system-compiler  build an SDK that carries a toolchain.json with the system compiler anyway (will not link unless the
                   system compiler happens to be the same one)
+  --android [DIR] build the Android APK (<work>/android/dissidia.apk) instead of the desktop binary: needs the release's android/ folder
+                  (default: next to --game's parent) and downloads Google's NDK once (games/dissidia/tools/android_build.py)
   --progress      print machine-readable lines:  [psp-build] STEP <i>/<n> <name>   [psp-build] PROGRESS <percent>
                   [psp-build] DONE <binary>   [psp-build] ERROR <message>
 
@@ -87,6 +89,41 @@ def run(cmd, env=None, cwd=None, filt=None):
         die("%s failed (exit %d)" % (os.path.basename(cmd[0]), p.returncode))
 
 
+def android_build(a, work, env, jobs, exe):
+    """Steps 4-5 for Android: NDK (downloaded once), configure + compile the generated game against the release's Android core, pack the APK."""
+    sys.path.insert(0, HERE)
+    import android_build as ab
+    adir = os.path.abspath(a.android if a.android != "auto" else os.path.join(os.path.abspath(a.game), "..", "android"))
+    if not os.path.isdir(adir):
+        die("%s: no Android part in this release" % adir)
+    ab.check_prebuilt(adir, die)
+    step(4, "Preparing the Android toolchain (Google's NDK, downloaded once)")
+    ab.fetch_ndk(adir, say, tag, die)
+    bd, tc = ab.write_toolchain(adir, work)
+    cache = os.path.join(bd, "CMakeCache.txt")
+    if os.path.isfile(cache) and os.path.realpath(re.search(r"^CMAKE_HOME_DIRECTORY:INTERNAL=(.*)$", open(cache).read(), re.M).group(1)) != os.path.realpath(os.path.join(adir, "sdk")):
+        shutil.rmtree(bd + os.sep + "CMakeFiles", ignore_errors=True)
+        os.remove(cache)
+    ovl = ";".join(os.path.join(work, "overlays", n) for n in ("battle", "menu", "extra", "supacc"))
+    run(["cmake", "-S", os.path.join(adir, "sdk"), "-B", bd, "-G", "Ninja", "-DCMAKE_TOOLCHAIN_FILE=" + tc, "-DCMAKE_BUILD_TYPE=Release",
+         "-DPSPRECOMP_OUTPUT_DIR=" + os.path.join(work, "output"), "-DPSPRECOMP_OVERLAY_DIRS=" + ovl], env=env)
+    step(5, "Compiling the game for Android (the long step)")
+    ninja = re.compile(r"^\[(\d+)/(\d+)\]")
+
+    def prog(line):
+        m = ninja.match(line)
+        if m and int(m.group(2)):
+            tag("PROGRESS", str(100 * int(m.group(1)) // int(m.group(2))))
+
+    run(["cmake", "--build", bd, "-j", str(jobs), "--target", "psprecomp_runtime"], env=env, filt=prog)
+    lib = os.path.join(bd, "libmain.so")
+    if not os.path.isfile(lib):
+        die("the build finished but %s is missing" % lib)
+    apk = ab.pack_apk(adir, work, lib, run, say, env)
+    tag("DONE", apk)
+    say("\nDone: %s\nCopy it to the device with games/dissidia/tools/android_install.py (needs adb), or install the APK by hand and copy the game folder (see docs/android.md)." % apk)
+
+
 def main():
     global PROGRESS
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
@@ -100,6 +137,8 @@ def main():
     ap.add_argument("--jobs", type=int, default=0)
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--progress", action="store_true")
+    ap.add_argument("--android", nargs="?", const="auto", default=None, metavar="DIR",
+                    help="build the Android version (an APK) instead of the desktop game; DIR = the release's android/ folder")
     a = ap.parse_args()
     PROGRESS = a.progress
 
@@ -230,6 +269,10 @@ def main():
     else:
         step(2, "Translating the game to C++: up to date, skipping (--force to redo)")
         step(3, "Building the overlay sources: up to date, skipping")
+
+    if a.android:
+        android_build(a, work, env, jobs, exe)
+        return
 
     # ------------------------------------------------------------------ 4. configure + build
     step(4, "Configuring the build")

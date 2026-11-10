@@ -51,6 +51,11 @@ std::vector<Step> plan_install(const Layout& l, const std::string& iso, const st
 // The game build only (rebuild / repair): analysis, recompile, compile (+ the Android build when chosen).
 std::vector<Step> plan_rebuild(const Layout& l, const std::string& workdir, const Options& o);
 
+// Installs the Android build (<workdir>/android/dissidia.apk) on a connected device with adb and copies the game's files to it
+// (game/tools/android_install.py).
+std::vector<Step> plan_android_install(const Layout& l, const std::string& workdir);
+bool android_build_exists(const std::string& workdir);
+
 // ---- updates (game/tools/update.py; see docs/installer.md "Updater") ----
 struct UpdateInfo {
     bool available = false;

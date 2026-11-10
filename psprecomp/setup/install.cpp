@@ -174,6 +174,20 @@ std::vector<Step> plan_install(const Layout& l, const std::string& iso, const st
     return p;
 }
 
+std::vector<Step> plan_android_install(const Layout& l, const std::string& workdir) {
+    Step x;
+    x.label = "Installing on your device";
+    x.explain = "Installs the app on the phone or handheld that is connected with USB or wireless debugging (adb), then copies the game files (about 2 GB) to it. Needs adb (Android platform-tools) in your PATH.";
+    x.argv = {l.python, join(l.game_dir, "tools/android_install.py"), workdir};
+    x.env = {{"PYTHONUNBUFFERED", "1"}};
+    x.weight = 1;
+    std::vector<Step> p{x};
+    finish_plan(p);
+    return p;
+}
+
+bool android_build_exists(const std::string& workdir) { return is_file(join(workdir, "android/dissidia.apk")); }
+
 std::vector<std::string> update_check_argv(const Layout& l) {
     std::vector<std::string> a = {l.python, l.update_script, "check", "--root", l.root};
     if (const char* m = std::getenv("PSPRECOMP_MANIFEST_URL")) { a.push_back("--manifest"); a.push_back(m); }

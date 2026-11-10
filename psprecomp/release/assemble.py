@@ -77,6 +77,7 @@ def main():
     ap.add_argument("--manifest-url", default=os.environ.get("PSPRECOMP_MANIFEST_URL") or
                     "https://github.com/%s/releases/latest/download/manifest.json" % (os.environ.get("GITHUB_REPOSITORY") or "schindlershadow/dissidia"))
     ap.add_argument("--no-archive", action="store_true")
+    ap.add_argument("--android-part", default=None, help="the Android part of the release (release/build_android_sdk.py): shipped as android/ and switches the wizard's Android option on")
     a = ap.parse_args()
     win = a.platform.startswith("windows")
     exe = ".exe" if win else ""
@@ -159,6 +160,16 @@ def main():
         stem = pth[: -len("._pth")]
         with open(os.path.join(out, "python", pth), "w") as f:
             f.write("%s.zip\n.\n..\\game\\tools\nimport site\n" % stem)
+
+    if a.android_part:
+        copy_tree(a.android_part, os.path.join(out, "android"))
+        fi = os.path.join(out, "game", "features.ini")
+        txt = open(fi).read() if os.path.isfile(fi) else ""
+        lines = [l for l in txt.splitlines() if not l.startswith("android=")] + ["android=1"]
+        open(fi, "w").write("\n".join(lines) + "\n")
+        for tool in ("android_build.py", "android_install.py"):   # (game/tools already has them when the whitelist includes *.py)
+            if not os.path.isfile(os.path.join(out, "game", "tools", tool)):
+                shutil.copy2(os.path.join(a.repo, "games", "dissidia", "tools", tool), os.path.join(out, "game", "tools", tool))
 
     os.makedirs(os.path.join(out, "licenses"))
     for src, name in ((os.path.join(a.repo, "LICENSE"), "psprecomp-LICENSE.txt"),

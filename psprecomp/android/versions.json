@@ -1,0 +1,14 @@
+{
+  "_comment": "Pinned Android inputs. The prebuilt Android core and libraries of a release are compiled with exactly this NDK, and the player's machine compiles the generated game with the same one (downloaded by games/dissidia/tools/android_build.py): C++ library and ABI must match. sha1 values are Google's (repository2-3.xml).",
+  "ndk": {
+    "version": "27.2.12479018",
+    "name": "r27c",
+    "files": {
+      "linux": {"url": "https://dl.google.com/android/repository/android-ndk-r27c-linux.zip", "sha1": "090e8083a715fdb1a3e402d0763c388abb03fb4e", "size": 663987688, "prebuilt": "linux-x86_64"},
+      "windows": {"url": "https://dl.google.com/android/repository/android-ndk-r27c-windows.zip", "sha1": "ac5f7762764b1f15341094e148ad4f847d050c38", "size": 781511249, "prebuilt": "windows-x86_64"}
+    }
+  },
+  "api": 29,
+  "abi": "arm64-v8a",
+  "package": "org.psprecomp.game"
+}

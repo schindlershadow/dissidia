@@ -43,6 +43,7 @@ def main():
     ap.add_argument("--recompiler")
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 2)
     ap.add_argument("--no-archive", action="store_true")
+    ap.add_argument("--android-sdk", help="an Android SDK dir (ndk, build-tools, platforms; see build_android_sdk.py): adds the Android part to the release")
     a = ap.parse_args()
     plat = a.platform
     win = plat.startswith("windows")
@@ -112,12 +113,24 @@ def main():
     run(["cmake", "--build", wiz, "-j", j], env=env)
     wizard = os.path.join(wiz, "psprecomp_setup" + (".exe" if win else ""))
 
+    # 4b. Android part (the same for every platform's archive: arm64 libraries built with the NDK, built once per work dir)
+    android_part = None
+    if a.android_sdk:
+        android_part = os.path.join(work, "android-part")
+        if not os.path.isfile(os.path.join(android_part, "android.json")):
+            run([sys.executable, "-I", os.path.join(HERE, "build_android_sdk.py"), "--sdk", a.android_sdk, "--cache", os.path.join(work, "cache"),
+                 "--cmake", shutil.which("cmake", path=env["PATH"]) if not cross else os.path.join(bundle + ".host", "cmake", "bin", "cmake"),
+                 "--ninja", shutil.which("ninja", path=env["PATH"]),
+                 "--stub", os.path.join(stub, "out"), "--work", os.path.join(work, "android-work"), "--out", android_part], env=env)
+
     # 5. assemble
     cmd = [sys.executable, "-I", os.path.join(HERE, "assemble.py"), "--platform", plat, "--version", a.version,
            "--out", os.path.join(work, "psprecomp-%s-%s" % (a.version, plat)), "--wizard", wizard, "--recompiler", rec,
            "--toolchain", bundle, "--sdk", sdk, "--cache", os.path.join(work, "cache")]
     if a.no_archive:
         cmd.append("--no-archive")
+    if android_part:
+        cmd += ["--android-part", android_part]
     run(cmd)
 
     # 6. single-file release: the wizard with the assembled folder appended (setup/payload.h); the archives stay too
