@@ -149,7 +149,17 @@ Milestone 1, hello APK (2026-11-10): `android/build_hello.py` builds SDL2 (share
 and touch events in logcat) for arm64-v8a with the Android NDK 27 (the NDK is needed: zig has no bionic headers), packs SDL's Java
 activity (javac + d8), aapt2, zipalign and a debug-signed apk. Tools live outside the repo (desktop `~/dissidia/android/{sdk,jdk,sdl2src}`:
 cmdline-tools sdkmanager `build-tools;34.0.0`, `platforms;android-34`, `ndk;27.2.12479018`; Corretto JDK 17). Built: `hello.apk`, 2.4 MB;
-run on the Retroid Pocket 6 (Adreno 740, OpenGL ES 3.2, 1920x1080, built-in "Xbox Wireless Controller" pad, Android 13) over wireless adb: window, GLES3 context and pad detection OK (2026-11-10); touch + button events awaiting the user. Next milestones: GLES 3 path in the renderer, bionic port of the core, the generated game for aarch64-android, APK shell.
+run on the Retroid Pocket 6 (Adreno 740, OpenGL ES 3.2, 1920x1080, built-in "Xbox Wireless Controller" pad, Android 13) over wireless adb: window, GLES3 context and pad detection OK (2026-11-10); touch + button events awaiting the user. 
+Milestone 2, the game on the device (2026-11-10): the renderer goes through `runtime/include/psp_gl.h` (glad on desktop, `<GLES3/gl32.h>` on Android:
+`glDepthRange`/`glClearDepth` to the `f` forms, `glMultiDrawArrays` as a loop, `glGetBufferSubData` through a mapping, point size through a
+`u_psize` uniform written to `gl_PointSize`, GLSL `#version 300 es` + precisions via `PSP_GLSL_VERSION`, no per-texture LOD bias, no timer queries / GL call
+statistics). The core and the player's generated game compile with the NDK unchanged otherwise (the Windows-port shims covered the POSIX use).
+`android/build_deps.py` builds SDL2 (shared), FreeType and FFmpeg (no asm: the NEON code is not PIC) for arm64 with the NDK; the SDK link project
+builds `libmain.so` (SHARED, `SDL_main` in `src/main.cpp`) when `ANDROID` is set; `build_hello.py --main-so ... --package org.psprecomp.game` packs the APK.
+`psp_android.cpp`: work folder = `<external storage>/Android/data/org.psprecomp.game/files/game` (the desktop work folder: disc0/, ms0/, mods/, voice_jp/ ...),
+stderr to logcat tag `psprecomp` and `last_run.log` there. Android 13 `adb push` into Android/data fails on nested folders: copy with
+`tar cf - disc0 | adb shell "tar xf - -C <dir>"`. Result on the Retroid Pocket 6: boots, loads the save, 30 GE frames/s, ATRAC audio decodes, the uber-shader
+compiles first time; picture/audio/input quality awaiting the user.
 
 ## Verification of milestone 1
 
