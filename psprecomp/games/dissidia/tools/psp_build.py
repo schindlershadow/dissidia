@@ -16,7 +16,11 @@ The same four steps as pipeline.sh, in Python so a Windows install needs no bash
   --repo DIR      the psprecomp source tree (default: the tree this script is in); used when --sdk is not given
   --game DIR      games/dissidia (game.toml, overlay_*.toml, analysis/, tools/); default: next to this script
   --psprecomp BIN the recompiler (default: <repo>/target/release/psprecomp, built with cargo when missing and cargo exists)
-  --toolchain DIR a portable toolchain (bin/ with clang/cmake/ninja/pkg-config, optional lib/pkgconfig): put first on PATH
+  --toolchain DIR the portable toolchain bundle of the release (toolchain/build_bundle.py: zig clang + libc++, cmake, ninja,
+                  static SDL2/FreeType/zlib/libavcodec). Used through its toolchain.cmake, so no system compiler or library is
+                  needed. An SDK built with a bundle (it carries toolchain.json) is only linked with the identical bundle.
+  --allow-system-compiler  build an SDK that carries a toolchain.json with the system compiler anyway (will not link unless the
+                  system compiler happens to be the same one)
   --progress      print machine-readable lines:  [psp-build] STEP <i>/<n> <name>   [psp-build] PROGRESS <percent>
                   [psp-build] DONE <binary>   [psp-build] ERROR <message>
 
@@ -88,6 +92,7 @@ def main():
     ap.add_argument("--game", default=os.path.abspath(os.path.join(HERE, "..")))
     ap.add_argument("--psprecomp")
     ap.add_argument("--toolchain")
+    ap.add_argument("--allow-system-compiler", action="store_true")
     ap.add_argument("--jobs", type=int, default=0)
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--progress", action="store_true")
@@ -103,13 +108,35 @@ def main():
     jobs = a.jobs or min(3, os.cpu_count() or 2)
 
     env = dict(os.environ)
+    exe = ".exe" if os.name == "nt" else ""
+    tc_file = None   # the bundle's CMake toolchain file, when --toolchain is a bundle
     if a.toolchain:
         tc = os.path.abspath(a.toolchain)
-        env["PATH"] = os.pathsep.join([os.path.join(tc, "bin"), env.get("PATH", "")])
+        if not os.path.isdir(tc):
+            die("toolchain %s does not exist" % tc)
+        env["PATH"] = os.pathsep.join([os.path.join(tc, "bin"), os.path.join(tc, "cmake", "bin"), env.get("PATH", "")])
+        if os.path.isfile(os.path.join(tc, "toolchain.cmake")):
+            tc_file = os.path.join(tc, "toolchain.cmake")
+            env["ZIG_GLOBAL_CACHE_DIR"] = os.path.join(work, ".zig-cache")   # libc++ etc. are built once per work folder
+            env.pop("CC", None)
+            env.pop("CXX", None)
         pc = os.path.join(tc, "lib", "pkgconfig")
         if os.path.isdir(pc):
             env["PKG_CONFIG_PATH"] = os.pathsep.join([pc, env.get("PKG_CONFIG_PATH", "")]).rstrip(os.pathsep)
-    exe = ".exe" if os.name == "nt" else ""
+    if a.sdk:
+        # ABI guard: the prebuilt core and the code compiled here must come from the same compiler + C++ library.
+        sdk_id = os.path.join(os.path.abspath(a.sdk), "toolchain.json")
+        if os.path.isfile(sdk_id):
+            want = json.load(open(sdk_id))
+            if tc_file:
+                have = json.load(open(os.path.join(os.path.dirname(tc_file), "toolchain.json")))
+                diff = [k for k in ("bundle_version", "platform", "zig_target", "zig") if want.get(k) != have.get(k)]
+                if diff:
+                    die("the SDK was built with toolchain bundle %s but %s is a different one (differs in %s)" %
+                        (json.dumps({k: want.get(k) for k in diff}), a.toolchain, ", ".join(diff)))
+            elif not a.allow_system_compiler:
+                die("this SDK was built with the release's toolchain bundle (zig %s, %s); pass --toolchain <bundle>" %
+                    (want.get("zig"), want.get("zig_target")))
 
     # ------------------------------------------------------------------ prerequisites
     psprecomp = a.psprecomp or os.path.join(repo, "target", "release", "psprecomp" + exe)
@@ -205,6 +232,12 @@ def main():
     build = os.path.join(work, "build")
     src = os.path.abspath(a.sdk) if a.sdk else os.path.join(repo, "runtime")
     cache = os.path.join(build, "CMakeCache.txt")
+    if os.path.isfile(cache):   # configured with another compiler (e.g. the system one before the bundle was used): start over
+        c = open(cache).read()
+        m = re.search(r"^CMAKE_TOOLCHAIN_FILE:[A-Z]+=(.*)$", c, re.M)
+        if (m.group(1) if m else None) != tc_file:
+            say("Build dir was configured with a different toolchain; reconfiguring from scratch")
+            shutil.rmtree(build, ignore_errors=True)
     if os.path.isfile(cache):   # configured from another source dir (moved or re-cloned): reconfigure from this one
         m = re.search(r"^CMAKE_HOME_DIRECTORY:INTERNAL=(.*)$", open(cache).read(), re.M)
         if m and os.path.realpath(m.group(1)) != os.path.realpath(src):
@@ -216,7 +249,9 @@ def main():
            "-DPSPRECOMP_OVERLAY_DIRS=" + ovl]
     if not a.sdk:
         cfg.append("-DPSPRECOMP_GAME=dissidia")
-    if shutil.which("ninja", path=env["PATH"]):
+    if tc_file:
+        cfg += ["-G", "Ninja", "-DCMAKE_TOOLCHAIN_FILE=" + tc_file, "-DCMAKE_EXE_LINKER_FLAGS=-s"]   # -s: no debug info (212 -> ~45 MB)
+    elif shutil.which("ninja", path=env["PATH"]):
         cfg += ["-G", "Ninja"] if not os.path.isfile(cache) else []
     if shutil.which("ccache", path=env["PATH"]):
         cfg.append("-DCMAKE_CXX_COMPILER_LAUNCHER=ccache")

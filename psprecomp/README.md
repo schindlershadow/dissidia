@@ -171,6 +171,10 @@ labels mark scope and priority.
 - [ ] GE/render fidelity: block transfers (#21), texture sampling (#22), the per-fragment pipeline
       (#24), 3D features — lighting / skinning / patches (#25), and display-list gaps (#26).
 - [ ] Faithful kernel callback delivery (#11) and the event-flag wait-mode fix (#64).
+- [ ] Installer / releases: a prebuilt runtime core, a portable compiler bundle (`toolchain/`, zig-based, no system installs) and
+      `games/dissidia/tools/psp_build.py` build the game on the player's machine from their own disc. Linux builds end to end with
+      no system compiler; Windows, the setup wizard, the release workflow and the updater are still to do
+      ([docs/installer.md](docs/installer.md)).
 - [ ] Cross-platform: build and verify on Linux and Windows (#70 — see
       [docs/PLATFORMS.md](docs/PLATFORMS.md)).
 

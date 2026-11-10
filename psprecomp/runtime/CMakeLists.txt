@@ -18,10 +18,17 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Find SDL2 via pkg-config (Homebrew installs pkg-config file)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
-# FreeType renders the sceLibFont (sceFont*) HLE glyphs
-pkg_check_modules(FREETYPE REQUIRED IMPORTED_TARGET freetype2)
+# A release builds with the portable toolchain bundle (toolchain/build_bundle.py): its toolchain file sets PSPRECOMP_DEPS_CMAKE,
+# whose deps.cmake defines the same PkgConfig::SDL2 / FREETYPE / AVCODEC and ZLIB::ZLIB targets from static libraries built
+# with the bundled compiler (no pkg-config, no system libraries). Otherwise the system's are found with pkg-config.
+if(PSPRECOMP_DEPS_CMAKE)
+    include("${PSPRECOMP_DEPS_CMAKE}")
+else()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
+    # FreeType renders the sceLibFont (sceFont*) HLE glyphs
+    pkg_check_modules(FREETYPE REQUIRED IMPORTED_TARGET freetype2)
+endif()
 
 # Savedata-dialog fonts (OFL: Cinzel + Crimson Text) are embedded in the binary.
 set(PSP_UI_FONTS_CPP ${CMAKE_CURRENT_BINARY_DIR}/gen/psp_ui_fonts.cpp)
@@ -34,13 +41,19 @@ execute_process(COMMAND ${CMAKE_COMMAND}
 
 # Optional: libavcodec for ATRAC3/ATRAC3+ decoding (sceAtrac HLE). Without it
 # the sceAtrac HLE keeps its bookkeeping but decodes to silence.
-pkg_check_modules(AVCODEC IMPORTED_TARGET libavcodec libavutil)
+if(NOT PSPRECOMP_DEPS_CMAKE)
+    pkg_check_modules(AVCODEC IMPORTED_TARGET libavcodec libavutil)
+endif()
 
-# Find OpenGL
-find_package(OpenGL REQUIRED)
+# OpenGL: the runtime loads every GL entry point through SDL_GL_GetProcAddress (glad), so a bundled build links no GL library.
+if(NOT PSPRECOMP_DEPS_CMAKE)
+    find_package(OpenGL REQUIRED)
+endif()
 
 # Find zlib (system zlib on macOS; pkg-config-discoverable on Linux)
-find_package(ZLIB REQUIRED)
+if(NOT TARGET ZLIB::ZLIB)
+    find_package(ZLIB REQUIRED)
+endif()
 
 # ── Recompiled game output directory (issue #47 Phase 1) ────────────────────
 # The runtime is game-agnostic: it builds against ANY `psprecomp recompile`
@@ -270,9 +283,9 @@ endif()
 target_link_libraries(psprecomp_core PUBLIC
     PkgConfig::SDL2
     PkgConfig::FREETYPE
-    OpenGL::GL
+    $<TARGET_NAME_IF_EXISTS:OpenGL::GL>
     ZLIB::ZLIB
-    pthread
+    $<$<NOT:$<PLATFORM_ID:Windows>>:pthread>
 )
 # The core calls into the recompiled code (dispatch tables) and the recompiled code calls the HLE in the core: one group.
 target_link_libraries(psprecomp_runtime PRIVATE
@@ -510,4 +523,8 @@ install(TARGETS psprecomp_core ARCHIVE DESTINATION lib COMPONENT sdk)
 install(DIRECTORY include/ DESTINATION include COMPONENT sdk FILES_MATCHING PATTERN "*.h")
 install(FILES src/main.cpp DESTINATION src COMPONENT sdk)
 install(FILES sdk/CMakeLists.txt DESTINATION . COMPONENT sdk)
+# The ABI identity of the toolchain bundle this core was built with: psp_build.py refuses to link it with code compiled by another.
+if(PSPRECOMP_TOOLCHAIN_JSON)
+    install(FILES "${PSPRECOMP_TOOLCHAIN_JSON}" DESTINATION . COMPONENT sdk)
+endif()
 install(DIRECTORY ${PSP_GAME_INCLUDE_DIR}/ DESTINATION include COMPONENT sdk FILES_MATCHING PATTERN "*.h")
