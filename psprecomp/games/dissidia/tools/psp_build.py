@@ -37,6 +37,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ANALYSES = ["analysis", "analysis_battle", "analysis_menu", "analysis_extra", "analysis_supacc"]
@@ -104,6 +105,23 @@ def android_build(a, work, env, jobs, exe):
     if os.path.isfile(cache) and os.path.realpath(re.search(r"^CMAKE_HOME_DIRECTORY:INTERNAL=(.*)$", open(cache).read(), re.M).group(1)) != os.path.realpath(os.path.join(adir, "sdk")):
         shutil.rmtree(bd + os.sep + "CMakeFiles", ignore_errors=True)
         os.remove(cache)
+    # Zip archives carry no time zone: a release built in UTC and unpacked west of it has files dated in the FUTURE, so ninja
+    # regenerates build.ninja forever ("still dirty after 100 tries"). Pull any future timestamp of the build inputs back to now.
+    now = time.time()
+    fixed = 0
+    for top in {src, os.path.join(repo, "toolchain") if not a.toolchain else os.path.abspath(a.toolchain), game, os.path.join(work, "output"),
+                os.path.join(work, "overlays")}:
+        for dp, dns, fns in os.walk(top):
+            for fn in fns:
+                fp = os.path.join(dp, fn)
+                try:
+                    if os.stat(fp).st_mtime > now:
+                        os.utime(fp, (now, now))
+                        fixed += 1
+                except OSError:
+                    pass
+    if fixed:
+        say("Fixed %d files dated in the future (time zone of the archive)" % fixed)
     ovl = ";".join(os.path.join(work, "overlays", n) for n in ("battle", "menu", "extra", "supacc"))
     run(["cmake", "-S", os.path.join(adir, "sdk"), "-B", bd, "-G", "Ninja", "-DCMAKE_TOOLCHAIN_FILE=" + tc, "-DCMAKE_BUILD_TYPE=Release",
          "-DPSPRECOMP_OUTPUT_DIR=" + os.path.join(work, "output"), "-DPSPRECOMP_OVERLAY_DIRS=" + ovl], env=env)

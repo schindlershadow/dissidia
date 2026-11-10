@@ -89,6 +89,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           name: release-files
@@ -96,6 +99,6 @@ jobs:
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >
-          gh release create "$VERSION" dist/* --repo "${{ github.repository }}"
-          --title "$VERSION" --notes "Installable build of the game's runtime. Download psprecomp-setup-<version>-windows-x86_64.exe (Windows) or psprecomp-setup-<version>-linux-x86_64 (Linux: chmod +x it) and run it: it unpacks itself on the first start. The tar.xz / zip archives hold the same files if you prefer to unpack them yourself. You need your own copy of the game (ISO or CSO)."
+        run: |
+          python3 psprecomp/release/make_notes.py --tag "$VERSION" -o notes.md
+          gh release create "$VERSION" psprecomp/dist/* --repo "${{ github.repository }}" --title "$VERSION" --notes-file notes.md
