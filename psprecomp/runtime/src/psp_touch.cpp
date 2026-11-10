@@ -38,6 +38,7 @@ struct Ctl {
 
 std::vector<Ctl> g_ctl;
 bool g_loaded = false;
+bool g_float = false;             // floating stick: touching an empty part of the screen starts a stick right there (saved in the layout)
 
 // short names of the buttons a combination can hold (picker order)
 struct BtnName { Btn b; const char* name; };
@@ -130,6 +131,7 @@ void save_layout() {
     FILE* f = std::fopen(k_layout_file, "w");
     if (!f) { std::fprintf(stderr, "[TOUCH] cannot write %s\n", k_layout_file); return; }
     std::fprintf(f, "# Touch control layout (edited in Settings > System > Edit Touch Controls). Positions are fractions of the window.\n");
+    std::fprintf(f, "option stick=%s\n", g_float ? "floating" : "fixed");
     for (auto& c : g_ctl) {
         if (c.custom()) {
             std::string b;
@@ -161,6 +163,7 @@ void load_layout() {
             if (e > p) tok.push_back(l.substr(p, e - p));
             p = e + 1;
         }
+        if (tok.size() == 2 && tok[0] == "option") { if (tok[1] == "stick=floating") g_float = true; else if (tok[1] == "stick=fixed") g_float = false; continue; }
         if (tok.size() < 2 || (tok[0] != "ctl" && tok[0] != "combo")) continue;
         Ctl* c = nullptr;
         for (auto& k : g_ctl) if (k.id == tok[1] && !k.custom() == (tok[0] == "ctl")) { c = &k; break; }
@@ -201,7 +204,7 @@ void load_layout() {
 // ===================================================================================================================
 // State and events
 // ===================================================================================================================
-struct Finger { float x, y; bool stick; };
+struct Finger { float x, y, ox, oy; bool stick; int dpad = -1; };   // dpad: the d-pad control this finger went down on (it stays captured)   // ox,oy: where the finger went down (the centre of a floating stick)
 std::map<SDL_FingerID, Finger> g_fingers;
 bool g_btn_state[SDL_CONTROLLER_BUTTON_MAX] = {};
 int16_t g_ax = 0, g_ay = 0;
@@ -210,6 +213,8 @@ bool g_dpad_dir[4] = {};          // up right down left, for drawing
 bool g_visible = false;
 int g_mode = -1;                  // 0 auto, 1 on, 2 off
 bool g_edit = false;
+bool g_fl_active = false;         // drawing: a floating stick is being used
+float g_fl_cx = 0, g_fl_cy = 0;
 
 int resolve_mode() {
     if (g_mode >= 0) return g_mode;
@@ -254,6 +259,7 @@ void push_axis(SDL_GameControllerAxis a, int16_t v) {
 void recompute() {
     int want[SDL_CONTROLLER_BUTTON_MAX] = {};
     float sx = 0, sy = 0;
+    g_fl_active = false;
     g_dpad_dir[0] = g_dpad_dir[1] = g_dpad_dir[2] = g_dpad_dir[3] = false;
     for (auto& c : g_ctl) c.pressed = false;
     if (!g_edit) {
@@ -261,8 +267,9 @@ void recompute() {
             const Finger& f = kv.second;
             if (f.stick) {
                 for (auto& c : g_ctl) {
-                    if (c.type != T_STICK || !c.on) continue;
-                    const Circle sc = circle_of(c);
+                    if (c.type != T_STICK || (!c.on && !g_float)) continue;
+                    Circle sc = circle_of(c);
+                    if (g_float) { sc.x = f.ox; sc.y = f.oy; g_fl_active = true; g_fl_cx = f.ox; g_fl_cy = f.oy; }
                     float dx = (f.x - sc.x) / sc.r, dy = (f.y - sc.y) / sc.r;
                     const float len = std::sqrt(dx * dx + dy * dy);
                     if (len > 1.0f) { dx /= len; dy /= len; }
@@ -271,15 +278,18 @@ void recompute() {
                 }
                 continue;
             }
-            for (auto& c : g_ctl) {
+            for (size_t ci = 0; ci < g_ctl.size(); ci++) {
+                Ctl& c = g_ctl[ci];
                 if (!c.on || c.type == T_STICK || c.latch) continue;
                 if (c.type == T_DPAD) {
                     const Rect r = rect_of(c);
-                    if (!in_rect(r, f.x, f.y, 0.03f * g_win_h)) continue;
+                    const bool captured = f.dpad == (int)ci;   // a finger that went down on the d-pad keeps steering it, even outside the box
+                    if (!captured && !in_rect(r, f.x, f.y, 0.03f * g_win_h)) continue;
                     const float cx = r.x + r.w / 2, cy = r.y + r.h / 2, dx = f.x - cx, dy = f.y - cy;
-                    if (dx * dx + dy * dy <= (0.04f * g_win_h * c.s) * (0.04f * g_win_h * c.s)) continue;   // dead centre
+                    if (dx * dx + dy * dy <= (0.05f * g_win_h * c.s) * (0.05f * g_win_h * c.s)) { c.pressed = true; continue; }   // dead centre
                     const float ang = std::atan2(dy, dx);
-                    const float t = 0.38f, co = std::cos(ang), si = std::sin(ang);
+                    // cardinal zones are 60 degrees wide, diagonals 30 (a thumb slightly off the axis must not add a second direction)
+                    const float t = 0.5f, co = std::cos(ang), si = std::sin(ang);
                     if (si < -t) g_dpad_dir[0] = true;
                     if (co > t) g_dpad_dir[1] = true;
                     if (si > t) g_dpad_dir[2] = true;
@@ -325,9 +335,9 @@ void release_all() {
 // ===================================================================================================================
 // Layout editor (touch driven, drawn in the overlay)
 // ===================================================================================================================
-enum Act { A_NONE, A_DONE, A_RESET, A_ADD, A_SIZE_DN, A_SIZE_UP, A_OPAC_DN, A_OPAC_UP, A_TOGGLE_ON, A_LATCH, A_BUTTONS, A_DELETE,
+enum Act { A_NONE, A_DONE, A_RESET, A_ADD, A_STICKMODE, A_SIZE_DN, A_SIZE_UP, A_OPAC_DN, A_OPAC_UP, A_TOGGLE_ON, A_LATCH, A_BUTTONS, A_DELETE,
            A_PICK_OK, A_PICK_CANCEL, A_PICK_BASE = 100 };
-struct UiBtn { Rect r; std::string text; Act act; bool lit; };
+struct UiBtn { Rect r; std::string text; Act act; bool lit; int icon = -1; };   // icon: index into k_names (the picker draws the button's shape)
 std::vector<UiBtn> g_ui;
 int g_sel = -1;                    // selected control (index into g_ctl)
 bool g_pick = false;               // the button picker is open
@@ -365,14 +375,14 @@ void build_ui() {
         const float x0 = w / 2 - (4 * cw + 3 * cg) / 2, y0 = h * 0.36f;
         for (int i = 0; i < 12; i++) {
             const bool lit = std::find(g_pick_set.begin(), g_pick_set.end(), k_names[i].b) != g_pick_set.end();
-            g_ui.push_back({{x0 + (i % 4) * (cw + cg), y0 + (i / 4) * (ch + cg), cw, ch}, k_names[i].name, (Act)(A_PICK_BASE + i), lit});
+            g_ui.push_back({{x0 + (i % 4) * (cw + cg), y0 + (i / 4) * (ch + cg), cw, ch}, k_names[i].name, (Act)(A_PICK_BASE + i), lit, i});
         }
         const float by = y0 + 3 * (ch + cg) + 0.02f * h;
         g_ui.push_back({{w / 2 - bw - gap / 2, by, bw, bh}, "OK", A_PICK_OK, false});
         g_ui.push_back({{w / 2 + gap / 2, by, bw, bh}, "CANCEL", A_PICK_CANCEL, false});
         return;
     }
-    row(0.31f * h, {{"DONE", A_DONE}, {"RESET", A_RESET}, {"ADD COMBO", A_ADD}});
+    row(0.31f * h, {{"DONE", A_DONE}, {"RESET", A_RESET}, {"ADD COMBO", A_ADD}, {g_float ? "STICK: FLOATING" : "STICK: FIXED", A_STICKMODE}});
     if (g_sel >= 0 && g_sel < (int)g_ctl.size()) {
         const Ctl& c = g_ctl[(size_t)g_sel];
         row(0.55f * h, {{"SIZE -", A_SIZE_DN}, {"SIZE +", A_SIZE_UP}, {"OPACITY -", A_OPAC_DN}, {"OPACITY +", A_OPAC_UP}});
@@ -413,6 +423,7 @@ void do_action(int act) {
         g_sel = -1;
         save_layout();
         break;
+    case A_STICKMODE: g_float = !g_float; for (auto& k : g_ctl) if (k.type == T_STICK) k.on = true; break;
     case A_ADD: g_pick = true; g_pick_new = true; g_pick_set.clear(); break;
     case A_SIZE_DN: if (c) c->s = std::max(0.4f, c->s - 0.1f); break;
     case A_SIZE_UP: if (c) c->s = std::min(3.0f, c->s + 0.1f); break;
@@ -513,8 +524,20 @@ void psp_touch_event(const SDL_Event& ev) {
         auto it = g_fingers.find(id);
         if (it == g_fingers.end()) {
             bool is_stick = false;
-            for (auto& c : g_ctl) if (c.type == T_STICK && c.on && hit(c, x, y)) is_stick = true;
-            g_fingers[id] = {x, y, is_stick};
+            if (g_float) {   // floating stick: a touch that is on no control starts the stick there (one at a time)
+                bool on_ctl = false, have = false;
+                for (auto& c : g_ctl) if (c.on && c.type != T_STICK && hit(c, x, y)) on_ctl = true;
+                for (auto& kv : g_fingers) if (kv.second.stick) have = true;
+                is_stick = !on_ctl && !have;
+            } else {
+                for (auto& c : g_ctl) if (c.type == T_STICK && c.on && hit(c, x, y)) is_stick = true;
+            }
+            g_fingers[id] = {x, y, x, y, is_stick};
+            if (!is_stick)
+                for (size_t ci = 0; ci < g_ctl.size(); ci++)
+                    if (g_ctl[ci].on && g_ctl[ci].type == T_DPAD && hit(g_ctl[ci], x, y)) g_fingers[id].dpad = (int)ci;
+            static const bool tlog = std::getenv("PSPRECOMP_TOUCH_LOG") != nullptr;
+            if (tlog) std::fprintf(stderr, "[TOUCH] finger down %.0f,%.0f stick=%d float=%d\n", x, y, (int)is_stick, (int)g_float);
             for (auto& c : g_ctl)   // a tap on a toggle-hold button flips it
                 if (c.on && c.latch && !is_stick && hit(c, x, y)) c.latched = !c.latched;
         } else {
@@ -689,39 +712,123 @@ const float* line_col(float alpha_mul) {
     return c;
 }
 
+// The shape of a PSP button, centred at cx,cy with half-size s: arrows for the d-pad, the four face symbols in their colours, L / R,
+// Start (play triangle) and Select (two bars). Used by the picker and on combination buttons.
+void draw_btn_icon(Btn b, float cx, float cy, float s, float alpha) {
+    static const float tint[4][3] = {{0.35f, 0.85f, 0.55f}, {0.95f, 0.40f, 0.40f}, {0.45f, 0.65f, 1.0f}, {0.95f, 0.55f, 0.85f}};
+    static float c[4];
+    const float t = std::max(2.0f, s * 0.22f);
+    auto col = [&](float r, float g, float bl) { c[0] = r; c[1] = g; c[2] = bl; c[3] = alpha; return c; };
+    switch (b) {
+    case SDL_CONTROLLER_BUTTON_DPAD_UP:   // arrows (head + stem), so they cannot be mistaken for Start's play triangle
+        tri(cx, cy - s, cx + s * 0.8f, cy + s * 0.05f, cx - s * 0.8f, cy + s * 0.05f, col(1, 1, 1));
+        fill_rect({cx - s * 0.25f, cy, s * 0.5f, s}, col(1, 1, 1));
+        break;
+    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+        tri(cx, cy + s, cx - s * 0.8f, cy - s * 0.05f, cx + s * 0.8f, cy - s * 0.05f, col(1, 1, 1));
+        fill_rect({cx - s * 0.25f, cy - s, s * 0.5f, s}, col(1, 1, 1));
+        break;
+    case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+        tri(cx - s, cy, cx + s * 0.05f, cy - s * 0.8f, cx + s * 0.05f, cy + s * 0.8f, col(1, 1, 1));
+        fill_rect({cx, cy - s * 0.25f, s, s * 0.5f}, col(1, 1, 1));
+        break;
+    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+        tri(cx + s, cy, cx - s * 0.05f, cy + s * 0.8f, cx - s * 0.05f, cy - s * 0.8f, col(1, 1, 1));
+        fill_rect({cx - s, cy - s * 0.25f, s, s * 0.5f}, col(1, 1, 1));
+        break;
+    case SDL_CONTROLLER_BUTTON_Y: {
+        const float* k = col(tint[0][0], tint[0][1], tint[0][2]);
+        line(cx, cy - s, cx + s, cy + s * 0.8f, t, k); line(cx + s, cy + s * 0.8f, cx - s, cy + s * 0.8f, t, k); line(cx - s, cy + s * 0.8f, cx, cy - s, t, k);
+        break; }
+    case SDL_CONTROLLER_BUTTON_B: ring(cx, cy, s, t, col(tint[1][0], tint[1][1], tint[1][2])); break;
+    case SDL_CONTROLLER_BUTTON_A: {
+        const float* k = col(tint[2][0], tint[2][1], tint[2][2]);
+        line(cx - s, cy - s, cx + s, cy + s, t, k); line(cx + s, cy - s, cx - s, cy + s, t, k);
+        break; }
+    case SDL_CONTROLLER_BUTTON_X: frame_rect({cx - s, cy - s, 2 * s, 2 * s}, t, col(tint[3][0], tint[3][1], tint[3][2])); break;
+    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: text_center("L", cx, cy, s * 4, s * 2 / 7.0f * 1.1f, col(1, 1, 1)); break;
+    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: text_center("R", cx, cy, s * 4, s * 2 / 7.0f * 1.1f, col(1, 1, 1)); break;
+    case SDL_CONTROLLER_BUTTON_START:   // a play triangle inside a ring: unmistakable next to the d-pad's Right arrow
+        ring(cx, cy, s * 1.15f, t, col(1, 1, 1));
+        tri(cx - s * 0.35f, cy - s * 0.6f, cx + s * 0.6f, cy, cx - s * 0.35f, cy + s * 0.6f, col(1, 1, 1));
+        break;
+    case SDL_CONTROLLER_BUTTON_BACK:
+        fill_rect({cx - s, cy - s * 0.55f, 2 * s, s * 0.4f}, col(1, 1, 1));
+        fill_rect({cx - s, cy + s * 0.15f, 2 * s, s * 0.4f}, col(1, 1, 1));
+        break;
+    default: break;
+    }
+}
+// a combination's buttons as a row (or rows) of icons inside a circle of radius r
+void draw_combo_icons(const std::vector<Btn>& btns, float cx, float cy, float r, float alpha) {
+    const int n = (int)btns.size();
+    if (n == 0) return;
+    const int rows = (n + 2) / 3;
+    const float s = r * (rows == 1 ? (n == 1 ? 0.5f : n == 2 ? 0.36f : 0.28f) : rows == 2 ? 0.25f : 0.19f);
+    const float step = s * 2.5f;
+    for (int ro = 0; ro < rows; ro++) {
+        const int from = ro * 3, cnt = std::min(3, n - from);
+        const float y = cy + (ro - (rows - 1) * 0.5f) * step;
+        for (int i = 0; i < cnt; i++) draw_btn_icon(btns[(size_t)(from + i)], cx + (i - (cnt - 1) * 0.5f) * step, y, s, alpha);
+    }
+}
+
 void draw_control(const Ctl& c, float lw) {
+    if (c.type == T_STICK && g_float && !g_edit && !g_fl_active) return;   // floating stick: only drawn while in use
     const float am = c.on ? c.a : c.a * 0.55f;   // disabled controls (editor only) are drawn faint
     const float* wl = g_white;
     float white_local[4];
     std::memcpy(white_local, wl, sizeof white_local);
     g_white[3] = std::min(1.0f, 0.6f * am);
     const bool dn = c.pressed;
+    const float grow = dn ? 1.16f : 1.0f;   // a pressed control is drawn larger (the touch area stays the same)
     if (c.type == T_STICK) {
-        const Circle b = circle_of(c);
+        Circle b = circle_of(c);
+        if (g_float && !g_edit) { b.x = g_fl_cx; b.y = g_fl_cy; }
         fill_circle(b.x, b.y, b.r, fill_col(false, 1, 1, 1, am));
         ring(b.x, b.y, b.r, lw, g_white);
-        const float kr = b.r * 0.42f;
         const bool act = g_knob_x != 0 || g_knob_y != 0;
+        const float kr = b.r * 0.42f * (act ? 1.2f : 1.0f);
         const float kx = b.x + g_knob_x * (b.r - kr), ky = b.y + g_knob_y * (b.r - kr);
         fill_circle(kx, ky, kr, fill_col(act, 1, 1, 1, am));
         ring(kx, ky, kr, lw, g_white);
     } else if (c.type == T_DPAD) {
+        // one cross: filled body, an outline with a dark halo, an arrow in every arm; a pressed arm is brighter and drawn larger
         const Rect r = rect_of(c);
-        const float cx = r.x + r.w / 2, cy = r.y + r.h / 2, s = r.w / 2, n = s * 0.40f;
+        const float cx = r.x + r.w / 2, cy = r.y + r.h / 2, S = r.w / 2, A = S * 0.33f;
+        const float px[12] = {-A, A, A, S, S, A, A, -A, -A, -S, -S, -A};
+        const float py[12] = {-S, -S, -A, -A, A, A, S, S, A, A, -A, -A};
+        const float* body = fill_col(false, 1, 1, 1, am);
+        for (int i = 0; i < 12; i++) {
+            const int j = (i + 1) % 12;
+            tri(cx, cy, cx + px[i], cy + py[i], cx + px[j], cy + py[j], body);
+        }
+        for (int i = 0; i < 12; i++) {   // outline (dark halo first, then white)
+            const int j = (i + 1) % 12;
+            line(cx + px[i], cy + py[i], cx + px[j], cy + py[j], lw * 3.2f, g_shade);
+        }
+        for (int i = 0; i < 12; i++) {
+            const int j = (i + 1) % 12;
+            line(cx + px[i], cy + py[i], cx + px[j], cy + py[j], lw, g_white);
+        }
         const float dx[4] = {0, 1, 0, -1}, dy[4] = {-1, 0, 1, 0};
         for (int i = 0; i < 4; i++) {
-            const float px = -dy[i], py = dx[i];
-            quad(cx + dx[i] * n * 0.5f + px * n * 0.5f, cy + dy[i] * n * 0.5f + py * n * 0.5f,
-                 cx + dx[i] * s + px * n * 0.5f, cy + dy[i] * s + py * n * 0.5f,
-                 cx + dx[i] * s - px * n * 0.5f, cy + dy[i] * s - py * n * 0.5f,
-                 cx + dx[i] * n * 0.5f - px * n * 0.5f, cy + dy[i] * n * 0.5f - py * n * 0.5f, fill_col(g_dpad_dir[i], 1, 1, 1, am));
-            tri(cx + dx[i] * s * 0.82f, cy + dy[i] * s * 0.82f,
-                cx + dx[i] * s * 0.50f + px * n * 0.22f, cy + dy[i] * s * 0.50f + py * n * 0.22f,
-                cx + dx[i] * s * 0.50f - px * n * 0.22f, cy + dy[i] * s * 0.50f - py * n * 0.22f, g_white);
+            const float qx = -dy[i], qy = dx[i];
+            if (g_dpad_dir[i]) {   // the pressed arm: brighter and a little larger than the cross
+                const float g = 1.12f;
+                const float* hl = fill_col(true, 1, 1, 1, am);
+                const float x0 = cx + dx[i] * A * 0.4f, y0 = cy + dy[i] * A * 0.4f, x1 = cx + dx[i] * S * g, y1 = cy + dy[i] * S * g;
+                quad(x0 + qx * A * g, y0 + qy * A * g, x1 + qx * A * g, y1 + qy * A * g, x1 - qx * A * g, y1 - qy * A * g, x0 - qx * A * g, y0 - qy * A * g, hl);
+            }
+            const float k = g_dpad_dir[i] ? 1.12f : 1.0f;
+            tri(cx + dx[i] * S * 0.82f * k, cy + dy[i] * S * 0.82f * k,
+                cx + dx[i] * S * 0.50f * k + qx * A * 0.55f, cy + dy[i] * S * 0.50f * k + qy * A * 0.55f,
+                cx + dx[i] * S * 0.50f * k - qx * A * 0.55f, cy + dy[i] * S * 0.50f * k - qy * A * 0.55f, g_white);
         }
     } else if (c.type == T_FACE || c.type == T_COMBO) {
         static const float tint[4][3] = {{0.35f, 0.85f, 0.55f}, {0.95f, 0.40f, 0.40f}, {0.45f, 0.65f, 1.0f}, {0.95f, 0.55f, 0.85f}};
-        const Circle b = circle_of(c);
+        Circle b = circle_of(c);
+        b.r *= grow;
         const bool latched_look = c.latch && c.latched;
         if (c.type == T_FACE) {
             const int i = c.face;
@@ -740,10 +847,11 @@ void draw_control(const Ctl& c, float lw) {
             fill_circle(b.x, b.y, b.r, fill_col(dn || latched_look, 0.55f, 0.45f, 0.95f, am));
             ring(b.x, b.y, b.r, lw, g_white);
             if (c.latch) ring(b.x, b.y, b.r * 0.86f, lw * 0.6f, g_white);   // a second ring marks toggle-hold buttons
-            text_center(combo_label(c), b.x, b.y, b.r * 1.55f, b.r * 0.2f, g_white);
+            draw_combo_icons(c.btns, b.x, b.y, b.r, std::min(1.0f, 0.95f * am));
         }
     } else if (c.type == T_RECT) {
-        const Rect r = rect_of(c);
+        Rect r = rect_of(c);
+        if (grow != 1.0f) { r.x -= r.w * (grow - 1) / 2; r.y -= r.h * (grow - 1) / 2; r.w *= grow; r.h *= grow; }
         fill_rect(r, fill_col(dn, 1, 1, 1, am));
         frame_rect(r, lw, g_white);
         if (c.glyph == 'L' || c.glyph == 'R') {
@@ -753,11 +861,11 @@ void draw_control(const Ctl& c, float lw) {
             fill_rect({r.x + r.w / 2 - r.h * 0.45f, sy - r.h * 0.22f, r.h * 0.9f, r.h * 0.12f}, g_white);
             fill_rect({r.x + r.w / 2 - r.h * 0.45f, sy + r.h * 0.10f, r.h * 0.9f, r.h * 0.12f}, g_white);
         } else {
-            const float tx = r.x + r.w / 2, ty = r.y + r.h / 2, ts = r.h * 0.32f;
-            tri(tx - ts * 0.7f, ty - ts, tx + ts, ty, tx - ts * 0.7f, ty + ts, g_white);
+            draw_btn_icon(SDL_CONTROLLER_BUTTON_START, r.x + r.w / 2, r.y + r.h / 2, r.h * 0.27f, std::min(1.0f, 0.9f * am));
         }
     } else if (c.type == T_MENU) {
-        const Circle b = circle_of(c);
+        Circle b = circle_of(c);
+        b.r *= grow;
         fill_circle(b.x, b.y, b.r, fill_col(dn, 1, 1, 1, am));
         ring(b.x, b.y, b.r, lw, g_white);
         for (int i = -1; i <= 1; i++) fill_rect({b.x - b.r * 0.5f, b.y + i * b.r * 0.34f - lw * 0.5f, b.r, lw}, g_white);
@@ -793,13 +901,22 @@ void draw_editor_ui(float lw) {
         if (b.lit) { f1[0] = 0.85f; f1[1] = 0.65f; f1[2] = 0.15f; }
         fill_rect(b.r, f1);
         frame_rect(b.r, lw, f2);
-        text_center(b.text, b.r.x + b.r.w / 2, b.r.y + b.r.h / 2, b.r.w * 0.9f, b.r.h / 13.0f, f2);
+        if (b.icon >= 0) draw_btn_icon(k_names[b.icon].b, b.r.x + b.r.w / 2, b.r.y + b.r.h / 2, std::min(b.r.w, b.r.h) * 0.28f, 1.0f);
+        else text_center(b.text, b.r.x + b.r.w / 2, b.r.y + b.r.h / 2, b.r.w * 0.9f, b.r.h / 13.0f, f2);
     }
     if (g_pick) {
         static float c2[4] = {1, 1, 1, 1};
-        std::string cur;
-        for (size_t i = 0; i < g_pick_set.size(); i++) { if (i) cur += "+"; cur += btn_name(g_pick_set[i]); }
-        text_center(cur.empty() ? "NOTHING YET" : cur, w / 2, 0.315f * h, 0.8f * w, cell, c2);
+        if (g_pick_set.empty()) text_center("NOTHING YET", w / 2, 0.315f * h, 0.8f * w, cell, c2);
+        else {   // the chosen buttons as shapes, joined by plus signs
+            const float is = 0.03f * h, stepx = is * 2.6f;
+            const float total = (float)g_pick_set.size() * stepx - is * 0.6f;
+            float px = w / 2 - total / 2 + is;
+            for (size_t i = 0; i < g_pick_set.size(); i++) {
+                if (i) text_center("+", px - stepx / 2, 0.315f * h, is * 2, is * 0.25f, c2);
+                draw_btn_icon(g_pick_set[i], px, 0.315f * h, is, 1.0f);
+                px += stepx;
+            }
+        }
     }
 }
 }  // namespace
