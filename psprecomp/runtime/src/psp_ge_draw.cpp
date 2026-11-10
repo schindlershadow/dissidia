@@ -2455,6 +2455,14 @@ static void ge_draw_prim_one(
             fbo_tex = ge_draw_find_target_texture(ge_fb_key(ta), &tw, &th);
         }
     }
+    {   // PSPRECOMP_WIDE_SKIP=glow|soft|both (diagnostic): skip the glow-chain draws that composite a 480 px buffer onto the wide picture
+        static const int skip = [] { const char* e = std::getenv("PSPRECOMP_WIDE_SKIP"); if (!e) return 0;
+            return !std::strcmp(e, "both") ? 3 : !std::strcmp(e, "glow") ? 1 : !std::strcmp(e, "soft") ? 2 : 0; }();
+        if (skip && fbo_tex && ge_vtype_through(state.vertex_type) && cur_w480() > 480 && g_fbtex_w480 == 480 && state.alpha_blend_enable) {
+            if ((skip & 1) && state.blend_mode == 0x2AA) return;   // the additive strips
+            if ((skip & 2) && state.blend_mode == 0x32) return;    // the alpha-blended full-screen pass
+        }
+    }
     // Widescreen: tell the vertex transform how this draw is placed (psp_ge_vertex.h)
     ge_set_wide(draw_wide_x(state), fbo_tex == 0, fbo_tex != 0);
     if (fbo_tex && g_fbtex_w480 > 480) ge_set_fb_u(480.0f / float(g_fbtex_w480), 0.5f * float(g_fbtex_w480 - 480) / float(g_fbtex_w480));
