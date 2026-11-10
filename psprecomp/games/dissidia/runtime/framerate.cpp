@@ -193,9 +193,10 @@ void frame_end_hook(uint8_t* rdram, recomp_context* ctx) {
         if (t - g_win_t0 >= 5000) {
             const int pose_n = g_pose_changed + g_pose_same;
             std::fprintf(stderr, "[FPS] logic %.1f Hz, interval %d, dt %.2f, step %.2f, overlay %u; body poses changed on %d of %d "
-                         "frame-to-frame checks (%.0f%%)\n",
+                         "frame-to-frame checks (%.0f%%); press latch: %u calls, %u edges, %u latched, %u dropped\n",
                          g_win_frames * 1000.0 / double(t - g_win_t0), g_interval, rdf(timer + 0x18u), rdf(FRAME_STEP),
-                         overlay_id(), g_pose_changed, pose_n, pose_n ? 100.0 * g_pose_changed / pose_n : 0.0);
+                         overlay_id(), g_pose_changed, pose_n, pose_n ? 100.0 * g_pose_changed / pose_n : 0.0,
+                         g_press_calls, g_press_edges, g_press_latched, g_press_dropped);
             g_win_t0 = t;
             g_win_frames = 0;
             g_pose_changed = g_pose_same = 0;
@@ -290,6 +291,7 @@ uint64_t g_fighter_seen[4] = {};   // g_tick when the fighter's step was last as
 // pressed for 2 / step updates in total (4 at 120 Hz), as long as the fighter has not started another action (script id) since:
 // the press that starts a move must not count again for that move's own early-press lockout (event 0x004C).
 bool g_press_latch = true;
+uint32_t g_press_calls = 0, g_press_edges = 0, g_press_latched = 0, g_press_dropped = 0;   // counters for the [FPS] log
 struct PressEntry { uint32_t obj = 0, bit = 0, actor = 0, scr = 0; uint64_t tick = 0; };
 PressEntry g_press[48];
 uint32_t actor_of_pad(uint32_t pad) {   // the fighter whose controller (actor+0x5C4) owns this virtual pad (controller+0x53C)
@@ -303,6 +305,7 @@ uint32_t actor_of_pad(uint32_t pad) {   // the fighter whose controller (actor+0
 void pressed_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t obj = static_cast<uint32_t>(ctx->r[4]), bit = static_cast<uint32_t>(ctx->r[5]);
     g_orig_pressed(rdram, ctx);
+    g_press_calls++;
     if (!g_press_latch || g_ticks >= 2.0f || overlay_id() != 1) return;
     const uint64_t window = static_cast<uint64_t>(2.0f / g_ticks + 0.5f);   // updates a press stays "pressed"
     PressEntry* free_slot = nullptr;
@@ -316,11 +319,13 @@ void pressed_hook(uint8_t* rdram, recomp_context* ctx) {
         if (!e) return;
         const uint32_t a = actor_of_pad(obj);
         *e = PressEntry{obj, bit, a, a ? (r32(a + 0x540u) & 0xFFFFu) : 0u, g_tick};
+        g_press_edges++;
         return;
     }
     if (!mine || g_tick == mine->tick || g_tick - mine->tick >= window) return;
-    if (mine->actor && (!ok(mine->actor) || (r32(mine->actor + 0x540u) & 0xFFFFu) != mine->scr)) { mine->obj = 0; return; }   // a new action began
+    if (mine->actor && (!ok(mine->actor) || (r32(mine->actor + 0x540u) & 0xFFFFu) != mine->scr)) { mine->obj = 0; g_press_dropped++; return; }   // a new action began
     ctx->r[2] = 1;
+    g_press_latched++;
 }
 
 
@@ -636,6 +641,7 @@ void dissidia_framerate_install(uint8_t* rdram) {
     psp_dispatch_register(ACTOR_DT, actor_dt_hook);
     psp_dispatch_register(CAM_DT, cam_dt_hook);
     if (g_orig_pressed) psp_dispatch_register(PRESSED, pressed_hook);
+    std::fprintf(stderr, "[FPS] press latch %s (pressed-test hook %s)\n", g_press_latch ? "on" : "off", g_orig_pressed ? "installed" : "NOT FOUND");
     if ((g_orig_rootmotion = psp_dispatch_probe_lookup(ROOT_MOTION))) psp_dispatch_register(ROOT_MOTION, root_motion_hook);
     else std::fprintf(stderr, "[FPS] root motion hook NOT installed (no function at %08X)\n", ROOT_MOTION);
     if ((g_orig_slowmo = psp_dispatch_probe_lookup(SLOWMO_FRAME))) psp_dispatch_register(SLOWMO_FRAME, slowmo_frame_hook);
