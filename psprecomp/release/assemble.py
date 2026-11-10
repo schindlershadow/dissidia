@@ -73,6 +73,8 @@ def main():
     ap.add_argument("--sdk", required=True)
     ap.add_argument("--repo", default=REPO)
     ap.add_argument("--cache", default=None)
+    ap.add_argument("--manifest-url", default=os.environ.get("PSPRECOMP_MANIFEST_URL") or
+                    "https://github.com/%s/releases/latest/download/manifest.json" % (os.environ.get("GITHUB_REPOSITORY") or "schindlershadow/dissidia"))
     ap.add_argument("--no-archive", action="store_true")
     a = ap.parse_args()
     win = a.platform.startswith("windows")
@@ -184,7 +186,7 @@ def main():
                              or r in ("game/game.toml", "toolchain/toolchain.json"))
     relink_fp = fingerprint(lambda r: r.startswith("sdk/"))
     rj = {"version": a.version, "platform": a.platform, "bundle_version": meta["bundle_version"], "zig_target": meta["zig_target"],
-          "rebuild_fingerprint": rebuild_fp, "relink_fingerprint": relink_fp, "files": files}
+          "rebuild_fingerprint": rebuild_fp, "relink_fingerprint": relink_fp, "manifest_url": a.manifest_url, "files": files}
     json.dump(rj, open(os.path.join(out, "release.json"), "w"), indent=1, sort_keys=True)
     print("assembled %s: %d files, version %s" % (out, len(files), a.version))
 

@@ -54,6 +54,7 @@ Layout find_layout(const std::string& root) {
     l.game_dir = join(root, "game");
     l.setup_script = join(root, "game/tools/setup_from_iso.py");
     l.build_script = join(root, "game/tools/psp_build.py");
+    l.update_script = join(root, "game/tools/update.py");
     std::string embedded = join(root, std::string("python/python") + EXE);
     if (is_file(embedded)) l.python = embedded;
     else {
@@ -161,6 +162,65 @@ std::vector<Step> plan_install(const Layout& l, const std::string& iso, const st
     return p;
 }
 
+std::vector<std::string> update_check_argv(const Layout& l) {
+    std::vector<std::string> a = {l.python, l.update_script, "check", "--root", l.root};
+    if (const char* m = std::getenv("PSPRECOMP_MANIFEST_URL")) { a.push_back("--manifest"); a.push_back(m); }
+    return a;
+}
+
+UpdateInfo parse_update_line(const std::string& line) {
+    UpdateInfo u;
+    auto field = [&](const std::string& key) -> std::string {
+        size_t p = line.find(" " + key + "=");
+        if (p == std::string::npos) return "";
+        p += key.size() + 2;
+        size_t e = line.find(' ', p);
+        return line.substr(p, e == std::string::npos ? std::string::npos : e - p);
+    };
+    if (line.compare(0, 6, "UPDATE") == 0) {
+        u.available = true;
+        u.version = field("version");
+        u.current = field("current");
+        u.size = std::atoll(field("size").c_str());
+        u.rebuild = field("rebuild") == "1";
+        u.relink = field("relink") == "1";
+    } else if (line.compare(0, 5, "ERROR") == 0) {
+        u.error = line.size() > 6 ? line.substr(6) : "unknown error";
+    }
+    return u;
+}
+
+std::vector<Step> plan_update(const Layout& l, const std::string& workdir, const Options& o, const UpdateInfo& u) {
+    Step d;
+    d.label = "Downloading the update";
+    d.explain = "Downloads the new release, checks it and replaces the program files. Your game files and saves are not touched.";
+    d.argv = {l.python, l.update_script, "apply", "--root", l.root};
+    if (const char* m = std::getenv("PSPRECOMP_MANIFEST_URL")) { d.argv.push_back("--manifest"); d.argv.push_back(m); }
+    d.env = {{"PYTHONUNBUFFERED", "1"}};
+    d.weight = u.rebuild ? 0.10 : 0.60;
+    std::vector<Step> p{d};
+    if (u.rebuild || u.relink) {
+        Step b = build_step(l, workdir, false);
+        b.explain = "";
+        b.weight = u.rebuild ? 0.90 : 0.40;
+        p.push_back(b);
+    }
+    (void)o;
+    finish_plan(p);
+    return p;
+}
+
+bool update_check_enabled(const std::string& workdir) {
+    if (const char* e = std::getenv("PSPRECOMP_UPDATE_CHECK")) if (e[0] == '0') return false;
+    std::ifstream f(join(workdir, "settings.ini"));
+    std::string line;
+    while (std::getline(f, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        if (line == "check_updates=0") return false;
+    }
+    return true;
+}
+
 double step_done_fraction(const std::vector<Step>& plan, int i) {
     if (i < 0) return 0;
     if (i >= (int)plan.size()) return 1;
@@ -180,6 +240,14 @@ void feed_line(Progress& p, const std::vector<Step>& plan, const std::string& li
         p.explain = st.explain;
         p.detail = line.size() > 60 ? line.substr(0, 57) + "..." : line;
         p.fraction = std::max(p.fraction, base);
+        int pc = 0;
+        if (std::sscanf(line.c_str(), "[update] PROGRESS %d", &pc) == 1) {   // update.py's download
+            p.detail = "Downloading: " + std::to_string(pc) + "%";
+            p.fraction = std::max(p.fraction, base + span * std::min(100, std::max(0, pc)) / 100.0 * 0.8);
+        } else if (line.compare(0, 9, "[update] ") == 0) {
+            if (line.compare(9, 5, "ERROR") == 0) p.error = line.substr(15);
+            else p.detail = line.substr(9, 56);
+        }
         return;
     }
     // ninja's own counter "[183/474] Building CXX object .../batch_0165.cpp.o"

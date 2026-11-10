@@ -50,6 +50,7 @@ def main():
     ap.add_argument("--repo", required=True)
     ap.add_argument("--assets", required=True)
     ap.add_argument("--tag")
+    ap.add_argument("--base-url", help="download base instead of the GitHub release url (tests: file:///dir)")
     ap.add_argument("-o", "--output", default="manifest.json")
     a = ap.parse_args()
     tag = a.tag or "v" + a.version
@@ -64,7 +65,7 @@ def main():
         rj = read_release_json(path)
         plats[m.group(2)] = {
             "asset": fn,
-            "url": "https://github.com/%s/releases/download/%s/%s" % (a.repo, tag, fn),
+            "url": ((a.base_url.rstrip("/") + "/" + fn) if a.base_url else "https://github.com/%s/releases/download/%s/%s" % (a.repo, tag, fn)),
             "sha256": sha256(path),
             "size": os.path.getsize(path),
             "bundle_version": rj["bundle_version"],

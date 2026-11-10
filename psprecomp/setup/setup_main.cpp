@@ -9,6 +9,8 @@
 //
 //   psprecomp_setup                          the wizard
 //   psprecomp_setup --play [DIR]             start the installed game (the remembered install, or DIR) and exit
+//   psprecomp_setup --launch                 the shortcut mode: check for an update (unless turned off), then start the game; a window
+//                                            only matters when an update is found (or something fails)
 //   psprecomp_setup --headless --iso FILE --dir DIR   the install steps without a window (prints the output; for scripts/tests)
 //   psprecomp_setup --root DIR               use DIR as the release folder instead of this program's folder
 //   psprecomp_setup --screenshots OUTDIR     write PPM images of the pages (documentation / look checks) and exit
@@ -182,7 +184,7 @@ struct Browser {
 };
 
 // -------------------------------------------------------------------------------------------------------------- app
-enum class Screen { Welcome, PickIso, PickUndub, Waiting, InstallDir, BrowseDir, TypePath, Options, Build, Done, Failed };
+enum class Screen { Welcome, PickIso, PickUndub, Waiting, InstallDir, BrowseDir, TypePath, Options, Build, Done, Failed, Checking, UpdateAvail, Message };
 // What a file/folder pick is for.
 enum class Pick { Iso, Undub, Dir };
 
@@ -207,6 +209,15 @@ struct App {
     std::string iso, workdir;
     setup::Options opt;
     bool rebuild_only = false;
+    bool updating = false;
+
+    // update check (game/tools/update.py check)
+    setup::Proc check_proc;
+    setup::UpdateInfo upd;
+    bool checking = false, manual_check = false, launch_mode = false;
+    int64_t check_start = 0;
+    std::string check_result;
+    std::string msg_title, msg_text;
 
     // native (system) file dialogs; the built-in browser is the fallback
     std::unique_ptr<pfd::open_file> file_dlg;
@@ -322,7 +333,7 @@ struct App {
             break;
         }
         case Screen::Build: {
-            p.title = rebuild_only ? "REBUILDING" : "INSTALLING";
+            p.title = updating ? "UPDATING" : rebuild_only ? "REBUILDING" : "INSTALLING";
             char pc[16];
             std::snprintf(pc, sizeof pc, "%d%%", (int)(prog.fraction * 100 + 0.5));
             std::string bar = "[";
@@ -340,6 +351,27 @@ struct App {
             if (sel > 3) sel = 3;
             break;
         }
+        case Screen::Checking:
+            p.title = "CHECKING FOR UPDATES";
+            p.tab = "Please wait";
+            p.rows = {row("Looking for a newer version...", "Contacts the release page. This does not send anything about you or your game."),
+                      row(launch_mode ? "Skip and play" : "Skip")};
+            break;
+        case Screen::UpdateAvail: {
+            p.title = "UPDATE AVAILABLE";
+            p.tab = upd.version;
+            std::string help = "Version " + upd.version + " is available (you have " + upd.current + "). Download size: " +
+                               human_size((uintmax_t)upd.size) + ".";
+            help += upd.rebuild ? " The game has to be built again afterwards, as at installation." :
+                    upd.relink ? " The game is relinked afterwards (a short step)." : " Only program files change.";
+            p.rows = {row("Update now", help), row(launch_mode ? "Not now: play" : "Not now", "You can update later from the start screen.")};
+            break;
+        }
+        case Screen::Message:
+            p.title = msg_title;
+            p.tab = "Info";
+            p.rows = {row("OK", msg_text)};
+            break;
         case Screen::Done:
             p.title = "ALL DONE";
             p.tab = "Finished";
@@ -358,10 +390,12 @@ struct App {
     int row_count() { return is_browser() ? (int)br.list.size() : (int)page().rows.size(); }
 
     // ---- actions ----
-    void start_plan(bool rebuild) {
-        rebuild_only = rebuild;
-        const setup::Options& o = rebuild ? state.options : opt;
-        plan = rebuild ? setup::plan_rebuild(layout, state.workdir, o) : setup::plan_install(layout, iso, workdir, o);
+    void start_plan(bool rebuild, bool update = false) {
+        rebuild_only = rebuild || update;
+        updating = update;
+        const setup::Options& o = (rebuild || update) ? state.options : opt;
+        if (update) plan = setup::plan_update(layout, state.workdir, o, upd);
+        else plan = rebuild ? setup::plan_rebuild(layout, state.workdir, o) : setup::plan_install(layout, iso, workdir, o);
         prog = setup::Progress();
         prog.stage = plan[0].label;
         prog.explain = plan[0].explain;
@@ -437,6 +471,43 @@ struct App {
         if (!content.empty() && content.back() != '\n') content += '\n';
         content += std::string("check_updates=") + (opt.check_updates ? "1" : "0") + "\n";
         if (FILE* out = std::fopen(f.string().c_str(), "wb")) { std::fwrite(content.data(), 1, content.size(), out); std::fclose(out); }
+    }
+
+    // ---- update check ----
+    void begin_check(bool manual) {
+        if (!layout_problem.empty()) { go(Screen::Welcome); return; }
+        manual_check = manual;
+        check_result.clear();
+        if (!check_proc.start(setup::update_check_argv(layout), {{"PYTHONUNBUFFERED", "1"}}, "")) {
+            finish_check(setup::UpdateInfo());
+            return;
+        }
+        checking = true;
+        check_start = now_ms();
+        go(Screen::Checking);
+    }
+
+    void finish_check(const setup::UpdateInfo& u) {
+        checking = false;
+        upd = u;
+        if (u.available) { go(Screen::UpdateAvail); return; }
+        if (manual_check) {
+            msg_title = "UPDATES";
+            msg_text = u.error.empty() ? "You have the newest version." : "Could not check for updates: " + u.error;
+            go(Screen::Message);
+        } else if (launch_mode) play();
+        else go(Screen::Welcome);
+    }
+
+    void pump_check() {
+        std::string line;
+        while (check_proc.read_line(line)) {
+            if (line.compare(0, 6, "UPDATE") == 0 || line.compare(0, 8, "NOUPDATE") == 0 || line.compare(0, 5, "ERROR") == 0) check_result = line;
+        }
+        if (checking && (!check_proc.busy() || now_ms() - check_start > 15000)) {
+            if (check_proc.busy()) { check_proc.kill(); check_result = "ERROR timed out"; }
+            finish_check(setup::parse_update_line(check_result));
+        }
     }
 
     void play() {
@@ -536,7 +607,7 @@ struct App {
             if (installed()) {
                 switch (sel) {
                 case 0: play(); break;
-                case 1: break;   // updater: not wired yet
+                case 1: begin_check(true); break;
                 case 2: opt = state.options; start_plan(true); break;
                 case 3: begin_pick(Pick::Iso, Screen::Welcome); break;
                 default: quit = true;
@@ -589,11 +660,24 @@ struct App {
                 fail("The installation was cancelled.");
             }
             break;
+        case Screen::Checking:
+            if (checking) check_proc.kill();
+            checking = false;
+            if (launch_mode) play(); else go(Screen::Welcome);
+            break;
+        case Screen::UpdateAvail:
+            if (sel == 0) { opt = state.options; start_plan(false, true); }
+            else if (launch_mode) play();
+            else go(Screen::Welcome);
+            break;
+        case Screen::Message:
+            go(Screen::Welcome);
+            break;
         case Screen::Done:
             if (sel == 0) play(); else quit = true;
             break;
         case Screen::Failed:
-            if (sel == 0) { if (!plan.empty()) start_plan(rebuild_only); else go(Screen::Welcome); }
+            if (sel == 0) { if (!plan.empty()) start_plan(rebuild_only && !updating, updating); else go(Screen::Welcome); }
             else if (sel == 1) go(Screen::Welcome);
             else quit = true;
             break;
@@ -628,7 +712,11 @@ struct App {
             quit = true;
             break;
         case Screen::Failed:
+        case Screen::Message:
             go(Screen::Welcome);
+            break;
+        case Screen::UpdateAvail:
+            if (launch_mode) play(); else go(Screen::Welcome);
             break;
         default:
             break;
@@ -748,7 +836,7 @@ int run_headless(const setup::Layout& l, const std::string& iso, const std::stri
 
 int main(int argc, char** argv) {
     std::string root, iso, dir, play_dir, shots;
-    bool headless = false, play = false;
+    bool headless = false, play = false, launch = false;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         auto next = [&](std::string& out) { if (i + 1 < argc) out = argv[++i]; };
@@ -756,6 +844,7 @@ int main(int argc, char** argv) {
         else if (a == "--iso") next(iso);
         else if (a == "--dir") next(dir);
         else if (a == "--headless") headless = true;
+        else if (a == "--launch") launch = true;
         else if (a == "--screenshots") next(shots);
         else if (a == "--play") { play = true; if (i + 1 < argc && argv[i + 1][0] != '-') play_dir = argv[++i]; }
         else { std::fprintf(stderr, "unknown option %s\n(see the header of setup_main.cpp)\n", a.c_str()); return 2; }
@@ -797,6 +886,7 @@ int main(int argc, char** argv) {
     app.workdir = state.workdir;
     app.iso = state.iso;
     app.opt = state.options;
+    app.launch_mode = launch;
 
     if (!shots.empty()) {   // look check without a window
         std::error_code ec;
@@ -845,6 +935,10 @@ int main(int argc, char** argv) {
     for (int i = 0; i < SDL_NumJoysticks(); i++)
         if (SDL_IsGameController(i) && (app.pad = SDL_GameControllerOpen(i))) break;
     SDL_StartTextInput();
+    if (app.installed() && app.layout_problem.empty()) {
+        if (setup::update_check_enabled(app.state.workdir)) app.begin_check(false);
+        else if (launch) app.play();
+    }
 
     while (!app.quit) {
         SDL_Event ev;
@@ -884,6 +978,7 @@ int main(int argc, char** argv) {
             }
         }
         app.poll_native();
+        if (app.checking) app.pump_check();
         if (app.building) app.pump_build();
         app.update_input();
         int64_t t = now_ms();

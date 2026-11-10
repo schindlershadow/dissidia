@@ -16,7 +16,7 @@ namespace setup {
 //   game/                        games/dissidia: game.toml, overlay_*.toml, analysis/, tools/*.py
 //   python/python.exe            embedded Python (Windows releases; Linux uses python3 from PATH)
 struct Layout {
-    std::string root, python, setup_script, build_script, recompiler, toolchain, sdk, game_dir;
+    std::string root, python, setup_script, build_script, update_script, recompiler, toolchain, sdk, game_dir;
     // Empty string when everything needed is there, else a message naming what is missing.
     std::string problem() const;
 };
@@ -48,6 +48,21 @@ bool feature_available(const Layout& l, const std::string& name);
 std::vector<Step> plan_install(const Layout& l, const std::string& iso, const std::string& workdir, const Options& o);
 // The game build only (rebuild / repair): analysis, recompile, compile (+ the Android build when chosen).
 std::vector<Step> plan_rebuild(const Layout& l, const std::string& workdir, const Options& o);
+
+// ---- updates (game/tools/update.py; see docs/installer.md "Updater") ----
+struct UpdateInfo {
+    bool available = false;
+    std::string version, current, error;
+    long long size = 0;
+    bool rebuild = false, relink = false;
+};
+// argv of "update.py check" / the parse of its one output line.
+std::vector<std::string> update_check_argv(const Layout& l);
+UpdateInfo parse_update_line(const std::string& line);
+// Download + install the new release files, then (when the generated code or the core changed) build the game again.
+std::vector<Step> plan_update(const Layout& l, const std::string& workdir, const Options& o, const UpdateInfo& u);
+// settings.ini "check_updates=0" in the work folder, or PSPRECOMP_UPDATE_CHECK=0, turns the automatic check off.
+bool update_check_enabled(const std::string& workdir);
 
 struct Progress {
     int step = 0;                       // index into the plan

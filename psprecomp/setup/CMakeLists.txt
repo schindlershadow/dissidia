@@ -34,3 +34,12 @@ target_link_libraries(psprecomp_setup PRIVATE PkgConfig::SDL2 PkgConfig::FREETYP
     $<$<PLATFORM_ID:Windows>:ws2_32 ole32 oleaut32 shell32 comdlg32 uuid user32>)   # portable-file-dialogs uses COM dialogs on Windows
 target_compile_options(psprecomp_setup PRIVATE -O2)
 install(TARGETS psprecomp_setup RUNTIME DESTINATION . COMPONENT setup)
+
+# Unit tests of the wizard's logic (no window): cmake -DPSPRECOMP_SETUP_TESTS=ON, then ctest or run test_setup_install.
+option(PSPRECOMP_SETUP_TESTS "Build the setup wizard's unit tests" OFF)
+if(PSPRECOMP_SETUP_TESTS)
+    enable_testing()
+    add_executable(test_setup_install tests/test_install.cpp install.cpp proc.cpp)
+    target_link_libraries(test_setup_install PRIVATE $<$<NOT:$<PLATFORM_ID:Windows>>:pthread>)
+    add_test(NAME setup_install COMMAND test_setup_install)
+endif()

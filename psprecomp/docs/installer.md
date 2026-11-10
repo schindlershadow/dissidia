@@ -104,10 +104,26 @@ of the fork.
    - Licenses: pspdecrypt is GPL-3.0 and ships as a separate executable (source and license pinned in the bundle), OpenSSL 3.0
      (Apache-2.0), SDL2 and zlib (zlib license), FreeType (FTL), FFmpeg (LGPL 2.1+; built without GPL parts, linked statically into the
      game the player builds: a source offer is needed with a release, TODO), portable-file-dialogs (WTFPL).
-6. **Updater** (task 8): on startup the launcher (not the game) fetches the latest release manifest, shows "Update available" and
-   updates the runtime files in place keeping the work folder (`disc0`, `ms0` saves, `settings.ini`, mods). `settings.ini`
-   `check_updates=0` disables it; `PSPRECOMP_UPDATE_CHECK=0` too. When the generated code must be rebuilt (the recompiler or analysis
-   changed) it says so and reruns the build step; otherwise only the core is swapped and relinked (fast).
+6. **Updater** (task 8; built 2026-11-10, update.py verified against a local file:// manifest, the wizard screens are not clicked through yet).
+   - `game/tools/update.py check|apply --root <release folder>` does the work (Python stdlib, so Windows uses the embedded one).
+     `check` fetches `manifest.json` (URL written into `release.json` at assemble time: the fork's latest release,
+     `PSPRECOMP_MANIFEST_URL` overrides) and prints one line (`UPDATE version=.. current=.. size=.. rebuild=0|1 relink=0|1`,
+     `NOUPDATE ..` or `ERROR ..`) and always exits 0, with an 8 s network timeout, so a failed check never stops the game.
+     `apply` downloads the archive for the platform with progress lines, verifies its sha256, unpacks it to `<root>/.update`,
+     replaces only files whose hash differs (a running exe is renamed to `.old` first on Windows), deletes files the new release
+     dropped and writes `release.json` last (an interrupted update is just run again).
+   - What follows an update: `rebuild=1` when the recompiler, analysis, overlay tomls, game tools or the toolchain bundle changed (the
+     generated code must be regenerated and compiled: `psp_build.py`, whose stamps skip whatever is still valid), `relink=1` when only
+     the prebuilt core (`sdk/`) changed (the same command relinks in seconds), neither: files only. The work folder (disc0, saves,
+     settings.ini, mods) is outside the release folder and untouched. A different toolchain bundle is guarded by the SDK
+     `toolchain.json` check.
+   - In the wizard: with an install present it checks at start (background, 15 s cap) and shows an "Update available" page (Update
+     now / Not now) and, from the start page, "Check for updates" on demand. `psprecomp_setup --launch` is the shortcut mode for
+     starting the game: check, then play at once when there is nothing to do.
+   - **Opt-out**: `check_updates=0` in the work folder's `settings.ini` (the wizard writes the player's choice from the Options
+     page at install time), or `PSPRECOMP_UPDATE_CHECK=0`. Not yet: a row for it in the in-game settings menu, signed manifests
+     (integrity today is the sha256 in a manifest served over HTTPS from the fork's release), delta downloads, wizard self-restart after
+     an update.
 7. **HD textures** (task 5) hooks in as an options page and a download step (Niosa / D012FFRT pack into `mods/textures`).
 8. **Android**: runtime-only app; the PC wizard exports a game bundle (compiled `libpsprecomp_game.so` + data) to copy over. Separate task.
    Findings: zig can target `aarch64-linux-android`, so the same bundle idea cross-compiles the generated code and the core on the PC
