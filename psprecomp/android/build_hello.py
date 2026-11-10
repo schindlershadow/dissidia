@@ -16,7 +16,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sdk", required=True); ap.add_argument("--sdl-src", required=True)
     ap.add_argument("--cmake", default="cmake"); ap.add_argument("--ninja", default="ninja")
-    ap.add_argument("--out", required=True); ap.add_argument("--api", default="26")
+    ap.add_argument("--out", required=True); ap.add_argument("--api", default="29")
     ap.add_argument("--main-so", help="a prebuilt libmain.so (the game): skips building the hello app")
     ap.add_argument("--sdl-so", help="libSDL2.so to pack with --main-so")
     ap.add_argument("--package", default="org.psprecomp.hello"); ap.add_argument("--label", default="psprecomp hello")
