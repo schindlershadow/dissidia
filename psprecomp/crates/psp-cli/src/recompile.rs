@@ -306,6 +306,15 @@ pub fn run_recompile(
     opts: &RecompileOptions,
 ) -> anyhow::Result<()> {
     let prep = prepare_emission(analysis_path, opts.config_path.as_deref())?;
+    if !opts.headers_only {
+        if let Some(seg) = prep.analysis.segments.iter().find(|s| s.p_memsz > 0 && s.data_b64.is_empty()) {
+            anyhow::bail!(
+                "{}: segment {} has no bytes: this is the shipped analysis metadata, which has to be hydrated with the game's own \
+                 binaries first (games/dissidia/tools/psp_build.py does that)",
+                analysis_path.display(), seg.p_vaddr
+            );
+        }
+    }
     let effective_batch_size = prep.config.functions_per_file.unwrap_or(opts.batch_size);
 
     // Module facts (issue #47 Phase 2): resolve before anything is written —

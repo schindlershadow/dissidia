@@ -130,7 +130,9 @@ pub struct JsonSegment {
     /// Always >= p_filesz; the extra bytes are zero (BSS).
     pub p_memsz: u64,
     pub p_flags: u32,
-    /// Base64-encoded segment bytes, length == p_memsz
+    /// Base64-encoded segment bytes, length == p_memsz. Absent in the analysis metadata a release ships (the bytes come from the
+    /// player's own files, see psp_build.py "hydrate"); `recompile` refuses such a file unless it is only writing headers.
+    #[serde(default)]
     pub data_b64: String,
 }
 

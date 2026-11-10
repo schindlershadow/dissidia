@@ -80,9 +80,30 @@ of the fork.
      (used for tests); `--root DIR`; `--screenshots DIR` renders every page to PPM without a display (look checks).
    - Not yet: the update check (a welcome-page row is reserved), Windows run, per-step failure hints, an installer exe / desktop
      shortcut.
-5. **Release workflow** (GitHub Actions, in the fork): per platform (Linux x86_64 AppImage-like folder, Windows x86_64 zip + installer
-   exe), builds the core, the recompiler, the bundle, signs/hashes, and publishes a Release with a manifest (`manifest.json`: version,
-   per-platform file + sha256 + size, minimum wizard version).
+5. **Release workflow** (written 2026-11-10; the local run below works, the GitHub Actions run itself has not been run yet because nothing is pushed).
+   - `release/build_release.py --platform P --version V --work DIR` is the whole build for one platform on a Linux host: bundle
+     (`toolchain/build_bundle.py`) -> header stub -> core + SDK -> wizard -> `release/assemble.py` -> `psprecomp-V-P.tar.xz`
+     (Linux) / `.zip` (Windows) + `.sha256`. Windows is cross-built; `build_bundle.py` keeps `<bundle>.host/` (host-runnable zig,
+     cmake, ninja + `toolchain-cross.cmake`) for that, and the Windows recompiler comes from a Windows runner.
+   - **Header stub** (the open question of milestone 3, solved): `psprecomp recompile <shipped analysis> --config game.toml
+     --headers-only` writes the four small generated headers (`recomp.h`, `recomp_module.h`, `recomp_game_config.h`,
+     `recomp_fingerprint.h`) plus a CMakeLists defining `psp::recomp` as an empty interface target, from the shipped analysis
+     metadata alone (no game bytes; `data_b64` is now optional in the JSON and a normal `recompile` refuses an unhydrated file).
+     The three non-fingerprint headers are byte-identical to the ones of a real output (checked). The core is then built with
+     `PSPRECOMP_OUTPUT_DIR=<stub>`, so CI needs no game.
+   - `.github/workflows/release.yml`: on a `v*` tag (or by hand for artifacts only) a Windows job builds the recompiler, an Ubuntu
+     job installs SDL2's build headers, builds both platforms with `build_release.py`, writes `manifest.json`
+     (`release/make_manifest.py`) and a `publish` job runs `gh release create` with the archives and the manifest.
+   - **Release contents** (`assemble.py`): the wizard, `bin/psprecomp`, the trimmed bundle, the SDK, `game/` (whitelist: analysis
+     metadata, game.toml, overlay tomls, features.ini, fx_shaders, `tools/*.py|json|txt` without tests), embedded Python on Windows
+     (pinned in `toolchain/versions.json`; its `._pth` gets `..\game\tools` added), `licenses/`, `release.json` (version,
+     platform, bundle identity, sha256 of every file, `rebuild_fingerprint`, `relink_fingerprint`). `assemble.py` refuses an SDK
+     built with a different bundle than the one it ships.
+   - **manifest.json** (what the updater downloads first): per platform asset name, url, sha256, size, `bundle_version` and the two
+     fingerprints from the archive's `release.json`; plus `min_wizard_version`.
+   - Licenses: pspdecrypt is GPL-3.0 and ships as a separate executable (source and license pinned in the bundle), OpenSSL 3.0
+     (Apache-2.0), SDL2 and zlib (zlib license), FreeType (FTL), FFmpeg (LGPL 2.1+; built without GPL parts, linked statically into the
+     game the player builds: a source offer is needed with a release, TODO), portable-file-dialogs (WTFPL).
 6. **Updater** (task 8): on startup the launcher (not the game) fetches the latest release manifest, shows "Update available" and
    updates the runtime files in place keeping the work folder (`disc0`, `ms0` saves, `settings.ini`, mods). `settings.ini`
    `check_updates=0` disables it; `PSPRECOMP_UPDATE_CHECK=0` too. When the generated code must be rebuilt (the recompiler or analysis
