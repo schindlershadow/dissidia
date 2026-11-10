@@ -149,7 +149,7 @@ Milestone 1, hello APK (2026-11-10): `android/build_hello.py` builds SDL2 (share
 and touch events in logcat) for arm64-v8a with the Android NDK 27 (the NDK is needed: zig has no bionic headers), packs SDL's Java
 activity (javac + d8), aapt2, zipalign and a debug-signed apk. Tools live outside the repo (desktop `~/dissidia/android/{sdk,jdk,sdl2src}`:
 cmdline-tools sdkmanager `build-tools;34.0.0`, `platforms;android-34`, `ndk;27.2.12479018`; Corretto JDK 17). Built: `hello.apk`, 2.4 MB;
-awaiting a run on a device. Next milestones: GLES 3 path in the renderer, bionic port of the core, the generated game for aarch64-android, APK shell.
+run on the Retroid Pocket 6 (Adreno 740, OpenGL ES 3.2, 1920x1080, built-in "Xbox Wireless Controller" pad, Android 13) over wireless adb: window, GLES3 context and pad detection OK (2026-11-10); touch + button events awaiting the user. Next milestones: GLES 3 path in the renderer, bionic port of the core, the generated game for aarch64-android, APK shell.
 
 ## Verification of milestone 1
 
