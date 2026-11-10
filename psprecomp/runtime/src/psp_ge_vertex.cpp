@@ -689,6 +689,10 @@ void ge_transform_vertices(
                 extend_u = g_wide_extend && !no_extend;   // PSPRECOMP_WIDE_EXTEND=0: diagnostic, draw these centred as before f36f89c
                 if (!(g_wide_extend && no_extend)) wx = 1.0f;
             }
+            extern bool ge_draw_frame_trace_on();
+            if (ge_draw_frame_trace_on())
+                std::fprintf(stderr, "[FTRACE]    through bbox x[%.1f,%.1f] y[%.1f,%.1f] n=%zu cover=%d fbtex=%d wx(in)=%.3f -> %s\n", minx, maxx, miny, maxy,
+                             verts.size(), g_wide_cover ? 1 : 0, g_wide_extend ? 1 : 0, g_wide_x, wx == 1.0f ? (extend_u ? "full+u" : "full") : "centred");
             // PSPRECOMP_WIDE_LOG=1: each distinct screen-sized through draw once (to find draws that nearly cover the screen)
             static const bool wide_log = std::getenv("PSPRECOMP_WIDE_LOG") != nullptr;
             static int wide_log_left = 120;

@@ -260,6 +260,10 @@ void ge_draw_set_stencil_mode(int m) { g_stencil_mode.store(m); }
 static std::mutex g_dump_mu;
 static std::string g_dump_dir;
 static std::atomic<bool> g_dump_armed{false};
+// Debug socket `W <n>`: trace every draw of the next n presented frames ([FTRACE] lines, see ge_draw_prim_one).
+static std::atomic<int> g_ftrace_frames{0};
+void ge_draw_frame_trace(int n) { g_ftrace_frames.store(n); }
+bool ge_draw_frame_trace_on() { return g_ftrace_frames.load(std::memory_order_relaxed) > 0; }
 void ge_draw_dump_targets(const char* dir) {
     { std::lock_guard<std::mutex> lk(g_dump_mu); g_dump_dir = dir; }
     g_dump_armed.store(true);
@@ -2476,6 +2480,14 @@ static void ge_draw_prim_one(
             fbo_tex ? " fbotex=1" : "");
     }
 
+    if (g_ftrace_frames.load(std::memory_order_relaxed) > 0 && !state.clear_mode) {
+        const GeViewportDepth fvp = compute_state_viewport_depth(state);
+        std::fprintf(stderr, "[FTRACE] #%d type=%d n=%d vtype=0x%06X thru=%d dest=0x%08X(w%d, curkey=%06X) tex=%d addr=0x%08X fbotex=%d(w480=%d) blend=%d mode=0x%X fixA=%06X vp=%d,%d,%d,%d wx=%.3f\n",
+            prim_call_count, prim_type, count, state.vertex_type, ge_vtype_through(state.vertex_type) ? 1 : 0, state.framebuf_ptr,
+            cur_w480(), g_current_target >= 0 ? g_targets[g_current_target].key : 0xFFFFFFu, state.texture_enable ? 1 : 0, state.tex_addr[0],
+            fbo_tex ? 1 : 0, fbo_tex ? g_fbtex_w480 : 0, state.alpha_blend_enable ? 1 : 0, (unsigned)state.blend_mode, (unsigned)state.blend_fix_a,
+            fvp.x, fvp.y, fvp.w, fvp.h, draw_wide_x(state));
+    }
     static const bool draw_trace_mat_env = std::getenv("PSPRECOMP_DRAW_TRACE_MAT") != nullptr;
     if (!state.clear_mode && prim_type == 3 && count > 30 && draw_trace_mat_env) {
         static int mat_n = 0;
@@ -3484,6 +3496,7 @@ void ge_present_frame(
     ge_draw_flush();
     if (g_fx_on == 1 && g_fx_live.load(std::memory_order_relaxed)) psp_fx_end_frame();
     if (g_ab) ab_compare_all();
+    if (g_ftrace_frames.load() > 0) { std::fprintf(stderr, "[FTRACE] ---- end of frame ----\n"); g_ftrace_frames.fetch_sub(1); }
     if (g_dump_armed.exchange(false)) {
         std::string dir;
         { std::lock_guard<std::mutex> lk(g_dump_mu); dir = g_dump_dir; }

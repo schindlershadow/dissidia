@@ -2,6 +2,7 @@
 #include "psp_runtime.h"
 #include "psp_ge.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -383,6 +384,12 @@ PspDebugReply psp_debug_handle_line(const char* line,
         // D <dir>: dump every live GE render target (colour + alpha) at the next present
         extern void ge_draw_dump_targets(const char* dir);
         ge_draw_dump_targets(skip_spaces(line + 2));
+        return make_ok_empty();
+    }
+    if (line[0] == 'W' && (line[1] == ' ' || line[1] == 0)) {
+        // W [n]: trace every draw of the next n frames ([FTRACE] lines in the log)
+        extern void ge_draw_frame_trace(int n);
+        ge_draw_frame_trace(line[1] ? std::max(1, std::atoi(line + 2)) : 1);
         return make_ok_empty();
     }
     if (line[0] == 'P' && line[1] == ' ') {
