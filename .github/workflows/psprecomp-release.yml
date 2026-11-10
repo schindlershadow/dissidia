@@ -100,5 +100,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          python3 psprecomp/release/make_notes.py --tag "$VERSION" -o notes.md
-          gh release create "$VERSION" psprecomp/dist/* --repo "${{ github.repository }}" --title "$VERSION" --notes-file notes.md
+          python3 release/make_notes.py --tag "$VERSION" -o notes.md
+          gh release create "$VERSION" dist/* --repo "${{ github.repository }}" --title "$VERSION" --notes-file notes.md
