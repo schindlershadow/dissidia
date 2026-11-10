@@ -44,6 +44,7 @@ struct GeTarget {
     GLuint ab_fbo = 0, ab_tex = 0, ab_depth = 0;   // PSPRECOMP_GE_AB twin (legacy-path shadow)
     uint64_t last_use = 0;     // LRU stamp (monotonic counter)
     int rs = 1;                // this target is 480*rs x 272*rs: g_rs for the buffers shown on screen, 1 for the others
+    bool mip_dirty = true;     // drawn into since its mipmaps were last built (see ge_draw_find_target_texture)
 };
 
 // Render scale (PSPRECOMP_RENDER_SCALE, 1..8 or auto): targets are 480*g_rs x 272*g_rs.
@@ -102,10 +103,24 @@ bool ge_draw_fb_prefilter() { return g_fb_prefilter.load(); }
 static std::atomic<bool> g_fb_snapshot_on{[] { const char* e = std::getenv("PSPRECOMP_GE_FEEDBACK"); return !(e && e[0] == '0'); }()};
 void ge_draw_set_fb_snapshot(bool on) { g_fb_snapshot_on.store(on); std::fprintf(stderr, "[DRAW] feedback snapshot %s\n", on ? "on" : "off"); }
 bool ge_draw_fb_snapshot() { return g_fb_snapshot_on.load(); }
-/// LOD bias for sampling `tex`: log2(render scale) for the feedback snapshot while the prefilter is on, else 0.
-float ge_draw_prefilter_bias(GLuint tex) {
-    if (!tex || tex != g_fb_scratch_tex || g_scratch_rs <= 1 || !g_fb_prefilter.load()) return 0.f;
-    return std::log2(static_cast<float>(g_scratch_rs));
+/// Should `tex` be sampled through its mipmaps, and with what LOD bias? Two cases while the prefilter is on:
+///  * the feedback snapshot of a scaled target (a pass shifting the picture it draws into): the source and the
+///    destination are the same size, so the bias log2(scale) picks the PSP-pixel-sized level;
+///  * a scaled target read while drawing into a smaller one (the first copy of the game's glow chain: the big
+///    picture into a 480x272 buffer, one bilinear tap per output pixel): the GPU already picks the level that
+///    averages the n x n block each output pixel stands for (bias 0), so the copy is the supersampled version of the
+///    PSP picture, not every n-th pixel of it (which aliases and ghosts).
+bool ge_draw_prefilter(GLuint tex, float* bias) {
+    *bias = 0.f;
+    if (!tex || !g_fb_prefilter.load()) return false;
+    if (tex == g_fb_scratch_tex) {
+        if (g_scratch_rs <= 1) return false;
+        *bias = std::log2(static_cast<float>(g_scratch_rs));
+        return true;
+    }
+    for (int i = 0; i < GE_MAX_TARGETS; ++i)
+        if (g_targets[i].fbo && g_targets[i].color_tex == tex) return g_targets[i].rs > cur_rs();
+    return false;
 }
 
 // The GE reads a texture from the very buffer it is rendering into (in-place
@@ -178,6 +193,13 @@ unsigned int ge_draw_find_target_texture(uint32_t key, int* w, int* h) {
         g_targets[i].last_use = ++g_target_clock;
         if (w) *w = 480 * g_targets[i].rs;
         if (h) *h = 272 * g_targets[i].rs;
+        if (g_targets[i].rs > cur_rs() && g_fb_prefilter.load() && g_targets[i].mip_dirty) {   // mip chain for the down-scaling read
+            flush_batch();
+            glBindTexture(GL_TEXTURE_2D, g_targets[i].color_tex);
+            glGenerateMipmap(GL_TEXTURE_2D);
+            ge_texture_invalidate_bind_cache();
+            g_targets[i].mip_dirty = false;
+        }
         return g_targets[i].color_tex;
     }
     return 0;
@@ -841,6 +863,7 @@ void ge_draw_select_target(uint32_t fb_addr_raw) {
     // buffer is a real, common render target.
     if (key == 0 && !g_framebufptr_seen) {
         if (g_current_target < 0) g_current_target = acquire_target(0);
+        g_targets[g_current_target].mip_dirty = true;
         glBindFramebuffer(GL_FRAMEBUFFER, g_targets[g_current_target].fbo);
         return;
     }
@@ -849,6 +872,7 @@ void ge_draw_select_target(uint32_t fb_addr_raw) {
     if (std::getenv("PSPRECOMP_MOVIE_TEXDBG"))
         std::fprintf(stderr, "[SELTGT] fb=%08X key=%06X slot=%d\n", fb_addr_raw, key, slot);
     g_current_target = slot;
+    g_targets[slot].mip_dirty = true;   // about to be drawn into
     if (g_front_target < 0) g_front_target = slot;
     glBindFramebuffer(GL_FRAMEBUFFER, g_targets[slot].fbo);
 }
