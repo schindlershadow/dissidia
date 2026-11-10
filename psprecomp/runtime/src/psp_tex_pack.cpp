@@ -567,7 +567,7 @@ bool psp_texpack_ppsspp_lookup(const PspPpssppTex& t, std::vector<uint8_t>& rgba
     if (!pp.on) return false;
     const uint32_t dim = t.size_reg & 0xF0F;
     uint64_t cachekey = ((uint64_t)(t.addr & 0x3FFFFFFF) << 32) | dim;
-    if (t.has_clut) cachekey ^= (uint64_t)(psp_texpack_xxh32(t.clut, t.clut_len, 0xC0108888u) ^ t.clut_format);
+    if (t.has_clut) cachekey ^= (uint64_t)(psp_texpack_xxh32(t.clut, t.clut_len, 0xC0108888u) ^ (t.clut_format | 0xC5000000u));   // PPSSPP XORs the raw register word, which carries the GE command byte 0xC5
     const uint32_t chash = psp_texpack_ppsspp_content_hash(t.mem, t.mem_len, t.fmt, t.width, t.height, t.bufw, pp.kind);
     char full[40], noaddr[40];
     std::snprintf(full, sizeof full, "%016llx%08x", (unsigned long long)cachekey, chash);
