@@ -26,6 +26,13 @@ GeViewportDepth ge_compute_viewport_depth(
 /// 480n x 272n; viewports are multiplied by n. Valid after ge_draw_init().
 int ge_draw_render_scale();
 
+/// Widescreen (settings menu "Widescreen", PSPRECOMP_WIDESCREEN=1): the displayed buffers get as wide as the window's
+/// shape needs (never narrower than 480 PSP pixels): the 3D scene fills the extra width, the HUD stays centred, a
+/// full-screen background or fade is stretched. Render thread / game paused. Width: current buffer width in PSP pixels.
+void ge_draw_set_widescreen(bool on);
+bool ge_draw_widescreen();
+int ge_draw_widescreen_width();
+
 /// Change the render scale live (settings menu): resizes every render target,
 /// keeping its picture. Main (GL) thread, game paused. False if refused.
 bool ge_draw_set_render_scale(int n);

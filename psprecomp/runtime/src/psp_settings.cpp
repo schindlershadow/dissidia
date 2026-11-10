@@ -71,7 +71,7 @@ bool g_wait_release = false;           // after closing: game input stays blocke
 bool g_confirm_cross = true;
 PspFrameRateHook g_fps{nullptr, 0, nullptr, nullptr};
 
-enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_QUIT,
+enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_WIDE, ROW_FPS, ROW_QUIT,
            ROW_NET_MODE, ROW_NET_SERVER, ROW_NET_ROOM, ROW_NET_PEERS, ROW_NET_STATUS,   // Network page
            ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS };   // the last six: Debug page
 std::vector<Row> g_rows;
@@ -86,6 +86,7 @@ bool g_dirty = true;
 int g_drawn_scale = 0;
 int64_t g_last_present = 0;
 int g_pending_rs = 0;                  // render scale waiting for the game to park
+int g_pending_wide = -1;               // widescreen (0 / 1) waiting for the game to park, -1 = none
 
 // Display: fullscreen or a window. Window sizes: k x 480x272, or the Steam Deck's 1280 x 800 (k = K_DECK; the
 // picture is letterboxed as on the Deck), or a size set by hand (k = -1, listed so the row can show it).
@@ -303,6 +304,20 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.help = "Internal 3D resolution\nHigher is sharper and costs more GPU time (Steam Deck: 2x or 3x).";
             break;
         }
+        case ROW_WIDE: {
+            const bool on = g_pending_wide >= 0 ? g_pending_wide != 0 : ge_draw_widescreen();
+            m.label = "Widescreen";
+            if (!on) m.value = "Off";
+            else if (g_pending_wide >= 0) m.value = "On";
+            else {
+                const int w = ge_draw_widescreen_width();
+                std::snprintf(buf, sizeof buf, w > 480 ? "On  (%d px wide)" : "On  (window not wider than 16:9)", w);
+                m.value = buf;
+            }
+            m.can_dec = on; m.can_inc = !on;
+            m.help = "Wide screens (PSPRECOMP_WIDESCREEN)\nThe battle scene is drawn wider to fill a window or screen wider than 16:9; the HUD stays centred at its normal size and backgrounds stretch. Saved.";
+            break;
+        }
         case ROW_FPS: {
             const int i = fps_index();
             m.label = "Frame Rate";
@@ -490,6 +505,11 @@ void change(int d) {   // left / right on the selected row
         if (n >= 1 && n <= k_max_rs) apply_render_scale(n);
         break;
     }
+    case ROW_WIDE: {
+        const bool on = g_pending_wide >= 0 ? g_pending_wide != 0 : ge_draw_widescreen();
+        if ((d > 0) != on) { g_pending_wide = d > 0 ? 1 : 0; save("widescreen", d > 0 ? "1" : "0"); }
+        break;
+    }
     case ROW_FPS: {
         const int i = fps_index() + d;
         if (i >= 0 && i < g_fps.count) apply_fps(i);
@@ -544,7 +564,7 @@ void build_rows() {
     } else if (g_page == PAGE_DEBUG) {
         g_rows = {ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS};
     } else {
-        g_rows = {ROW_DISPLAY, ROW_RES, ROW_SCALE};
+        g_rows = {ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_WIDE};
         if (g_fps.get && g_fps.count > 1) g_rows.push_back(ROW_FPS);
         g_rows.push_back(ROW_QUIT);
     }
@@ -625,6 +645,7 @@ void confirm() {
         apply_render_scale(n % k_max_rs + 1);
         break;
     }
+    case ROW_WIDE: change((g_pending_wide >= 0 ? g_pending_wide != 0 : ge_draw_widescreen()) ? -1 : 1); return;
     case ROW_FPS:
         apply_fps((fps_index() + 1) % g_fps.count);
         break;
@@ -701,6 +722,7 @@ void psp_settings_load_early() {
     }
     if ((it = g_saved.find("render_scale")) != g_saved.end() && std::atoi(it->second.c_str()) > 0)
         put("PSPRECOMP_RENDER_SCALE", it->second);
+    if ((it = g_saved.find("widescreen")) != g_saved.end()) put("PSPRECOMP_WIDESCREEN", it->second == "1" ? "1" : "0");
     if ((it = g_saved.find("fps")) != g_saved.end() && std::atoi(it->second.c_str()) > 0) put("PSPRECOMP_FPS", it->second);
     if ((it = g_saved.find("window_size")) != g_saved.end() && g_saved.count("display") && g_saved["display"] == "window"
         && it->second.find('x') != std::string::npos) {
@@ -817,6 +839,11 @@ void psp_settings_tick() {
     if (!g_open.load()) return;
     held_dir_update();
     // A render scale change waits until the game has parked (no display list in flight).
+    if (g_pending_wide >= 0 && g_parked.load() > 0) {
+        ge_draw_set_widescreen(g_pending_wide != 0);
+        g_pending_wide = -1;
+        g_dirty = true;
+    }
     if (g_pending_rs && g_parked.load() > 0) {
         if (!ge_draw_set_render_scale(g_pending_rs))
             std::fprintf(stderr, "[SETTINGS] render scale change refused (PSPRECOMP_GE_AB is on)\n");

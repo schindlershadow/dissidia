@@ -548,6 +548,13 @@ static bool ge_mvp_collapses(
     return collapsed;
 }
 
+// Widescreen state for the draw being transformed (see psp_ge_vertex.h).
+static float g_wide_x = 1.0f;
+static bool g_wide_cover = false;
+static float g_fb_u_scale = 1.0f, g_fb_u_off = 0.0f;
+void ge_set_wide(float wx, bool cover) { g_wide_x = wx; g_wide_cover = cover; }
+void ge_set_fb_u(float u_scale, float u_off) { g_fb_u_scale = u_scale; g_fb_u_off = u_off; }
+
 // Game-module degenerate-matrix fallback slot (#47 P5 seam).
 static GeDegenerateFallbackFn g_degenerate_fallback = nullptr;
 
@@ -665,8 +672,20 @@ void ge_transform_vertices(
             1u << (state.tex_size[0] & 0xFFu));
         const float texh = static_cast<float>(
             1u << ((state.tex_size[0] >> 8) & 0xFFu));
+        // Widescreen: a through draw is centred (x scaled by wx), except one that covers the whole screen without
+        // a render-target texture, which is stretched across the whole width (menu backgrounds, fades).
+        float wx = g_wide_x;
+        if (wx != 1.0f && g_wide_cover && !verts.empty()) {
+            float minx = 1e9f, maxx = -1e9f, miny = 1e9f, maxy = -1e9f;
+            for (const auto& v : verts) {
+                minx = std::min(minx, v.pos[0]); maxx = std::max(maxx, v.pos[0]);
+                miny = std::min(miny, v.pos[1]); maxy = std::max(maxy, v.pos[1]);
+            }
+            if (minx <= 0.5f && maxx >= 479.5f && miny <= 0.5f && maxy >= 271.5f) wx = 1.0f;
+        }
+        const float fu_scale = g_fb_u_scale, fu_off = g_fb_u_off;
         for (auto& v : verts) {
-            v.pos[0] = v.pos[0] / 240.0f - 1.0f;
+            v.pos[0] = (v.pos[0] / 240.0f - 1.0f) * wx;
             v.pos[1] = 1.0f - v.pos[1] / 136.0f;
             v.pos[2] = v.pos[2] / 65535.0f;
             v.w = 1.0f;   // already NDC: no perspective divide (see ge_decode_vertices)
@@ -680,6 +699,7 @@ void ge_transform_vertices(
                 if (state.texture_enable) {
                     if (texw > 0.0f) v.uv[0] /= texw;
                     if (texh > 0.0f) v.uv[1] /= texh;
+                    v.uv[0] = v.uv[0] * fu_scale + fu_off;   // a wide render target as the texture
                 }
             }
         }
@@ -739,6 +759,7 @@ void ge_transform_vertices(
                     v.pos[1] = wpos[1];
                     v.pos[2] = wpos[2];
                 }
+                v.pos[0] *= g_wide_x;
                 v.w = 1.0f;   // NDC-direct: no perspective divide
             } else {
                 float clip[4];
@@ -747,7 +768,7 @@ void ge_transform_vertices(
 
                 // Leave in clip space: the GPU does the perspective divide,
                 // near/far clipping and perspective-correct interpolation.
-                v.pos[0] = clip[0];
+                v.pos[0] = clip[0] * g_wide_x;   // widescreen: the wider target shows more to the sides
                 v.pos[1] = clip[1];
                 v.pos[2] = clip[2];
                 v.w = clip[3];

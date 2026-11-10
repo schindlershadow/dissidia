@@ -96,6 +96,17 @@ PPSSPP (https://www.ppsspp.org/docs/troubleshooting/the-bloom-problem): the game
 number of steps tuned for 480x272, and at n times the resolution those steps blur too little and leave a hard ghost around
 characters and bright objects. `PSPRECOMP_RENDER_SCALE_ALL=1` scales every target again (the old behaviour).
 
+Widescreen (generic runtime option): settings menu > System > Widescreen (saved as `widescreen=1`), or `PSPRECOMP_WIDESCREEN=1`.
+The PSP's 480x272 is already about 16:9, so this matters for windows and screens wider than that (21:9, 32:9). The displayed
+buffers become as wide as the window's shape needs (`272 x aspect` PSP pixels, even, 480..960; never narrower than 480).
+3D draws whose viewport spans the whole screen get their clip x scaled by `480 / width`, so the vertical field of view stays and the
+horizontal one grows: the scene shows more to the sides (objects the game never submits outside its own view pop in at the edges
+of the extra width). Every through-mode (2D) draw is scaled the same way, so the HUD and menus stay centred at their original size.
+A through-mode draw that covers the whole 480x272 screen without a render-target texture (a menu background, a fade) is stretched
+over the whole width instead, so menus show their background on the side parts. Draws that read a render target (the glow chain's
+add-back) stay centred; offscreen buffers stay 480x272, so the glow does not reach the side parts. The savedata dialog and the
+settings menu are drawn centred. A buffer that was 480 wide when widescreen was switched on is grown without losing its picture.
+
 Input: keyboard and SDL game controllers (`PSPRECOMP_SWAP_AB`, `PSPRECOMP_GAMECONTROLLERDB`, `PSPRECOMP_PAD_LOG=1`; key/button
 tables and Steam Input setup in `docs/steamdeck.md`).
 
