@@ -8,6 +8,8 @@ You need your own copy of the game as an `.iso` or `.cso`. The European PSN rele
 
 ## Install and play
 
+A prebuilt release with a setup wizard (Linux and Windows) is being worked on; the plan and status are in [psprecomp/docs/installer.md](psprecomp/docs/installer.md). Until then, use the steps below.
+
 ### Steam Deck
 
 No terminal needed. In Desktop Mode (Steam button > Power > Switch to Desktop):

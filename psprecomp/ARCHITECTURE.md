@@ -147,6 +147,7 @@ All under `runtime/` (headers in `runtime/include/`, sources in `runtime/src/`):
 
 | Subsystem | Files | Responsibility |
 |-----------|-------|----------------|
+| Core library + SDK | `runtime/CMakeLists.txt`, `runtime/sdk/CMakeLists.txt` | Everything under `runtime/src` (plus the selected game module) builds as the static library `psprecomp_core`; `psprecomp_runtime` is `main.cpp` (the only file that includes the generated `funcs.h`) linked with it, the generated libraries and the overlay libraries in one link group. `cmake --install --component sdk` writes an SDK (`lib/libpsprecomp_core.a`, headers, `src/main.cpp`, `sdk/CMakeLists.txt`) that builds a game from a recompiled output directory without the runtime sources: a release ships the prebuilt core and the player's machine compiles only the generated C++ (design: [docs/installer.md](docs/installer.md)) |
 | Boot / main loop | `main.cpp` | Generic boot sequence (module start, thread creation), SDL2 main loop — contains zero address-keyed hooks (they live in `games/<id>/runtime/`, Phase 4) |
 | Game modules | `psp_game_module.h`, `psp_game_default.cpp`, `games/<id>/runtime/` | Per-game hook seam — see [Per-Game Layer](#per-game-layer-games) |
 | Memory | `psp_memory.cpp` | 128 MB `rdram` allocation; all guest addresses masked with `0x07FFFFFFU` |
