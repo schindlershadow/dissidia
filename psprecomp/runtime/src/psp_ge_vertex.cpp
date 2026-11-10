@@ -690,9 +690,9 @@ void ge_transform_vertices(
                 for (const auto& v : verts) if (v.has_uv) { const float u = (v.uv[0] * state.tex_scale_u + state.tex_offset_u) / texw * g_fb_u_remap; u0 = std::min(u0, u); u1 = std::max(u1, u); }
                 src_fills = !(u1 > u0) || (u0 <= 0.02f && u1 >= 0.98f);
             }
-            if (src_fills && minx <= 0.5f && maxx >= 479.5f && miny <= 0.5f && maxy >= 271.5f) {
+            if (minx <= 0.5f && maxx >= 479.5f && miny <= 0.5f && maxy >= 271.5f) {
                 static const bool no_extend = [] { const char* v = std::getenv("PSPRECOMP_WIDE_EXTEND"); return v && v[0] == '0'; }();
-                extend_u = g_wide_extend && !no_extend;   // PSPRECOMP_WIDE_EXTEND=0: diagnostic, draw these centred as before f36f89c
+                extend_u = g_wide_extend && !no_extend && src_fills;   // a partial source (the 1/4 size thumbnail of the whole picture): full width, u unchanged   // PSPRECOMP_WIDE_EXTEND=0: diagnostic, draw these centred as before f36f89c
                 if (!(g_wide_extend && no_extend)) wx = 1.0f;
             }
             extern bool ge_draw_frame_trace_on();
@@ -716,7 +716,15 @@ void ge_transform_vertices(
             }
         }
         const float wide_wx = g_wide_x;
-        const float fu_scale = g_fb_u_scale, fu_off = g_fb_u_off;
+        float fu_scale = g_fb_u_scale, fu_off = g_fb_u_off;
+        if (fu_scale < 1.0f && state.texture_enable && texw > 0.0f && !verts.empty()) {
+            // reading the wide picture into a narrow target at 1/4 size or less (the game's soft-focus thumbnail): take the whole width, so the
+            // stretched-back copy (see extend_u above) lines up with the picture everywhere, sides included
+            float u0 = 1e9f, u1 = -1e9f, x0 = 1e9f, x1 = -1e9f;
+            for (const auto& v : verts) { if (v.has_uv) { u0 = std::min(u0, v.uv[0]); u1 = std::max(u1, v.uv[0]); } x0 = std::min(x0, v.pos[0]); x1 = std::max(x1, v.pos[0]); }
+            const float dest_w = (x1 - x0) * wx, src_w = (u1 - u0) * state.tex_scale_u;
+            if (dest_w > 0.5f && src_w >= 3.5f * dest_w) { fu_scale = 1.0f; fu_off = 0.0f; }
+        }
         for (auto& v : verts) {
             v.pos[0] = (v.pos[0] / 240.0f - 1.0f) * wx;
             v.pos[1] = 1.0f - v.pos[1] / 136.0f;
