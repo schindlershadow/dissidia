@@ -685,8 +685,9 @@ void ge_transform_vertices(
                 miny = std::min(miny, v.pos[1]); maxy = std::max(maxy, v.pos[1]);
             }
             if (minx <= 0.5f && maxx >= 479.5f && miny <= 0.5f && maxy >= 271.5f) {
-                extend_u = g_wide_extend;
-                wx = 1.0f;
+                static const bool no_extend = [] { const char* v = std::getenv("PSPRECOMP_WIDE_EXTEND"); return v && v[0] == '0'; }();
+                extend_u = g_wide_extend && !no_extend;   // PSPRECOMP_WIDE_EXTEND=0: diagnostic, draw these centred as before f36f89c
+                if (!(g_wide_extend && no_extend)) wx = 1.0f;
             }
             // PSPRECOMP_WIDE_LOG=1: each distinct screen-sized through draw once (to find draws that nearly cover the screen)
             static const bool wide_log = std::getenv("PSPRECOMP_WIDE_LOG") != nullptr;
