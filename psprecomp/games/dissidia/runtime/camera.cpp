@@ -19,7 +19,8 @@
 // Options: PSPRECOMP_CAM_FREE=0 disables (stick then acts as D-pad, see psp_hle_ctrl.cpp), PSPRECOMP_CAM_SENS
 // (1.0 = 150 deg/s yaw at full deflection), PSPRECOMP_CAM_INVERT_Y=1, PSPRECOMP_CAM_PITCH_MIN/MAX (deg,
 // elevation of the eye above the target; default -5..80), PSPRECOMP_CAM_RECENTER=<seconds> (time constant
-// for the offset to drift back to zero while the stick is idle; default 0 = hold),
+// for the offset to drift back to zero once the stick has been idle for PSPRECOMP_CAM_RECENTER_DELAY seconds;
+// defaults 1.0 and 0.5; 0 = hold the offset),
 // PSPRECOMP_CAM_LOG=1 is the GE-level log; PSPRECOMP_CAMX_LOG=<n> logs n updates of this module.
 
 #include "psp_game_module.h"
@@ -51,7 +52,7 @@ uint32_t g_mgr = 0;
 bool g_in_update = false;
 int g_eye_calls = 0;
 bool g_free = true, g_invert = false;
-float g_sens = 1.0f, g_pitch_min = -5.f, g_pitch_max = 80.f, g_recenter = 0.f;
+float g_sens = 1.0f, g_pitch_min = -5.f, g_pitch_max = 80.f, g_recenter = 1.0f, g_recenter_delay = 0.5f, g_idle = 0.f;
 float g_yaw = 0.f, g_pitch = 0.f;   // accumulated offsets (radians)
 double g_last_t = 0;
 int g_log_left = 0;
@@ -146,11 +147,19 @@ void dissidia_cam_update(uint8_t* rdram, recomp_context* ctx) {
     g_rstick_consumed_until_ms.store(now_ms() + 400, std::memory_order_relaxed);
     constexpr float kRate = 2.6f;   // rad/s at full deflection and sens 1.0
     if (active) {
+        g_idle = 0.f;
         g_yaw   += sx * g_sens * kRate * static_cast<float>(dt);
         g_pitch += (g_invert ? -sy : sy) * g_sens * kRate * 0.6f * static_cast<float>(dt);
-    } else if (g_recenter > 0.f && dt > 0) {
-        float k = std::exp(-static_cast<float>(dt) / g_recenter);
-        g_yaw *= k; g_pitch *= k;
+    } else {
+        g_idle += static_cast<float>(dt);
+        // Let go of the stick: after a short pause (a brief release while adjusting must not snap back) the offset
+        // eases back to the game's own camera, so a big turn cannot leave the fighter out of sight.
+        if (g_recenter > 0.f && g_idle > g_recenter_delay && dt > 0) {
+            float k = std::exp(-static_cast<float>(dt) / g_recenter);
+            g_yaw *= k; g_pitch *= k;
+            if (std::fabs(g_yaw) < 0.002f) g_yaw = 0.f;
+            if (std::fabs(g_pitch) < 0.002f) g_pitch = 0.f;
+        }
     }
     // Yaw is unbounded but kept in (-pi, pi].
     const float PI = 3.14159265f;
@@ -226,6 +235,7 @@ void dissidia_camera_install(uint8_t* rdram) {
     if ((e = std::getenv("PSPRECOMP_CAM_PITCH_MIN"))) g_pitch_min = static_cast<float>(std::atof(e));
     if ((e = std::getenv("PSPRECOMP_CAM_PITCH_MAX"))) g_pitch_max = static_cast<float>(std::atof(e));
     if ((e = std::getenv("PSPRECOMP_CAM_RECENTER"))) g_recenter = static_cast<float>(std::atof(e));
+    if ((e = std::getenv("PSPRECOMP_CAM_RECENTER_DELAY"))) g_recenter_delay = static_cast<float>(std::atof(e));
     if ((e = std::getenv("PSPRECOMP_CAMX_LOG"))) g_log_left = std::atoi(e);
     g_orig_update = ovl_battle_lookup(CAM_UPDATE);
     g_orig_seteye = psp_dispatch_probe_lookup(CAM_SETEYE);

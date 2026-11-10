@@ -96,8 +96,9 @@ tables and Steam Input setup in `docs/steamdeck.md`).
 Controls, right stick (the PSP has none): in battle it is a free camera. `games/dissidia/runtime/camera.cpp`
 wraps the battle camera update (`ovl_battle FUN_08B3CA24`, once per frame) and rotates the final eye position
 around the camera target by an accumulated yaw/pitch offset, so the game's own d-pad camera, lock-on framing,
-auto-centring and collision pull-in keep working underneath (the stick is an offset on top, held until you move
-it again; `PSPRECOMP_CAM_RECENTER=<s>` makes it drift back). Outside battle (menus) the right stick acts as the
+auto-centring and collision pull-in keep working underneath (the stick is an offset on top: when you let go of the stick it
+eases back to the game's camera after 0.5 s, with a time constant of 1 s; `PSPRECOMP_CAM_RECENTER=<s>` changes the time constant,
+`PSPRECOMP_CAM_RECENTER_DELAY=<s>` the pause, `PSPRECOMP_CAM_RECENTER=0` holds the offset until you move it again). Outside battle (menus) the right stick acts as the
 D-pad. Options: `PSPRECOMP_CAM_FREE=0` (stick is a plain D-pad everywhere, the game's own camera), `PSPRECOMP_CAM_SENS`
 (default 1.0 = ~150 deg/s at full deflection), `PSPRECOMP_CAM_INVERT_Y=1`, `PSPRECOMP_CAM_PITCH_MIN/MAX` (eye elevation
 limits in degrees, default -5..80), `PSPRECOMP_RSTICK_DEADZONE` (default 0.20), `PSPRECOMP_RSTICK_DPAD=0` (right stick

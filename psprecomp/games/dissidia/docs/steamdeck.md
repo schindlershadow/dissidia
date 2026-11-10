@@ -271,8 +271,8 @@ Input to any of the buttons above if you want them.
   Nintendo-style layouts or if you want confirm on the right-hand button. In `play.sh` add it as a Launch Option.
 * The right stick turns the battle camera freely (the PSP only had the D-pad for this): yaw and pitch are an
   offset on top of the game's own camera, so lock-on and auto-centring still work. `PSPRECOMP_CAM_SENS=1.5` speeds
-  it up, `PSPRECOMP_CAM_INVERT_Y=1` inverts pitch, `PSPRECOMP_CAM_RECENTER=3` lets the view drift back in 3 s when the
-  stick is idle, `PSPRECOMP_CAM_FREE=0` switches to the plain "right stick = D-pad" behaviour (the game's own d-pad
+  it up, `PSPRECOMP_CAM_INVERT_Y=1` inverts pitch, the view drifts back to the game's camera 0.5 s after you let go of the stick (`PSPRECOMP_CAM_RECENTER=3` makes
+  it slower, `PSPRECOMP_CAM_RECENTER=0` holds it), `PSPRECOMP_CAM_FREE=0` switches to the plain "right stick = D-pad" behaviour (the game's own d-pad
   camera). In menus the right stick is always a D-pad. `PSPRECOMP_RSTICK_DPAD=0` disables that conversion (the
   stick then does nothing in menus), `PSPRECOMP_RSTICK_DEADZONE=0.3` widens the dead zone.
   Environment variables set in Steam's Launch Options as `PSPRECOMP_CAM_SENS=1.5 %command%` do not work here
