@@ -675,7 +675,9 @@ void build_rows() {
         g_rows.push_back(ROW_SOFT);
         if (voice_row_wanted()) g_rows.push_back(ROW_VOICE);
         if (texpack_row_wanted()) g_rows.push_back(ROW_TEXPACK);
+#ifdef __ANDROID__   // the on-screen controls exist for Android only
         g_rows.push_back(ROW_TOUCH);
+#endif
         g_rows.push_back(ROW_UPDATES);
         g_rows.push_back(ROW_QUIT);
     }
