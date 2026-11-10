@@ -3,7 +3,7 @@
 #include "ppsspp_config.h"
 #include <cstdint>
 
-#if PPSSPP_PLATFORM(WINDOWS)
+#if PPSSPP_PLATFORM(WINDOWS) && defined(_MSC_VER)   // mingw/clang use the builtins below
 #include "Common/CommonWindows.h"
 
 // Use this if you know the value is non-zero.

@@ -62,7 +62,7 @@ find_library(PSPRECOMP_CORE psprecomp_core PATHS "${CMAKE_CURRENT_LIST_DIR}/lib"
 add_library(psprecomp_core STATIC IMPORTED)
 set_target_properties(psprecomp_core PROPERTIES IMPORTED_LOCATION "${PSPRECOMP_CORE}")
 target_link_libraries(psprecomp_core INTERFACE PkgConfig::SDL2 PkgConfig::FREETYPE $<TARGET_NAME_IF_EXISTS:OpenGL::GL> ZLIB::ZLIB
-    $<$<NOT:$<PLATFORM_ID:Windows>>:pthread>)
+    $<$<NOT:$<PLATFORM_ID:Windows>>:pthread> $<$<PLATFORM_ID:Windows>:ws2_32>)
 if(AVCODEC_FOUND)
     target_link_libraries(psprecomp_core INTERFACE PkgConfig::AVCODEC)
 endif()

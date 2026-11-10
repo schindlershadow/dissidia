@@ -1,5 +1,6 @@
 // psp_settings.cpp — in-game settings menu. See include/psp_settings.h.
 #include "psp_settings.h"
+#include "psp_platform.h"
 #include "psp_ge_vertex.h"
 #include "psp_runtime.h"
 #include "psp_event_loop.h"
@@ -725,7 +726,7 @@ void psp_settings_load_early() {
     if (g_saved.empty()) return;
     std::string applied;
     auto put = [&](const char* var, const std::string& v) {
-        setenv(var, v.c_str(), 1);
+        psp_plat::setenv_(var, v.c_str());
         applied += std::string(" ") + var + "=" + v;
     };
     auto it = g_saved.find("display");
@@ -733,7 +734,7 @@ void psp_settings_load_early() {
     else if (it != g_saved.end() && it->second == "window") {
         put("PSPRECOMP_FULLSCREEN", "0");
         auto k = g_saved.find("window_scale");
-        if (k != g_saved.end() && std::atoi(k->second.c_str()) > 0) { put("PSPRECOMP_SCALE", k->second); unsetenv("PSPRECOMP_WINDOW"); }
+        if (k != g_saved.end() && std::atoi(k->second.c_str()) > 0) { put("PSPRECOMP_SCALE", k->second); psp_plat::unsetenv_("PSPRECOMP_WINDOW"); }
     }
     if ((it = g_saved.find("render_scale")) != g_saved.end() && std::atoi(it->second.c_str()) > 0)
         put("PSPRECOMP_RENDER_SCALE", it->second);
@@ -743,7 +744,7 @@ void psp_settings_load_early() {
     if ((it = g_saved.find("window_size")) != g_saved.end() && g_saved.count("display") && g_saved["display"] == "window"
         && it->second.find('x') != std::string::npos) {
         put("PSPRECOMP_WINDOW", it->second);
-        unsetenv("PSPRECOMP_SCALE");
+        psp_plat::unsetenv_("PSPRECOMP_SCALE");
     }
     if ((it = g_saved.find("net_mode")) != g_saved.end() && (it->second == "internet" || it->second == "lan"))
         put("PSPRECOMP_ADHOC_MODE", it->second);

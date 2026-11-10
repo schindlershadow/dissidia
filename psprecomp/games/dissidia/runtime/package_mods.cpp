@@ -1,5 +1,6 @@
 // games/dissidia/runtime/package_mods.cpp — see package_mods.h.
 #include "package_mods.h"
+#include "psp_platform.h"
 
 #include <algorithm>
 #include <cctype>
@@ -71,7 +72,7 @@ int64_t pread_all(const std::string& file, uint8_t* dest, uint32_t n, int64_t of
     if (fd < 0) return -1;
     int64_t got = 0;
     while (got < n) {
-        ssize_t r = ::pread(fd, dest + got, n - got, off + got);
+        ssize_t r = psp_plat::pread_(fd, dest + got, n - got, off + got);
         if (r <= 0) break;
         got += r;
     }

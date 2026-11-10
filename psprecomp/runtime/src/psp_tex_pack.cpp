@@ -1,4 +1,5 @@
 #include "psp_tex_pack.h"
+#include "psp_platform.h"
 #include "hle/psp_hle_io.h"
 
 #include <zlib.h>
@@ -97,7 +98,7 @@ bool file_exists(const std::string& p) {
 }
 void mkdir_p(const std::string& p) {
     for (size_t i = 1; i <= p.size(); i++)
-        if (i == p.size() || p[i] == '/') ::mkdir(p.substr(0, i).c_str(), 0755);
+        if (i == p.size() || p[i] == '/') psp_plat::mkdir_(p.substr(0, i).c_str(), 0755);
 }
 
 bool parse_hex16(const char* s, uint64_t* out) {

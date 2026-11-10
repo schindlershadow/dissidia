@@ -1,3 +1,6 @@
+// Windows: keep the plain C main() (SDL would otherwise rename it SDL_main and need SDL2main/WinMain); see SDL_SetMainReady below.
+#define SDL_MAIN_HANDLED
+#include <SDL.h>
 #include "recomp.h"
 #include "funcs.h"
 #include "psp_memory.h"
@@ -70,6 +73,7 @@ extern RECOMP_FUNC void entry(uint8_t* rdram, recomp_context* ctx);
 int main(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
+    SDL_SetMainReady();
 
     // 0. Identify the output/ this binary was built against (issue #36).
     //    One grep-stable line; the configure-time fingerprint check is the

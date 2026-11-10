@@ -94,15 +94,18 @@ libraries was played by the user (boots, loads the save).
 ## Windows status (2026-11-10)
 
 `build_bundle.py windows-x86_64` (run on a Linux host) produces a bundle of Windows executables (zig, cmake, ninja, the `zig-*.exe`
-launchers) and static mingw `libSDL2.a`, `libfreetype.a`, `libz.a`, `libavcodec.a`/`libavutil.a`; two Windows-only workarounds are in the
-script (zlib static target only; ffmpeg configure's `--pic-executable` link flag). With the bundle's compiler (run through the host
-launchers) the generated game code compiles for `x86_64-windows-gnu` (eboot library, 0 errors, 1 min). What is **not** done:
+launchers) and static mingw `libSDL2.a`, `libfreetype.a`, `libz.a`, `libavcodec.a`/`libavutil.a`; Windows-only workarounds in the script:
+zlib static target only, ffmpeg configure's `--pic-executable` link flag, the system libraries SDL2 needs listed in `deps.cmake`.
 
-- Nothing Windows was run (the `.exe` tools and a Windows game binary are untested; wine is installed on the desktop and could run
-  the tool executables, a real Windows machine is needed for the game).
-- **The runtime core does not build for Windows**: it uses POSIX APIs (`sys/mman.h`, `sys/socket.h`/`arpa/inet.h` in the debug socket
-  and ad-hoc code, `sigaction`, `statvfs`, `sys/syscall.h` in `psp_prof.h`, `setenv`/`unsetenv`, `pread`, `localtime_r`, `st_mtim`,
-  two-argument `mkdir`) in about 15 files (`psp_memory.cpp`, `psp_event_loop.cpp`, `psp_debug_socket.cpp`, `psp_settings.cpp`,
-  `psp_fx_shader.cpp`, `psp_tex_pack.cpp`, `hle/psp_hle_io.cpp`, `hle/psp_hle_adhoc.cpp`, `hle/psp_hle_utility.cpp`,
-  `hle/psp_savedata_dialog.cpp`, `vfpu_ppsspp/...`, `games/dissidia/runtime/{hooks_io,package_mods,roster}.cpp`). Porting those is a
-  separate task (task 19); the bundle does not change with it.
+**Task 19, Windows port of the core: builds.** The POSIX calls the runtime used now go through `runtime/include/psp_platform.h`
+(`psp_plat::`: guest memory via `VirtualAlloc` instead of `mmap`, `mkdir`, `pread` via overlapped `ReadFile`, `setenv`, `localtime`,
+free disk space, file mtime, Winsock for the debug socket and ad-hoc UDP incl. `WSAPoll` and a non-blocking socket instead of
+`MSG_DONTWAIT`; `sigaction` becomes `signal`; the `/proc` thread profiler is Linux only; `main()` uses `SDL_MAIN_HANDLED`; the VFPU
+`BitScan.h` takes the compiler builtins on mingw). On Linux and macOS each shim is a thin inline over the original call.
+Result: the core, the generated code, the overlays and `psprecomp_runtime.exe` (50 MB) compile and link for `x86_64-windows-gnu` with
+the bundle's compiler (run through the host launchers on Linux), and the Linux build is unchanged (rebuilt and linked again).
+
+Not verified: **no Windows binary has been run.** Open questions only a run shows: path handling (`/` vs `\\`, drive letters, case
+rules in `psp_path_to_host`), GL context creation through static SDL2 on Windows, the audio sink, threads/fibers in the scheduler, `getenv`
+based settings (settings.ini applies them with `_putenv_s`), Winsock UDP error codes (e.g. `WSAECONNRESET` on ICMP port unreachable).
+Wine is installed on the desktop for a first look; a Windows machine is the real test.

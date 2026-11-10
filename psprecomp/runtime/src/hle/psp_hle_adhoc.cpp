@@ -17,13 +17,7 @@
 #include "psp_memory.h"
 #include "recomp.h"
 
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include "psp_platform.h"
 
 #include <algorithm>
 #include <array>
@@ -222,7 +216,7 @@ void send_dgram(const sockaddr_in& to, uint8_t type, const std::vector<uint8_t>&
     uint16_t n = (uint16_t)body.size();
     std::memcpy(&p[11], &n, 2);
     if (!body.empty()) std::memcpy(&p[HDR], body.data(), body.size());
-    (void)!sendto(g_sock, p.data(), p.size(), 0, (const sockaddr*)&to, sizeof to);
+    (void)!sendto(g_sock, reinterpret_cast<const char*>(p.data()), (int)p.size(), 0, (const sockaddr*)&to, sizeof to);
 }
 
 // A datagram larger than the path MTU is split by IP into fragments, and many routers (home NAT, a
@@ -724,12 +718,12 @@ void net_thread() {
     int64_t next_beacon = 0, next_tick = 0;
     uint8_t buf[65536];
     while (!g_stop.load()) {
-        pollfd pfd{g_sock, POLLIN, 0};
-        int r = poll(&pfd, 1, 5);
+        pollfd pfd{}; pfd.fd = g_sock; pfd.events = POLLIN;
+        int r = psp_plat::poll_(&pfd, 1, 5);
         if (r > 0 && (pfd.revents & POLLIN)) {
             for (int i = 0; i < 64; i++) {
                 sockaddr_in from{}; socklen_t fl = sizeof from;
-                ssize_t n = recvfrom(g_sock, buf, sizeof buf, MSG_DONTWAIT, (sockaddr*)&from, &fl);
+                ssize_t n = recvfrom(g_sock, reinterpret_cast<char*>(buf), (int)sizeof buf, psp_plat::kMsgDontWait, (sockaddr*)&from, &fl);
                 if (n <= 0) break;
                 on_packet(buf, (size_t)n, from);
             }
@@ -869,10 +863,12 @@ bool ensure_net() {
         g_log = lg && lg[0] == '1';
         if (const char* bp = std::getenv("PSPRECOMP_ADHOC_PORT")) g_base_port = std::atoi(bp);
         load_cfg_from_env();
-        g_sock = socket(AF_INET, SOCK_DGRAM, 0);
+        psp_plat::net_init();
+        g_sock = (int)socket(AF_INET, SOCK_DGRAM, 0);
         if (g_sock < 0) { ANOTE("socket() failed; ad-hoc networking off"); g_enabled = false; return; }
         int one = 1;
-        setsockopt(g_sock, SOL_SOCKET, SO_BROADCAST, &one, sizeof one);
+        setsockopt(g_sock, SOL_SOCKET, SO_BROADCAST, PSP_SOCKOPT_CAST(&one), sizeof one);
+        psp_plat::set_nonblocking(g_sock);
         if (const char* sp = std::getenv("PSPRECOMP_ADHOC_SPAN")) g_span = std::clamp(std::atoi(sp), 1, 64);
         for (int i = 0; i < g_span && !g_my_port; i++) {
             sockaddr_in a{}; a.sin_family = AF_INET; a.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -884,7 +880,7 @@ bool ensure_net() {
                 g_my_port = ntohs(got.sin_port);
             }
         }
-        if (!g_my_port) { ANOTE("could not bind UDP ports %d-%d; ad-hoc networking off", g_base_port, g_base_port + g_span - 1); close(g_sock); g_sock = -1; g_enabled = false; return; }
+        if (!g_my_port) { ANOTE("could not bind UDP ports %d-%d; ad-hoc networking off", g_base_port, g_base_port + g_span - 1); psp_plat::close_socket(g_sock); g_sock = -1; g_enabled = false; return; }
 
         const char* mc = std::getenv("PSPRECOMP_ADHOC_MAC");
         unsigned m[6];

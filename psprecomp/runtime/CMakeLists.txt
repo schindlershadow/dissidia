@@ -286,6 +286,7 @@ target_link_libraries(psprecomp_core PUBLIC
     $<TARGET_NAME_IF_EXISTS:OpenGL::GL>
     ZLIB::ZLIB
     $<$<NOT:$<PLATFORM_ID:Windows>>:pthread>
+    $<$<PLATFORM_ID:Windows>:ws2_32>   # debug socket + ad-hoc (Winsock)
 )
 # The core calls into the recompiled code (dispatch tables) and the recompiled code calls the HLE in the core: one group.
 target_link_libraries(psprecomp_runtime PRIVATE

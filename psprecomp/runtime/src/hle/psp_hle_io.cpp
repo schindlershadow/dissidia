@@ -1,4 +1,5 @@
 #include <cctype>
+#include "psp_platform.h"
 #include "hle/psp_hle.h"
 #include "hle/psp_hle_io.h"
 #include "hle/psp_hle_kernel.h"
@@ -64,10 +65,10 @@ void psp_io_init(const char* disc0_host_path) {
                  g_disc0_path.c_str());
     const char* ms0_env = std::getenv("PSPRECOMP_MS0");
     g_ms0_path = ms0_env ? ms0_env : (g_disc0_path + "/../ms0");
-    ::mkdir(g_ms0_path.c_str(), 0755);
-    ::mkdir((g_ms0_path + "/PSP").c_str(), 0755);
-    ::mkdir((g_ms0_path + "/PSP/SAVEDATA").c_str(), 0755);
-    ::mkdir((g_ms0_path + "/PSP/GAME").c_str(), 0755);
+    psp_plat::mkdir_(g_ms0_path.c_str(), 0755);
+    psp_plat::mkdir_((g_ms0_path + "/PSP").c_str(), 0755);
+    psp_plat::mkdir_((g_ms0_path + "/PSP/SAVEDATA").c_str(), 0755);
+    psp_plat::mkdir_((g_ms0_path + "/PSP/GAME").c_str(), 0755);
     std::fprintf(stderr, "[IO] ms0 mapped to: %s\n", g_ms0_path.c_str());
 }
 
@@ -1450,7 +1451,7 @@ static void hle_sceIoRename(
 static void hle_sceIoMkdir(uint8_t* rdram, recomp_context* ctx) {
     const char* p = reinterpret_cast<const char*>(rdram + (static_cast<uint32_t>(ctx->r[4]) & PSP_ADDR_MASK));
     std::string h = psp_path_to_host(p);
-    int rc = h.empty() ? -1 : ::mkdir(h.c_str(), 0755);
+    int rc = h.empty() ? -1 : psp_plat::mkdir_(h.c_str(), 0755);
     if (rc != 0 && errno == EEXIST) rc = -2;
     std::fprintf(stderr, "[HLE] sceIoMkdir(\"%s\") = %d\n", p, rc);
     ctx->r[2] = rc == 0 ? SCE_OK : (rc == -2 ? (int32_t)0x80010011 /* EEXIST */ : SCE_ERROR_ERRNO_ENOENT);

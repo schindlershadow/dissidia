@@ -13,6 +13,7 @@
 // redirect needs no knowledge of the engine's data structures.
 
 #include "package_mods.h"
+#include "psp_platform.h"
 #include "hle/psp_hle_io.h"
 #include "psp_fx_shader.h"
 #include "psp_tex_pack.h"
@@ -217,7 +218,7 @@ bool overlay_read(int tag, int host_fd, int64_t off, uint32_t size, uint8_t* des
     if (tag >= TAG_OVL_BASE) {   // overlay blob: normal read, then patch roster slots in the buffer
         int64_t got = 0;
         while (got < (int64_t)size) {
-            ssize_t r = ::pread(host_fd, dest + got, size - got, off + got);
+            ssize_t r = psp_plat::pread_(host_fd, dest + got, size - got, off + got);
             if (r <= 0) break;
             got += r;
         }
@@ -231,7 +232,7 @@ bool overlay_read(int tag, int host_fd, int64_t off, uint32_t size, uint8_t* des
     auto base = [host_fd](uint8_t* d, uint32_t n, int64_t o) -> int64_t {
         int64_t got = 0;
         while (got < (int64_t)n) {
-            ssize_t r = ::pread(host_fd, d + got, n - got, o + got);
+            ssize_t r = psp_plat::pread_(host_fd, d + got, n - got, o + got);
             if (r <= 0) break;
             got += r;
         }

@@ -4,6 +4,7 @@
 // Render thread only. Nothing here runs when there is no manifest:
 // psp_fx_want_ids() is false and psp_ge_draw.cpp never calls in.
 #include "psp_fx_shader.h"
+#include "psp_platform.h"
 #include "psp_ge.h"
 #include "psp_ge_constants.h"
 #include "psp_ge_shader.h"
@@ -87,11 +88,7 @@ std::string resolve_dir() {
 long long file_mtime(const std::string& p) {
     struct stat st;
     if (::stat(p.c_str(), &st) != 0) return -1;
-#ifdef __APPLE__
-    return (long long)st.st_mtimespec.tv_sec * 1000000000LL + st.st_mtimespec.tv_nsec;
-#else
-    return (long long)st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec;
-#endif
+return psp_plat::mtime_ns(st);
 }
 
 bool read_file(const std::string& path, std::string* out) {

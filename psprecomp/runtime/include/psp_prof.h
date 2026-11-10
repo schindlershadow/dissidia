@@ -14,6 +14,8 @@
 
 #ifdef __APPLE__
 #include <pthread.h>
+#elif defined(_WIN32)
+#include "psp_platform.h"
 #else
 #include <sys/syscall.h>
 #endif
@@ -21,6 +23,8 @@ namespace psp_prof {
 inline long gettid_() {
 #ifdef __APPLE__
     uint64_t tid = 0; pthread_threadid_np(nullptr, &tid); return (long)tid;
+#elif defined(_WIN32)
+    return psp_plat::gettid_();
 #else
     return syscall(SYS_gettid);
 #endif
@@ -81,6 +85,9 @@ inline void seq(const char* what, long arg = 0) {
                  (long)gettid_(), what, arg);
 }
 // Per-thread CPU time (jiffies) from /proc/self/task, delta since last report.
+#ifdef _WIN32
+inline void thread_cpu_report(double) {}   // /proc-based; Linux only
+#else
 inline void thread_cpu_report(double dt) {
     static std::map<std::string, unsigned long> last;
     static long hz = sysconf(_SC_CLK_TCK);
@@ -112,6 +119,7 @@ inline void thread_cpu_report(double dt) {
     closedir(d);
     std::fprintf(stderr, "[PROF] threads(cpu):%s\n", out.c_str());
 }
+#endif
 
 inline void report(double dt, uint32_t frames) {
     if (!enabled) return;

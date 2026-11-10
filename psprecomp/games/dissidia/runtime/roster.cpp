@@ -18,6 +18,7 @@
 // Using an existing code ("fiv100") makes the slot an alias of that character's files.
 
 #include "roster_max.h"
+#include "psp_platform.h"
 #include "psp_game_module.h"
 #include "hle/psp_hle.h"
 #include "hle/psp_hle_io.h"
@@ -1053,7 +1054,7 @@ bool read_host_file(const std::string& path, std::vector<uint8_t>* out) {
 }
 bool write_host_file_atomic(const std::string& path, const std::vector<uint8_t>& data) {
     for (size_t i = 1; i < path.size(); i++)              // mkdir -p of the folder (a fresh memory stick has none)
-        if (path[i] == '/') ::mkdir(path.substr(0, i).c_str(), 0755);
+        if (path[i] == '/') psp_plat::mkdir_(path.substr(0, i).c_str(), 0755);
     const std::string tmp = path + ".tmp";
     {
         std::ofstream f(tmp, std::ios::binary | std::ios::trunc);

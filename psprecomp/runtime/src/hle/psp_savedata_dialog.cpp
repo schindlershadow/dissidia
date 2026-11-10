@@ -1,5 +1,6 @@
 // Savedata list dialog: state machine + software renderer. See header.
 #include "psp_savedata_dialog.h"
+#include "psp_platform.h"
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -509,7 +510,7 @@ std::string detail_line(const std::string& d) {
 std::string fmt_time(time_t t) {
     if (!t) return "";
     struct tm tmv;
-    localtime_r(&t, &tmv);
+    psp_plat::localtime_(t, &tmv);
     char buf[64];
     snprintf(buf, sizeof buf, "%04d/%02d/%02d  %02d:%02d", tmv.tm_year + 1900, tmv.tm_mon + 1,
              tmv.tm_mday, tmv.tm_hour, tmv.tm_min);

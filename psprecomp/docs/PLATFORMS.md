@@ -11,7 +11,7 @@ notes refer to and [README.md](../README.md) for build/run instructions.
 |---------------|-----------------------------------|----------------------------------|
 | macOS         | Verified                          | Verified                         |
 | Linux         | Expected to work (untested)       | Likely portable, untested        |
-| Windows       | Untested                          | Untested                         |
+| Windows       | Untested                          | Compiles and links (mingw, zig bundle); never run |
 
 "Verified" means it is the platform on which the project is actively built and
 run. "Untested" means exactly that — it has not been tried, not that it is

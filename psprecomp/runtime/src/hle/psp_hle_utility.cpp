@@ -1,4 +1,5 @@
 #include "hle/psp_hle.h"
+#include "psp_platform.h"
 #include "hle/psp_hle_kernel.h"
 #include "hle/psp_hle_io.h"
 #include "hle/psp_audio_sink.h"
@@ -15,7 +16,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <sys/stat.h>
-#include <sys/statvfs.h>
 #include <dirent.h>
 #include <unistd.h>
 #include <string>
@@ -1577,7 +1577,7 @@ static std::string sd_space_text(uint64_t kb) {
 
 static void sd_write_dt(uint8_t* rdram, uint32_t a, time_t t) {
     struct tm tmv;
-    localtime_r(&t, &tmv);
+    psp_plat::localtime_(t, &tmv);
     psp_mem_write<uint16_t>(rdram, a + 0, uint16_t(tmv.tm_year + 1900));
     psp_mem_write<uint16_t>(rdram, a + 2, uint16_t(tmv.tm_mon + 1));
     psp_mem_write<uint16_t>(rdram, a + 4, uint16_t(tmv.tm_mday));
@@ -1609,7 +1609,7 @@ static std::string sd_base() { return psp_path_to_host("ms0:/PSP/SAVEDATA"); }
 static void sd_mkpath(const std::string& path) {
     for (size_t i = 1; i <= path.size(); ++i)
         if (i == path.size() || path[i] == '/')
-            ::mkdir(path.substr(0, i).c_str(), 0755);
+            psp_plat::mkdir_(path.substr(0, i).c_str(), 0755);
 }
 
 // ---- crypto helpers ----
@@ -1815,10 +1815,10 @@ static int32_t savedata_do_sizes(uint8_t* rdram, uint32_t p,
     uint32_t msfree = psp_mem_read<uint32_t>(rdram, p + SD_MSFREE);
     if (msfree && sd_ram_ok(msfree, 20)) {
         uint64_t free_clusters = (1ull << 30) / SD_CLUSTER;  // fallback 1GB
-        struct statvfs sv;
         std::string root = psp_path_to_host("ms0:/");
-        if (!root.empty() && statvfs(root.c_str(), &sv) == 0)
-            free_clusters = uint64_t(sv.f_bavail) * sv.f_frsize / SD_CLUSTER;
+        uint64_t freeb = 0;
+        if (!root.empty() && psp_plat::free_bytes(root.c_str(), &freeb))
+            free_clusters = freeb / SD_CLUSTER;
         free_clusters = std::min<uint64_t>(free_clusters, 0x1FFFFF);
         uint32_t kb = uint32_t(free_clusters * (SD_CLUSTER / 1024));
         psp_mem_write<uint32_t>(rdram, msfree + 0, SD_CLUSTER);
@@ -1939,7 +1939,7 @@ static int32_t savedata_do_save(uint8_t* rdram, uint32_t p,
     if (base.empty() || dirname.empty()) return 0;
     std::string dir = base + "/" + dirname;
     sd_mkpath(base);
-    ::mkdir(dir.c_str(), 0755);
+    psp_plat::mkdir_(dir.c_str(), 0755);
 
     uint32_t buf = psp_mem_read<uint32_t>(rdram, p + SD_DATABUF);
     uint32_t sz = psp_mem_read<uint32_t>(rdram, p + SD_DATASIZE);

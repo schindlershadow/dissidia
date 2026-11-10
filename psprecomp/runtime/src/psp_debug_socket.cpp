@@ -12,9 +12,7 @@
 #include <thread>
 #include <vector>
 
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <unistd.h>
+#include "psp_platform.h"
 
 static constexpr uint32_t PSP_DBG_ADDR_MASK = 0x07FFFFFFU;
 static constexpr size_t   MAX_READ_BYTES    = 65536;
@@ -451,7 +449,7 @@ static bool send_all(int fd, const void* data, size_t len) {
     const uint8_t* p = static_cast<const uint8_t*>(data);
     size_t sent = 0;
     while (sent < len) {
-        ssize_t w = ::send(fd, p + sent, len - sent, 0);
+        ssize_t w = ::send(fd, reinterpret_cast<const char*>(p + sent), static_cast<int>(len - sent), 0);
         if (w <= 0) return false;
         sent += static_cast<size_t>(w);
     }
@@ -516,12 +514,13 @@ static void handle_client(int client_fd) {
             if (*it == client_fd) { g_client_fds.erase(it); break; }
         }
     }
-    ::close(client_fd);
+    psp_plat::close_socket(client_fd);
 }
 
 /// Main loop for the background accept thread.
 static void server_loop(int port) {
-    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    psp_plat::net_init();
+    int fd = (int)::socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
         std::fprintf(stderr,
             "[DEBUG] Failed to create debug socket\n");
@@ -530,7 +529,7 @@ static void server_loop(int port) {
     g_server_fd = fd;
 
     int opt = 1;
-    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, PSP_SOCKOPT_CAST(&opt), sizeof(opt));
 
     struct sockaddr_in addr{};
     addr.sin_family      = AF_INET;
@@ -540,14 +539,14 @@ static void server_loop(int port) {
     if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
         std::fprintf(stderr,
             "[DEBUG] Failed to bind debug socket on port %d\n", port);
-        ::close(fd);
+        psp_plat::close_socket(fd);
         g_server_fd = -1;
         return;
     }
 
     if (::listen(fd, 4) < 0) {
         std::fprintf(stderr, "[DEBUG] Failed to listen on debug socket\n");
-        ::close(fd);
+        psp_plat::close_socket(fd);
         g_server_fd = -1;
         return;
     }
@@ -567,7 +566,7 @@ static void server_loop(int port) {
 
         struct sockaddr_in client_addr{};
         socklen_t client_len = sizeof(client_addr);
-        int client_fd = ::accept(
+        int client_fd = (int)::accept(
             fd, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
         if (client_fd < 0) continue;
 
@@ -577,7 +576,7 @@ static void server_loop(int port) {
         g_client_threads.emplace_back(handle_client, client_fd);
     }
 
-    ::close(fd);
+    psp_plat::close_socket(fd);
     g_server_fd = -1;
 }
 
@@ -595,7 +594,7 @@ void psp_debug_socket_stop() {
     g_debug_running.store(false, std::memory_order_relaxed);
     // Wake the accept() select() by shutting down the server socket
     if (g_server_fd >= 0) {
-        ::shutdown(g_server_fd, SHUT_RDWR);
+        ::shutdown(g_server_fd, psp_plat::kShutBoth);
     }
     if (g_debug_thread.joinable()) {
         g_debug_thread.join();
@@ -604,7 +603,7 @@ void psp_debug_socket_stop() {
     {
         std::lock_guard<std::mutex> lock(g_clients_mutex);
         for (int fd : g_client_fds) {
-            ::shutdown(fd, SHUT_RDWR);
+            ::shutdown(fd, psp_plat::kShutBoth);
         }
     }
     for (auto& t : g_client_threads) {

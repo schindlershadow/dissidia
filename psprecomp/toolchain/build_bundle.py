@@ -148,7 +148,7 @@ def pc_private_libs(pc):
     libs = []
     if os.path.isfile(pc):
         for line in open(pc, encoding="utf-8"):
-            if line.startswith("Libs.private:"):
+            if line.startswith(("Libs.private:", "Libs:")):   # mingw's sdl2.pc lists the system libraries under plain Libs
                 libs += [t[2:] for t in line.split(":", 1)[1].split() if t.startswith("-l")]
     return libs
 
@@ -340,7 +340,7 @@ def main():
     z_lib = lib("libz.a", "libzlibstatic.a", "libzlib.a")
     sdl_sys = pc_private_libs(os.path.join(libdir, "pkgconfig", "sdl2.pc")) or \
         (["m", "dl", "pthread", "rt"] if plat.startswith("linux") else [])
-    sdl_sys = [l for l in sdl_sys if l != "SDL2"]
+    sdl_sys = [l for l in sdl_sys if l not in ("SDL2", "SDL2main", "mingw32")]
     av_sys = (["m", "pthread"] if plat.startswith("linux") else ["bcrypt"])
 
     # ---------------------------------------------------------------- 5. deps.cmake / toolchain.cmake / toolchain.json

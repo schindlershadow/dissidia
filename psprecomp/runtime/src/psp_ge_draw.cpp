@@ -22,7 +22,7 @@
 #include <vector>
 #include <cmath>
 #include <random>
-#include <sys/mman.h>
+#include "psp_platform.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1931,9 +1931,8 @@ static void fast_prim(uint8_t* rdram, const GeState& state, int prim_type, int c
 // the CPU reference. Covers lighting + skinning variants the game's own
 // draws never use (it has no normals).
 static void verify_selftest(int iters) {
-    uint8_t* ram = static_cast<uint8_t*>(mmap(nullptr, PSP_MEM_SIZE, PROT_READ | PROT_WRITE,
-        MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0));
-    if (ram == MAP_FAILED) { std::fprintf(stderr, "[SELFTEST] mmap failed\\n"); return; }
+    uint8_t* ram = static_cast<uint8_t*>(psp_plat::alloc_zeroed(PSP_MEM_SIZE));
+    if (!ram) { std::fprintf(stderr, "[SELFTEST] mmap failed\\n"); return; }
     std::mt19937 rng(0xC0FFEE);
     auto U = [&](float a, float b) { return std::uniform_real_distribution<float>(a, b)(rng); };
     auto I = [&](int a, int b) { return std::uniform_int_distribution<int>(a, b)(rng); };
@@ -2014,7 +2013,7 @@ static void verify_selftest(int iters) {
     ge_texture_invalidate_bind_cache();
     std::fprintf(stderr, "[SELFTEST] %d synthetic draws run\\n", ran);
     verify_report("selftest");
-    munmap(ram, PSP_MEM_SIZE);
+    psp_plat::free_pages(ram, PSP_MEM_SIZE);
 }
 
 // ---- Public API ----
