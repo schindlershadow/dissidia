@@ -60,7 +60,14 @@ static GeTarget g_targets[GE_MAX_TARGETS];
 // wider than 16:9. The 3D scene fills the extra width (the horizontal field of view grows, the vertical stays), the
 // HUD and every other 2D draw stay centred at their original size, and a full-screen background or fade is
 // stretched over the whole width (see ge_set_wide in psp_ge_vertex.h).
-static std::atomic<bool> g_wide_on{[] { const char* e = std::getenv("PSPRECOMP_WIDESCREEN"); return e && e[0] && e[0] != '0'; }()};
+// -1 = not read yet: the env var is read on first use, because the saved settings.ini is applied to the environment
+// only after static initialisation.
+static std::atomic<int> g_wide_state{-1};
+static bool wide_on() {
+    int v = g_wide_state.load();
+    if (v < 0) { const char* e = std::getenv("PSPRECOMP_WIDESCREEN"); v = (e && e[0] && e[0] != '0') ? 1 : 0; g_wide_state.store(v); }
+    return v != 0;
+}
 static int g_wide_px = 480;      // width of the displayed buffers, PSP pixels (even, 480..960)
 static uint32_t g_main_keys[8];
 static int g_main_n = 0;
@@ -3433,7 +3440,7 @@ static void ab_compare_all() {
 // Widescreen: the width the displayed buffers should have for the current window (480 when it is off or the window is
 // not wider than 16:9), and the (re)allocation of the displayed buffers when that changes.
 static int wide_px_for_window() {
-    if (!g_wide_on.load()) return 480;
+    if (!wide_on()) return 480;
     SDL_Window* w = psp_get_sdl_window();
     if (!w) return g_wide_px;
     int dw = 0, dh = 0;
@@ -3454,8 +3461,8 @@ static void wide_update() {
     for (int i = 0; i < g_main_n; i++) mark_main_key(g_main_keys[i]);   // grows / shrinks them, keeping the picture
     delete_scratch();
 }
-void ge_draw_set_widescreen(bool on) { g_wide_on.store(on); wide_update(); }
-bool ge_draw_widescreen() { return g_wide_on.load(); }
+void ge_draw_set_widescreen(bool on) { g_wide_state.store(on ? 1 : 0); wide_update(); }
+bool ge_draw_widescreen() { return wide_on(); }
 int ge_draw_widescreen_width() { return g_wide_px; }
 
 void ge_present_frame(
