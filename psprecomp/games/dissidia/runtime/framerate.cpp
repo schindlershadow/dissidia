@@ -231,7 +231,7 @@ void pad_set_hook(uint8_t* rdram, recomp_context* ctx) {
 // wrong speed): address, kind (actor+0x542, roster.cpp ACT_KIND: 0 fighter, 1 assist, 3 summoned), own-clock flag, both clocks, the step the game
 // gets and the global step. Capped, so a long battle does not flood the log.
 bool g_actor_log = false;
-int g_actor_log_left = 400;
+int g_actor_log_left = 4000;
 struct ActorSeen { uint32_t actor; float res; int own; };
 ActorSeen g_actor_seen[24];
 
