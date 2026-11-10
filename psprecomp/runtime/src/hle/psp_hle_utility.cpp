@@ -1652,6 +1652,56 @@ static bool sd_read_sfo_map(const std::string& dir, SfoMap& m) {
 // else saveName.
 static std::string g_sd_chosen_save;
 
+// ---- shared save folders across game regions ----------------------------
+// A game module may declare that several disc IDs are the same game
+// (psp_savedata_set_shared_ids): their save folders are then one set. A
+// request for <ID><slot> uses whichever region's folder exists, so a save made
+// on a US disc loads on an EU install and the other way round.
+static std::vector<std::string> g_sd_shared_ids;
+extern "C" void psp_savedata_set_shared_ids(const char* const* ids, int n) {
+    g_sd_shared_ids.clear();
+    for (int i = 0; i < n; ++i) g_sd_shared_ids.push_back(ids[i]);
+    if (const char* e = std::getenv("PSPRECOMP_SAVE_IDS")) {  // extra, comma list
+        std::string v = e, cur;
+        for (char c : v + ",") {
+            if (c == ',') { if (!cur.empty()) g_sd_shared_ids.push_back(cur); cur.clear(); }
+            else cur += c;
+        }
+    }
+}
+// game first, then the other regions' IDs; just {game} for an unshared game.
+static std::vector<std::string> sd_game_ids(const std::string& game) {
+    std::vector<std::string> out{game};
+    if (std::find(g_sd_shared_ids.begin(), g_sd_shared_ids.end(), game) ==
+        g_sd_shared_ids.end())
+        return out;
+    for (auto& id : g_sd_shared_ids)
+        if (id != game) out.push_back(id);
+    return out;
+}
+// The folder name for game+save: the requested region's if it exists, else
+// another region's existing one, else the requested name (a new save).
+static std::string sd_alias_dir(const std::string& game, const std::string& save) {
+    for (auto& id : sd_game_ids(game))
+        if (sd_is_dir(sd_base() + "/" + id + save)) return id + save;
+    return game + save;
+}
+// Slot names (the part after the game ID) of existing saves for game, all
+// shared regions merged, in directory order, no duplicates.
+static std::vector<std::string> sd_existing_slots(const std::string& game) {
+    std::vector<std::string> out;
+    for (auto& id : sd_game_ids(game)) {
+        std::string pat = id + "*";
+        for (auto& n : sd_list_dir(sd_base()))
+            if (sd_glob(pat.c_str(), n.c_str()) && sd_is_dir(sd_base() + "/" + n)) {
+                std::string slot = n.substr(std::min(n.size(), id.size()));
+                if (std::find(out.begin(), out.end(), slot) == out.end())
+                    out.push_back(slot);
+            }
+    }
+    return out;
+}
+
 static std::vector<std::string> sd_savenamelist(uint8_t* rdram, uint32_t p) {
     std::vector<std::string> out;
     uint32_t list = psp_mem_read<uint32_t>(rdram, p + SD_SAVENAMELIST);
@@ -1675,20 +1725,16 @@ static std::string sd_resolve_dirname(uint8_t* rdram, uint32_t p,
             auto names = sd_savenamelist(rdram, p);
             std::vector<std::string> existing;
             if (names.empty()) {
-                std::string pat = game + "*";
-                for (auto& n : sd_list_dir(sd_base()))
-                    if (sd_glob(pat.c_str(), n.c_str()) &&
-                        sd_is_dir(sd_base() + "/" + n))
-                        existing.push_back(n.substr(std::min(n.size(), game.size())));
+                existing = sd_existing_slots(game);
             } else {
                 for (auto& n : names)
-                    if (sd_is_dir(sd_base() + "/" + game + n)) existing.push_back(n);
+                    if (sd_is_dir(sd_base() + "/" + sd_alias_dir(game, n))) existing.push_back(n);
             }
             if (existing.size() == 1) save = existing[0];
             else if (!names.empty()) save = names[0];
         }
     }
-    return game + save;
+    return sd_alias_dir(game, save);
 }
 
 static void sd_load_sfo(uint8_t* rdram, uint32_t p, const std::string& dir) {
@@ -1830,7 +1876,7 @@ static int32_t savedata_do_sizes(uint8_t* rdram, uint32_t p,
     if (msdata && sd_ram_ok(msdata, 0x40)) {
         std::string g = sd_cstr(rdram, msdata, 13);
         std::string s = sd_cstr(rdram, msdata + 16, 20);
-        std::string name = (g.empty() && s.empty()) ? dirname : g + s;
+        std::string name = (g.empty() && s.empty()) ? dirname : sd_alias_dir(g, s);
         std::string dir = sd_base() + "/" + name;
         if (!name.empty() && sd_is_dir(dir)) {
             sd_put_str(rdram, msdata, g, 13);
@@ -1868,9 +1914,22 @@ static int32_t savedata_do_list(uint8_t* rdram, uint32_t p) {
     uint32_t entries = psp_mem_read<uint32_t>(rdram, il + 8);
     std::string base = sd_base();
     uint32_t n = 0;
+    std::vector<std::string> seen_slots;
     for (auto& name : sd_list_dir(base)) {
         if (n >= maxc) break;
-        if (!sd_glob(pat.c_str(), name.c_str())) continue;
+        bool hit = false;
+        std::string slotname;
+        for (auto& id : sd_game_ids(game)) {
+            std::string pt = id + (save == "*" ? "*" : save);
+            if (sd_glob(pt.c_str(), name.c_str())) {
+                hit = true;
+                slotname = name.substr(std::min(name.size(), id.size()));
+                break;
+            }
+        }
+        if (!hit) continue;
+        if (std::find(seen_slots.begin(), seen_slots.end(), slotname) != seen_slots.end()) continue;
+        seen_slots.push_back(slotname);
         std::string dir = base + "/" + name;
         struct stat st;
         if (::stat(dir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) continue;
@@ -1882,7 +1941,7 @@ static int32_t savedata_do_list(uint8_t* rdram, uint32_t p) {
         sd_write_dt(rdram, e + 4, st.st_ctime);
         sd_write_dt(rdram, e + 20, st.st_atime);
         sd_write_dt(rdram, e + 36, st.st_mtime);
-        sd_put_str(rdram, e + 52, name.substr(std::min(name.size(), game.size())), 20);
+        sd_put_str(rdram, e + 52, slotname, 20);
         ++n;
     }
     psp_mem_write<uint32_t>(rdram, il + 4, n);
@@ -2130,10 +2189,7 @@ static std::vector<psp_sddialog::SaveEntry> sd_collect_entries(
     std::string base = sd_base();
     auto names = sd_savenamelist(rdram, p);
     if (names.empty()) {
-        std::string pat = game + "*";
-        for (auto& n : sd_list_dir(base))
-            if (sd_glob(pat.c_str(), n.c_str()) && sd_is_dir(base + "/" + n))
-                names.push_back(n.substr(std::min(n.size(), game.size())));
+        names = sd_existing_slots(game);
         if (!load) {
             std::string cur = sd_cstr(rdram, p + SD_SAVENAME, 20);
             if (cur.empty() || cur == "<>") cur = "0000";
@@ -2145,7 +2201,7 @@ static std::vector<psp_sddialog::SaveEntry> sd_collect_entries(
     for (auto& slot : names) {
         psp_sddialog::SaveEntry e;
         e.slot = slot;
-        e.dirname = game + slot;
+        e.dirname = sd_alias_dir(game, slot);
         std::string dir = base + "/" + e.dirname;
         e.exists = sd_is_dir(dir);
         if (e.exists) {

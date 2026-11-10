@@ -16,6 +16,10 @@ std::atomic<bool> g_should_exit{false};
 std::atomic<uint32_t> g_host_buttons{0};
 std::atomic<uint32_t> g_injected_buttons{0};
 std::atomic<int64_t> g_injected_buttons_deadline_ms{0};
+// The audio sink (SDL) is not linked into this test; the HLE only paces with it.
+void psp_audio_pace(int, int, bool) {}
+size_t psp_audio_queued_frames(int) { return 0; }
+
 static std::string g_root;
 std::string psp_path_to_host(const char* p) {
     std::string s = p;
@@ -258,6 +262,29 @@ int main() {
         CHECK(le.size() == 1 && le[0].slot == "OnlyOne");
         auto se = sd_collect_entries(R, P, false);
         CHECK(se.size() == 2 && !se[0].exists && se[1].exists);
+    }
+
+    // --- save folders are shared across regions once the module declares the IDs ---
+    {
+        static const char* const ids[] = {"ULUS10566", "ULES01505"};
+        psp_savedata_set_shared_ids(ids, 2);
+        std::string d = dirpath("ULUS10566Shared00");
+        ::mkdir(d.c_str(), 0755);
+        auto data = payload(32, 99);
+        sd_write_file(d + "/DATA.BIN", data.data(), data.size());
+        setup(4, "Shared00", "DATA.BIN", 1, nullptr, 0);   // game ULES01505, folder is ULUS10566
+        CHECK(sd_resolve_dirname(R, P, 4) == "ULUS10566Shared00");
+        setup(0, "Shared00", "DATA.BIN", 1, nullptr, 0);
+        CHECK(sd_alias_dir("ULES01505", "Shared00") == "ULUS10566Shared00");
+        CHECK(sd_alias_dir("ULES01505", "Fresh00") == "ULES01505Fresh00");
+        setup(4, "", "DATA.BIN", 1, nullptr, 0);
+        auto le = sd_collect_entries(R, P, true);
+        bool found = false;
+        for (auto& e : le) if (e.slot == "Shared00" && e.exists) found = true;
+        CHECK(found);
+        static const char* const none[] = {"X"};
+        psp_savedata_set_shared_ids(none, 0);
+        CHECK(sd_alias_dir("ULES01505", "Shared00") == "ULES01505Shared00");
     }
 
     if (getenv("KEEP")) { printf("kept %s\n", g_root.c_str()); return g_fail ? 1 : 0; }

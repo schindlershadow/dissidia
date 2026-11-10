@@ -13,6 +13,14 @@ the same for every region (the key and the format are shared); a disc only looks
 disc IDs seen so far: `ULUS10566` (US), `ULES01505` (Europe). A Japanese disc has its own `ULJM...` ID, which
 `savemgr` takes from the install, or from `--id`.
 
+## One save set for every region
+
+The runtime treats `ULUS10566`, `ULES01505` and `ULJM05681` as the same game (`psp_savedata_set_shared_ids`, called
+from the Dissidia module; more IDs can be added with `PSPRECOMP_SAVE_IDS=ID1,ID2`). When the game asks for
+`<its ID><slot>`, the runtime uses whichever region's folder exists, so a US save loads on an EU install with no copying
+or renaming, and the save list shows each slot once. Saving writes back into the folder that was found; a slot that
+exists nowhere is created under the running disc's own ID. Test: `runtime/tests/test_savedata_hle.cpp`.
+
 ## savemgr
 
 `tools/savemgr/savemgr.cpp` is a small stand-alone tool (C++17, no libraries beyond `psp_savedata_crypto`):

@@ -276,7 +276,11 @@ void dissidia_menu_flag_cb(uint8_t* rdram, recomp_context* ctx) {
     (void)ctx;
 }
 
+extern "C" void psp_savedata_set_shared_ids(const char* const* ids, int n);
 void dissidia_register_hooks(uint8_t* rdram) {
+    // One save set for every region: US, EU, JP.
+    static const char* const kIds[] = {"ULUS10566", "ULES01505", "ULJM05681"};
+    psp_savedata_set_shared_ids(kIds, 3);
     psp_dispatch_register(0x089E0A88u, dissidia_menu_flag_cb<4>);
     psp_dispatch_register(0x089E0AA4u, dissidia_menu_flag_cb<2>);
     dissidia_index_install();    // package-index buffer relocation (hooks_index.cpp); before the first build
