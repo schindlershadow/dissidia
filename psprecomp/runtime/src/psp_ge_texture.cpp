@@ -574,7 +574,11 @@ GLuint ge_texture_bind(
         const char* e = std::getenv("PSPRECOMP_TEX_HASH");
         return !e ? 1 : (e[0] == 'h' ? 0 : (e[0] == 'f' ? 2 : 1));
     }();
-    int hash_bytes = hash_mode == 2 ? data_bytes : (hash_mode == 0 ? std::min(data_bytes, 4096) : std::min(data_bytes, 16384));
+    // Default: textures up to 256 KiB are hashed whole. A sampled hash (head + a few strided windows) can miss a change
+    // that touches only a small area: Dissidia swaps the eye / mouth cells of a face texture in place (Ultimecia's alt
+    // looks), and a stale decode then shows the wrong face parts. Bigger textures (full-screen images) keep the sample.
+    int hash_bytes = hash_mode == 2 ? data_bytes : (hash_mode == 0 ? std::min(data_bytes, 4096)
+                    : (data_bytes <= 262144 ? data_bytes : std::min(data_bytes, 16384)));
 
     if (masked_addr + hash_bytes
         > static_cast<int>(PSP_MEM_SIZE)) {
