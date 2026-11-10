@@ -68,6 +68,10 @@ Character mod folders in `mods/` are built and loaded every time the game starts
 
 Communications mode works over the internet instead of PSP ad-hoc WiFi. By default the game connects to a party server (`party.schindlershadow.com`), so there is nothing to forward: open Communications mode, and everyone in the same room appears in the lobby (the default is the public room; set a room name under Esc > Network to play with friends only). A LAN mode (players on one network, or listed by address) is on the same page. A full match has been played between two copies on one machine; it is untested with more than two players, on a real LAN between machines, and over the internet, and nothing here delays input, so high latency may make a match unplayable. In a session everyone runs at the lowest frame rate any player chose. Setup, options, the server and how it works: [docs/multiplayer.md](psprecomp/games/dissidia/docs/multiplayer.md).
 
+## Saves from other regions
+
+A save from the US, European or Japanese disc works with any of them. `savemgr` lists the saves in a PSP memory stick or PPSSPP folder, imports them into your install under your disc's ID, and exports yours for another region: `savemgr import --from <PSP/SAVEDATA> --workdir ~/dissidia/work`. It only renames the folder and signs `PARAM.SFO` again; the game data is copied untouched. Details and the real-PSP caveat: [docs/savedata.md](psprecomp/games/dissidia/docs/savedata.md).
+
 ## What is not in this repository
 No game data (bring your own ISO), no character mods (`mods/_template/` shows the layout), no texture packs (the loader works with the community packs credited below), no third-party mod ports, no game artwork.
 
