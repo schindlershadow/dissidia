@@ -29,6 +29,13 @@ The launcher icon is original artwork (a crystal), drawn by `android/icon/make_i
 
 - **Touch controls**: shown after the first touch (Auto), hidden when a controller button is pressed; Settings > System > Touch Controls
   (Auto / On / Off). The menu button at the top opens the Settings menu; a built-in or Bluetooth pad works as usual.
+- **Customising the touch controls**: Settings > System > Edit Touch Controls opens a layout editor drawn over the game. Drag any control (stick, d-pad,
+  Triangle / Circle / Cross / Square, L, R, Start, Select, menu) to move it; tap one to select it, then change its **size** and **opacity**, or
+  **hide** it (a hidden control ignores touches). **Add combo** creates a round button that presses several PSP buttons at once (pick any of Up, Down,
+  Left, Right, Triangle, Circle, Cross, Square, L, R, Start, Select: for example L+R, or R+Triangle); for a combo you can also choose
+  **Hold: toggle** (a tap presses it and keeps it held, the next tap releases it; shown with a double ring), change its buttons or delete it.
+  **Reset** restores the default layout, **Done** saves. The layout is `touch_layout.txt` in the game folder (one line per control; positions are
+  fractions of the window, so it survives a change of screen size).
 - **Frame rate / render scale**: Settings > System. 30 fps is the PSP's own rate; the 120 fps mode needs a fast device. Rooted devices can set the
   CPU governor to `performance` for steadier clocks.
 - **Debug flags**: `<game folder>/env.txt` with `KEY=VALUE` lines sets `PSPRECOMP_*` variables (for example `PSPRECOMP_PROF=1`); the log is

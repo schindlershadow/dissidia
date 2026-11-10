@@ -82,7 +82,7 @@ bool updates_choice();
 bool texpack_choice();
 bool texpack_at_start();
 
-enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_VOICE, ROW_TEXPACK, ROW_TOUCH, ROW_UPDATES, ROW_QUIT,
+enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_VOICE, ROW_TEXPACK, ROW_TOUCH, ROW_TOUCH_EDIT, ROW_UPDATES, ROW_QUIT,
            ROW_NET_MODE, ROW_NET_SERVER, ROW_NET_ROOM, ROW_NET_PEERS, ROW_NET_STATUS,   // Network page
            ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS };   // the last six: Debug page
 std::vector<Row> g_rows;
@@ -367,6 +367,10 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.help = "On-screen buttons (touch screens)\nAuto: shown when you touch the screen, hidden when a controller button is pressed. On: always shown. Off: never. Saved.";
             break;
         }
+        case ROW_TOUCH_EDIT:
+            m.label = "Edit Touch Controls";
+            m.help = "Touch layout editor\nMove, resize or hide each on-screen control and add combination buttons (for example L+R, or R+Triangle). Press Cross to open it; the layout is saved.";
+            break;
         case ROW_UPDATES: {
             const bool on = updates_choice();
             m.label = "Check for Updates";
@@ -677,6 +681,7 @@ void build_rows() {
         if (texpack_row_wanted()) g_rows.push_back(ROW_TEXPACK);
 #ifdef __ANDROID__   // the on-screen controls exist for Android only
         g_rows.push_back(ROW_TOUCH);
+        g_rows.push_back(ROW_TOUCH_EDIT);
 #endif
         g_rows.push_back(ROW_UPDATES);
         g_rows.push_back(ROW_QUIT);
@@ -766,6 +771,7 @@ void confirm() {
     case ROW_TEXPACK: apply_texpack(!texpack_choice()); break;
     case ROW_UPDATES: apply_updates(!updates_choice()); break;
     case ROW_TOUCH: change(psp_touch_mode() >= 2 ? -2 : 1); return;
+    case ROW_TOUCH_EDIT: psp_touch_edit_begin(); return;
     case ROW_NET_MODE: change(g_net_internet ? 1 : -1); return;
     case ROW_NET_SERVER: edit_begin(0); return;
     case ROW_NET_ROOM: edit_begin(1); return;
