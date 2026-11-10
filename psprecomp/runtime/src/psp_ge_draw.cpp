@@ -1795,6 +1795,13 @@ static void fast_prim(uint8_t* rdram, const GeState& state, int prim_type, int c
     if (gpu) {
         Xf3D xf;
         build_xf(state, xf);
+        if (fbo_tex && g_fbtex_w480 > 480 && state.texture_enable) {   // a wide render target as the texture: the PSP's u (0..1 = 480 px) -> its middle part
+            const float fs = 480.0f / float(g_fbtex_w480), fo = 0.5f * float(g_fbtex_w480 - 480) / float(g_fbtex_w480);
+            xf.uvxf[2] = xf.uvxf[2] * fs + fo;
+            xf.uvxf[0] *= fs;
+            static bool logged = false;
+            if (!logged) { logged = true; std::fprintf(stderr, "[WIDE] 3D draw samples a %d px wide render target: u remapped\n", g_fbtex_w480); }
+        }
         const int path = xf.skin_n > 0 ? 2 : 1;
         KeyBuf key;
         build_key(key, state, mode, path, prim_type, fbo_tex, &xf);
