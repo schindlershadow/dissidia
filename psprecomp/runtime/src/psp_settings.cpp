@@ -411,14 +411,14 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.label = "Quit Game";
             m.value = g_quit_armed ? "Press again to quit" : "";
             m.help = g_quit_armed ? "Quit\nUnsaved progress is lost. Press again to quit, or move away to cancel."
-                                  : "Quit\nClose the game and return to the desktop / Steam.  (L / R: Debug page)";
+                                  : "Quit\nClose the game and return to the desktop / Steam.";
             break;
         case ROW_PERF: {
             const bool on = ge_draw_perf_overlay();
             m.label = "Performance Overlay";
             m.value = on ? "On" : "Off";
             m.can_dec = on; m.can_inc = !on;
-            m.help = "Frame counter\nFrames per second and frame times in the top-left corner. Saved.  (L / R: System page)";
+            m.help = "Frame counter\nFrames per second and frame times in the top-left corner. Saved.";
             break;
         }
         case ROW_FX: {
@@ -472,6 +472,10 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.help = "Flicker test (PSPRECOMP_GE_RING)\nHow vertices reach the GPU. Saved; applies when the game next starts.";
             break;
         }
+        }
+        {   // every row's help title says how to change pages
+            const size_t nl = m.help.find('\n');
+            m.help.insert(nl == std::string::npos ? m.help.size() : nl, m.help.empty() ? "L / R: change page" : "  (L / R: change page)");
         }
         out.push_back(std::move(m));
     }
