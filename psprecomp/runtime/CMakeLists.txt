@@ -130,7 +130,6 @@ endif()
 
 # Runtime sources
 set(RUNTIME_SOURCES
-    src/main.cpp
     src/psp_memory.cpp
     src/psp_dispatch.cpp
     src/psp_fn_watch.cpp
@@ -206,7 +205,19 @@ else()
     message(STATUS "psprecomp: game module = ${PSPRECOMP_GAME}")
 endif()
 
-add_executable(psprecomp_runtime ${RUNTIME_SOURCES})
+# The runtime proper is a static library (psprecomp_core); the executable is src/main.cpp (the only file that needs the
+# game's funcs.h) linked against it, the recompiled code and the overlay libraries. A release ships libpsprecomp_core.a
+# prebuilt (cmake --install, see runtime/sdk/CMakeLists.txt): the player's machine then compiles only the generated code.
+add_library(psprecomp_core STATIC ${RUNTIME_SOURCES})
+add_executable(psprecomp_runtime src/main.cpp)
+target_link_libraries(psprecomp_runtime PRIVATE psprecomp_core)
+
+target_include_directories(psprecomp_core PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${PSPRECOMP_OUTPUT_DIR}/include  # recomp.h
+    ${SDL2_INCLUDE_DIRS}
+    ${PSP_GAME_INCLUDE_DIR}          # game-private headers (empty when generic)
+)
 
 target_include_directories(psprecomp_runtime PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -250,28 +261,31 @@ endforeach()
 
 if(AVCODEC_FOUND)
     message(STATUS "psprecomp: libavcodec found (${AVCODEC_VERSION}) -> ATRAC3/ATRAC3+ + sceMpeg (H.264/ATRAC3+) decoding enabled")
-    target_compile_definitions(psprecomp_runtime PRIVATE PSPRECOMP_HAVE_AVCODEC)
-    target_link_libraries(psprecomp_runtime PRIVATE PkgConfig::AVCODEC)
+    target_compile_definitions(psprecomp_core PUBLIC PSPRECOMP_HAVE_AVCODEC)
+    target_link_libraries(psprecomp_core PUBLIC PkgConfig::AVCODEC)
 else()
     message(STATUS "psprecomp: libavcodec NOT found -> sceAtrac decodes silence")
 endif()
 
-target_link_libraries(psprecomp_runtime PRIVATE
-    ${PSP_OVERLAY_LIBS}
-    psp::recomp
+target_link_libraries(psprecomp_core PUBLIC
     PkgConfig::SDL2
     PkgConfig::FREETYPE
     OpenGL::GL
     ZLIB::ZLIB
     pthread
 )
+# The core calls into the recompiled code (dispatch tables) and the recompiled code calls the HLE in the core: one group.
+target_link_libraries(psprecomp_runtime PRIVATE
+    $<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,--start-group> psprecomp_core ${PSP_OVERLAY_LIBS} psp::recomp
+    $<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,--end-group>
+)
 
 # Suppress OpenGL deprecation warnings on macOS
-target_compile_definitions(psprecomp_runtime PRIVATE
+target_compile_definitions(psprecomp_core PRIVATE
     GL_SILENCE_DEPRECATION
 )
 
-target_compile_options(psprecomp_runtime PRIVATE
+target_compile_options(psprecomp_core PRIVATE
     $<IF:$<CONFIG:Debug>,-O0,-O2>
     -Wall
     -Wextra
@@ -488,3 +502,12 @@ target_compile_definitions(test_fep_log PRIVATE PSP_FEP_LOG_PURE)
 target_compile_options(test_fep_log PRIVATE -O2 -Wall -Wextra -Wno-unused-parameter)
 add_test(NAME fep_log_tests COMMAND test_fep_log)
 
+
+# ── SDK install (release builds) ─────────────────────────────────────────────
+# cmake --install <build> --prefix <sdk> --component sdk  puts the prebuilt runtime core and what a player's machine needs to
+# link it with their own recompiled game next to sdk/CMakeLists.txt (see there). No game-derived file is part of it.
+install(TARGETS psprecomp_core ARCHIVE DESTINATION lib COMPONENT sdk)
+install(DIRECTORY include/ DESTINATION include COMPONENT sdk FILES_MATCHING PATTERN "*.h")
+install(FILES src/main.cpp DESTINATION src COMPONENT sdk)
+install(FILES sdk/CMakeLists.txt DESTINATION . COMPONENT sdk)
+install(DIRECTORY ${PSP_GAME_INCLUDE_DIR}/ DESTINATION include COMPONENT sdk FILES_MATCHING PATTERN "*.h")
