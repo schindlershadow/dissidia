@@ -163,7 +163,7 @@ compiles first time; picture/audio/input quality awaiting the user.
 Fixes after the first look (2026-11-10): (1) no TrueType font on Android -> every sceFont string blank: `psp_font_host_files` now uses `/system/fonts/DroidSans.ttf` (+ Bold);
 (2) Adreno does not honour buffer orphaning: wrapping the vertex ring with `glBufferData(NULL)` while earlier draws were still pending made them read the NEW
 storage (streaks, sprites from other screens, text swapped). On ES the ring now waits (`glFinish`) at a wrap and reuses the buffer, 512 K vertices per ring
-(found by bisecting: legacy renderer fine, `PSPRECOMP_GE_SYNC=1` fine, a ring that never wraps fine). `<work folder>/env.txt` (KEY=VALUE lines) sets `PSPRECOMP_*` flags on Android.
+(found by bisecting: legacy renderer fine, `PSPRECOMP_GE_SYNC=1` fine, a ring that never wraps fine). (3) speed: `glBufferSubData` into the ring cost ~0.5 ms per call on Adreno (battle: upload 62 of 77 ms per frame, 11 fps); ES now defaults to the unsynchronised mapping (`PSPRECOMP_GE_RING=map`): the RP6 holds 30 fps at 4x render scale, 60 fps in the 120 fps mode at 4x (user, 2026-11-10). `<work folder>/env.txt` (KEY=VALUE lines) sets `PSPRECOMP_*` flags on Android.
 `android/redeploy.sh <adb serial>` rebuilds the library + APK on the build machine and reinstalls.
 
 ## Verification of milestone 1

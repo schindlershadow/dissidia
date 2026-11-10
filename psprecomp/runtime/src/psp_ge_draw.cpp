@@ -1241,7 +1241,7 @@ struct Stream {
 // of every display list (FINISH), 3 = glFinish once per present, flush =
 // glFlush after every batch (diagnostics / escape hatch for drivers whose
 // asynchronous behaviour differs from the one this was developed on).
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(PSP_GLES)   // Android/Adreno: glBufferSubData costs ~0.5 ms per call (62 of 77 ms per battle frame); the mapping is far cheaper
 static int g_ring_mode = 1;
 #else
 static int g_ring_mode = 0;
