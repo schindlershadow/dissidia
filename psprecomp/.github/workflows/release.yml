@@ -55,11 +55,19 @@ jobs:
           python3 release/build_release.py --platform windows-x86_64 --version "${VERSION#v}" --work work
           --recompiler recompiler-windows/psprecomp.exe
       - name: Collect
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
         run: |
           mkdir dist
           cp work/psprecomp-*.tar.xz* work/psprecomp-*.zip* dist/
           python3 release/make_manifest.py --version "${VERSION#v}" --repo "${{ github.repository }}" --tag "$VERSION" \
             --assets dist -o dist/manifest.json
+          # Signed manifest (docs/installer.md "Signed manifests"). A committed public key without the secret would ship
+          # releases that no install accepts, so that combination fails here.
+          if [ -f games/dissidia/update_key.pub ] && [ -z "$RELEASE_SIGNING_KEY" ]; then
+            echo "games/dissidia/update_key.pub is committed but the RELEASE_SIGNING_KEY secret is not set"; exit 1
+          fi
+          if [ -n "$RELEASE_SIGNING_KEY" ]; then python3 release/sign_manifest.py sign dist/manifest.json; fi
           ls -la dist
       - uses: actions/upload-artifact@v4
         with:

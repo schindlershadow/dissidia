@@ -70,7 +70,10 @@ of the fork.
      ("About 6 minutes left", from ninja's file counter during the compile, from the overall fraction elsewhere) and an explanation
      of what the current stage does in the information panel. The step weights live in `setup/install.cpp`.
    - **Options**: check for updates; HD texture pack; Japanese voices (undub; asks for the undub disc image first); Android
-     version. A release declares which of the optional features it implements in `game/features.ini` (`hd_textures=1`,
+     version; **Import saves** (cycles Off / each PPSSPP or memory-stick SAVEDATA folder found with Dissidia 012 saves, found by
+     `psp_savemgr::detect_sources`; it adds the last install step, `psprecomp_setup --import-saves FROM --dir WORK`, which copies the
+     saves under the installed game's disc ID, re-signed, and never replaces a save that already exists in the install; verified
+     2026-11-10 with a headless install from the US ISO, `--headless ... --saves DIR`). A release declares which of the optional features it implements in `game/features.ini` (`hd_textures=1`,
      `jp_audio=1`, `android=1`); until a feature exists its row shows "Not yet" and cannot be switched on. The commands the
      wizard runs for them are fixed in `install.cpp` (`tools/fetch_textures.py <work>`, `tools/jp_audio.py --iso <undub>
      --work <work>`, `psp_build.py ... --android`), so those tasks only have to provide the scripts and flip the line.
@@ -103,7 +106,7 @@ of the fork.
      fingerprints from the archive's `release.json`; plus `min_wizard_version`.
    - Licenses: pspdecrypt is GPL-3.0 and ships as a separate executable (source and license pinned in the bundle), OpenSSL 3.0
      (Apache-2.0), SDL2 and zlib (zlib license), FreeType (FTL), FFmpeg (LGPL 2.1+; built without GPL parts, linked statically into the
-     game the player builds: a source offer is needed with a release, TODO), portable-file-dialogs (WTFPL).
+     game the player builds: `licenses/THIRD-PARTY-NOTICES.txt` (from `release/third_party_notices.py`) gives the pinned source URL + sha256, the configure flags, the two build-time edits and a written offer; the license texts are copied into `toolchain/licenses/` by `build_bundle.py` and into the release's `licenses/` by `assemble.py`; the player links the game from the shipped static libraries, so the library can be replaced), portable-file-dialogs (WTFPL).
 6. **Updater** (task 8; built 2026-11-10, update.py verified against a local file:// manifest, the wizard screens are not clicked through yet).
    - `game/tools/update.py check|apply --root <release folder>` does the work (Python stdlib, so Windows uses the embedded one).
      `check` fetches `manifest.json` (URL written into `release.json` at assemble time: the fork's latest release,
@@ -121,9 +124,16 @@ of the fork.
      now / Not now) and, from the start page, "Check for updates" on demand. `psprecomp_setup --launch` is the shortcut mode for
      starting the game: check, then play at once when there is nothing to do.
    - **Opt-out**: `check_updates=0` in the work folder's `settings.ini` (the wizard writes the player's choice from the Options
-     page at install time), or `PSPRECOMP_UPDATE_CHECK=0`. In-game: Settings > System > Check for Updates writes the same `check_updates=` line (built 2026-11-10). Not yet: signed manifests
-     (integrity today is the sha256 in a manifest served over HTTPS from the fork's release), delta downloads, wizard self-restart after
+     page at install time), or `PSPRECOMP_UPDATE_CHECK=0`. In-game: Settings > System > Check for Updates writes the same `check_updates=` line (built 2026-11-10). Signed manifests: see below. Not yet: delta downloads, wizard self-restart after
      an update.
+   - **Signed manifests** (built 2026-11-10; `games/dissidia/tools/ed25519.py` is pure-Python RFC 8032, checked against the RFC vector and
+     against OpenSSL both ways). If a release ships `game/update_key.pub` (the committed `games/dissidia/update_key.pub`), `update.py`
+     fetches `<manifest url>.sig` and refuses a manifest with a missing or wrong signature, so a hijacked download host cannot push
+     an update (the archive's sha256 is inside the signed manifest). Without the key file only the sha256 protects an update.
+     One-time setup, which needs the owner: `python3 release/sign_manifest.py keygen`, commit the public value as
+     `games/dissidia/update_key.pub`, store the seed as the GitHub secret `RELEASE_SIGNING_KEY`; the workflow then signs
+     (`release/sign_manifest.py sign`) and fails if the key is committed but the secret is not. Rotating the key needs one release
+     signed with the old key that ships the new `update_key.pub`. Tests: `games/dissidia/tools/test_update_signature.py`.
 7. **HD textures** (task 5) hooks in as an options page and a download step (Niosa / D012FFRT pack into `mods/textures`).
 8. **Android**: runtime-only app; the PC wizard exports a game bundle (compiled `libpsprecomp_game.so` + data) to copy over. Separate task.
    Findings: zig can target `aarch64-linux-android`, so the same bundle idea cross-compiles the generated code and the core on the PC

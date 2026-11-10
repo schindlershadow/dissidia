@@ -16,6 +16,7 @@ namespace setup {
 //   game/                        games/dissidia: game.toml, overlay_*.toml, analysis/, tools/*.py
 //   python/python.exe            embedded Python (Windows releases; Linux uses python3 from PATH)
 struct Layout {
+    std::string self;   // this program (the import-saves step runs it again)
     std::string root, python, setup_script, build_script, update_script, recompiler, toolchain, sdk, game_dir;
     // Empty string when everything needed is there, else a message naming what is missing.
     std::string problem() const;
@@ -39,6 +40,7 @@ struct Options {
     bool jp_audio = false;              // undub (Japanese voices); needs undub_iso
     bool android = false;               // also build the Android version
     std::string undub_iso;
+    std::string import_saves;           // a SAVEDATA folder to copy the player's Dissidia 012 saves from (empty = none)
 };
 // Optional features a release can offer: game/features.ini has one "name=1" line per implemented feature
 // (hd_textures, jp_audio, android). A missing file or line = not in this release yet (the wizard shows the option but

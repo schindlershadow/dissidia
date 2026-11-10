@@ -26,7 +26,7 @@ execute_process(COMMAND ${CMAKE_COMMAND} -DFONT_DIR=${RT}/assets/fonts -DOUT=${F
 
 add_executable(psprecomp_setup
     setup_main.cpp install.cpp proc.cpp
-    ${RT}/src/hle/psp_savedata_dialog.cpp
+    ${RT}/src/hle/psp_savedata_dialog.cpp ${RT}/src/hle/psp_savemgr.cpp ${RT}/src/hle/psp_savedata_crypto.cpp
     ${FONTS_CPP})
 target_include_directories(psprecomp_setup PRIVATE ${RT}/include ${RT}/src/hle)
 target_link_libraries(psprecomp_setup PRIVATE PkgConfig::SDL2 PkgConfig::FREETYPE

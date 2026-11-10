@@ -52,6 +52,7 @@ Layout find_layout(const std::string& root) {
     Layout l;
     l.root = root;
     l.recompiler = join(root, std::string("bin/psprecomp") + EXE);
+    l.self = join(root, std::string("psprecomp_setup") + EXE);
     l.toolchain = join(root, "toolchain");
     l.sdk = join(root, "sdk");
     l.game_dir = join(root, "game");
@@ -160,6 +161,14 @@ std::vector<Step> plan_install(const Layout& l, const std::string& iso, const st
         j.env = {{"PYTHONUNBUFFERED", "1"}};
         j.weight = 0.05;
         p.push_back(j);
+    }
+    if (!o.import_saves.empty()) {
+        Step v;
+        v.label = "Importing your saves";
+        v.explain = "Copies your Dissidia 012 saves into the game's save folder (from another region or from PPSSPP) and signs them for this game. The originals are not changed.";
+        v.argv = {l.self, "--import-saves", o.import_saves, "--dir", workdir};
+        v.weight = 0.01;
+        p.push_back(v);
     }
     finish_plan(p);
     return p;

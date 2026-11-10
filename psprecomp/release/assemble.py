@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tarfile
 import urllib.request
@@ -165,6 +166,18 @@ def main():
                       (os.path.join(out, "toolchain", "bin", "pspdecrypt-LICENSE.txt"), "pspdecrypt-LICENSE.txt")):
         if os.path.isfile(src):
             shutil.copy2(src, os.path.join(out, "licenses", name))
+
+    # license texts of the bundled libraries, generated notices (incl. the FFmpeg source offer), the update signing key
+    tlic = os.path.join(out, "toolchain", "licenses")
+    if os.path.isdir(tlic):
+        for fn in os.listdir(tlic):
+            shutil.copy2(os.path.join(tlic, fn), os.path.join(out, "licenses", fn))
+    subprocess.check_call([sys.executable, os.path.join(a.repo, "release", "third_party_notices.py"),
+                           "--versions", os.path.join(a.repo, "toolchain", "versions.json"),
+                           "-o", os.path.join(out, "licenses", "THIRD-PARTY-NOTICES.txt")])
+    keyfile = os.path.join(a.repo, "games", "dissidia", "update_key.pub")
+    if os.path.isfile(keyfile):
+        shutil.copy2(keyfile, os.path.join(out, "game", "update_key.pub"))
 
     files = {}
     for dp, dns, fns in os.walk(out):

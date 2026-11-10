@@ -521,6 +521,15 @@ void pp_init() {
         std::fprintf(stderr, "[TEXPACK] %s/textures.ini uses hash=quick, which is not supported: PPSSPP compatibility off\n", g.dir.c_str());
         return;
     }
+    // Packs list textures they do not ship (Niosa's lists ~220 such entries): drop them now so a lookup does not
+    // report a hit and then fail to load the file.
+    size_t dangling = 0;
+    for (auto it = pp.files.begin(); it != pp.files.end();) {
+        FILE* t = std::fopen((g.dir + "/" + it->second).c_str(), "rb");
+        if (t) { std::fclose(t); ++it; }
+        else { it = pp.files.erase(it); dangling++; }
+    }
+    if (dangling) std::fprintf(stderr, "[TEXPACK] %zu pack entr%s to a file the pack does not contain (ignored)\n", dangling, dangling == 1 ? "y points" : "ies point");
     pp.on = !pp.files.empty();
     for (auto& kv : pp.files) {
         pp.by_content.emplace(kv.first.substr(16), kv.first);

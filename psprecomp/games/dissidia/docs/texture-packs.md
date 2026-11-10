@@ -74,3 +74,10 @@ The hash functions are unit-tested (`test_tex_pack_ppsspp`); **no hit has been s
 
 `tools/fetch_textures.py <workdir>` downloads Niosa/D012FFRT from GitHub into `<workdir>/mods/textures` (the installer wizard does this when
 "HD texture pack" is on). The pack has no stated license and is not bundled; it was made for the US release (ULUS10566).
+
+## Pack entries without a file
+
+A textures.ini may list textures the pack does not ship: Niosa's D012FFRT has about 220 of its ~1050 `[hashes]` lines pointing to a PNG that is
+not in the download (names without `.png`, DLC/test art, `ui/selogo.png`, `ui/opencredits.png`...). The loader checks every entry once at start,
+drops those and logs `[TEXPACK] N pack entries point to a file the pack does not contain (ignored)`; before, such a texture logged `HIT` and then
+`bad replacement ...: unreadable (using original)`. Those textures stay original either way.

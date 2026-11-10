@@ -12,6 +12,8 @@
 //   psprecomp_setup --launch                 the shortcut mode: check for an update (unless turned off), then start the game; a window
 //                                            only matters when an update is found (or something fails)
 //   psprecomp_setup --headless --iso FILE --dir DIR   the install steps without a window (prints the output; for scripts/tests)
+//   psprecomp_setup --headless ... --saves SAVEDATA   also import the saves of a SAVEDATA folder
+//   psprecomp_setup --import-saves SAVEDATA --dir DIR  copy Dissidia 012 saves into an install (an install step; no window)
 //   psprecomp_setup --root DIR               use DIR as the release folder instead of this program's folder
 //   psprecomp_setup --screenshots OUTDIR     write PPM images of the pages (documentation / look checks) and exit
 #define SDL_MAIN_HANDLED   // keep the plain main() on Windows (see SDL_SetMainReady below)
@@ -28,6 +30,7 @@
 #include <vector>
 
 #include "../runtime/src/hle/psp_savedata_dialog.h"
+#include "../runtime/src/hle/psp_savemgr.h"
 #include "install.h"
 #include "proc.h"
 #include "third_party/portable-file-dialogs.h"
@@ -208,6 +211,8 @@ struct App {
     KeyboardDialog osk;
     std::string iso, workdir;
     setup::Options opt;
+    std::vector<psp_savemgr::Source> save_sources;   // PPSSPP / memory sticks that hold Dissidia 012 saves (found when Options opens)
+    bool save_sources_scanned = false;
     bool rebuild_only = false;
     bool updating = false;
 
@@ -324,10 +329,20 @@ struct App {
                  an = setup::feature_available(layout, "android");
             MenuRow u = toggle_row("Check for updates", "Look for new releases when the game starts (changeable later in the game's settings.ini).", opt.check_updates, true);
             std::string jpHelp = "Adds the Japanese voices and movies from a second disc image (an undub ISO) that you pick next.";
+            if (!save_sources_scanned) { save_sources = psp_savemgr::detect_sources(true); save_sources_scanned = true; }
+            MenuRow sv = row("Import saves", "", "None found");
+            if (!save_sources.empty()) {
+                sv.help = "Copies your Dissidia 012 saves from PPSSPP or a memory stick into the game, whatever their region. The originals are not changed. You can also do this later in the game (Triangle in the save list).";
+                sv.value = "Off";
+                for (auto& src : save_sources)
+                    if (src.path == opt.import_saves) sv.value = src.label + " (" + std::to_string(psp_savemgr::scan(src.path).size()) + ")";
+                sv.can_dec = sv.can_inc = true;
+            } else sv.help = "No PPSSPP or memory stick saves of Dissidia 012 were found. You can import saves later in the game (Triangle in the save list).";
             p.rows = {u,
                       toggle_row("HD texture pack", "Download the community HD texture pack for the game.", opt.hd_textures, tex),
                       toggle_row("Japanese voices (undub)", jpHelp, opt.jp_audio, jp),
                       toggle_row("Android version", "Also build the Android version of the game (copy it to your device afterwards).", opt.android, an),
+                      sv,
                       row("Start installing", "Reads " + shorten_left(iso, 40) + " and builds the game in " + shorten_left(workdir, 34) +
                                                   ". You can cancel and continue later."),
                       row("Back")};
@@ -563,7 +578,7 @@ struct App {
             go(Screen::InstallDir);
         } else if (pick == Pick::Undub) {
             opt.undub_iso = path;
-            go(Screen::Options, 4);
+            go(Screen::Options, 5);
             start_install_or_ask();
         } else {
             iso = path;
@@ -601,6 +616,13 @@ struct App {
             if (setup::feature_available(layout, "jp_audio")) { opt.jp_audio = !opt.jp_audio; if (!opt.jp_audio) opt.undub_iso.clear(); }
             break;
         case 3: if (setup::feature_available(layout, "android")) opt.android = !opt.android; break;
+        case 4: {   // Off -> each detected source -> Off
+            size_t i = 0;
+            if (!opt.import_saves.empty()) { while (i < save_sources.size() && save_sources[i].path != opt.import_saves) i++; i++; }
+            opt.import_saves = i < save_sources.size() ? save_sources[i].path : "";
+            if (save_sources.empty()) opt.import_saves.clear();
+            break;
+        }
         default: break;
         }
         dirty = true;
@@ -649,14 +671,14 @@ struct App {
             break;
         }
         case Screen::InstallDir:
-            if (sel == 0) go(Screen::Options, 4);
+            if (sel == 0) go(Screen::Options, 5);
             else if (sel == 1) begin_pick(Pick::Dir, Screen::InstallDir);
             else if (sel == 2) { workdir = setup::default_install_dir(); dirty = true; sel = 0; }
             else begin_pick(Pick::Iso, Screen::Welcome);
             break;
         case Screen::Options:
-            if (sel <= 3) toggle_option(sel);
-            else if (sel == 4) start_install_or_ask();
+            if (sel <= 4) toggle_option(sel);
+            else if (sel == 5) start_install_or_ask();
             else go(Screen::InstallDir);
             break;
         case Screen::Build:
@@ -702,7 +724,7 @@ struct App {
             go(Screen::Welcome);
             break;
         case Screen::PickUndub:
-            go(Screen::Options, 4);
+            go(Screen::Options, 5);
             break;
         case Screen::BrowseDir:
             go(Screen::InstallDir);
@@ -731,7 +753,7 @@ struct App {
 
     void adjust(int dir) {
         (void)dir;
-        if (screen == Screen::Options && sel <= 3) toggle_option(sel);
+        if (screen == Screen::Options && sel <= 4) toggle_option(sel);
     }
 
     void update_input() {
@@ -809,12 +831,13 @@ void write_ppm(const Canvas& c, const std::string& path) {
     std::fclose(f);
 }
 
-int run_headless(const setup::Layout& l, const std::string& iso, const std::string& dir) {
+int run_headless(const setup::Layout& l, const std::string& iso, const std::string& dir, const std::string& saves) {
     std::string prob = l.problem();
     if (!prob.empty()) { std::fprintf(stderr, "error: %s\n", prob.c_str()); return 2; }
     std::error_code ec;
     fs::create_directories(dir, ec);
     setup::Options o;
+    o.import_saves = saves;
     auto plan = setup::plan_install(l, iso, dir, o);
     setup::Progress prog;
     for (size_t i = 0; i < plan.size(); i++) {
@@ -856,9 +879,31 @@ static void attach_parent_console() {
 static void attach_parent_console() {}
 #endif
 
+// --import-saves FROM --dir DIR: copy the Dissidia 012 saves of FROM (a SAVEDATA folder) into DIR/ms0/PSP/SAVEDATA under
+// the installed game's disc ID. Run by the install plan as a step; no window.
+static int import_saves_cli(const std::string& from, const std::string& workdir) {
+    namespace sm = psp_savemgr;
+    const std::string target = sm::installed_disc_id(workdir);
+    if (target.empty()) { std::fprintf(stderr, "error: cannot tell the installed game's disc ID in %s\n", workdir.c_str()); return 1; }
+    const std::string dest = (fs::path(workdir) / "ms0" / "PSP" / "SAVEDATA").string();
+    std::error_code ec;
+    fs::create_directories(dest, ec);
+    auto saves = sm::scan(from);
+    std::printf("%zu save(s) in %s\n", saves.size(), from.c_str());
+    int failed = 0;
+    for (auto& s : saves) {
+        std::string dn;
+        std::string err = sm::copy_save(s, dest, target, false, &dn);
+        if (err.rfind("already exists", 0) == 0) { std::printf("%s: already in the game, kept\n", s.name.c_str()); continue; }   // never replace progress made in the new install
+        if (err.empty()) std::printf("%s -> %s\n", s.name.c_str(), dn.c_str());
+        else { std::fprintf(stderr, "%s: %s\n", s.name.c_str(), err.c_str()); failed++; }
+    }
+    return failed ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     attach_parent_console();
-    std::string root, iso, dir, play_dir, shots;
+    std::string root, iso, dir, play_dir, shots, import_from, saves_from;
     bool headless = false, play = false, launch = false;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -866,11 +911,17 @@ int main(int argc, char** argv) {
         if (a == "--root") next(root);
         else if (a == "--iso") next(iso);
         else if (a == "--dir") next(dir);
+        else if (a == "--import-saves") next(import_from);
+        else if (a == "--saves") next(saves_from);
         else if (a == "--headless") headless = true;
         else if (a == "--launch") launch = true;
         else if (a == "--screenshots") next(shots);
         else if (a == "--play") { play = true; if (i + 1 < argc && argv[i + 1][0] != '-') play_dir = argv[++i]; }
         else { std::fprintf(stderr, "unknown option %s\n(see the header of setup_main.cpp)\n", a.c_str()); return 2; }
+    }
+    if (!import_from.empty()) {
+        if (dir.empty()) { std::fprintf(stderr, "--import-saves needs --dir DIR\n"); return 2; }
+        return import_saves_cli(import_from, dir);
     }
     SDL_SetMainReady();
     if (root.empty()) {
@@ -888,7 +939,7 @@ int main(int argc, char** argv) {
 
     if (headless) {
         if (iso.empty() || dir.empty()) { std::fprintf(stderr, "--headless needs --iso FILE and --dir DIR\n"); return 2; }
-        return run_headless(layout, iso, dir);
+        return run_headless(layout, iso, dir, saves_from);
     }
     if (play) {
         std::string wd = play_dir.empty() ? state.workdir : play_dir;
@@ -932,7 +983,7 @@ int main(int argc, char** argv) {
         app.go(Screen::PickIso); shot("2b_pick_iso");
         app.go(Screen::InstallDir); shot("3_install_dir");
         app.go(Screen::Options, 1); shot("4_options");
-        app.go(Screen::Options, 4); shot("4b_options_scrolled");
+        app.go(Screen::Options, 5); shot("4b_options_scrolled");
         setup::Options o; o.android = true; o.hd_textures = true; o.jp_audio = true; o.undub_iso = "/x.iso";
         app.plan = setup::plan_install(app.layout, app.iso, app.workdir, o);
         app.prog.step = 1; app.prog.stage = "Compiling the game"; app.prog.fraction = 0.42;

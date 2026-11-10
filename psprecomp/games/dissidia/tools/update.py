@@ -18,6 +18,7 @@ apply   downloads the archive for this platform, verifies its sha256, replaces t
         is simply run again. Prints "[update] PROGRESS <percent>" lines and "[update] DONE" or "[update] ERROR <message>".
 
 The install's work folder (disc0, saves, settings.ini, mods) lives outside the release folder and is not touched.
+Signed manifests: with game/update_key.pub present, <manifest url>.sig must verify (see load_manifest).
 Opt-out: settings.ini "check_updates=0" in the work folder, or PSPRECOMP_UPDATE_CHECK=0 (checked by the wizard before it calls this).
 Python 3 standard library only.
 """
@@ -30,6 +31,9 @@ import sys
 import tarfile
 import urllib.request
 import zipfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ed25519  # noqa: E402
 
 TIMEOUT = 8
 
@@ -46,6 +50,26 @@ def fetch(url, timeout=TIMEOUT):
 def load_json_url(url):
     with fetch(url) as r:
         return json.loads(r.read().decode("utf-8"))
+
+
+def load_manifest(root, url):
+    """The manifest at `url`. When the installed release carries game/update_key.pub (an Ed25519 public key, 64 hex
+    characters) the manifest must also have a valid signature at <url>.sig (release/sign_manifest.py): a wrong or missing
+    signature is an error, so a hijacked download host cannot push an update. Without a key file only the archive's sha256
+    from the manifest protects the download (development builds)."""
+    with fetch(url) as r:
+        body = r.read()
+    keyfile = os.path.join(root, "game", "update_key.pub")
+    if os.path.isfile(keyfile):
+        pub = bytes.fromhex(open(keyfile).read().strip())
+        try:
+            with fetch(url + ".sig") as r:
+                sig = bytes.fromhex(r.read().decode("ascii").strip())
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError("manifest signature missing (%s)" % e)
+        if not ed25519.verify(pub, body, sig):
+            raise RuntimeError("manifest signature is not valid")
+    return json.loads(body.decode("utf-8"))
 
 
 def version_key(v):
@@ -85,7 +109,7 @@ def cmd_check(a):
         if not url:
             say("ERROR no manifest url")
             return 0
-        m = load_json_url(url)
+        m = load_manifest(a.root, url)
         p = newer(m, cur)
         if not p:
             say("NOUPDATE current=%s" % cur["version"])
@@ -163,7 +187,7 @@ def cmd_apply(a):
     if not cur:
         return err("%s has no release.json" % a.root)
     try:
-        m = load_json_url(a.manifest or cur["manifest_url"])
+        m = load_manifest(a.root, a.manifest or cur["manifest_url"])
     except Exception as e:  # noqa: BLE001
         return err("cannot read the manifest: %s" % e)
     p = newer(m, cur)

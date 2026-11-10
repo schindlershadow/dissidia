@@ -357,6 +357,15 @@ def main():
         os.remove(os.path.join(out, "bin", "pspdecrypt.pdb"))
     shutil.copy2(os.path.join(psrc, "LICENSE.TXT"), os.path.join(out, "bin", "pspdecrypt-LICENSE.txt"))
 
+    # License texts of the libraries linked into the game the player builds (release/assemble.py copies licenses/ into the release).
+    os.makedirs(os.path.join(out, "licenses"), exist_ok=True)
+    for lname, lfiles in (("ffmpeg", ["COPYING.LGPLv2.1", "LICENSE.md"]), ("sdl2", ["LICENSE.txt"]), ("zlib", ["LICENSE"]),
+                          ("freetype", ["docs/FTL.TXT", "docs/LICENSE.TXT"]), ("openssl", ["LICENSE.txt"])):
+        for lf in lfiles:
+            lp = os.path.join(work, "src-" + lname, lf)
+            if os.path.isfile(lp):
+                shutil.copy2(lp, os.path.join(out, "licenses", "%s-%s" % (lname, os.path.basename(lf))))
+
     # ---------------------------------------------------------------- 4. static libraries only
     libdir = os.path.join(deps, "lib")
     for fn in os.listdir(libdir):
