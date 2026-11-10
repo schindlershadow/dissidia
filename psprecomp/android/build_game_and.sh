@@ -5,12 +5,15 @@ set -eo pipefail
 export PATH=$HOME/dissidia/tcb/v2/lin/bin:$PATH
 A=${ANDROID_DIR:-$HOME/dissidia/android}; W=${1:-$HOME/Games/Dissidia012}
 cd $A
-TC=$A/and_deps29/toolchain.cmake   # API 29: native ELF TLS (below it the compiler emulates thread_local, ~15% of the run time)
-cmake -S ~/code/dissidia/psprecomp/runtime -B core_and -G Ninja -DCMAKE_TOOLCHAIN_FILE=$TC -DCMAKE_BUILD_TYPE=Release -DPSPRECOMP_OUTPUT_DIR=$W/output >/dev/null
+TC=$A/and_deps29/toolchain.cmake
+# NOT -ftls-model=initial-exec: bionic refuses it in a dlopen()ed library ("dlopen failed: TLS symbol (null)"). The dynamic TLS
+# descriptor resolver costs ~8% of a battle: cut by touching thread_local variables less in hot paths instead.
+TLS=""   # API 29: native ELF TLS (below it the compiler emulates thread_local, ~15% of the run time)
+cmake -S ~/code/dissidia/psprecomp/runtime -B core_and -G Ninja -DCMAKE_TOOLCHAIN_FILE=$TC -DCMAKE_BUILD_TYPE=Release $TLS -DPSPRECOMP_OUTPUT_DIR=$W/output >/dev/null
 cmake --build core_and --target psprecomp_core 2>&1 | tail -2
 rm -rf sdk_and && cmake --install core_and --component sdk --prefix sdk_and >/dev/null
 OV=""; for o in supacc battle menu extra; do [ -d $W/overlays/$o ] && OV="$OV;$W/overlays/$o"; done
-cmake -S sdk_and -B game_and -G Ninja -DCMAKE_TOOLCHAIN_FILE=$TC -DCMAKE_BUILD_TYPE=Release -DPSPRECOMP_OUTPUT_DIR=$W/output -DPSPRECOMP_OVERLAY_DIRS="${OV#;}" >/dev/null
+cmake -S sdk_and -B game_and -G Ninja -DCMAKE_TOOLCHAIN_FILE=$TC -DCMAKE_BUILD_TYPE=Release $TLS -DPSPRECOMP_OUTPUT_DIR=$W/output -DPSPRECOMP_OVERLAY_DIRS="${OV#;}" >/dev/null
 cmake --build game_and --target psprecomp_runtime 2>&1 | tail -4
 ls -la game_and/libmain.so
 echo BUILD_DONE

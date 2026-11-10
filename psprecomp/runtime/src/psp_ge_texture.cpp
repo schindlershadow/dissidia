@@ -27,21 +27,29 @@ static bool g_tex_initialized = false;
 static uint32_t fnv1a_hash(
     const uint8_t* data, size_t len
 ) {
-    // Name kept for history; this is a 64-bit word-at-a-time multiply/xor
-    // mix (~10x faster than byte-wise FNV over the 4 KiB texture window the
-    // cache hashes per bind). The value is only used inside the cache key.
-    uint64_t h = 0x9E3779B97F4A7C15ull ^ (uint64_t)len;
+    // Name kept for history; this is a word-at-a-time multiply/xor mix over FOUR independent lanes: the single-chain
+    // version was latency bound (a dependent multiply per 8 bytes), and whole textures up to 256 KiB are hashed at every
+    // bind, 20% of a battle frame on an Adreno phone. The value is only used inside the cache key.
+    constexpr uint64_t K = 0xFF51AFD7ED558CCDull;
+    uint64_t h0 = 0x9E3779B97F4A7C15ull ^ (uint64_t)len, h1 = h0 + 0x1234567ull, h2 = h0 + 0x2345678ull, h3 = h0 + 0x3456789ull;
     size_t i = 0;
+    for (; i + 32 <= len; i += 32) {
+        uint64_t w[4];
+        std::memcpy(w, data + i, 32);
+        h0 = (h0 ^ w[0]) * K; h1 = (h1 ^ w[1]) * K; h2 = (h2 ^ w[2]) * K; h3 = (h3 ^ w[3]) * K;
+        h0 ^= h0 >> 32; h1 ^= h1 >> 32; h2 ^= h2 >> 32; h3 ^= h3 >> 32;
+    }
+    uint64_t h = h0 ^ (h1 * 0x9E3779B1ull) ^ (h2 * 0xC2B2AE3Dull) ^ (h3 * 0x27D4EB2Full);
     for (; i + 8 <= len; i += 8) {
         uint64_t w;
         std::memcpy(&w, data + i, 8);
-        h = (h ^ w) * 0xFF51AFD7ED558CCDull;
+        h = (h ^ w) * K;
         h ^= h >> 32;
     }
     if (i < len) {
         uint64_t w = 0;
         std::memcpy(&w, data + i, len - i);
-        h = (h ^ w) * 0xFF51AFD7ED558CCDull;
+        h = (h ^ w) * K;
         h ^= h >> 32;
     }
     h *= 0xC4CEB9FE1A85EC53ull;

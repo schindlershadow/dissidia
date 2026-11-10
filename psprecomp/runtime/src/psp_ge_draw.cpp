@@ -917,7 +917,8 @@ void ge_draw_select_target(uint32_t fb_addr_raw) {
     }
     if (g_front_target < 0) mark_main_key(key);   // the first buffer the game draws into is shown
     int slot = acquire_target(key);
-    if (std::getenv("PSPRECOMP_MOVIE_TEXDBG"))
+    static const bool seltgt_dbg = std::getenv("PSPRECOMP_MOVIE_TEXDBG") != nullptr;
+    if (seltgt_dbg)
         std::fprintf(stderr, "[SELTGT] fb=%08X key=%06X slot=%d\n", fb_addr_raw, key, slot);
     g_current_target = slot;
     g_targets[slot].mip_dirty = true;   // about to be drawn into

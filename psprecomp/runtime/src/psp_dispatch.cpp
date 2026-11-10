@@ -341,9 +341,11 @@ void psp_trace_checkpoint(uint32_t addr) {
     // [#35] shared (cross-thread) ring for the debug socket I command.
     // One relaxed fetch_add + store per function entry; measured noise is
     // acceptable for a diagnostics-first runtime.
+#ifndef __ANDROID__   // the debug socket does not run on Android: skip the atomic read-modify-write on every function entry
     g_shared_func_ring[g_shared_func_ring_pos.fetch_add(
         1, std::memory_order_relaxed) & 63u]
         .store(addr, std::memory_order_relaxed);
+#endif
 
     // PSPRECOMP_FIRSTCALL=<hex gate addr>:<out path>: first-call / call-count log of every function entered
     // while the guest byte at the gate address is non-zero (set it with the debug socket `W <addr> 01`; the value is
