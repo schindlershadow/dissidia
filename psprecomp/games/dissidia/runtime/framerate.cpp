@@ -292,6 +292,7 @@ uint64_t g_fighter_seen[4] = {};   // g_tick when the fighter's step was last as
 // pressed for 2 / step updates in total (4 at 120 Hz), as long as the fighter has not started another action (script id) since:
 // the press that starts a move must not count again for that move's own early-press lockout (event 0x004C).
 bool g_press_latch = true;
+float g_press_ms = 33.4f;   // PSPRECOMP_PRESS_LATCH=<ms>: how long a press counts (default one PSP update; 0 = off)
 struct PressEntry { uint32_t obj = 0, bit = 0, actor = 0, scr = 0; uint64_t tick = 0; };
 PressEntry g_press[48];
 uint32_t actor_of_pad(uint32_t pad) {   // the fighter whose controller (actor+0x5C4) owns this virtual pad (controller+0x53C)
@@ -307,7 +308,7 @@ void pressed_hook(uint8_t* rdram, recomp_context* ctx) {
     g_orig_pressed(rdram, ctx);
     g_press_calls++;
     if (!g_press_latch || g_ticks >= 2.0f || overlay_id() != 1) return;
-    const uint64_t window = static_cast<uint64_t>(2.0f / g_ticks + 0.5f);   // updates a press stays "pressed"
+    const uint64_t window = static_cast<uint64_t>(g_press_ms * 0.001f * 60.0f / g_ticks + 0.5f);   // updates a press stays "pressed"
     PressEntry* free_slot = nullptr;
     PressEntry* mine = nullptr;
     for (auto& e : g_press) {
@@ -624,7 +625,8 @@ void dissidia_framerate_install(uint8_t* rdram) {
     g_log = (e = std::getenv("PSPRECOMP_FPS_LOG")) && e[0] && e[0] != '0';
     g_actor_log = (e = std::getenv("PSPRECOMP_ASSIST_LOG")) && e[0] && e[0] != '0';
     g_fighter_log = (e = std::getenv("PSPRECOMP_FIGHTER_LOG")) && e[0] && e[0] != '0';
-    g_press_latch = !((e = std::getenv("PSPRECOMP_PRESS_LATCH")) && e[0] == '0');
+    if ((e = std::getenv("PSPRECOMP_PRESS_LATCH")) && e[0]) { g_press_ms = float(std::atof(e)); if (g_press_ms == 1.0f) g_press_ms = 33.4f; }
+    g_press_latch = g_press_ms > 0.5f;
     g_fighter_dump = g_fighter_log && (e = std::getenv("PSPRECOMP_FIGHTER_DUMP")) && e[0] && e[0] != '0';
     g_orig_frame_end = psp_dispatch_probe_lookup(FRAME_END);
     g_orig_pad = psp_dispatch_probe_lookup(PAD_SET);

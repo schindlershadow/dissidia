@@ -135,3 +135,11 @@ at half frames (confirmed fine in the first run), and the CPU cost on the Deck.
 Generic runtime code (`runtime/src/psp_settings.cpp`, see ARCHITECTURE.md). The page layout lives next to the save
 dialog (`psp_sddialog::render_menu`) and uses the same `SdTheme`. The Dissidia theme adds the d-pad left/right glyphs
 (button sheet, entry 8) and the blue/white selector triangles (common UI sheet, entry 0) for the value arrows.
+
+### Timed button inputs above 30 Hz (press latch)
+
+The fighter code asks the virtual pad whether a button was *pressed this update* (`FUN_08AB399C`: state and not previous state), so
+a press is seen for one update: 33 ms on the PSP, 8 ms at 120 Hz. Timed chain inputs (Jecht's 3 to 5 frame windows) were four times
+harder to hit at 120 Hz. The hook in `runtime/framerate.cpp` reports a press as pressed for 33 ms in total (4 updates at 120 Hz),
+ending early when the fighter starts another action (script id changes), so the press that starts a move cannot also trip that move's
+early-press lockout (event 0x004C). `PSPRECOMP_PRESS_LATCH=<ms>` changes the time (0 turns it off); the `[FPS]` log line shows the counts.
