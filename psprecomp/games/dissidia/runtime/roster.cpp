@@ -5640,3 +5640,41 @@ void dissidia_wpnp_install() {
     if (!g_orig_ablt_load) std::fprintf(stderr, "[ROSTER] ablt buffer hook NOT installed\n");
     else psp_dispatch_register(ABLT_LOAD, ablt_load_hook);
 }
+
+
+// ---- Test driver (framerate.cpp, PSPRECOMP_TEST_SCRIPT `action <id>`): start any of a fighter's actions without a press ----
+// Same path as the touchdown / chain-window starts above: the actor's own plya record of the action id, FUN_08B382B8 with the
+// selector overridden to hand that record back. id < 0 lists the actor's records instead ("[TEST] plya ..." lines).
+// Returns 1 started, 0 not started, -1 no such record / battle overlay not resident.
+int dissidia_test_action(uint8_t* rdram, recomp_context* ctx, uint32_t actor, int id) {
+    uint32_t ovl;
+    std::memcpy(&ovl, rdram + (OVL_BASE & 0x07FFFFFFu), 4);
+    if (ovl != 1u || !guest_ok(actor, 0x1070u)) return -1;
+    if (!g_start_action) g_start_action = ovl_battle_lookup(START_ACTION);
+    if (!g_plya_select) g_plya_select = psp_dispatch_probe_lookup(PLYA_SELECT);
+    static bool hooked = false;
+    if (!hooked && g_plya_select) { psp_dispatch_register(PLYA_SELECT, plya_select_hook); hooked = true; }
+    if (!g_start_action || !g_plya_select) return -1;
+    if (id < 0) {
+        const uint32_t ms = guest_rd<uint32_t>(rdram, actor + ACT_MOVESET);
+        const uint32_t t = guest_ok(ms, 0x8Cu) ? guest_rd<uint32_t>(rdram, ms + 0x88u) : 0u;
+        const uint32_t n = guest_ok(t, 8u) ? guest_rd<uint32_t>(rdram, t + 4u) : 0u;
+        std::fprintf(stderr, "[TEST] plya actor %08X: %u records\n", actor, n);
+        for (uint32_t i = 0; i < n && i < 4096u && guest_ok(t, 8u + (i + 1) * PLYA_STRIDE); i++) {
+            const uint32_t r = t + 8u + i * PLYA_STRIDE;
+            std::fprintf(stderr, "[TEST] plya action %u script %d\n", guest_rd<uint16_t>(rdram, r), (int)guest_rd<int16_t>(rdram, r + 0x1C));
+        }
+        return 1;
+    }
+    uint32_t table = 0;
+    const uint32_t rec = plya_record(rdram, actor, id, &table);
+    if (!rec) return -1;
+    const recomp_context after = *ctx;
+    ctx->r[4] = static_cast<int32_t>(actor); ctx->r[5] = LAND_KIND; ctx->r[6] = 0;
+    g_force_actor = actor; g_force_rec = rec; g_force_table = table;
+    g_start_action(rdram, ctx);
+    g_force_actor = g_force_rec = g_force_table = 0u;
+    const uint32_t okv = static_cast<uint32_t>(ctx->r[2]);
+    *ctx = after;
+    return okv ? 1 : 0;
+}
