@@ -60,6 +60,7 @@ constexpr uint32_t OVL_BASE = 0x089DD4C0u;
 constexpr uint32_t FRAME_END = 0x08883F9Cu;     // EBOOT: per-frame end (a0 = frame timer)
 constexpr uint32_t TIMER_PTR = 0x089D69E0u;     // EBOOT: frame timer object pointer
 constexpr uint32_t FRAME_STEP = 0x089D5EACu;    // EBOOT: global frame step (float, 1/60 s ticks)
+constexpr uint32_t PRESSED = 0x08AB399Cu;       // battle overlay: virtual pad 'pressed this update' test (obj, bit) = state & ~prev
 constexpr uint32_t PAD_SET = 0x08871BD0u;       // EBOOT: pad button state + auto-repeat
 constexpr uint32_t PAD_MGR_PTR = 0x089D6008u;   // EBOOT: pad manager pointer (+0x25C delay, +0x260 interval)
 constexpr uint32_t ACTOR_DT = 0x08838300u;      // EBOOT: an actor's time step
@@ -70,7 +71,7 @@ constexpr uint32_t OWN_MASK0 = 0x089C7FD8u, OWN_MASK1 = 0x089C7FDCu;
 constexpr uint32_t CAM_DT = 0x08B3B4FCu;        // battle overlay: a camera's time step
 
 uint8_t* g_ram = nullptr;
-FuncPtr g_orig_rootmotion = nullptr, g_orig_slowmo = nullptr, g_orig_frame_end = nullptr, g_orig_pad = nullptr, g_orig_actor_dt = nullptr, g_orig_cam_dt = nullptr;
+FuncPtr g_orig_pressed = nullptr, g_orig_rootmotion = nullptr, g_orig_slowmo = nullptr, g_orig_frame_end = nullptr, g_orig_pad = nullptr, g_orig_actor_dt = nullptr, g_orig_cam_dt = nullptr;
 std::atomic<int> g_target{30};     // requested rate (settings / env)
 int g_interval = 2;                // interval written on the last frame end (2 = 30 Hz, 1 = 60 Hz and above)
 int g_rate = 30;                   // logic rate in effect (30, 60, 90, ... one frame per vblank above 30)
@@ -256,6 +257,7 @@ void root_motion_hook(uint8_t* rdram, recomp_context* ctx) {
     else prev_mag = mag;
 }
 
+
 void pad_set_hook(uint8_t* rdram, recomp_context* ctx) {
     const float step = rdf(FRAME_STEP);
     const uint32_t mgr = r32(PAD_MGR_PTR);
@@ -281,6 +283,47 @@ bool g_actor_log = false;
 int g_fighter_log_left = 40000;
 uint32_t g_fighters[4] = {};
 uint64_t g_fighter_seen[4] = {};   // g_tick when the fighter's step was last asked for (stale = left the battle)
+
+// Press latch (PSPRECOMP_PRESS_LATCH=0 turns it off). The fighter code asks the virtual pad "was bit B pressed this update"
+// (FUN_08AB399C: state & ~previous state). The PSP ran 30 updates a second, so a press was seen for 33 ms; at 120 it is seen for
+// 8 ms, and the timed chain inputs (Jecht: 3 to 5 frame windows) are four times harder to hit. A press is therefore reported as
+// pressed for 2 / step updates in total (4 at 120 Hz), as long as the fighter has not started another action (script id) since:
+// the press that starts a move must not count again for that move's own early-press lockout (event 0x004C).
+bool g_press_latch = true;
+struct PressEntry { uint32_t obj = 0, bit = 0, actor = 0, scr = 0; uint64_t tick = 0; };
+PressEntry g_press[48];
+uint32_t actor_of_pad(uint32_t pad) {   // the fighter whose controller (actor+0x5C4) owns this virtual pad (controller+0x53C)
+    for (uint32_t a : g_fighters) {
+        if (!a || !ok(a)) continue;
+        const uint32_t ctrl = r32(a + 0x5C4u);
+        if (ok(ctrl) && ctrl + 0x53Cu == pad) return a;
+    }
+    return 0;
+}
+void pressed_hook(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t obj = static_cast<uint32_t>(ctx->r[4]), bit = static_cast<uint32_t>(ctx->r[5]);
+    g_orig_pressed(rdram, ctx);
+    if (!g_press_latch || g_ticks >= 2.0f || overlay_id() != 1) return;
+    const uint64_t window = static_cast<uint64_t>(2.0f / g_ticks + 0.5f);   // updates a press stays "pressed"
+    PressEntry* free_slot = nullptr;
+    PressEntry* mine = nullptr;
+    for (auto& e : g_press) {
+        if (e.obj == obj && e.bit == bit) { mine = &e; break; }
+        if (!free_slot && (!e.obj || g_tick - e.tick > 16)) free_slot = &e;
+    }
+    if (ctx->r[2] & 1) {   // a real edge: remember it
+        PressEntry* e = mine ? mine : free_slot;
+        if (!e) return;
+        const uint32_t a = actor_of_pad(obj);
+        *e = PressEntry{obj, bit, a, a ? (r32(a + 0x540u) & 0xFFFFu) : 0u, g_tick};
+        return;
+    }
+    if (!mine || g_tick == mine->tick || g_tick - mine->tick >= window) return;
+    if (mine->actor && (!ok(mine->actor) || (r32(mine->actor + 0x540u) & 0xFFFFu) != mine->scr)) { mine->obj = 0; return; }   // a new action began
+    ctx->r[2] = 1;
+}
+
+
 uint32_t g_objects[12] = {};      // assists (kind 1), summoned / thrown objects (3, 6 ...): PSPRECOMP_FIGHTER_LOG logs their motion time
 float g_object_time[12] = {};
 int g_object_log_left = 30000;
@@ -576,11 +619,13 @@ void dissidia_framerate_install(uint8_t* rdram) {
     g_log = (e = std::getenv("PSPRECOMP_FPS_LOG")) && e[0] && e[0] != '0';
     g_actor_log = (e = std::getenv("PSPRECOMP_ASSIST_LOG")) && e[0] && e[0] != '0';
     g_fighter_log = (e = std::getenv("PSPRECOMP_FIGHTER_LOG")) && e[0] && e[0] != '0';
+    g_press_latch = !((e = std::getenv("PSPRECOMP_PRESS_LATCH")) && e[0] == '0');
     g_fighter_dump = g_fighter_log && (e = std::getenv("PSPRECOMP_FIGHTER_DUMP")) && e[0] && e[0] != '0';
     g_orig_frame_end = psp_dispatch_probe_lookup(FRAME_END);
     g_orig_pad = psp_dispatch_probe_lookup(PAD_SET);
     g_orig_actor_dt = psp_dispatch_probe_lookup(ACTOR_DT);
     g_orig_cam_dt = ovl_battle_lookup(CAM_DT);
+    g_orig_pressed = ovl_battle_lookup(PRESSED);
     if (!g_orig_frame_end || !g_orig_pad || !g_orig_actor_dt || !g_orig_cam_dt) {
         std::fprintf(stderr, "[FPS] hooks NOT installed (frame end %p pad %p actor dt %p camera dt %p): 30 Hz only\n",
                      (void*)g_orig_frame_end, (void*)g_orig_pad, (void*)g_orig_actor_dt, (void*)g_orig_cam_dt);
@@ -590,6 +635,7 @@ void dissidia_framerate_install(uint8_t* rdram) {
     psp_dispatch_register(PAD_SET, pad_set_hook);
     psp_dispatch_register(ACTOR_DT, actor_dt_hook);
     psp_dispatch_register(CAM_DT, cam_dt_hook);
+    if (g_orig_pressed) psp_dispatch_register(PRESSED, pressed_hook);
     if ((g_orig_rootmotion = psp_dispatch_probe_lookup(ROOT_MOTION))) psp_dispatch_register(ROOT_MOTION, root_motion_hook);
     else std::fprintf(stderr, "[FPS] root motion hook NOT installed (no function at %08X)\n", ROOT_MOTION);
     if ((g_orig_slowmo = psp_dispatch_probe_lookup(SLOWMO_FRAME))) psp_dispatch_register(SLOWMO_FRAME, slowmo_frame_hook);
