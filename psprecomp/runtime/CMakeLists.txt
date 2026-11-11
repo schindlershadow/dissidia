@@ -1,6 +1,20 @@
 cmake_minimum_required(VERSION 3.20)
 project(psprecomp_runtime CXX C)
 
+# GL-on-Vulkan backend (PSPRECOMP_RENDERER=vulkan at run time; docs/VULKAN_PORT.md). Desktop only for now.
+option(PSPRECOMP_VULKAN "Build the Vulkan backend" ON)
+set(PSP_VKGL_SOURCES "")
+if(PSPRECOMP_VULKAN AND NOT ANDROID AND NOT APPLE)
+    find_package(Vulkan)
+    find_library(PSP_GLSLANG_LIB glslang)
+    if(Vulkan_FOUND AND PSP_GLSLANG_LIB)
+        set(PSP_VKGL_SOURCES src/vk/psp_vk_context.cpp src/vk/psp_vk_glsl.cpp src/vk/vkgl_core.cpp src/vk/vkgl_api.cpp)
+        message(STATUS "psprecomp: Vulkan backend enabled")
+    else()
+        message(STATUS "psprecomp: Vulkan backend disabled (needs the Vulkan SDK and glslang)")
+    endif()
+endif()
+
 # VFPU: PPSSPP's interpreter vendored in src/vfpu_ppsspp (see its README.md); psp_vfpu_ops.cpp is the
 # API the recompiled code calls. Used by the runtime and by the host VFPU tests.
 set(PSP_VFPU_SOURCES
@@ -209,6 +223,7 @@ set(RUNTIME_SOURCES
     src/psp_screenfx.cpp
     src/psp_debug_socket.cpp
     src/psp_gl_stats.cpp
+    ${PSP_VKGL_SOURCES}
 )
 
 # ── Game-module selection (issues #46/#47 Phase 4) ──────────────────────────
@@ -326,6 +341,13 @@ target_link_libraries(psprecomp_runtime PRIVATE
 )
 
 # Suppress OpenGL deprecation warnings on macOS
+if(PSP_VKGL_SOURCES)
+    target_compile_definitions(psprecomp_core PUBLIC PSPRECOMP_HAVE_VKGL)
+    target_include_directories(psprecomp_core PRIVATE /usr/include/glslang)
+    target_link_libraries(psprecomp_core PUBLIC Vulkan::Vulkan glslang SPIRV MachineIndependent GenericCodeGen OSDependent
+        glslang-default-resource-limits SPIRV-Tools-opt SPIRV-Tools)
+endif()
+
 target_compile_definitions(psprecomp_core PRIVATE
     GL_SILENCE_DEPRECATION
 )
@@ -586,3 +608,26 @@ if(PSPRECOMP_TOOLCHAIN_JSON)
     install(FILES "${PSPRECOMP_TOOLCHAIN_JSON}" DESTINATION . COMPONENT sdk)
 endif()
 install(DIRECTORY ${PSP_GAME_INCLUDE_DIR}/ DESTINATION include COMPONENT sdk FILES_MATCHING PATTERN "*.h")
+
+# Vulkan backend foundation (docs/VULKAN_PORT.md). Standalone test: headless device + clear/readback, and with --window
+# an SDL Vulkan swapchain. The runtime links libvulkan only when PSPRECOMP_VULKAN is ON (milestone 2+).
+find_package(Vulkan)
+if(Vulkan_FOUND AND NOT ANDROID)
+    add_executable(test_vk_context tests/test_vk_context.cpp src/vk/psp_vk_context.cpp)
+    target_include_directories(test_vk_context PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${SDL2_INCLUDE_DIRS})
+    target_link_libraries(test_vk_context PRIVATE Vulkan::Vulkan PkgConfig::SDL2)
+    target_compile_options(test_vk_context PRIVATE -O2 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
+    add_test(NAME vk_context_tests COMMAND test_vk_context)
+endif()
+
+if(Vulkan_FOUND AND NOT ANDROID)
+    find_library(GLSLANG_LIB glslang)
+    if(GLSLANG_LIB)
+        add_executable(test_vk_glsl tests/test_vk_glsl.cpp src/vk/psp_vk_glsl.cpp)
+        target_include_directories(test_vk_glsl PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/include /usr/include/glslang)
+        target_link_libraries(test_vk_glsl PRIVATE glslang SPIRV MachineIndependent GenericCodeGen OSDependent
+            glslang-default-resource-limits SPIRV-Tools-opt SPIRV-Tools pthread)
+        target_compile_options(test_vk_glsl PRIVATE -O2 -Wall -Wextra -Wno-unused-parameter)
+        add_test(NAME vk_glsl_tests COMMAND test_vk_glsl)
+    endif()
+endif()

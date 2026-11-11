@@ -1,3 +1,4 @@
+#include "psp_gl_window.h"
 #include "hle/psp_savedata_dialog.h"
 #include "psp_ge_draw.h"
 #include "psp_post.h"
@@ -2054,7 +2055,7 @@ void ge_draw_init() {
             // panel -> 3 = 1440x816; a 960x544 window -> 2). Capped at 3 so
             // a Retina/4K window does not silently allocate 8 huge targets.
             int dw = 0, dh = 0;
-            if (SDL_Window* w = psp_get_sdl_window()) SDL_GL_GetDrawableSize(w, &dw, &dh);
+            if (SDL_Window* w = psp_get_sdl_window()) psp_gl_drawable_size(w, &dw, &dh);
             v = dh > 0 ? (int)((dh + 136) / 272) : 1;
             v = v < 1 ? 1 : v > 3 ? 3 : v;
             std::fprintf(stderr, "[DRAW] render scale auto: drawable %dx%d -> %d\n", dw, dh, v);
@@ -3114,7 +3115,7 @@ static PresentRect present_layout(SDL_Window* window) {
     const int pw = g_present_w480;
     static PresentRect cached{0, 0, 480, 272, GL_NEAREST, false};
     int dw = 0, dh = 0;
-    SDL_GL_GetDrawableSize(window, &dw, &dh);
+    psp_gl_drawable_size(window, &dw, &dh);
     if (dw <= 0 || dh <= 0) { dw = pw; dh = 272; }
     if (dw == cw && dh == ch && pw == cpw) return cached;
     cw = dw; ch = dh; cpw = pw;
@@ -3184,7 +3185,7 @@ static void present_service_window_capture() {
     }
     SDL_Window* window = psp_get_sdl_window();
     int dw = 0, dh = 0;
-    SDL_GL_GetDrawableSize(window, &dw, &dh);
+    psp_gl_drawable_size(window, &dw, &dh);
     std::vector<uint8_t> px(size_t(dw) * dh * 4), fl(px.size());
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     glReadBuffer(GL_BACK);
@@ -3502,7 +3503,7 @@ static void present_blit(GLuint fbo, const char* why = "flip") {
             post_done = psp_post_draw(src_tex, spw * srs, 272 * srs, pr.x0, pr.y0, pr.x1, pr.y1, pf == GL_NEAREST);
             if (post_done) {
                 int dw = 0, dh = 0;
-                SDL_GL_GetDrawableSize(window, &dw, &dh);
+                psp_gl_drawable_size(window, &dw, &dh);
                 glViewport(0, 0, dw, dh);
                 glc::invalidate();
                 ge_texture_invalidate_bind_cache();   // the pass bound / unbound texture unit 0 behind the texture module's back
@@ -3518,7 +3519,7 @@ static void present_blit(GLuint fbo, const char* why = "flip") {
     present_dialog_overlay(cpr);
     if (psp_touch_enabled()) {   // on-screen controls over the whole window (own program/VAO: the GE's cached GL state is reset after)
         int tw = 0, th = 0;
-        SDL_GL_GetDrawableSize(window, &tw, &th);
+        psp_gl_drawable_size(window, &tw, &th);
         psp_touch_draw(tw, th);
         glc::invalidate();
         ge_shader_note_external_program();
@@ -3526,7 +3527,7 @@ static void present_blit(GLuint fbo, const char* why = "flip") {
     present_service_window_capture();
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     if (g_sync_mode == 3) glFinish();
-    SDL_GL_SwapWindow(window);
+    psp_gl_swap(window);
     g_present_dirty = false;
     g_last_present = std::chrono::steady_clock::now();
 }
@@ -3581,7 +3582,7 @@ static int wide_px_for_window() {
     SDL_Window* w = psp_get_sdl_window();
     if (!w) return g_wide_px;
     int dw = 0, dh = 0;
-    SDL_GL_GetDrawableSize(w, &dw, &dh);
+    psp_gl_drawable_size(w, &dw, &dh);
     if (dw <= 0 || dh <= 0) return 480;
     int px = int(272.0 * dw / dh + 0.5) & ~1;
     GLint maxtex = 0;
@@ -3805,7 +3806,7 @@ void ge_draw_present_overlay_now() {
     glClear(GL_COLOR_BUFFER_BIT);
     present_dialog_overlay(pr);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    SDL_GL_SwapWindow(window);
+    psp_gl_swap(window);
     if (sc) glEnable(GL_SCISSOR_TEST);
     glc::invalidate();
 }

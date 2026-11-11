@@ -247,6 +247,12 @@ def run(a, fps=None):
         if getattr(a, 'watch', None):                  # arm the runtime's memory-write watch (debug socket M) `watch_after` s after the clock starts
             time.sleep(a.watch_after)
             g.cmd('M ' + a.watch)
+        if getattr(a, 'shots', None):                   # --shots 2,6,12: save a screenshot that many seconds after the fight starts, then quit
+            t_start = time.time()
+            for sec in [float(x) for x in a.shots.split(',') if x.strip()]:
+                time.sleep(max(0.0, t_start + sec - time.time()))
+                g.cmd('S ' + os.path.join(os.path.abspath(a.out), 'battle_%s_%03d.tga' % (os.environ.get('PSPRECOMP_RENDERER', 'gl'), int(sec))))
+            return g.log
         if a.script:
             end = time.time() + a.timeout
             while g.alive() and time.time() < end:
@@ -492,6 +498,7 @@ def main(argv):
         if name == 'run':
             p.add_argument('--fps', type=int, default=30)
             p.add_argument('--record', help='write the pad input of this session as a test script')
+            p.add_argument('--shots', help='comma separated seconds after the fight starts at which to save a screenshot (battle_<renderer>_<s>.tga), then quit')
             p.add_argument('--watch', help='hex guest address: log which functions change it ([MEM_WATCH] lines)')
             p.add_argument('--watch-after', dest='watch_after', type=float, default=4.0)
         else:

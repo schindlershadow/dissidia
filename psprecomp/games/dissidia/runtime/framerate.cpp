@@ -229,6 +229,9 @@ void testdrive_load(const char* path) {
         } else if (cmd == "action") {   // action <id> [who]: start the action; who = player (default) | cpu | <slot>; id -1 lists them
             int id = -1; std::string who = "player"; ss >> id >> who;
             g_test_events.push_back({t, 4, static_cast<uint32_t>(id), who == "cpu" ? 1u : (who == "player" ? 0u : 2u + static_cast<uint32_t>(std::atoi(who.c_str()))), ""});
+        } else if (cmd == "shot") {   // shot <path>: save a screenshot (TGA) of the picture shown at this game time (renderer comparisons)
+            std::string path; ss >> path;
+            g_test_events.push_back({t, 5, 0, 0, path});
         } else if (cmd == "quit") g_test_events.push_back({t, 3, 0, 0, ""});
         else std::fprintf(stderr, "[TEST] unknown command '%s'\n", cmd.c_str());
     }
@@ -356,6 +359,7 @@ void testdrive_frame(uint8_t* rdram, recomp_context* ctx) {
             std::fprintf(stderr, "[TEST] gt=%.0f action %d on %08X (%s): %s\n", g_gt_ms, static_cast<int>(e.a), a, e.b == 1 ? "cpu" : "player",
                          r == 1 ? "started" : r == 0 ? "NOT started" : r == -1 ? "no such record" : "no such fighter");
         }
+        else if (e.kind == 5) { const bool ok = ge_draw_capture_screenshot(e.text.c_str(), 10000); std::fprintf(stderr, "[TEST] gt=%.0f shot %s: %s\n", g_gt_ms, e.text.c_str(), ok ? "saved" : "FAILED"); }
         else if (e.kind == 3) { std::fprintf(stderr, "[TEST] quit at gt=%.0f ms\n", g_gt_ms); g_should_exit.store(true); }
     }
     psp_ctrl_set_script(true, g_test_buttons, g_test_analog);

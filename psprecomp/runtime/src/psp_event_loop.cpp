@@ -1,3 +1,4 @@
+#include "psp_gl_window.h"
 #include "psp_event_loop.h"
 #include "psp_runtime.h"
 #include "psp_render_queue.h"
@@ -449,7 +450,7 @@ static void handle_sdl_event(const SDL_Event& ev) {
     case SDL_WINDOWEVENT:
         if (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
             int dw = 0, dh = 0;
-            SDL_GL_GetDrawableSize(SDL_GetWindowFromID(ev.window.windowID), &dw, &dh);
+            psp_gl_drawable_size(SDL_GetWindowFromID(ev.window.windowID), &dw, &dh);
             std::fprintf(stderr, "[RT] window %dx%d (drawable %dx%d)\n",
                          ev.window.data1, ev.window.data2, dw, dh);
         }
@@ -492,6 +493,13 @@ void psp_set_window_icon(const unsigned char* rgba, int w, int h) {
     apply_window_icon(g_window);
 }
 static SDL_GLContext g_gl_context = nullptr;
+static bool vk_renderer_requested() {
+#if defined(PSPRECOMP_HAVE_VKGL)
+    return vkgl::requested();
+#else
+    return false;
+#endif
+}
 
 // ---------------------------------------------------------------------------
 // psp_runtime_init_sdl — create SDL window + GL 3.3 core context + GLAD
@@ -579,7 +587,8 @@ int psp_runtime_init_sdl() {
         }
     }
     const char* fs_env = std::getenv("PSPRECOMP_FULLSCREEN");
-    uint32_t wflags = SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE |
+    const bool use_vk = vk_renderer_requested();
+    uint32_t wflags = (use_vk ? SDL_WINDOW_VULKAN : SDL_WINDOW_OPENGL) | SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE |
                       SDL_WINDOW_ALLOW_HIGHDPI;
     if (fs_env && fs_env[0] && fs_env[0] != '0') wflags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
 #ifdef PSP_GLES
@@ -599,7 +608,9 @@ int psp_runtime_init_sdl() {
         return 1;
     }
 
-    // 4. Create GL context (must precede gladLoadGL — Pitfall 6)
+    // 4. Create GL context (must precede gladLoadGL — Pitfall 6). With the Vulkan backend there is no GL context: the
+    //    Vulkan layer is brought up after the window exists and installs the GL entry points itself (step 5).
+    if (!use_vk) {
     g_gl_context = SDL_GL_CreateContext(g_window);
     if (!g_gl_context) {
         std::fprintf(stderr,
@@ -609,11 +620,23 @@ int psp_runtime_init_sdl() {
         SDL_Quit();
         return 1;
     }
+    }
 
     SDL_StopTextInput();   // started while the on-screen keyboard is open (osk_tick)
 
     // 5. Load GL function pointers via GLAD2 (MUST be after context creation)
     //    GLAD2 requires a loader function; SDL2 provides SDL_GL_GetProcAddress.
+#if defined(PSPRECOMP_HAVE_VKGL)
+    if (use_vk) {
+        std::string verr;
+        if (!vkgl::init(g_window, std::getenv("PSPRECOMP_VSYNC") != nullptr, &verr)) {
+            std::fprintf(stderr, "[RT] Vulkan backend unavailable: %s\n", verr.c_str());
+            SDL_DestroyWindow(g_window);
+            SDL_Quit();
+            return 1;
+        }
+    } else
+#endif
 #ifdef PSP_GLES
     if (false) {   // libGLESv3 exports the ES 3.2 entry points directly
 #else
@@ -630,19 +653,19 @@ int psp_runtime_init_sdl() {
 
     // No driver-side vsync: the guest's vblank is simulated (hle display) and
     // a blocking swap would stall the render thread for up to a refresh.
-    SDL_GL_SetSwapInterval(std::getenv("PSPRECOMP_VSYNC") ? 1 : 0);
+    if (!use_vk) SDL_GL_SetSwapInterval(std::getenv("PSPRECOMP_VSYNC") ? 1 : 0);
 
     // 6. Print GL info for diagnostics
     std::fprintf(stderr, "[RT] GL: %s\n",
         glGetString(GL_VERSION));
     std::fprintf(stderr, "[RT] GL renderer: %s (%s)\n",
         glGetString(GL_RENDERER), glGetString(GL_VENDOR));
-    if (gl_debug) gl_debug_install();
+    if (gl_debug && !use_vk) gl_debug_install();
 
     // 7. Clear to black and swap — show initial frame
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
-    SDL_GL_SwapWindow(g_window);
+    psp_gl_swap(g_window);
 
     std::fprintf(stderr, "[RT] SDL/GL initialized (480x272)\n");
     return 0;
@@ -778,6 +801,9 @@ void psp_runtime_shutdown() {
     render_queue_process();
 
     // 4. Destroy GL context
+#if defined(PSPRECOMP_HAVE_VKGL)
+    vkgl::shutdown();
+#endif
     if (g_gl_context) {
         SDL_GL_DeleteContext(g_gl_context);
         g_gl_context = nullptr;
