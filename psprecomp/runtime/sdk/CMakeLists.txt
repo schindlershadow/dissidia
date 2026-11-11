@@ -31,6 +31,7 @@ else()
     pkg_check_modules(AVCODEC IMPORTED_TARGET libavcodec libavutil)
     find_package(OpenGL REQUIRED)
     find_package(ZLIB REQUIRED)
+    include("${CMAKE_CURRENT_LIST_DIR}/psp_mbedtls.cmake" OPTIONAL)
 endif()
 
 add_subdirectory(${PSPRECOMP_OUTPUT_DIR} ${CMAKE_CURRENT_BINARY_DIR}/recomp_build)
@@ -65,6 +66,9 @@ target_link_libraries(psprecomp_core INTERFACE PkgConfig::SDL2 PkgConfig::FREETY
     $<$<NOT:$<OR:$<PLATFORM_ID:Windows>,$<PLATFORM_ID:Android>>>:pthread> $<$<PLATFORM_ID:Android>:GLESv3 log android> $<$<PLATFORM_ID:Windows>:ws2_32>)
 if(AVCODEC_FOUND)
     target_link_libraries(psprecomp_core INTERFACE PkgConfig::AVCODEC)
+endif()
+if(TARGET PkgConfig::MBEDTLS)
+    target_link_libraries(psprecomp_core INTERFACE PkgConfig::MBEDTLS)
 endif()
 
 if(ANDROID)

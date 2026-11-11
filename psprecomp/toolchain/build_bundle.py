@@ -288,6 +288,11 @@ def main():
         "-DSDL_SHARED=OFF", "-DSDL_STATIC=ON", "-DSDL_TEST=OFF", "-DSDL_TESTS=OFF", "-DSDL_INSTALL_TESTS=OFF",
         "-DSDL_ASSERTIONS=disabled", "-DSDL_LIBSAMPLERATE=OFF"])
 
+    log("building mbedTLS (HTTPS for cloud sync)")
+    cmake_build("mbedtls", src("mbedtls"), [
+        "-DENABLE_TESTING=OFF", "-DENABLE_PROGRAMS=OFF", "-DUSE_SHARED_MBEDTLS_LIBRARY=OFF", "-DUSE_STATIC_MBEDTLS_LIBRARY=ON",
+        "-DGEN_FILES=OFF"])
+
     ffver = None
     if not a.skip_ffmpeg:
         log("building FFmpeg (libavcodec: ATRAC3/ATRAC3+/H.264 decoders only)")
@@ -360,7 +365,8 @@ def main():
     # License texts of the libraries linked into the game the player builds (release/assemble.py copies licenses/ into the release).
     os.makedirs(os.path.join(out, "licenses"), exist_ok=True)
     for lname, lfiles in (("ffmpeg", ["COPYING.LGPLv2.1", "LICENSE.md"]), ("sdl2", ["LICENSE.txt"]), ("zlib", ["LICENSE"]),
-                          ("freetype", ["docs/FTL.TXT", "docs/LICENSE.TXT"]), ("openssl", ["LICENSE.txt"])):
+                          ("freetype", ["docs/FTL.TXT", "docs/LICENSE.TXT"]), ("openssl", ["LICENSE.txt"]),
+                          ("mbedtls", ["LICENSE", "apache-2.0.txt"])):
         for lf in lfiles:
             lp = os.path.join(work, "src-" + lname, lf)
             if os.path.isfile(lp):
@@ -384,6 +390,9 @@ def main():
     sdl_lib = lib("libSDL2.a")
     ft_lib = lib("libfreetype.a")
     z_lib = lib("libz.a", "libzlibstatic.a", "libzlib.a")
+    mbed_libs = [lib("libmbedtls.a"), lib("libmbedx509.a"), lib("libmbedcrypto.a")] + \
+        [n for n in ("libeverest.a", "libp256m.a") if os.path.isfile(os.path.join(libdir, n))]
+    mbed_sys = ["ws2_32", "bcrypt"] if plat.startswith("windows") else []
     sdl_sys = pc_private_libs(os.path.join(libdir, "pkgconfig", "sdl2.pc")) or \
         (["m", "dl", "pthread", "rt"] if plat.startswith("linux") else [])
     sdl_sys = [l for l in sdl_sys if l not in ("SDL2", "SDL2main", "mingw32")]
@@ -407,6 +416,9 @@ endfunction()
         f.write('_psp_dep(FREETYPE "${_psp_deps}/include/freetype2" "${_psp_deps}/lib/%s")\n' % ft_lib)
         f.write('set(SDL2_FOUND TRUE)\nset(SDL2_INCLUDE_DIRS "${_psp_deps}/include/SDL2")\nset(SDL2_VERSION "%s")\n' % ver["sources"]["sdl2"]["version"])
         f.write('set(FREETYPE_FOUND TRUE)\nset(FREETYPE_VERSION "%s")\n' % ver["sources"]["freetype"]["version"])
+        f.write('_psp_dep(MBEDTLS "${_psp_deps}/include" "%s;%s")\n' %
+                (";".join("${_psp_deps}/lib/" + n for n in mbed_libs), cm_list(mbed_sys)))
+        f.write('set(MBEDTLS_FOUND TRUE)\nset(MBEDTLS_VERSION "%s")\n' % ver["sources"]["mbedtls"]["version"])
         if ffver:
             f.write('_psp_dep(AVCODEC "${_psp_deps}/include" "${_psp_deps}/lib/%s;${_psp_deps}/lib/%s;%s")\n' %
                     (lib("libavcodec.a"), lib("libavutil.a"), cm_list(av_sys)))

@@ -182,6 +182,9 @@ labels mark scope and priority.
 - [ ] Save import / export: the game's save list has a Triangle key opening **Manage saves** (import from PPSSPP, a PSP memory stick or any
       folder, any region; export the other way; backups on replace; `games/dissidia/docs/savedata.md`). Unit-tested against a real PPSSPP save
       folder; not yet used in the running game.
+- [ ] Cloud sync of saves between devices (a synced folder, WebDAV or Google Drive; Settings > Cloud and Triangle > Cloud sync on the
+      save list; `games/dissidia/docs/cloud-sync.md`). Host-tested against fake servers; not yet run in the game, and Google sign-in
+      not yet tried against Google itself.
 - [ ] Cross-platform: build and verify on Linux and Windows (#70 — see
       [docs/PLATFORMS.md](docs/PLATFORMS.md)).
 

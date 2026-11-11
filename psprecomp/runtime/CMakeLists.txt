@@ -30,6 +30,21 @@ else()
     pkg_check_modules(FREETYPE REQUIRED IMPORTED_TARGET freetype2)
 endif()
 
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/psp_mbedtls.cmake")
+
+# The Mozilla CA root bundle for HTTPS (assets/ca/README.md), embedded like the fonts.
+set(PSP_CACERT_CPP ${CMAKE_CURRENT_BINARY_DIR}/gen/psp_cacert.cpp)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/assets/ca/cacert.pem
+             ${CMAKE_CURRENT_SOURCE_DIR}/assets/embed_cacert.cmake)
+execute_process(COMMAND ${CMAKE_COMMAND}
+    -DPEM=${CMAKE_CURRENT_SOURCE_DIR}/assets/ca/cacert.pem -DOUT=${PSP_CACERT_CPP}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/assets/embed_cacert.cmake)
+
+# Cloud sync: save sync through a folder / WebDAV / Google Drive (psp_cloudsync.h). HTTPS needs mbedTLS (optional, above).
+set(PSP_CLOUD_SOURCES
+    src/hle/psp_cloudsync.cpp src/hle/psp_cloud_providers.cpp src/hle/psp_cloud_service.cpp src/hle/psp_cloud_glue.cpp
+    src/hle/psp_http.cpp ${PSP_CACERT_CPP})
+
 # Savedata-dialog fonts (OFL: Cinzel + Crimson Text) are embedded in the binary.
 set(PSP_UI_FONTS_CPP ${CMAKE_CURRENT_BINARY_DIR}/gen/psp_ui_fonts.cpp)
 file(GLOB PSP_UI_FONT_FILES ${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/*.ttf)
@@ -179,6 +194,7 @@ set(RUNTIME_SOURCES
     src/hle/psp_savedata_dialog.cpp
     src/hle/psp_savemgr.cpp
     src/hle/psp_savemgr_ui.cpp
+    ${PSP_CLOUD_SOURCES}
     ${PSP_UI_FONTS_CPP}
     src/hle/psp_hle_font.cpp
     src/hle/psp_hle_sas.cpp
@@ -284,6 +300,14 @@ else()
     message(STATUS "psprecomp: libavcodec NOT found -> sceAtrac decodes silence")
 endif()
 
+if(TARGET PkgConfig::MBEDTLS)
+    message(STATUS "psprecomp: mbedTLS found (${MBEDTLS_VERSION}) -> HTTPS (cloud sync) enabled")
+    target_compile_definitions(psprecomp_core PUBLIC PSPRECOMP_HAVE_MBEDTLS)
+    target_link_libraries(psprecomp_core PUBLIC PkgConfig::MBEDTLS)
+else()
+    message(STATUS "psprecomp: mbedTLS 3.6+ NOT found -> no HTTPS (cloud sync limited to folder sync)")
+endif()
+
 target_link_libraries(psprecomp_core PUBLIC
     PkgConfig::SDL2
     PkgConfig::FREETYPE
@@ -360,15 +384,28 @@ target_link_libraries(test_savedata_dialog PRIVATE PkgConfig::FREETYPE)
 add_test(NAME savedata_dialog COMMAND test_savedata_dialog)
 add_executable(test_savedata_hle tests/test_savedata_hle.cpp
     src/hle/psp_savedata_crypto.cpp src/hle/psp_savedata_dialog.cpp
-    src/hle/psp_savemgr.cpp src/hle/psp_savemgr_ui.cpp ${PSP_UI_FONTS_CPP})
-target_include_directories(test_savedata_hle PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${PSPRECOMP_OUTPUT_DIR}/include)
+    src/hle/psp_savemgr.cpp src/hle/psp_savemgr_ui.cpp ${PSP_CLOUD_SOURCES} ${PSP_UI_FONTS_CPP})
+target_include_directories(test_savedata_hle PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/src/hle ${PSPRECOMP_OUTPUT_DIR}/include)
 target_link_libraries(test_savedata_hle PRIVATE pthread PkgConfig::FREETYPE)
+if(TARGET PkgConfig::MBEDTLS)
+    target_compile_definitions(test_savedata_hle PRIVATE PSPRECOMP_HAVE_MBEDTLS)
+    target_link_libraries(test_savedata_hle PRIVATE PkgConfig::MBEDTLS)
+endif()
 add_test(NAME savedata_hle COMMAND test_savedata_hle)
 add_executable(test_savemgr tests/test_savemgr.cpp src/hle/psp_savemgr.cpp src/hle/psp_savemgr_ui.cpp
     src/hle/psp_savedata_crypto.cpp src/hle/psp_savedata_dialog.cpp ${PSP_UI_FONTS_CPP})
 target_include_directories(test_savemgr PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/src/hle)
 target_link_libraries(test_savemgr PRIVATE PkgConfig::FREETYPE)
 add_test(NAME savemgr COMMAND test_savemgr)
+add_executable(test_cloudsync tests/test_cloudsync.cpp src/hle/psp_cloudsync.cpp src/hle/psp_savemgr.cpp
+    src/hle/psp_savedata_crypto.cpp)
+add_test(NAME cloud_providers_and_service COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_cloud.sh)
+target_include_directories(test_cloudsync PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/src/hle)
+add_test(NAME cloudsync COMMAND test_cloudsync)
+if(TARGET PkgConfig::MBEDTLS AND PSPRECOMP_MBEDTLS_PREFIX)
+    add_test(NAME http COMMAND ${CMAKE_COMMAND} -E env MBEDTLS_PREFIX=${PSPRECOMP_MBEDTLS_PREFIX}
+             bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_http.sh)
+endif()
 
 # Debug socket v2 unit test target (issue #35). Links ONLY the socket
 # layer -- the I/S commands reach game state through the PspDebugHooks
@@ -541,7 +578,7 @@ add_test(NAME fep_log_tests COMMAND test_fep_log)
 install(TARGETS psprecomp_core ARCHIVE DESTINATION lib COMPONENT sdk)
 install(DIRECTORY include/ DESTINATION include COMPONENT sdk FILES_MATCHING PATTERN "*.h")
 install(FILES src/main.cpp DESTINATION src COMPONENT sdk)
-install(FILES sdk/CMakeLists.txt DESTINATION . COMPONENT sdk)
+install(FILES sdk/CMakeLists.txt cmake/psp_mbedtls.cmake DESTINATION . COMPONENT sdk)
 # The ABI identity of the toolchain bundle this core was built with: psp_build.py refuses to link it with code compiled by another.
 if(PSPRECOMP_TOOLCHAIN_JSON)
     install(FILES "${PSPRECOMP_TOOLCHAIN_JSON}" DESTINATION . COMPONENT sdk)
