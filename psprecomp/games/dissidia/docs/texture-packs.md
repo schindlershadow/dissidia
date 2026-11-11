@@ -109,3 +109,15 @@ Label atlases of the customization screens (`ea8da23a5f4cfe83`, `01a8235b4aef00c
 RANK, ITEM INFO, EQUIPMENT, SET A B C ...) are handled the same way: `LABELS` in `texpack_patches.py` lists each line's ink box, the model's blur inside
 the box is cleared and the string is drawn in Cinzel Bold in the line's original colour. To add one: find the atlas id with
 `PSPRECOMP_TEXPACK_LOG_IDS=1`, read the cells off the atlas picture, add the boxes.
+
+White stat names with a shadow (MAX HP BRV CP ATK DEF LUK in `ea8da23a5f4cfe83`) use `SHADOWED` in `texpack_patches.py`: the letters are drawn in
+Cinzel Bold over a softened navy shadow offset by one source pixel, as in the original.
+
+### Finding more baked-in text (`texpack_text.py`)
+
+`tools/texpack_text.py <extract dir> <pack dir> --scan scan.json` runs an OCR (RapidOCR, `pip install rapidocr-onnxruntime`) over the originals and
+writes proposals: string, ink box, colour, shadow. Spaces are worked out from the ink gaps. The OCR drops spaces and misreads letters, so the
+JSON is meant to be read and corrected by hand (fix `text`, set `"skip": true`), then `--apply scan.json` draws it: Cinzel Bold for capitals,
+Crimson Text SemiBold for mixed case, in the line's colour, skipping any line the font would have to stretch by more than 25%. Lines of
+10 px or less only; the 480x272 tutorial slides (whole sentences) are left to the model. `tools/texpack_text_reviewed.json` is the reviewed set that
+produced the current pack. Known limits: outlined or glowing lettering becomes plain coloured lettering, and condensed fonts are skipped.
