@@ -3443,6 +3443,7 @@ static void present_blit(GLuint fbo, const char* why = "flip") {
                 SDL_GL_GetDrawableSize(window, &dw, &dh);
                 glViewport(0, 0, dw, dh);
                 glc::invalidate();
+                ge_texture_invalidate_bind_cache();   // the pass bound / unbound texture unit 0 behind the texture module's back
                 ge_shader_note_external_program();
             }
         }
