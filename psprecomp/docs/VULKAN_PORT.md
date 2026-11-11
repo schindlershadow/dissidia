@@ -15,6 +15,13 @@ pipeline cache on disk, FX shader hot reload untested on Vulkan, Android needs t
 what a device build reports in `vk_cache/miss`). Bugs found by device testing and worth remembering: per-frame-slot UBO offsets go stale when a program's
 uniforms never change; debug-socket screenshots read the game's framebuffer, not the display (use `adb screencap`).
 
+Profile of the same fight on the RP6 (simpleperf, root, GLES; unstripped libmain.so on the desktop; recipe: `simpleperf record -p <pid> -f 1500 --duration 8`):
+two busy threads, render (~58% busy) and guest/game (~50% busy); at 240 fps selected the game still ends at ~113 (GLES) / ~116 (Vulkan, with or without
+present), i.e. the two threads mostly alternate (frame ~8.6 ms ~ 5.1 + 4.4 ms) rather than overlap, so neither the graphics API nor display refresh is the cap.
+Render thread: `getenv` 13-17% (fixed: `PSPRECOMP_GEOM_SELFTEST` was read on every draw), texture-cache content hash 15%, `build_key` 9%, vertex decode 6%, GL driver
+~15%. Game thread: dynamic TLS resolver 13%, `RECOMP_LOOKUP`+`ovl_battle_lookup` 13%, VFPU interpreter (`vfpu_dot`, Read/WriteVector, `Int_*`) ~20%, `psp_trace_checkpoint` 5.6%.
+Next levers: overlap the guest thread with GE processing (frame pipelining), avoid thread_local in hot paths, compile out the trace checkpoint, cheaper texture hashing.
+
 Earlier notes (milestones 0-2): the battle harness's Xvfb gives **llvmpipe (software) GL**; SDL's `offscreen` video driver gives real NVIDIA GL for fair timing.
 
 Original status: planning. Goals: (1) better performance, (2) a base for ray-traced effects later.

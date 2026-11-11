@@ -2425,7 +2425,8 @@ static void ge_draw_prim_one(
     // fixed. Proves the detector is not a constant-false oracle. No GL side
     // effects; runs once.
     static bool selftest_done = false;
-    if (!selftest_done && std::getenv("PSPRECOMP_GEOM_SELFTEST")) {
+    static const bool selftest_wanted = std::getenv("PSPRECOMP_GEOM_SELFTEST") != nullptr;   // read once: getenv per draw cost ~17% of the render thread on Android
+    if (!selftest_done && selftest_wanted) {
         selftest_done = true;
         g_prim_type_count[GE_PRIM_TRIANGLE_STRIP]++;
         std::fprintf(stderr,
