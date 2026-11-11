@@ -81,3 +81,11 @@ A textures.ini may list textures the pack does not ship: Niosa's D012FFRT has ab
 not in the download (names without `.png`, DLC/test art, `ui/selogo.png`, `ui/opencredits.png`...). The loader checks every entry once at start,
 drops those and logs `[TEXPACK] N pack entries point to a file the pack does not contain (ignored)`; before, such a texture logged `HIT` and then
 `bad replacement ...: unreadable (using original)`. Those textures stay original either way.
+
+## Precedence and pixel-repeated pack entries
+
+The runtime looks a texture up in the id-named files (`<id>.png`, see above) first and in a PPSSPP `textures.ini` pack second. About 45% of
+Niosa's D012FFRT files (360 of 808) are only the original with every pixel repeated 2x or 4x, so they look as blocky as the PSP art (item icons,
+`ui/equipmenticons.png`, many character textures). `tools/texpack_extract.py` + `tools/texpack_upscale.py` produce real upscales of the same
+textures under our ids; because id files win, they replace those entries without editing the foreign pack. `PSPRECOMP_TEXPACK_LOG_MAX=N`
+raises the number of PPSSPP lookups logged (default 400 with `PSPRECOMP_TEXPACK_LOG=1`).
