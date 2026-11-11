@@ -96,3 +96,11 @@ raises the number of PPSSPP lookups logged (default 400 with `PSPRECOMP_TEXPACK_
 (about 200 MB) and our own upscales from https://github.com/schindlershadow/dissidia-hd-textures (3,366 `<id>.png` files, about 1.1 GB, built with
 `texpack_extract.py` and `texpack_upscale.py`; its README and `manifest.json` say what each file is). Total download about 1.3 GB, on disk about
 1.4 GB. If the second download fails the first is still installed; `--no-ids` skips it, `--ids-zip FILE` uses a local archive.
+
+## Hand-redrawn pieces
+
+Tiny text inside an atlas (6 to 10 px) is beyond the model: it either blurs or invents letters. `tools/texpack_patches.py` redraws the two
+that matter most after `texpack_upscale.py`: the title screen's copyright strip (`texpack_crisp.py`) and the YES / NO labels of every
+confirm prompt (a 26x9 and a 20x9 px grey sprite cell in the UI atlas `c6f05e9985eebe31`, drawn again in Cinzel Bold; the game tints it).
+`PSPRECOMP_TEXPACK_LOG_IDS=1` logs each id-named file the first time it is bound, and `FT 1` on the debug socket lists a frame's draws with
+texture address and UV window: that is how to find which cell of which atlas draws something on screen.
