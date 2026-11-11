@@ -2,6 +2,7 @@
 #include <cstring>
 #include "psp_ge_texture.h"
 #include "hle/psp_hle_mpeg.h"
+#include "hle/psp_hle_font.h"
 #include "psp_ge.h"
 #include "psp_prof.h"
 #include "psp_ge_constants.h"
@@ -789,8 +790,16 @@ GLuint ge_texture_bind(
     std::vector<uint8_t> pack_px;      // replacement / upscaled pixels
     int pack_w = 0, pack_h = 0;
     bool replaced = false;
+    // Our own id-named files first: they are curated for this project and replace the PPSSPP pack's entries where
+    // that pack only holds a pixel-repeated copy of the original (docs/texture-packs.md).
+    if (id_on)
+        tid = psp_texpack_make_id(src_data, (size_t)width_bytes * height, fmt, width, height,
+                                  fmt == GE_TFMT_CLUT4 ? 4 : fmt == GE_TFMT_CLUT8 ? 8 : 0, clut_rgba);
+    if (pack_on && !replaced)
+        replaced = psp_texpack_load_replacement(tid, pack_px, pack_w, pack_h);
+
     // PPSSPP-style pack (textures.ini + hash-named files): its key comes from the raw guest memory, not from the decoded texels.
-    if (fmt <= GE_TFMT_CLUT8 && psp_texpack_ppsspp_active() && masked_addr < PSP_MEM_SIZE) {
+    if (!replaced && fmt <= GE_TFMT_CLUT8 && psp_texpack_ppsspp_active() && masked_addr < PSP_MEM_SIZE) {
         PspPpssppTex pt{};
         pt.addr = psp_addr;
         pt.size_reg = key.size_reg;
@@ -813,11 +822,26 @@ GLuint ge_texture_bind(
         }
         replaced = psp_texpack_ppsspp_lookup(pt, pack_px, pack_w, pack_h);
     }
-    if (id_on)
-        tid = psp_texpack_make_id(src_data, (size_t)width_bytes * height, fmt, width, height,
-                                  fmt == GE_TFMT_CLUT4 ? 4 : fmt == GE_TFMT_CLUT8 ? 8 : 0, clut_rgba);
-    if (pack_on && !replaced)
-        replaced = psp_texpack_load_replacement(tid, pack_px, pack_w, pack_h);
+    // HD text: a CLUT4 buffer the game filled with sceFontGetCharGlyphImage (psp_hle_font.h) is replaced by the glyphs
+    // drawn again at a higher resolution; the coverage is mapped through the strip's own palette.
+    if (!replaced && fmt == GE_TFMT_CLUT4 && !swizzle && masked_addr < PSP_MEM_SIZE && psp_font_hd_scale() > 1) {
+        std::vector<uint8_t> cov;
+        int hw = 0, hh = 0;
+        if (psp_font_hd_strip(rdram + masked_addr, (size_t)PSP_MEM_SIZE - masked_addr, width, height, bufw ? bufw : width, cov, hw, hh)) {
+            const ClutIdx ci(state);
+            uint8_t ramp[16][4];
+            for (int i = 0; i < 16; i++) std::memcpy(ramp[i], clut_rgba + ci((uint32_t)i) * 4, 4);
+            pack_px.resize((size_t)hw * hh * 4);
+            for (size_t i = 0; i < (size_t)hw * hh; i++) {
+                const float t = cov[i] * (15.0f / 255.0f);
+                const int i0 = (int)t, i1 = std::min(15, i0 + 1);
+                const float f = t - (float)i0;
+                for (int k = 0; k < 4; k++) pack_px[i * 4 + k] = (uint8_t)(ramp[i0][k] * (1 - f) + ramp[i1][k] * f + 0.5f);
+            }
+            pack_w = hw; pack_h = hh;
+            replaced = true;
+        }
+    }
 
     // Convert to RGBA8888
     std::vector<uint8_t> rgba;

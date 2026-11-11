@@ -586,7 +586,8 @@ bool psp_texpack_ppsspp_lookup(const PspPpssppTex& t, std::vector<uint8_t>& rgba
     if (it == pp.files.end() && pp.ignore_addr) it = pp.files.find(noaddr);
     const bool hit = it != pp.files.end();
     // The first lookups are always logged (so a log tells whether the pack matches); PSPRECOMP_TEXPACK_LOG=1 logs more.
-    if (pp.logged < (pp.log ? 400u : 40u)) {
+    static const unsigned log_max = [] { const char* v = std::getenv("PSPRECOMP_TEXPACK_LOG_MAX"); return v ? (unsigned)std::strtoul(v, nullptr, 10) : 0u; }();
+    if (pp.logged < (log_max ? log_max : (pp.log ? 400u : 40u))) {
         pp.logged++;
         std::string hint;
         if (!hit) {

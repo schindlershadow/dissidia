@@ -147,7 +147,7 @@ std::vector<Step> plan_install(const Layout& l, const std::string& iso, const st
     if (o.hd_textures && feature_available(l, "hd_textures")) {
         Step t;
         t.label = "Downloading the HD texture pack";
-        t.explain = "Fetches the community HD texture pack into the game's mods folder.";
+        t.explain = "Fetches the community HD texture pack and our own upscales (about 1.3 GB in all) into the game's mods folder.";
         t.argv = {l.python, join(l.game_dir, "tools/fetch_textures.py"), workdir};
         t.env = {{"PYTHONUNBUFFERED", "1"}};
         t.weight = 0.06;

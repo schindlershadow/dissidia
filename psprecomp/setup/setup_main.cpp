@@ -342,7 +342,7 @@ struct App {
                 sv.can_dec = sv.can_inc = true;
             } else sv.help = "No PPSSPP or memory stick saves of Dissidia 012 were found. You can import saves later in the game (Triangle in the save list).";
             p.rows = {u,
-                      toggle_row("HD texture pack", "Download the community HD texture pack for the game.", opt.hd_textures, tex),
+                      toggle_row("HD texture pack", "Download the community HD texture pack and our upscales for textures it lacks (about 1.3 GB).", opt.hd_textures, tex),
                       toggle_row("Japanese voices (undub)", jpHelp, opt.jp_audio, jp),
                       toggle_row("Android version", "Also builds the Android version (an APK for phones and handhelds, 64-bit ARM). Needs a one-time download of Google's Android NDK (about 0.7 GB; by turning this on you accept its license, developer.android.com/studio/terms) and some extra minutes. Afterwards you can install it on a connected device from the last page.", opt.android, an),
                       sv,
