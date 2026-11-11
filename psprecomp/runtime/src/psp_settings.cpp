@@ -7,6 +7,7 @@
 #include "psp_event_loop.h"
 #include "psp_ge_draw.h"
 #include "psp_post.h"
+#include "psp_ge_texture.h"
 #include "hle/psp_savedata_dialog.h"
 #include "hle/psp_hle_adhoc.h"
 #include "hle/psp_cloud_service.h"
@@ -84,7 +85,7 @@ bool updates_choice();
 bool texpack_choice();
 bool texpack_at_start();
 
-enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_AA, ROW_SHARP, ROW_UPSCALE, ROW_VOICE, ROW_TEXPACK, ROW_TOUCH, ROW_TOUCH_EDIT, ROW_UPDATES, ROW_QUIT,
+enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_AA, ROW_SHARP, ROW_ANISO, ROW_UPSCALE, ROW_VOICE, ROW_TEXPACK, ROW_TOUCH, ROW_TOUCH_EDIT, ROW_UPDATES, ROW_QUIT,
            ROW_NET_MODE, ROW_NET_SERVER, ROW_NET_ROOM, ROW_NET_PEERS, ROW_NET_STATUS,   // Network page
            ROW_CLOUD_PROVIDER, ROW_CLOUD_FOLDER, ROW_CLOUD_URL, ROW_CLOUD_USER, ROW_CLOUD_PASS, ROW_CLOUD_GOOGLE,
            ROW_CLOUD_AUTO, ROW_CLOUD_REPLAYS, ROW_CLOUD_NOW, ROW_CLOUD_STATUS,   // Cloud page
@@ -566,6 +567,14 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.help = "Sharpening (PSPRECOMP_SHARPEN)\nContrast-adaptive sharpening of the finished picture. Levels 1 to 4; use it with FXAA to win back crispness. Saved.";
             break;
         }
+        case ROW_ANISO: {
+            const int v = ge_texture_aniso();
+            m.label = "Anisotropic Filtering";
+            m.value = v > 1 ? std::to_string(v) + "x" : "Off";
+            m.can_dec = v > 1; m.can_inc = v < 16;
+            m.help = "Anisotropic filtering (PSPRECOMP_ANISO)\nKeeps textures sharp at a slant, such as stage floors. Builds mipmaps for the game's textures, so it costs a little load time and video memory. Takes effect at once. Saved.";
+            break;
+        }
         case ROW_UPSCALE: {
             static const char* const names[3] = {"Bilinear", "Sharp Bilinear", "Bicubic"};
             const int v = psp_post_upscale();
@@ -802,6 +811,14 @@ void change(int d) {   // left / right on the selected row
         if (v != psp_post_sharpen()) { psp_post_set_sharpen(v); save("sharpen", std::to_string(v)); }
         break;
     }
+    case ROW_ANISO: {
+        static const int lv[5] = {1, 2, 4, 8, 16};
+        int i = 0;
+        while (i < 4 && lv[i] < ge_texture_aniso()) ++i;
+        i = std::min(4, std::max(0, i + d));
+        if (lv[i] != ge_texture_aniso()) { ge_texture_set_aniso(lv[i]); save("aniso", std::to_string(lv[i])); }
+        break;
+    }
     case ROW_UPSCALE: {
         static const char* const keys[3] = {"bilinear", "sharp", "bicubic"};
         const int v = std::min(2, std::max(0, psp_post_upscale() + d));
@@ -854,6 +871,7 @@ void build_rows() {
         g_rows.push_back(ROW_SOFT);
         g_rows.push_back(ROW_AA);
         g_rows.push_back(ROW_SHARP);
+        g_rows.push_back(ROW_ANISO);
         g_rows.push_back(ROW_UPSCALE);
         if (voice_row_wanted()) g_rows.push_back(ROW_VOICE);
         if (texpack_row_wanted()) g_rows.push_back(ROW_TEXPACK);
@@ -978,6 +996,7 @@ void confirm() {
     case ROW_SOFT: change(ge_soft_focus() ? -1 : 1); return;
     case ROW_AA: change(psp_post_aa() ? -1 : 1); return;
     case ROW_SHARP: change(psp_post_sharpen() >= 4 ? -4 : 1); return;
+    case ROW_ANISO: change(ge_texture_aniso() >= 16 ? -4 : 1); return;
     case ROW_UPSCALE: change(psp_post_upscale() >= 2 ? -2 : 1); return;
     case ROW_GLOWSOFT: change(ge_draw_fb_prefilter() ? -1 : 1); return;
     case ROW_GLOWPASS: change(ge_draw_fb_snapshot() ? -1 : 1); return;
@@ -1048,6 +1067,7 @@ void psp_settings_load_early() {
     if ((it = g_saved.find("widescreen")) != g_saved.end()) put("PSPRECOMP_WIDESCREEN", it->second == "1" ? "1" : "0");
     if ((it = g_saved.find("soft_focus")) != g_saved.end()) put("PSPRECOMP_SOFT_FOCUS", it->second == "0" ? "0" : "1");
     if ((it = g_saved.find("post_aa")) != g_saved.end()) put("PSPRECOMP_POST_AA", it->second == "1" ? "1" : "0");
+    if ((it = g_saved.find("aniso")) != g_saved.end()) put("PSPRECOMP_ANISO", it->second);
     if ((it = g_saved.find("sharpen")) != g_saved.end()) put("PSPRECOMP_SHARPEN", it->second);
     if ((it = g_saved.find("upscale")) != g_saved.end() && (it->second == "bilinear" || it->second == "sharp" || it->second == "bicubic"))
         put("PSPRECOMP_UPSCALE", it->second);

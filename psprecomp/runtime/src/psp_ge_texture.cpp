@@ -17,10 +17,49 @@
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
+#include <atomic>
 
 // ---- Module state ----
 static std::array<TexCacheEntry, TEX_CACHE_SIZE> g_tex_cache;
 static bool g_tex_initialized = false;
+
+// Anisotropic filtering (PSPRECOMP_ANISO=1|2|4|8|16, settings 'aniso'). Above 1 the game's textures are uploaded with a mip
+// chain and sampled with GL_LINEAR_MIPMAP_LINEAR wherever the game asked for linear minification (nearest stays nearest),
+// and the sampler's max anisotropy is set. The setting changes at runtime: the texture cache is flushed on the render thread.
+static std::atomic<int> g_aniso{-1};
+static std::atomic<int> g_aniso_epoch{0};
+static int g_aniso_seen_epoch = 0;
+static float g_aniso_hw_max = -1.f;        // driver limit, queried once on the render thread (0 = unsupported)
+static constexpr GLenum K_TEX_MAX_ANISO = 0x84FE, K_MAX_TEX_MAX_ANISO = 0x84FF;   // GL_EXT_texture_filter_anisotropic
+int ge_texture_aniso() {
+    int v = g_aniso.load();
+    if (v < 0) {
+        const char* e = std::getenv("PSPRECOMP_ANISO");
+        v = e ? std::atoi(e) : 1;
+        if (v != 2 && v != 4 && v != 8 && v != 16) v = 1;
+        g_aniso.store(v);
+    }
+    return v;
+}
+void ge_texture_set_aniso(int level) {
+    if (level != 2 && level != 4 && level != 8 && level != 16) level = 1;
+    if (level == ge_texture_aniso()) return;
+    g_aniso.store(level);
+    g_aniso_epoch.fetch_add(1);
+}
+static float aniso_applied() {   // the max anisotropy to set, 1 when off or unsupported
+    const int want = ge_texture_aniso();
+    if (want <= 1) return 1.f;
+    if (g_aniso_hw_max < 0.f) {
+        GLfloat mx = 0.f;
+        while (glGetError() != GL_NO_ERROR) {}
+        glGetFloatv(K_MAX_TEX_MAX_ANISO, &mx);
+        if (glGetError() != GL_NO_ERROR) mx = 0.f;
+        g_aniso_hw_max = mx;
+        std::fprintf(stderr, "[TEX] anisotropic filtering %dx requested, driver max %.0f\n", want, mx);
+    }
+    return g_aniso_hw_max >= 2.f ? std::min(float(want), g_aniso_hw_max) : 1.f;
+}
 
 // ---- FNV-1a hash ----
 
@@ -396,7 +435,10 @@ static void apply_tex_params(TexCacheEntry& e, const GeState& state) {
     uint32_t mag_lin = (state.tex_filter >> 8) & 1;
     GLenum min_gl = min_lin ? GL_LINEAR : GL_NEAREST;
     GLenum mag_gl = mag_lin ? GL_LINEAR : GL_NEAREST;
-    if (e.mips && (state.tex_filter & 4)) {
+    const bool aniso_on = aniso_applied() > 1.f;
+    if (e.mips && min_lin && aniso_on) {
+        min_gl = GL_LINEAR_MIPMAP_LINEAR;   // anisotropic filtering needs the mip chain whatever the game asked for
+    } else if (e.mips && (state.tex_filter & 4)) {
         // Texture-pack replacement with generated mip levels, and the game
         // asked for mipmapped minification: 4 NN, 5 LN, 6 NL, 7 LL.
         static const GLenum mm[4] = {GL_NEAREST_MIPMAP_NEAREST, GL_LINEAR_MIPMAP_NEAREST,
@@ -415,7 +457,7 @@ static void apply_tex_params(TexCacheEntry& e, const GeState& state) {
     if (force_filter == 2) {
         min_gl = GL_NEAREST; mag_gl = GL_NEAREST;
     } else if (force_filter == 1) {
-        min_gl = (e.mips && (state.tex_filter & 4)) ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR;
+        min_gl = (e.mips && ((state.tex_filter & 4) || aniso_on)) ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR;
         mag_gl = GL_LINEAR;
     }
     if (e.replaced) {
@@ -432,6 +474,7 @@ static void apply_tex_params(TexCacheEntry& e, const GeState& state) {
         e.filter = filter_key;
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min_gl);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, mag_gl);
+        if (aniso_on) glTexParameterf(GL_TEXTURE_2D, K_TEX_MAX_ANISO, aniso_applied());
     }
 }
 
@@ -546,6 +589,10 @@ GLuint ge_texture_bind(
     const GeState& state = ge_get_state();
 
     g_bound_pack_id = 0;
+    if (g_aniso_seen_epoch != g_aniso_epoch.load()) {   // anisotropic setting changed: reload every texture
+        g_aniso_seen_epoch = g_aniso_epoch.load();
+        ge_texture_invalidate_all();
+    }
     if (!state.texture_enable) {
         bind_tex2d(0);
         return 0;
@@ -888,7 +935,7 @@ GLuint ge_texture_bind(
         // Minified replacements alias without mips; generate them when the
         // image is more than 2x the original (the game picks whether they are
         // sampled, see apply_tex_params).
-        entry.mips = pack_w > 2 * width || pack_h > 2 * height;
+        entry.mips = pack_w > 2 * width || pack_h > 2 * height || aniso_applied() > 1.f;
         if (entry.mips) glGenerateMipmap(GL_TEXTURE_2D);
     } else {
         glTexImage2D(
@@ -896,7 +943,8 @@ GLuint ge_texture_bind(
             width, height, 0,
             GL_RGBA, GL_UNSIGNED_BYTE,
             rgba.data());
-        entry.mips = false;
+        entry.mips = aniso_applied() > 1.f && width >= 4 && height >= 4;
+        if (entry.mips) glGenerateMipmap(GL_TEXTURE_2D);
     }
     entry.replaced = pack_px_used;
     entry.pack_id = tid;
