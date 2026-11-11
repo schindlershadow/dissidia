@@ -104,3 +104,8 @@ that matter most after `texpack_upscale.py`: the title screen's copyright strip 
 confirm prompt (a 26x9 and a 20x9 px grey sprite cell in the UI atlas `c6f05e9985eebe31`, drawn again in Cinzel Bold; the game tints it).
 `PSPRECOMP_TEXPACK_LOG_IDS=1` logs each id-named file the first time it is bound, and `FT 1` on the debug socket lists a frame's draws with
 texture address and UV window: that is how to find which cell of which atlas draws something on screen.
+
+Label atlases of the customization screens (`ea8da23a5f4cfe83`, `01a8235b4aef00cb`, `40c5a7313b7c99d5`: TOTAL / BASE, ACCESSORY INFO, CATEGORY, CURRENT,
+RANK, ITEM INFO, EQUIPMENT, SET A B C ...) are handled the same way: `LABELS` in `texpack_patches.py` lists each line's ink box, the model's blur inside
+the box is cleared and the string is drawn in Cinzel Bold in the line's original colour. To add one: find the atlas id with
+`PSPRECOMP_TEXPACK_LOG_IDS=1`, read the cells off the atlas picture, add the boxes.
