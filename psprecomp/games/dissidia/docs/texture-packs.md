@@ -121,3 +121,6 @@ JSON is meant to be read and corrected by hand (fix `text`, set `"skip": true`),
 Crimson Text SemiBold for mixed case, in the line's colour, skipping any line the font would have to stretch by more than 25%. Lines of
 10 px or less only; the 480x272 tutorial slides (whole sentences) are left to the model. `tools/texpack_text_reviewed.json` is the reviewed set that
 produced the current pack. Known limits: outlined or glowing lettering becomes plain coloured lettering, and condensed fonts are skipped.
+
+The 480x272 images (tutorial slides, story and event art, 77 textures) are run with `texpack_upscale.py --max4x 480`, i.e. 1920x1088, so they fill a
+1080p screen without being stretched; every other texture above 256 px stays at 2x to keep the pack small.
