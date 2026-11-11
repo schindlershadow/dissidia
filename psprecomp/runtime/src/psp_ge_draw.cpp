@@ -1,5 +1,6 @@
 #include "hle/psp_savedata_dialog.h"
 #include "psp_ge_draw.h"
+#include "psp_post.h"
 #include "psp_ge.h"
 #include "psp_ge_constants.h"
 #include "psp_ge_vertex.h"
@@ -3428,6 +3429,26 @@ static void present_blit(GLuint fbo, const char* why = "flip") {
     } else if (srs > 1 && pf == GL_NEAREST && (pr.x1 - pr.x0) != spw * srs) {
         if (!(fl && (!std::strcmp(fl, "nearest") || !std::strcmp(fl, "integer")))) pf = GL_LINEAR;
     }
+    bool post_done = false;
+    if (psp_post_active()) {   // FXAA / sharpen / smooth upscale (psp_post.cpp) instead of the plain blit
+        GLuint src_tex = 0;
+        for (int i = 0; i < GE_MAX_TARGETS && !src_tex; ++i) {
+            if (g_targets[i].fbo == fbo) src_tex = g_targets[i].color_tex;
+            else if (g_targets[i].ab_fbo && g_targets[i].ab_fbo == fbo) src_tex = g_targets[i].ab_tex;
+        }
+        if (src_tex) {
+            post_done = psp_post_draw(src_tex, spw * srs, 272 * srs, pr.x0, pr.y0, pr.x1, pr.y1, pf == GL_NEAREST);
+            if (post_done) {
+                int dw = 0, dh = 0;
+                SDL_GL_GetDrawableSize(window, &dw, &dh);
+                glViewport(0, 0, dw, dh);
+                glc::invalidate();
+                ge_texture_invalidate_bind_cache();   // the pass bound / unbound texture unit 0 behind the texture module's back
+                ge_shader_note_external_program();
+            }
+        }
+    }
+    if (!post_done)
     glBlitFramebuffer(0, 0, spw * srs, 272 * srs, pr.x0, pr.y0, pr.x1, pr.y1,
                       GL_COLOR_BUFFER_BIT, pf);
     if (!std::strcmp(why, "flip")) perf_note_flip();

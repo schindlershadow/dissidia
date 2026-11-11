@@ -69,6 +69,10 @@ if they do not answer).
 predicts input. It was built for a few milliseconds of WiFi latency. A relay adds the trip to the server on top of the
 direct path; how much round-trip time the game tolerates has not been measured, so try a nearby partner first.
 
+## Settings menu
+
+The in-game settings menu (Esc / F1, Guide) pauses the game, which would stall the other players, so it does not open while you are in a group with others: a message says so and the game carries on. Change settings before joining a room.
+
 ## Frame rate
 
 Every player's wanted frame rate (30 or 60, from the settings menu) is shared in the beacons. While a player is in a

@@ -6,6 +6,8 @@
 #include "psp_runtime.h"
 #include "psp_event_loop.h"
 #include "psp_ge_draw.h"
+#include "psp_post.h"
+#include "psp_ge_texture.h"
 #include "hle/psp_savedata_dialog.h"
 #include "hle/psp_hle_adhoc.h"
 #include "hle/psp_cloud_service.h"
@@ -83,7 +85,7 @@ bool updates_choice();
 bool texpack_choice();
 bool texpack_at_start();
 
-enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_VOICE, ROW_TEXPACK, ROW_TOUCH, ROW_TOUCH_EDIT, ROW_UPDATES, ROW_QUIT,
+enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_AA, ROW_SHARP, ROW_ANISO, ROW_UPSCALE, ROW_VOICE, ROW_TEXPACK, ROW_TOUCH, ROW_TOUCH_EDIT, ROW_UPDATES, ROW_QUIT,
            ROW_NET_MODE, ROW_NET_SERVER, ROW_NET_ROOM, ROW_NET_PEERS, ROW_NET_STATUS,   // Network page
            ROW_CLOUD_PROVIDER, ROW_CLOUD_FOLDER, ROW_CLOUD_URL, ROW_CLOUD_USER, ROW_CLOUD_PASS, ROW_CLOUD_GOOGLE,
            ROW_CLOUD_AUTO, ROW_CLOUD_REPLAYS, ROW_CLOUD_NOW, ROW_CLOUD_STATUS,   // Cloud page
@@ -549,6 +551,39 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.help = "Soft focus (PSPRECOMP_SOFT_FOCUS)\nSome stages (Order's Sanctuary) blend a blurred copy of the picture over the scene for a dreamy look. Off gives a sharper picture. Saved.";
             break;
         }
+        case ROW_AA: {
+            const bool on = psp_post_aa() != 0;
+            m.label = "Anti-Aliasing";
+            m.value = on ? "FXAA" : "Off";
+            m.can_dec = on; m.can_inc = !on;
+            m.help = "Post-process anti-aliasing (PSPRECOMP_POST_AA)\nSmooths jagged edges on the finished picture (FXAA). It does not touch the game's glow, so it is safe at any render scale. Saved.";
+            break;
+        }
+        case ROW_SHARP: {
+            const int v = psp_post_sharpen();
+            m.label = "Sharpening";
+            m.value = v ? "Level " + std::to_string(v) : "Off";
+            m.can_dec = v > 0; m.can_inc = v < 4;
+            m.help = "Sharpening (PSPRECOMP_SHARPEN)\nContrast-adaptive sharpening of the finished picture. Levels 1 to 4; use it with FXAA to win back crispness. Saved.";
+            break;
+        }
+        case ROW_ANISO: {
+            const int v = ge_texture_aniso();
+            m.label = "Anisotropic Filtering";
+            m.value = v > 1 ? std::to_string(v) + "x" : "Off";
+            m.can_dec = v > 1; m.can_inc = v < 16;
+            m.help = "Anisotropic filtering (PSPRECOMP_ANISO)\nKeeps textures sharp at a slant, such as stage floors. Builds mipmaps for the game's textures, so it costs a little load time and video memory. Takes effect at once. Saved.";
+            break;
+        }
+        case ROW_UPSCALE: {
+            static const char* const names[3] = {"Bilinear", "Sharp Bilinear", "Bicubic"};
+            const int v = psp_post_upscale();
+            m.label = "Upscale Filter";
+            m.value = names[v];
+            m.can_dec = v > 0; m.can_inc = v < 2;
+            m.help = "Upscale filter (PSPRECOMP_UPSCALE)\nHow the picture is stretched to the window when its size is not a whole multiple. Sharp Bilinear keeps texels crisp, Bicubic is smoother and sharper than Bilinear. Saved.";
+            break;
+        }
         case ROW_GLOWSOFT: {
             const bool on = ge_draw_fb_prefilter();
             m.label = "Glow Softening";
@@ -574,10 +609,6 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.help = "Flicker test (PSPRECOMP_GE_RING)\nHow vertices reach the GPU. Saved; applies when the game next starts.";
             break;
         }
-        }
-        {   // every row's help title says how to change pages
-            const size_t nl = m.help.find('\n');
-            m.help.insert(nl == std::string::npos ? m.help.size() : nl, m.help.empty() ? "L / R: change page" : "  (L / R: change page)");
         }
         out.push_back(std::move(m));
     }
@@ -768,6 +799,28 @@ void change(int d) {   // left / right on the selected row
     case ROW_SOFT:
         if ((d > 0) != ge_soft_focus()) { ge_set_soft_focus(d > 0); save("soft_focus", d > 0 ? "1" : "0"); }
         break;
+    case ROW_AA:
+        if ((d > 0) != (psp_post_aa() != 0)) { psp_post_set_aa(d > 0); save("post_aa", d > 0 ? "1" : "0"); }
+        break;
+    case ROW_SHARP: {
+        const int v = std::min(4, std::max(0, psp_post_sharpen() + d));
+        if (v != psp_post_sharpen()) { psp_post_set_sharpen(v); save("sharpen", std::to_string(v)); }
+        break;
+    }
+    case ROW_ANISO: {
+        static const int lv[5] = {1, 2, 4, 8, 16};
+        int i = 0;
+        while (i < 4 && lv[i] < ge_texture_aniso()) ++i;
+        i = std::min(4, std::max(0, i + d));
+        if (lv[i] != ge_texture_aniso()) { ge_texture_set_aniso(lv[i]); save("aniso", std::to_string(lv[i])); }
+        break;
+    }
+    case ROW_UPSCALE: {
+        static const char* const keys[3] = {"bilinear", "sharp", "bicubic"};
+        const int v = std::min(2, std::max(0, psp_post_upscale() + d));
+        if (v != psp_post_upscale()) { psp_post_set_upscale(v); save("upscale", keys[v]); }
+        break;
+    }
     case ROW_GLOWSOFT: ge_draw_set_fb_prefilter(d > 0); break;
     case ROW_GLOWPASS: ge_draw_set_fb_snapshot(d > 0); break;
     case ROW_RING: {
@@ -812,8 +865,12 @@ void build_rows() {
         if (g_fps.get && g_fps.count > 1) g_rows.push_back(ROW_FPS);
         g_rows.push_back(ROW_WIDE);
         g_rows.push_back(ROW_SOFT);
-        if (voice_row_wanted()) g_rows.push_back(ROW_VOICE);
         if (texpack_row_wanted()) g_rows.push_back(ROW_TEXPACK);
+        g_rows.push_back(ROW_AA);
+        g_rows.push_back(ROW_SHARP);
+        g_rows.push_back(ROW_ANISO);
+        g_rows.push_back(ROW_UPSCALE);
+        if (voice_row_wanted()) g_rows.push_back(ROW_VOICE);
 #ifdef __ANDROID__   // the on-screen controls exist for Android only
         g_rows.push_back(ROW_TOUCH);
         g_rows.push_back(ROW_TOUCH_EDIT);
@@ -824,9 +881,18 @@ void build_rows() {
     g_sel = std::min(std::max(g_sel_page[g_page], 0), int(g_rows.size()) - 1);
 }
 
-void switch_page() {
+// Length of the tab switch animation; PSPRECOMP_TAB_ANIM_MS=<ms> overrides it (0 = no animation).
+int64_t tab_anim_ms() {
+    static const int64_t v = [] { const char* e = std::getenv("PSPRECOMP_TAB_ANIM_MS"); return e && e[0] ? int64_t(std::atoi(e)) : int64_t(200); }();
+    return v;
+}
+int g_anim_from = -1, g_anim_dir = 0;  // a tab switch in progress: the tab left, and the direction (+1 = R)
+int64_t g_anim_t0 = 0;
+
+void switch_page(int dir = 1) {   // dir +1 = the next tab (R), -1 = the previous one (L); wraps around
     g_sel_page[g_page] = g_sel;
-    g_page = (g_page + 1) % PAGES;
+    g_anim_from = g_page; g_anim_dir = dir; g_anim_t0 = now_ms();
+    g_page = (g_page + dir + PAGES) % PAGES;
     build_rows();
     g_quit_armed = false;
     g_dirty = true;
@@ -834,6 +900,11 @@ void switch_page() {
 
 void set_open(bool open) {
     if (open == g_open.load()) return;
+    if (open && psp_adhoc_in_session()) {   // opening pauses the game, which would stall the other players
+        ge_draw_toast("Settings are unavailable during multiplayer", 2500);
+        std::fprintf(stderr, "[SETTINGS] menu not opened: in a multiplayer session\n");
+        return;
+    }
     if (open) {
         build_res_options();
         pick_window_size();
@@ -933,6 +1004,10 @@ void confirm() {
     case ROW_SYNC: ge_draw_set_sync_mode((ge_draw_sync_mode() + 1) % 5); break;
     case ROW_RING: change((g_ring_next >= 0 ? g_ring_next : ge_draw_ring_mode()) ? -1 : 1); return;
     case ROW_SOFT: change(ge_soft_focus() ? -1 : 1); return;
+    case ROW_AA: change(psp_post_aa() ? -1 : 1); return;
+    case ROW_SHARP: change(psp_post_sharpen() >= 4 ? -4 : 1); return;
+    case ROW_ANISO: change(ge_texture_aniso() >= 16 ? -4 : 1); return;
+    case ROW_UPSCALE: change(psp_post_upscale() >= 2 ? -2 : 1); return;
     case ROW_GLOWSOFT: change(ge_draw_fb_prefilter() ? -1 : 1); return;
     case ROW_GLOWPASS: change(ge_draw_fb_snapshot() ? -1 : 1); return;
     }
@@ -1001,6 +1076,11 @@ void psp_settings_load_early() {
         put("PSPRECOMP_RENDER_SCALE", it->second);
     if ((it = g_saved.find("widescreen")) != g_saved.end()) put("PSPRECOMP_WIDESCREEN", it->second == "1" ? "1" : "0");
     if ((it = g_saved.find("soft_focus")) != g_saved.end()) put("PSPRECOMP_SOFT_FOCUS", it->second == "0" ? "0" : "1");
+    if ((it = g_saved.find("post_aa")) != g_saved.end()) put("PSPRECOMP_POST_AA", it->second == "1" ? "1" : "0");
+    if ((it = g_saved.find("aniso")) != g_saved.end()) put("PSPRECOMP_ANISO", it->second);
+    if ((it = g_saved.find("sharpen")) != g_saved.end()) put("PSPRECOMP_SHARPEN", it->second);
+    if ((it = g_saved.find("upscale")) != g_saved.end() && (it->second == "bilinear" || it->second == "sharp" || it->second == "bicubic"))
+        put("PSPRECOMP_UPSCALE", it->second);
     if ((it = g_saved.find("fps")) != g_saved.end() && std::atoi(it->second.c_str()) > 0) put("PSPRECOMP_FPS", it->second);
     if ((it = g_saved.find("voice")) != g_saved.end() && (it->second == "jp" || it->second == "en"))
         put("PSPRECOMP_VOICE", it->second);
@@ -1063,8 +1143,11 @@ bool psp_settings_handle_event(const SDL_Event& ev) {
         case SDLK_z: case SDLK_BACKSPACE:
             if (!ev.key.repeat) set_open(false);
             break;
-        case SDLK_q: case SDLK_e: case SDLK_TAB: case SDLK_PAGEUP: case SDLK_PAGEDOWN:
-            if (!ev.key.repeat) switch_page();
+        case SDLK_q: case SDLK_PAGEUP:
+            if (!ev.key.repeat) switch_page(-1);
+            break;
+        case SDLK_e: case SDLK_TAB: case SDLK_PAGEDOWN:
+            if (!ev.key.repeat) switch_page(1);
             break;
         default: break;
         }
@@ -1095,7 +1178,8 @@ bool psp_settings_handle_event(const SDL_Event& ev) {
         }
         if (b == ok) confirm();
         else if (b == back || b == SDL_CONTROLLER_BUTTON_START) set_open(false);
-        else if (b == SDL_CONTROLLER_BUTTON_LEFTSHOULDER || b == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) switch_page();
+        else if (b == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) switch_page(-1);
+        else if (b == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) switch_page(1);
         return false;
     }
     case SDL_TEXTINPUT:
@@ -1155,7 +1239,19 @@ void psp_settings_tick() {
         g_dirty = false;
         g_drawn_scale = scale;
         psp_sddialog::Canvas c(scale);
-        psp_sddialog::render_menu(c, "Settings", k_page_names[g_page], make_rows(), g_edit.active ? g_edit.sel : g_sel, g_confirm_cross);
+        static const std::vector<std::string> page_tabs(k_page_names, k_page_names + PAGES);
+        psp_sddialog::MenuAnim anim;
+        if (g_anim_from >= 0) {
+            const float u = tab_anim_ms() > 0 ? float(t - g_anim_t0) / float(tab_anim_ms()) : 1.f;
+            if (u >= 1.f) g_anim_from = -1;
+            else {
+                anim.from_tab = g_anim_from; anim.dir = g_anim_dir;
+                anim.p = 0.2f + 0.8f * (1.f - (1.f - u) * (1.f - u) * (1.f - u));   // ease out, starting a little in so no frame shows an empty list
+                g_dirty = true;                                       // keep drawing until it has settled
+            }
+        }
+        psp_sddialog::render_menu(c, "Settings", k_page_names[g_page], make_rows(), g_edit.active ? g_edit.sel : g_sel, g_confirm_cross,
+                                  &page_tabs, g_page, g_anim_from >= 0 ? &anim : nullptr);
         psp_sddialog::menu_overlay_publish(c);
         ge_draw_present_overlay_now();
         g_last_present = t;

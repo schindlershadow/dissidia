@@ -55,6 +55,11 @@ GLuint ge_texture_bind_external(GLuint gl_tex, const GeState& state);
 /// Invalidate the entire texture cache (debug/reset).
 void ge_texture_invalidate_all();
 
+/// Anisotropic filtering level (1 = off, 2, 4, 8, 16): PSPRECOMP_ANISO / settings 'aniso'. Changing it reloads the texture cache
+/// on the render thread at the next texture bind.
+int ge_texture_aniso();
+void ge_texture_set_aniso(int level);
+
 /// Forget the cached "currently bound texture" (call after any other code
 /// bound a GL_TEXTURE_2D behind this module's back, e.g. render-target setup).
 void ge_texture_invalidate_bind_cache();

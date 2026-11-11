@@ -364,6 +364,29 @@ Two consequences of how this is implemented:
   16.667 ms on the game thread to simulate the 60 Hz vblank. No `SDL_GL_SetSwapInterval` is
   called, so vsync is whatever the platform defaults to.
 
+### Present-time post-processing
+
+`runtime/src/psp_post.cpp` replaces the final `glBlitFramebuffer` in `present_blit` when any effect is on. It draws the shown
+render target's colour texture through one fragment shader into the window rectangle, so the game's own glow and blur chain is
+never touched and the effects work at every render scale. All three effects are Settings > System rows and are saved:
+
+| Setting | Env | Values |
+|---|---|---|
+| Anti-Aliasing | `PSPRECOMP_POST_AA` | 0 off, 1 FXAA (compact edge-directed blend) |
+| Sharpening | `PSPRECOMP_SHARPEN` | 0 off, 1..4 (contrast-adaptive sharpening, after AMD CAS) |
+| Upscale Filter | `PSPRECOMP_UPSCALE` | `bilinear` (as before), `sharp` (sharp bilinear), `bicubic` (Catmull-Rom) |
+
+An exact integer-scale (nearest) present keeps its hard pixels: the upscale filter does not apply there, FXAA and sharpening still do.
+If the shader fails to build, the plain blit is used. The pass resets the cached GL state afterwards (`glc::invalidate`).
+
+### Anisotropic filtering
+
+`PSPRECOMP_ANISO=1|2|4|8|16` (Settings > System > Anisotropic Filtering, saved as `aniso`; default off). Above 1, game textures
+are uploaded with a generated mip chain (`psp_ge_texture.cpp`, cache-miss uploads only; movies and render targets are not
+touched), textures the game samples with linear minification use `GL_LINEAR_MIPMAP_LINEAR`, and `GL_TEXTURE_MAX_ANISOTROPY_EXT`
+is set (clamped to the driver limit; drivers without the extension keep 1). Textures the game samples with nearest stay nearest.
+Texture-pack replacements get mips too. Changing the level reloads the texture cache on the render thread at the next bind.
+
 ## What Is Not Implemented
 
 Honest inventory of GE features the interpreter accepts but does not execute, with the

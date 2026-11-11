@@ -180,8 +180,14 @@ struct MenuRow {
     std::string help;           // information panel text while selected
     bool can_dec = false, can_inc = false;   // draws the left / right arrows
 };
+// `tabs` (optional, with more than one name): the pages of a multi-page menu drawn as tabs, `tab_active` the shown one, the others
+// dimmed; the hint bar then also shows the L / R page keys. Without it `tab` is drawn as the single header tab.
+// `anim` (optional): a tab switch in progress. p runs 0 -> 1 (already eased): tab `from_tab` fades down while `tab_active` rises, and the
+// rows slide in from the side the switch came from (dir +1 = from the right) while fading in.
+struct MenuAnim { int from_tab = -1; float p = 1.f; int dir = 0; };
 void render_menu(Canvas& c, const std::string& title, const std::string& tab,
-                 const std::vector<MenuRow>& rows, int sel, bool confirm_cross);
+                 const std::vector<MenuRow>& rows, int sel, bool confirm_cross,
+                 const std::vector<std::string>* tabs = nullptr, int tab_active = 0, const MenuAnim* anim = nullptr);
 
 // Cross-thread overlay hand-off (game thread publishes, GL thread fetches).
 void overlay_publish(const Canvas& c);   // activates the overlay
