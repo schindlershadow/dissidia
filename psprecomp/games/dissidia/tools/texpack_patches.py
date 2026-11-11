@@ -94,9 +94,58 @@ def redraw_labels(orig, hd, labels):
     return Image.fromarray(a, "RGBA")
 
 
+# White labels with a dark drop shadow (stat names on the customization screens): id -> [(string, rough box)]; the white ink box is found
+# inside the rough box, the shadow (navy, offset one source pixel down-right, softened) is drawn under the letters.
+SHADOWED = {
+    "ea8da23a5f4cfe83": [("MAX", (1, 45, 21, 54)), ("HP", (32, 45, 51, 54)), ("BRV", (5, 57, 31, 66)), ("CP", (41, 57, 59, 66)),
+                         ("ATK", (5, 69, 31, 78)), ("DEF", (5, 81, 31, 90)), ("LUK", (5, 93, 32, 102))],
+}
+
+
+def redraw_shadowed(orig, hd, labels):
+    from PIL import ImageFilter
+    k = hd.width // orig.width
+    o = np.array(orig.convert("RGBA"))
+    a = np.array(hd.convert("RGBA"))
+    f = ImageFont.truetype(FONT, 200)
+    for txt, (x0, y0, x1, y1) in labels:
+        reg = o[y0:y1 + 1, x0:x1 + 1]
+        white = (reg[..., 3] > 200) & (reg[..., :3].min(-1) > 200)
+        ys, xs = np.where(white)
+        wx0, wx1, wy0, wy1 = xs.min() + x0, xs.max() + x0, ys.min() + y0, ys.max() + y0
+        shadow_rgb = np.array([24, 24, 37], np.uint8)
+        # clear the whole rough box (letters and shadow), 0.7 px margin
+        cy0, cy1, cx0, cx1 = int((y0 - 0.7) * k), int((y1 + 1.7) * k), int((x0 - 0.7) * k), int((x1 + 1.7) * k)
+        a[max(0, cy0):cy1, max(0, cx0):cx1] = [24, 24, 37, 0]
+        bb = f.getbbox(txt)
+        m = Image.new("L", (bb[2] - bb[0], bb[3] - bb[1]), 0)
+        ImageDraw.Draw(m).text((-bb[0], -bb[1]), txt, font=f, fill=255)
+        w, h = (wx1 + 1 - wx0) * k, (wy1 + 1 - wy0) * k
+        m = m.resize((w, h), Image.LANCZOS)
+        canvas = Image.new("L", (a.shape[1], a.shape[0]), 0)
+        canvas.paste(m, (wx0 * k, wy0 * k))
+        text = np.asarray(canvas).astype(np.float32) / 255
+        sh = Image.new("L", canvas.size, 0)
+        sh.paste(m, (wx0 * k + k, wy0 * k + k))
+        sh = np.asarray(sh.filter(ImageFilter.GaussianBlur(k * 0.6))).astype(np.float32) / 255 * 0.62
+        box = (slice(max(0, cy0), cy1), slice(max(0, cx0), cx1))
+        al_s, al_t = sh[box], text[box]
+        out = a[box].astype(np.float32)
+        # shadow under, white letters over (straight alpha "over")
+        a_out = al_t + al_s * (1 - al_t)
+        rgb = np.where(a_out[..., None] > 0, (255 * al_t[..., None] + shadow_rgb * (al_s * (1 - al_t))[..., None]) / np.maximum(a_out[..., None], 1e-6), shadow_rgb)
+        out[..., :3] = rgb
+        out[..., 3] = a_out * 255
+        a[box] = np.clip(out + 0.5, 0, 255).astype(np.uint8)
+    return Image.fromarray(a, "RGBA")
+
+
 PATCHES = {"585ca08f8a5250d3": copyright_strip, "c6f05e9985eebe31": yes_no_labels}
 for _id, _labels in LABELS.items():
     PATCHES[_id] = (lambda labels: lambda orig, hd: redraw_labels(orig, hd, labels))(_labels)
+for _id, _labels in SHADOWED.items():   # after the plain labels of the same atlas
+    _prev = PATCHES.get(_id)
+    PATCHES[_id] = (lambda prev, labels: lambda orig, hd: redraw_shadowed(orig, prev(orig, hd) if prev else hd, labels))(_prev, _labels)
 
 
 def main(argv):
