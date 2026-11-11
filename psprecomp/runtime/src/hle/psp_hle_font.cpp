@@ -846,6 +846,9 @@ bool psp_font_hd_strip(const uint8_t* mem, size_t avail, int width, int height, 
     const int S = hd_scale_cfg();
     if (S <= 1 || width < 8 || height < 4 || bufw < 8) return false;
     std::lock_guard<std::mutex> lk(g_mtx);
+    static const bool tlog0 = std::getenv("PSPRECOMP_TEXT_LOG") != nullptr;
+    static int n_calls = 0;
+    if (tlog0 && n_calls++ < 5) fprintf(stderr, "[TEXHD] strip lookup %dx%d bufw=%d, %zu canvases\n", width, height, bufw, g_canvas.size());
     if (g_canvas.empty()) return false;
     const int bpl = (bufw + 1) / 2;
     const HdCanvas* cv = nullptr;
@@ -861,7 +864,13 @@ bool psp_font_hd_strip(const uint8_t* mem, size_t avail, int width, int height, 
         auto ct = g_canvas.find(it->second);
         if (ct != g_canvas.end() && ct->second.bpl == bpl && ct->second.bh == bh) { cv = &ct->second; break; }
     }
-    if (!cv) return false;
+    static const bool tlog = std::getenv("PSPRECOMP_TEXT_LOG") != nullptr;
+    static int n_hit = 0, n_miss = 0;
+    if (!cv) {
+        if (tlog && n_miss++ < 60) fprintf(stderr, "[TEXHD] miss %dx%d bufw=%d (%zu canvases, %zu hashes)\n", width, height, bufw, g_canvas.size(), g_by_hash.size());
+        return false;
+    }
+    if (tlog && (n_hit++ < 20 || n_hit % 200 == 0)) fprintf(stderr, "[TEXHD] hit %dx%d bufw=%d canvas %dx%d (hits %d, misses %d)\n", width, height, bufw, cv->bw, cv->bh, n_hit, n_miss);
     const int bw = cv->bw, bh = cv->bh;
     hw = width * S; hh = height * S;
     cov.assign((size_t)hw * hh, 0);

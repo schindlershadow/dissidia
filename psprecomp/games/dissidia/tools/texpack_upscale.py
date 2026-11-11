@@ -8,7 +8,7 @@ Reads <extract>/index.tsv, upscales every uncovered texture (covered=0) into <ou
   - near-uniform textures (colour+alpha std < 3) get a plain Lanczos 4x: a model would invent detail on flat art;
   - small cut-out textures (<=128 px with transparency: face icons, sprites) are 60% Lanczos + 40% model, because the model
     invents faces from so few pixels;
-  - the original alpha channel is resized (Lanczos) and re-attached, so sprite edges stay exact;
+  - the original alpha channel is resized (bilinear) and re-attached, and the original colour is restored where alpha ~ 0;
   - textures whose larger side is > 256 are brought back down to 2x (repo size), the rest stay 4x.
 Finished ids are skipped, so a run can be resumed. Needs numpy + Pillow.
 """
@@ -60,8 +60,18 @@ def main():
             if cut and max(w, h) <= 128:
                 # small cut-out art (portraits, icons): the model redraws faces from ~40 px of source; keep 60% Lanczos
                 u = Image.blend(o.resize(tgt, Image.LANCZOS), u, 0.4)
-            if cut: u.putalpha(o.getchannel('A').resize(tgt, Image.LANCZOS))
-            else: u.putalpha(255)
+            if cut:
+                # The model turns the colour of fully transparent pixels black (the game's own is often white), and a
+                # blend that still reads those texels (title screen: grey wash and boxes) shows it. Where alpha is
+                # ~0 the original colour is put back; alpha comes from the original with bilinear (no ringing).
+                alpha = np.asarray(o.getchannel('A').resize(tgt, Image.BILINEAR)).astype(np.float32)
+                orgb = np.asarray(o.convert('RGB').resize(tgt, Image.NEAREST)).astype(np.float32)
+                urgb = np.asarray(u.convert('RGB')).astype(np.float32)
+                m = np.clip(1 - alpha / 16.0, 0, 1)[..., None]
+                rgb = np.clip(urgb * (1 - m) + orgb * m + 0.5, 0, 255)
+                u = Image.fromarray(np.concatenate([rgb, alpha[..., None]], -1).astype(np.uint8), 'RGBA')
+            else:
+                u.putalpha(255)
         u.save(os.path.join(a.out, i + '.png'), optimize=True)
     n = 0
     for i in flat: finish(i, None); n += 1
