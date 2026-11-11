@@ -439,7 +439,7 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.value = psp_cloud_svc::provider_name(g_cloud.provider);
             m.can_dec = g_cloud.provider != psp_cloud_svc::Provider::Off;
             m.can_inc = g_cloud.provider != psp_cloud_svc::Provider::Google;
-            m.help = "Keep saves in step between devices\nOff, a synced Folder (Syncthing, a Drive / OneDrive folder, a NAS), a WebDAV server (Nextcloud and most NAS boxes) or Google Drive. Saves from every region sync with each other. On the save list, Triangle > Cloud sync shows the status and lets you choose when both sides changed.";
+            m.help = "Keep saves in step between devices\nLeft / right (or Cross) choose: Off, Folder, WebDAV, Google Drive. Folder: a synced (Syncthing, a Drive / OneDrive folder, a NAS), a WebDAV server (Nextcloud and most NAS boxes) or Google Drive. Saves from every region sync with each other. On the save list, Triangle > Cloud sync shows the status and lets you choose when both sides changed.";
             break;
         case ROW_CLOUD_FOLDER:
             m.label = "Sync Folder";
@@ -469,7 +469,7 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
                 m.help = "Signing in\n" + st.text + "\nPress Cross to cancel.";
             } else if (g_cloud.google_refresh.empty()) {
                 m.value = "Sign in...";
-                m.help = "Sign in to Google Drive\nPress Cross: a code appears. Enter it at google.com/device on your phone or computer. The game gets access to its own hidden folder only, never to your other files.";
+                m.help = "Sign in to Google Drive\nPress Cross: a code appears. Enter it at google.com/device on your phone or computer. The game only gets access to a folder it creates in your Drive, never to your other files.";
             } else {
                 m.value = "Signed in";
                 m.help = "Signed in to Google Drive\nPress Cross to sign out on this device. The saves in your Drive stay where they are.";
@@ -480,7 +480,7 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.label = "Sync Automatically";
             m.value = g_cloud.auto_sync ? "On" : "Off";
             m.can_dec = g_cloud.auto_sync; m.can_inc = !g_cloud.auto_sync;
-            m.help = "Automatic sync\nOn: a sync runs at start-up (before the game reads saves) and a few seconds after each save. Downloads only happen at start-up or from Sync Now, never during play. Off: only Sync Now.";
+            m.help = "Automatic sync\nOn: a sync runs at start-up (before the game reads saves) and a few seconds after each save (it uploads this save and downloads newer ones from your other devices). Off: only Sync Now.";
             break;
         case ROW_CLOUD_REPLAYS:
             m.label = "Include Replays";

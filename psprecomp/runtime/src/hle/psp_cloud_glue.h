@@ -7,11 +7,9 @@
 
 #include <string>
 
-// disc0_dir: the mapped disc0 folder (<workdir>/disc0), ms0_dir: the emulated memory stick folder. Loads cloud.ini and, when
-// cloud sync is configured and automatic, starts the first sync in the background.
-void psp_cloud_glue_boot(const std::string& disc0_dir, const std::string& ms0_dir);
+// (psp_cloud_glue_boot / psp_cloud_glue_shutdown are declared in the public include/hle/psp_cloud_boot.h, which main.cpp uses.)
+#include "hle/psp_cloud_boot.h"
 // Blocks (up to 20 s) while the start-up sync is still running, so a download never replaces a save the game is reading.
 void psp_cloud_glue_before_savedata();
 void psp_cloud_glue_after_save();
 void psp_cloud_glue_manager_hooks(psp_sddialog::ManagerConfig& mc);
-void psp_cloud_glue_shutdown();

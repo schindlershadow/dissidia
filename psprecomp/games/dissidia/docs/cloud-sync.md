@@ -10,7 +10,9 @@ Keeps the save folders of several installs (Windows, Linux, Android; any region)
   - *WebDAV*: the address of a folder on the server (it must be inside an existing folder), user and password. For
     Nextcloud / ownCloud create an **app password** (Settings > Security) and use that.
   - *Google Drive*: **Sign in...** shows a code; enter it at google.com/device on a phone or computer. The game only gets
-    Google's `drive.appdata` permission: its own hidden folder in your Drive, never your other files.
+    Google's `drive.file` permission: it creates a folder called "Dissidia PSPRecomp Saves" in your Drive and can only see
+    files it created itself, never your other files. (Google's device sign-in does not allow the hidden `drive.appdata`
+    scope, which is why the folder is visible. You can delete the folder at any time.)
 - **Save list** (the game's load / save screen): **Triangle > Cloud sync** shows the status, **Sync now**, the Google
   sign-in, and the choices when a save changed on two devices. This is the safest place to download: the game is not reading
   saves while the list is open. Saves downloaded here show up in the list at once.
@@ -21,7 +23,7 @@ Keeps the save folders of several installs (Windows, Linux, Android; any region)
 | When | What |
 |---|---|
 | Start of the game | a full sync (uploads and downloads), in the background. The game waits for it (up to 20 s) before its first save dialog, so a download never replaces a save the game is reading |
-| A few seconds after the game saves | **push only**: your save goes up; newer saves from other devices are *not* downloaded during play (they come at the next start or **Sync now**) |
+| A few seconds after the game saves | a full sync: your save goes up and newer saves from your other devices come down. The game waits for a running sync before its next save dialog, so a download never lands while it reads a save. A save changed on two devices is a conflict, as always |
 | **Sync now** | a full sync |
 
 *Sync Automatically: Off* leaves only **Sync now**. Replays are left out unless *Include Replays* is on.
@@ -52,8 +54,8 @@ checked against both hashes before it touches anything.
 ## Google Drive client (for forks)
 
 `runtime/src/hle/psp_cloud_keys.h` holds this project's OAuth client (type *TVs and Limited Input devices*, scope
-`drive.appdata`). Google does not treat that client secret as confidential. A fork should create its own in the Google Cloud
-console (APIs & Services: enable the Drive API, OAuth consent screen with the `drive.appdata` scope and a privacy policy page,
+`drive.file`). Google does not treat that client secret as confidential. A fork should create its own in the Google Cloud
+console (APIs & Services: enable the Drive API, OAuth consent screen with the `drive.file` scope and a privacy policy page,
 create the client) and replace the two values, or set `PSPRECOMP_GOOGLE_CLIENT_ID` / `_SECRET`.
 
 ## Code
@@ -61,7 +63,7 @@ create the client) and replace the two values, or set `PSPRECOMP_GOOGLE_CLIENT_I
 | File | Role |
 |---|---|
 | `psp_cloudsync.{h,cpp}` | provider interface, folder provider, SHA-256, save container, the three-way sync and conflict handling |
-| `psp_cloud_providers.{h,cpp}` | WebDAV and Google Drive (device sign-in, refresh, `appDataFolder`) |
+| `psp_cloud_providers.{h,cpp}` | WebDAV and Google Drive (device sign-in, refresh, a "Dissidia PSPRecomp Saves" folder in Drive) |
 | `psp_http.{h,cpp}` | blocking HTTP/1.1 client; HTTPS through mbedTLS with the embedded Mozilla CA bundle (`assets/ca`), certificate and host name checked |
 | `psp_cloud_service.{h,cpp}` | configuration, worker thread, status, debounced push after a save |
 | `psp_cloud_glue.{h,cpp}` | the few calls the runtime makes (boot, wait before the first save dialog, after a save, shutdown) |

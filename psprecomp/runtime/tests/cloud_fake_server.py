@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fake WebDAV (/dav/) and Google OAuth + Drive v3 (appDataFolder) server for test_cloud_providers (run_cloud.sh).
+"""Fake WebDAV (/dav/) and Google OAuth + Drive v3 (drive.file scope, files in a folder the app creates) server for test_cloud_providers (run_cloud.sh).
 Prints 'READY <port>'. Admin: GET /admin/expire (invalidates access tokens), /admin/reset, /admin/stats."""
 import http.server, json, sys, threading, urllib.parse, base64, re
 
@@ -7,7 +7,7 @@ lock = threading.Lock()
 S = {}
 def reset():
     S.clear()
-    S.update(dav_dir=False, dav={}, drive={}, next_id=1, tokens=set(), token_n=0, polls=0, refreshes=0, device_starts=0, dav_requests=0)
+    S.update(dav_dir=False, dav={}, drive={}, next_id=1, tokens=set(), token_n=0, polls=0, refreshes=0, device_starts=0, dav_requests=0, folders_created=0)
 reset()
 DAV_USER, DAV_PASS = "me", "app-password"
 PAGE = 2
@@ -35,7 +35,7 @@ class H(http.server.BaseHTTPRequestHandler):
             if u.path.startswith("/dav"): return self.dav(u, body)
             if u.path == "/admin/expire": S["tokens"].clear(); return self.send(200, {})
             if u.path == "/admin/reset": reset(); return self.send(200, {})
-            if u.path == "/admin/stats": return self.send(200, {k: S[k] for k in ("refreshes", "polls", "device_starts", "dav_requests")})
+            if u.path == "/admin/stats": return self.send(200, {k: S[k] for k in ("refreshes", "polls", "device_starts", "dav_requests", "folders_created")})
             if u.path == "/device/code": return self.device_code(body)
             if u.path == "/token": return self.token(body)
             if u.path.startswith("/drive/") or u.path.startswith("/upload/drive/"): return self.drive(u, q, body)
@@ -78,7 +78,8 @@ class H(http.server.BaseHTTPRequestHandler):
     # ---------------- OAuth
     def device_code(self, body):
         f = urllib.parse.parse_qs(body.decode())
-        if f.get("scope", [""])[0] != "https://www.googleapis.com/auth/drive.appdata": return self.send(400, {"error": "invalid_scope"})
+        if f.get("scope", [""])[0] != "https://www.googleapis.com/auth/drive.file":
+            return self.send(400, {"error": "invalid_scope", "error_description": "Invalid device flow scope: " + f.get("scope", [""])[0]})   # as Google does for drive.appdata
         if f.get("client_id", [""])[0] == "bad": return self.send(401, {"error": "invalid_client", "error_description": "no such client"})
         S["device_starts"] += 1; S["polls"] = 0
         self.send(200, {"device_code": "DEV-" + f["client_id"][0], "user_code": "ABCD-EFGH", "verification_url": "https://www.google.com/device",
@@ -111,17 +112,29 @@ class H(http.server.BaseHTTPRequestHandler):
         m, p = self.command, u.path
         files = S["drive"]
         if p == "/drive/v3/files" and m == "GET":
-            if q.get("spaces", [""])[0] != "appDataFolder": return self.send(400, {"error": "spaces"})
+            if q.get("spaces"): return self.send(400, {"error": "spaces not used with drive.file"})
             items = sorted(files.items(), key=lambda kv: int(kv[0]))
             qq = q.get("q", [""])[0]
-            mm = re.match(r"name = '(.*)' and 'appDataFolder' in parents and trashed = false", qq)
-            if mm: items = [kv for kv in items if kv[1]["name"] == mm.group(1)]
-            elif qq: return self.send(400, {"error": "bad q"})
+            if "trashed = false" not in qq: return self.send(400, {"error": "bad q"})
+            nm = re.search(r"name = '(.*?)'", qq)
+            mt = re.search(r"mimeType = '(.*?)'", qq)
+            par = re.search(r"'(\w+)' in parents", qq)
+            if not par: return self.send(400, {"error": "bad q (parent)"})
+            items = [kv for kv in items if par.group(1) in kv[1]["parents"]
+                     and (not nm or kv[1]["name"] == nm.group(1)) and (not mt or kv[1]["mime"] == mt.group(1))]
+            if not mt: items = [kv for kv in items if kv[1]["mime"] != "application/vnd.google-apps.folder"]
             start = int(q.get("pageToken", ["0"])[0])
             page = items[start:start + PAGE]
             out = {"files": [{"id": i, "name": f["name"], "size": str(len(f["data"]))} for i, f in page]}
             if start + PAGE < len(items): out["nextPageToken"] = str(start + PAGE)
             return self.send(200, out)
+        if p == "/drive/v3/files" and m == "POST":      # create a folder
+            meta = json.loads(body)
+            if meta.get("mimeType") != "application/vnd.google-apps.folder": return self.send(400, {"error": "folders only"})
+            fid = str(S["next_id"]); S["next_id"] += 1
+            files[fid] = {"name": meta["name"], "data": b"", "parents": meta.get("parents", ["root"]), "mime": meta["mimeType"]}
+            S["folders_created"] += 1
+            return self.send(200, {"id": fid})
         mm = re.match(r"^/drive/v3/files/(\d+)$", p)
         if mm:
             fid = mm.group(1)
@@ -135,9 +148,10 @@ class H(http.server.BaseHTTPRequestHandler):
             meta = json.loads(parts[0].split(b"\r\n\r\n", 1)[1].rstrip(b"\r\n"))
             data = parts[1].split(b"\r\n\r\n", 1)[1]
             assert data.endswith(b"\r\n"); data = data[:-2]
-            if meta.get("parents") != ["appDataFolder"]: return self.send(400, {"error": "parents"})
+            pid = (meta.get("parents") or [""])[0]
+            if pid not in files or files[pid]["mime"] != "application/vnd.google-apps.folder": return self.send(400, {"error": "parent is not a folder"})
             fid = str(S["next_id"]); S["next_id"] += 1
-            files[fid] = {"name": meta["name"], "data": data}
+            files[fid] = {"name": meta["name"], "data": data, "parents": [pid], "mime": "application/octet-stream"}
             return self.send(200, {"id": fid})
         mm = re.match(r"^/upload/drive/v3/files/(\d+)$", p)
         if mm and m == "PATCH" and q.get("uploadType", [""])[0] == "media":

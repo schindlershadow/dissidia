@@ -588,7 +588,7 @@ void fighter_dump_frame() {
         const uint32_t a = g_fighters[i];
         if (!a || !ok(a)) continue;
         const uint32_t scr = r32(a + 0x540u) & 0xFFFFu;
-        if (scr == 0xFFFFu) continue;
+        if (scr == 0xFFFFu && !g_test_on) continue;
         const bool fresh = g_dump_prev_actor[i] != a;
         g_dump_prev_actor[i] = a;
         for (const auto& rg : ranges)

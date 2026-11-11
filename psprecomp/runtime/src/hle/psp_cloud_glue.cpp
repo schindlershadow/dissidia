@@ -57,6 +57,7 @@ void psp_cloud_glue_manager_hooks(psp_sddialog::ManagerConfig& mc) {
     mc.cloud_signin = [] { svc::signin_start(); };
     mc.cloud_signin_cancel = [] { svc::signin_cancel(); };
     mc.cloud_signout = [] { svc::signout(); };
+    mc.cloud_set_config = [](const svc::Config& c) { svc::set_config(c); };
     mc.cloud_resolve = [](const std::string& s, psp_cloud::Choice c) { svc::resolve(s, c); };
 }
 

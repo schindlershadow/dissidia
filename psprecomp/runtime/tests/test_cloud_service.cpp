@@ -70,7 +70,7 @@ int main(int argc, char** argv) {
     CHECK(slurp(A.dir("GameData00") / "DISSIDIA.BIN") == slurp(B.dir("GameData00") / "DISSIDIA.BIN"));
     CHECK(svc::status().text.find("1 down") != std::string::npos);
 
-    // after a save: push-only, debounced. The other device's newer FCard00 is NOT downloaded during play.
+    // after a save: a debounced full sync: this save goes up and the other device's newer FCard00 comes down
     B.change("FCard00", "FCARD.BIN", 6);
     sync_all(*cloud_prov, ob);
     const Bytes fcard_before = slurp(A.dir("FCard00") / "FCARD.BIN");
@@ -80,11 +80,9 @@ int main(int argc, char** argv) {
     CHECK(wait_for([&] { Bytes b; return make_folder_provider(cloud)->get("GameData00.meta", &b).empty() &&
                                  meta_from_text(std::string(b.begin(), b.end())).hash == hash_save(A.dir("GameData00").string()); }));
     CHECK(idle_after_sync());
-    CHECK(slurp(A.dir("FCard00") / "FCARD.BIN") == fcard_before);        // untouched
-    CHECK(svc::status().state == svc::Status::Idle && svc::status().text.find("next start") != std::string::npos);
-    svc::sync_now();                                        // the next full sync takes it
-    CHECK(idle_after_sync());
-    CHECK(slurp(A.dir("FCard00") / "FCARD.BIN") == slurp(B.dir("FCard00") / "FCARD.BIN"));
+    CHECK(wait_for([&] { return slurp(A.dir("FCard00") / "FCARD.BIN") == slurp(B.dir("FCard00") / "FCARD.BIN"); }));   // came down too
+    CHECK(slurp(A.dir("FCard00") / "FCARD.BIN") != fcard_before);
+    CHECK(svc::status().state == svc::Status::Idle);
 
     // conflict: waits for a choice, does not block wait_ready, then resolve
     sync_all(*cloud_prov, ob);                              // B takes A's latest first

@@ -1,4 +1,4 @@
-// OAuth client of this project's Google Cloud app ("TVs and Limited Input devices" type, scope drive.appdata only).
+// OAuth client of this project's Google Cloud app ("TVs and Limited Input devices" type, scope drive.file only: the app sees only files it created itself).
 // For this client type Google does not treat the secret as confidential (it ships in every installed app); it identifies the
 // project for quota and consent, and cannot access anyone's Drive without that person's own sign-in. A fork should register
 // its own client (docs/cloud-sync.md) and replace these two values, or set PSPRECOMP_GOOGLE_CLIENT_ID / _SECRET.

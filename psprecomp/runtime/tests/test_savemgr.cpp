@@ -433,13 +433,64 @@ static void test_cloud(const fs::path& T) {
     // sign out (Google only)
     f.st.conflicts = 0; f.st.items.clear(); f.st.state = svc::Status::Idle; ++f.st.revision;
     v.tap(CROSS);
-    down(v, 2);                                                  // Info, Sync now, Sign out
+    down(v, 3);                                                  // Info, Sync now, Change service, Sign out
     v.tap(CROSS);
     CHECK(f.signouts == 1 && v.d.screen() == Screen::Cloud);
     // the screen's revision follows the service, so it redraws when the status changes
     const uint32_t r1 = v.d.revision();
     ++f.st.revision;
     CHECK(v.d.revision() != r1);
+    // ---- setting up another service from the save list ----
+    {
+        FakeCloud g;
+        g.st.state = svc::Status::Off; g.st.text = "Off"; g.st.revision = 1;
+        ManagerConfig c2 = make_cfg(saves, bak, {}, {});
+        c2.cloud_status = [&] { return g.st; };
+        c2.cloud_config = [&] { return g.cfg; };
+        c2.cloud_configured = [&] { return g.configured; };
+        c2.cloud_sync = [&] { ++g.syncs; };
+        c2.cloud_signin = [&] { ++g.signins; };
+        c2.cloud_set_config = [&](const svc::Config& nc) { g.cfg = nc; g.configured = nc.provider != svc::Provider::Off; ++g.st.revision; };
+        Drv u;
+        u.d.begin(c2);
+        u.tick(0); down(u, 2); u.tap(CROSS);
+        CHECK(u.d.screen() == Screen::Cloud);
+        // not set up: Status, Google, WebDAV, Folder, Back: every service is offered
+        down(u, 3);                                          // Synced folder...
+        u.tap(CROSS);
+        CHECK(u.d.screen() == Screen::CloudType);
+        for (char ch : std::string("/home/me/Sync")) osk_push_key((uint32_t)(unsigned char)ch);
+        osk_push_key(13);
+        u.tick(0); u.tick(0);
+        CHECK(u.d.screen() == Screen::Cloud);
+        CHECK(g.cfg.provider == svc::Provider::Folder && g.cfg.folder == "/home/me/Sync" && g.syncs == 1);
+        // configured: Status, Sync now, Change service, Back
+        down(u, 2);
+        u.tap(CROSS);                                        // Change service: back to the choice
+        CHECK(g.cfg.provider == svc::Provider::Off && !g.configured && u.d.screen() == Screen::Cloud && u.d.selected() == 0);
+        // WebDAV: address, user and password, one after the other
+        down(u, 2);
+        u.tap(CROSS);
+        CHECK(u.d.screen() == Screen::CloudType);
+        for (char ch : std::string("https://nc.example.com/dav/saves")) osk_push_key((uint32_t)(unsigned char)ch);
+        osk_push_key(13); u.tick(0); u.tick(0);
+        CHECK(u.d.screen() == Screen::CloudType && g.cfg.provider == svc::Provider::Off);   // not finished yet: the user name
+        for (char ch : std::string("me")) osk_push_key((uint32_t)(unsigned char)ch);
+        osk_push_key(13); u.tick(0); u.tick(0);
+        CHECK(u.d.screen() == Screen::CloudType);
+        for (char ch : std::string("app-pass-1")) osk_push_key((uint32_t)(unsigned char)ch);
+        osk_push_key(13); u.tick(0); u.tick(0);
+        CHECK(u.d.screen() == Screen::Cloud);
+        CHECK(g.cfg.provider == svc::Provider::WebDav && g.cfg.webdav_url == "https://nc.example.com/dav/saves" &&
+              g.cfg.webdav_user == "me" && g.cfg.webdav_pass == "app-pass-1" && g.syncs == 2);
+        // an empty first field cancels
+        down(u, 2); u.tap(CROSS);                            // Change service
+        down(u, 3); u.tap(CROSS);                            // Synced folder...  (prefilled with the old path)
+        CHECK(u.d.screen() == Screen::CloudType);
+        osk_push_key(13); u.tick(0); u.tick(0);              // done with the prefilled value = unchanged: finishes
+        CHECK(u.d.screen() == Screen::Cloud);
+    }
+
     // Circle on the first screen leaves the dialog
     v.tap(CIRCLE);
     CHECK(v.d.screen() == Screen::Main);

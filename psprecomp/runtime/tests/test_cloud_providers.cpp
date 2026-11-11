@@ -1,4 +1,4 @@
-// Host test for the cloud providers (psp_cloud_providers): WebDAV and Google Drive (device sign-in, refresh, appDataFolder
+// Host test for the cloud providers (psp_cloud_providers): WebDAV and Google Drive (device sign-in, refresh, a Drive folder
 // files) against a local fake server (tests/cloud_fake_server.py, started by run_cloud.sh), each through the same provider
 // conformance checks and a two-device sync. Plain http only: no TLS, no real accounts, no network.
 #include "psp_cloud_providers.h"
@@ -157,6 +157,7 @@ int main(int argc, char** argv) {
         auto p = make_google_drive_provider(gc);
         conformance(*p, "Google Drive");
         CHECK(stat("refreshes") == "1");                              // one access token for the whole run
+        CHECK(stat("folders_created") == "1");                        // the saves folder is created once, then found
         // the access token expires between calls: refreshed transparently, the call still succeeds
         CHECK(p->put("Zed.meta", Bytes{'z'}).empty());
         admin("expire");
@@ -164,7 +165,10 @@ int main(int argc, char** argv) {
         CHECK(p->get("Zed.meta", &got).empty() && got == Bytes{'z'});
         CHECK(stat("refreshes") == "2");
         CHECK(p->remove("Zed.meta").empty());
-        // a second device (fresh provider, no cached ids) sees the same files
+        // a second device (fresh provider, no cached ids) finds the same folder and files; it does not create another folder
+        CHECK(make_google_drive_provider(gc)->put("Shared0.meta", Bytes{'s'}).empty());
+        CHECK(stat("folders_created") == "1");
+        p->remove("Shared0.meta");
         CHECK(make_google_drive_provider(gc)->put("Shared.meta", Bytes{'s'}).empty());
         std::vector<RemoteItem> items;
         CHECK(p->list(&items).empty() && has(items, "Shared.meta", 1));

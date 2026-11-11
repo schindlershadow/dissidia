@@ -328,10 +328,13 @@ public:
     std::string list(std::vector<RemoteItem>* out) override {
         out->clear();
         ids_.clear();
+        if (std::string e = ensure_folder(false); !e.empty()) return e;
+        if (folder_.empty()) return "";                     // nothing uploaded yet
         std::string page;
         for (int guard = 0; guard < 50; guard++) {
-            std::string url = c_.api_base + "/drive/v3/files?spaces=appDataFolder&pageSize=1000&fields=" +
-                              psp_http::url_encode("nextPageToken,files(id,name,size)");
+            std::string url = c_.api_base + "/drive/v3/files?pageSize=1000&fields=" +
+                              psp_http::url_encode("nextPageToken,files(id,name,size)") +
+                              "&q=" + psp_http::url_encode("'" + folder_ + "' in parents and trashed = false");
             if (!page.empty()) url += "&pageToken=" + psp_http::url_encode(page);
             Response r;
             if (std::string e = call("GET", url, {}, &r); !e.empty()) return e;
@@ -377,9 +380,10 @@ public:
             if (!r.ok()) return http_error(r, "Google Drive upload of " + name);
             return "";
         }
+        if (std::string e = ensure_folder(true); !e.empty()) return e;
         const std::string boundary = "psprecomp_boundary_7f3a91c2";
         std::string head = "--" + boundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{\"name\":\"" + json_escape(name) +
-                           "\",\"parents\":[\"appDataFolder\"]}\r\n--" + boundary + "\r\nContent-Type: application/octet-stream\r\n\r\n";
+                           "\",\"parents\":[\"" + folder_ + "\"]}\r\n--" + boundary + "\r\nContent-Type: application/octet-stream\r\n\r\n";
         const std::string tail = "\r\n--" + boundary + "--\r\n";
         Bytes body(head.begin(), head.end());
         body.insert(body.end(), data.begin(), data.end());
@@ -417,15 +421,41 @@ private:
     std::string find(const std::string& name, std::string* id) {
         auto it = ids_.find(name);
         if (it != ids_.end()) { *id = it->second; return ""; }
-        const std::string q = "name = '" + name + "' and 'appDataFolder' in parents and trashed = false";
+        id->clear();
+        if (std::string e = ensure_folder(false); !e.empty()) return e;
+        if (folder_.empty()) return "";
+        const std::string q = "name = '" + name + "' and '" + folder_ + "' in parents and trashed = false";
         Response r;
-        if (std::string e = call("GET", c_.api_base + "/drive/v3/files?spaces=appDataFolder&fields=" + psp_http::url_encode("files(id,name)") +
+        if (std::string e = call("GET", c_.api_base + "/drive/v3/files?fields=" + psp_http::url_encode("files(id,name)") +
                                  "&q=" + psp_http::url_encode(q), {}, &r); !e.empty()) return e;
         Json j;
         if (!r.ok() || !parse_json(r.text(), &j)) return http_error(r, "Google Drive lookup of " + name);
         id->clear();
         if (const Json* f = j.get("files"))
             if (!f->a.empty()) { *id = f->a[0].str("id"); ids_[name] = *id; }
+        return "";
+    }
+
+    // The folder that holds the saves (with the drive.file scope the app only ever sees files it created itself). Found by
+    // name, and created on demand. "" in folder_ after a successful call with create=false means there is none yet.
+    std::string ensure_folder(bool create) {
+        if (!folder_.empty()) return "";
+        static const char* kName = "Dissidia PSPRecomp Saves";
+        const std::string q = std::string("name = '") + kName + "' and mimeType = 'application/vnd.google-apps.folder' and 'root' in parents and trashed = false";
+        Response r;
+        if (std::string e = call("GET", c_.api_base + "/drive/v3/files?orderBy=createdTime&fields=" + psp_http::url_encode("files(id)") +
+                                 "&q=" + psp_http::url_encode(q), {}, &r); !e.empty()) return e;
+        Json j;
+        if (!r.ok() || !parse_json(r.text(), &j)) return http_error(r, "Google Drive folder lookup");
+        if (const Json* f = j.get("files"))
+            if (!f->a.empty()) { folder_ = f->a[0].str("id"); return ""; }
+        if (!create) return "";
+        const std::string meta = std::string("{\"name\":\"") + kName + "\",\"mimeType\":\"application/vnd.google-apps.folder\"}";
+        Bytes body(meta.begin(), meta.end());
+        if (std::string e = call("POST", c_.api_base + "/drive/v3/files?fields=id", {{"Content-Type", "application/json; charset=UTF-8"}}, &r, &body); !e.empty())
+            return e;
+        if (!r.ok() || !parse_json(r.text(), &j) || j.str("id").empty()) return http_error(r, "Google Drive cannot create the saves folder");
+        folder_ = j.str("id");
         return "";
     }
 
@@ -472,6 +502,7 @@ private:
     GoogleConfig c_;
     std::string token_;
     std::map<std::string, std::string> ids_;     // object name -> Drive file id
+    std::string folder_;                         // Drive id of the saves folder ("" = not looked up / not there)
 };
 
 }  // namespace
@@ -485,7 +516,7 @@ DeviceCode google_start_device_flow(const GoogleConfig& cfg) {
     r.method = "POST";
     r.url = cfg.auth_base + "/device/code";
     r.headers = {{"Content-Type", "application/x-www-form-urlencoded"}};
-    const std::string form = psp_http::form_encode({{"client_id", cfg.client_id}, {"scope", "https://www.googleapis.com/auth/drive.appdata"}});
+    const std::string form = psp_http::form_encode({{"client_id", cfg.client_id}, {"scope", "https://www.googleapis.com/auth/drive.file"}});
     r.body.assign(form.begin(), form.end());
     const Response res = psp_http::perform(r);
     Json j;

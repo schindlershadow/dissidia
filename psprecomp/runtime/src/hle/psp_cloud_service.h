@@ -6,7 +6,8 @@
 // When things run:
 //   start-up        a full sync (uploads and downloads) when enabled; the savedata HLE waits for it (wait_ready) before the
 //                   game's first save dialog, so a download never replaces a save the game is reading
-//   after a save    a push-only sync a few seconds later (debounced); it never downloads during play
+//   after a save    a full sync a few seconds later (debounced); the savedata HLE waits for a running sync before the game's next
+//                   save dialog, so a download never lands while the game is reading a save
 //   on request      "Sync now" from a menu: full sync
 // Conflicts (both sides changed) are never resolved silently: they wait in status().items until resolve() is called.
 #pragma once
@@ -60,7 +61,7 @@ bool configured();                      // a provider is chosen and has what it 
 
 void sync_now();                        // full sync
 void startup_sync();                    // sync_now when auto_sync is on
-void after_save();                      // debounced push-only sync when auto_sync is on
+void after_save();                      // debounced sync when auto_sync is on
 void resolve(const std::string& suffix, psp_cloud::Choice c);
 
 void signin_start();                    // Google device flow; status() shows user_code / verify_url meanwhile

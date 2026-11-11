@@ -31,6 +31,7 @@ struct ManagerConfig {
     std::function<bool()> cloud_configured;
     std::function<void()> cloud_sync, cloud_signin, cloud_signin_cancel, cloud_signout;
     std::function<void(const std::string& suffix, psp_cloud::Choice)> cloud_resolve;
+    std::function<void(const psp_cloud_svc::Config&)> cloud_set_config;     // folder / WebDAV setup, "change service"
 };
 
 class ManagerDialog {
@@ -43,7 +44,7 @@ public:
     bool changed() const { return changed_; }   // saves were added or replaced: refresh the list behind it
 
     // ---- for tests ----
-    enum class Screen { Main, PickSource, PickDest, TypePath, PickSaves, Confirm, Result, Cloud, CloudConflict };
+    enum class Screen { Main, PickSource, PickDest, TypePath, PickSaves, Confirm, Result, Cloud, CloudConflict, CloudType };
     Screen screen() const { return screen_; }
     int selected() const { return sel_; }
     const std::vector<std::string>& result_lines() const { return result_; }
@@ -71,7 +72,14 @@ private:
     std::string cloud_suffix_;       // the conflict being decided
     unsigned cloud_seen_rev_ = 0;
 
-    enum class CloudAct { Info, SyncNow, SignIn, CancelSignIn, Conflict, SignOut, Back };
+    enum class CloudAct { Info, SyncNow, SignIn, CancelSignIn, SetupWebDav, SetupFolder, ChangeService, Conflict, SignOut, Back };
+    // Typing a folder path / the WebDAV address, user and password with the on-screen keyboard, one field after the other.
+    psp_cloud_svc::Config cloud_cfg_;
+    bool cloud_webdav_ = false;
+    int cloud_step_ = 0;
+    void cloud_type_begin(bool webdav);
+    void cloud_type_ask();
+    void cloud_type_done();
     struct CloudRow { CloudAct act; std::string suffix; };
     std::vector<CloudRow> cloud_rows() const;
     void activate_cloud();

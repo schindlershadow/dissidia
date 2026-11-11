@@ -56,7 +56,11 @@ fs::path P(const std::string& s) { return fs::u8path(s); }
 
 std::string ini_path() { return (P(g.paths.workdir) / "cloud.ini").u8string(); }
 
-void touch() { ++g.st.revision; }
+std::string g_last_logged;
+void touch() {   // the status changed: bump the revision the menus watch, and log the text once (it is the only trace of why a sync failed)
+    ++g.st.revision;
+    if (g.st.text != g_last_logged) { g_last_logged = g.st.text; std::fprintf(stderr, "[CLOUD] %s\n", g.st.text.c_str()); }
+}
 
 void load_ini() {
     g.cfg = Config{};
@@ -244,7 +248,7 @@ void do_signin(std::unique_lock<std::mutex>& lk) {
     if (!dc.error.empty()) { g.st.state = Status::Error; g.st.text = dc.error; touch(); return; }
     g.st.user_code = dc.user_code;
     g.st.verify_url = dc.verification_url;
-    g.st.text = "On your phone or computer open " + dc.verification_url + " and enter the code " + dc.user_code;
+    g.st.text = "Enter the code " + dc.user_code + " at " + dc.verification_url + " (the page is opened for you when possible, and the code is copied to the clipboard)";
     touch();
     int interval = std::max(1, dc.interval);
     const auto deadline = Clock::now() + std::chrono::seconds(dc.expires_in > 0 ? dc.expires_in : 600);
@@ -287,7 +291,7 @@ void worker_main() {
         Job job;
         bool have = false;
         if (!g.jobs.empty()) { job = g.jobs.front(); g.jobs.pop_front(); have = true; }
-        else if (g.push_pending && Clock::now() >= g.push_at) { g.push_pending = false; job.kind = Job::Push; have = true; }
+        else if (g.push_pending && Clock::now() >= g.push_at) { g.push_pending = false; job.kind = Job::Sync; have = true; }
         if (!have) {
             if (g.push_pending) g.cv.wait_until(lk, g.push_at);
             else g.cv.wait(lk);
@@ -295,8 +299,7 @@ void worker_main() {
         }
         if (job.kind == Job::Signin) { do_signin(lk); g.cv.notify_all(); continue; }
         g.busy = true;
-        if (job.kind == Job::Sync) do_sync(lk, true);
-        else if (job.kind == Job::Push) do_sync(lk, false);
+        if (job.kind == Job::Sync || job.kind == Job::Push) do_sync(lk, true);
         else do_resolve(lk, job.suffix, job.choice);
         g.busy = false;
         g.cv.notify_all();
@@ -379,7 +382,7 @@ void after_save() {
     std::lock_guard<std::mutex> lk(g.m);
     ensure_worker();
     g.push_pending = true;
-    g.push_at = Clock::now() + std::chrono::seconds(4);     // several saves in a row become one upload
+    g.push_at = Clock::now() + std::chrono::seconds(4);     // several saves in a row become one sync
     g.cv.notify_all();
 }
 

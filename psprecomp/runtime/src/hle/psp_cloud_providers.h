@@ -1,5 +1,5 @@
 // Cloud storage providers for psp_cloudsync (psp_cloudsync.h): WebDAV (Nextcloud, ownCloud, most NAS boxes) and Google
-// Drive (the hidden per-app "appDataFolder": the app sees only its own files). Both run on psp_http, so call them from a
+// Drive (a folder the app creates in My Drive; with the drive.file scope the app sees only files it created itself). Both run on psp_http, so call them from a
 // worker thread. Endpoints are configurable so the tests can point them at a local fake server.
 #pragma once
 
@@ -28,7 +28,7 @@ struct GoogleConfig {
     std::string api_base = "https://www.googleapis.com";
 };
 
-// Sign-in with the OAuth device flow: show `user_code` and `verification_url` to the person (they enter the code on any
+// Sign-in with the OAuth device flow (Google's device flow allows the drive.file scope but not drive.appdata): show `user_code` and `verification_url` to the person (they enter the code on any
 // phone or computer), then poll every `interval` seconds until the result is Done or a final state.
 struct DeviceCode {
     std::string device_code, user_code, verification_url;

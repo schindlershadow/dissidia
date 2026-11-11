@@ -94,7 +94,7 @@ void ManagerDialog::begin(const ManagerConfig& cfg) {
 }
 
 uint32_t ManagerDialog::revision() const {
-    uint32_t r = rev_ + (screen_ == Screen::TypePath ? kbd_.revision() : 0);
+    uint32_t r = rev_ + (screen_ == Screen::TypePath || screen_ == Screen::CloudType ? kbd_.revision() : 0);
     if ((screen_ == Screen::Cloud || screen_ == Screen::CloudConflict) && cfg_.cloud_status) r += cfg_.cloud_status().revision * 7919u;
     return r;
 }
@@ -157,10 +157,22 @@ std::vector<MenuRow> ManagerDialog::rows(std::string* title, std::string* tab) c
                     "Upload changed saves and download newer ones now. " + st.text);
                 break;
             case CloudAct::SignIn:
-                row("Sign in to Google Drive", "", "Shows a code. Enter it at google.com/device on your phone or computer. The game only gets access to its own hidden folder in your Drive.");
+                row("Google Drive: sign in", "", "Shows a code and opens google.com/device (the code is copied). The game only gets access to a folder it creates in your Drive.");
                 break;
             case CloudAct::CancelSignIn:
                 row("Cancel sign-in", st.user_code, st.text);
+                break;
+            case CloudAct::SetupWebDav:
+                row("WebDAV server...", "", "Nextcloud, ownCloud and most NAS boxes. You type the address of a folder on the server, the user name and the password "
+                    "(for Nextcloud use an app password). The password is shown while you type.");
+                break;
+            case CloudAct::SetupFolder:
+                row("Synced folder...", "", "A folder that another program keeps in sync between your devices (Syncthing, the Drive / OneDrive / Dropbox desktop apps, "
+                    "a network share). You type its path.");
+                break;
+            case CloudAct::ChangeService:
+                row("Change service", psp_cloud_svc::provider_name(cc.provider), "Stop using " + std::string(psp_cloud_svc::provider_name(cc.provider)) +
+                    " and pick another. Your saves and the sign-in details are not deleted.");
                 break;
             case CloudAct::Conflict: {
                 std::string what;
@@ -207,6 +219,9 @@ std::vector<MenuRow> ManagerDialog::rows(std::string* title, std::string* tab) c
     case Screen::TypePath:
         *title = "Path";
         break;
+    case Screen::CloudType:
+        *title = "Cloud Sync";
+        break;
     case Screen::PickSaves: {
         *title = importing_ ? "Import Saves" : "Export Saves";
         int n = 0;
@@ -251,7 +266,7 @@ std::vector<MenuRow> ManagerDialog::rows(std::string* title, std::string* tab) c
 }
 
 void ManagerDialog::render(Canvas& c) const {
-    if (screen_ == Screen::TypePath) { kbd_.render(c); return; }
+    if (screen_ == Screen::TypePath || screen_ == Screen::CloudType) { kbd_.render(c); return; }
     std::string title, tab;
     auto r = rows(&title, &tab);
     render_menu(c, title, tab, r, sel_, cfg_.confirm_cross);
@@ -270,6 +285,7 @@ void ManagerDialog::back() {
     switch (screen_) {
     case Screen::Main: break;   // handled by the caller (Cancelled)
     case Screen::Cloud: go(Screen::Main, 2); break;
+    case Screen::CloudType: osk_set_active(false); go(Screen::Cloud, 0); break;
     case Screen::CloudConflict: go(Screen::Cloud, 0); break;
     case Screen::PickSource: case Screen::PickDest: go(Screen::Main, importing_ ? 0 : 1); break;
     case Screen::TypePath: go(importing_ ? Screen::PickSource : Screen::PickDest, int(sources_.size())); break;
@@ -445,6 +461,7 @@ void ManagerDialog::activate() {
         break;
     case Screen::Cloud: activate_cloud(); break;
     case Screen::CloudConflict: activate_conflict(); break;
+    case Screen::CloudType: break;
     case Screen::TypePath: break;
     }
 }
@@ -456,11 +473,15 @@ std::vector<ManagerDialog::CloudRow> ManagerDialog::cloud_rows() const {
     const psp_cloud_svc::Config cc = cfg_.cloud_config ? cfg_.cloud_config() : psp_cloud_svc::Config{};
     const bool configured = cfg_.cloud_configured && cfg_.cloud_configured();
     if (st.state == St::SigningIn) r.push_back({CloudAct::CancelSignIn, ""});
-    else if (!configured) r.push_back({CloudAct::SignIn, ""});
-    else {
+    else if (!configured) {
+        r.push_back({CloudAct::SignIn, ""});
+        r.push_back({CloudAct::SetupWebDav, ""});
+        r.push_back({CloudAct::SetupFolder, ""});
+    } else {
         r.push_back({CloudAct::SyncNow, ""});
         for (auto& it : st.items)
             if (it.action == psp_cloud::Action::Conflict) r.push_back({CloudAct::Conflict, it.suffix});
+        r.push_back({CloudAct::ChangeService, ""});
         if (cc.provider == psp_cloud_svc::Provider::Google) r.push_back({CloudAct::SignOut, ""});
     }
     r.push_back({CloudAct::Back, ""});
@@ -478,10 +499,49 @@ void ManagerDialog::activate_cloud() {
     case CloudAct::SignIn: if (cfg_.cloud_signin) cfg_.cloud_signin(); break;
     case CloudAct::CancelSignIn: if (cfg_.cloud_signin_cancel) cfg_.cloud_signin_cancel(); break;
     case CloudAct::Conflict: if (!syncing) { cloud_suffix_ = cr.suffix; go(Screen::CloudConflict, 0); } break;
+    case CloudAct::SetupWebDav: cloud_type_begin(true); return;
+    case CloudAct::SetupFolder: cloud_type_begin(false); return;
+    case CloudAct::ChangeService:
+        if (cfg_.cloud_set_config) { psp_cloud_svc::Config c = cfg_.cloud_config ? cfg_.cloud_config() : psp_cloud_svc::Config{}; c.provider = psp_cloud_svc::Provider::Off; cfg_.cloud_set_config(c); }
+        go(Screen::Cloud, 0);
+        break;
     case CloudAct::SignOut: if (cfg_.cloud_signout) cfg_.cloud_signout(); go(Screen::Cloud, 0); break;
     case CloudAct::Back: back(); break;
     }
     ++rev_;
+}
+
+void ManagerDialog::cloud_type_begin(bool webdav) {
+    cloud_cfg_ = cfg_.cloud_config ? cfg_.cloud_config() : psp_cloud_svc::Config{};
+    cloud_webdav_ = webdav;
+    cloud_step_ = 0;
+    cloud_type_ask();
+}
+
+void ManagerDialog::cloud_type_ask() {
+    if (!cloud_webdav_) kbd_.begin(u"Folder path (synced by another program)", to_u16(cloud_cfg_.folder), 255, cfg_.confirm_cross);
+    else if (cloud_step_ == 0) kbd_.begin(u"WebDAV folder address (https://...)", to_u16(cloud_cfg_.webdav_url), 255, cfg_.confirm_cross);
+    else if (cloud_step_ == 1) kbd_.begin(u"WebDAV user name", to_u16(cloud_cfg_.webdav_user), 63, cfg_.confirm_cross);
+    else kbd_.begin(u"WebDAV password (app password)", to_u16(cloud_cfg_.webdav_pass), 63, cfg_.confirm_cross);
+    osk_set_active(true);
+    go(Screen::CloudType);
+}
+
+// The keyboard was closed. An empty first field cancels the setup; later fields may be empty (a public share has no login).
+void ManagerDialog::cloud_type_done() {
+    osk_set_active(false);
+    const std::string typed = to_u8(kbd_.text());
+    if (cloud_step_ == 0 && typed.empty()) { go(Screen::Cloud, 0); return; }
+    if (!cloud_webdav_) cloud_cfg_.folder = typed;
+    else if (cloud_step_ == 0) cloud_cfg_.webdav_url = typed;
+    else if (cloud_step_ == 1) cloud_cfg_.webdav_user = typed;
+    else cloud_cfg_.webdav_pass = typed;
+    if (cloud_webdav_ && cloud_step_ < 2) { ++cloud_step_; cloud_type_ask(); return; }
+    cloud_cfg_.provider = cloud_webdav_ ? psp_cloud_svc::Provider::WebDav : psp_cloud_svc::Provider::Folder;
+    if (cfg_.cloud_set_config) cfg_.cloud_set_config(cloud_cfg_);
+    if (cfg_.cloud_sync) cfg_.cloud_sync();         // try it at once: the status shows whether it works
+    cloud_seen_rev_ = 0;
+    go(Screen::Cloud, 0);
 }
 
 void ManagerDialog::activate_conflict() {
@@ -501,6 +561,10 @@ Result ManagerDialog::update(uint32_t b, int64_t now_ms) {
             const int n = int(cloud_rows().size());
             if (screen_ == Screen::Cloud && sel_ >= n) sel_ = n - 1;
         }
+    }
+    if (screen_ == Screen::CloudType) {
+        if (kbd_.update(b, now_ms) != Result::Running) cloud_type_done();
+        return Result::Running;
     }
     if (screen_ == Screen::TypePath) {
         const Result r = kbd_.update(b, now_ms);

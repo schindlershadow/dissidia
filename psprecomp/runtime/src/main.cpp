@@ -18,7 +18,7 @@
 #include "psp_debug_socket.h"
 #include "psp_game_module.h"
 #include "psp_settings.h"
-#include "hle/psp_cloud_glue.h"
+#include "hle/psp_cloud_boot.h"
 #include "psp_vfpu.h"  // vfpu_init_context — VFPU prefix reset default
 
 // Build fingerprint of the output/ this binary was generated from (issue #36).
