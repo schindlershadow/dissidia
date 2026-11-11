@@ -72,6 +72,9 @@ def main():
                 u = Image.fromarray(np.concatenate([rgb, alpha[..., None]], -1).astype(np.uint8), 'RGBA')
             else:
                 u.putalpha(255)
+        arr = np.array(u.convert('RGBA'))
+        arr[(arr[..., :3] >= 251).all(-1), :3] = 255      # the model drifts white to 254; layered textures darken
+        u = Image.fromarray(arr, 'RGBA')
         u.save(os.path.join(a.out, i + '.png'), optimize=True)
     n = 0
     for i in flat: finish(i, None); n += 1
