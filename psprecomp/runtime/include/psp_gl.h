@@ -5,6 +5,11 @@
 #if defined(__ANDROID__)
 #include <GLES3/gl32.h>
 #include <GLES2/gl2ext.h>
+#if defined(PSPRECOMP_HAVE_VKGL)
+// The renderer's gl* calls go through a pointer table so the Vulkan layer can replace them (psp_gl_table.h).
+#define PSP_GL_TABLE_MACROS
+#include "psp_gl_table.h"
+#endif
 
 // Names that differ in ES.
 #define glDepthRange(n, f) glDepthRangef((GLfloat)(n), (GLfloat)(f))

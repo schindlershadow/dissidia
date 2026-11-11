@@ -47,6 +47,10 @@ struct Buffer {
     VmaAllocation alloc = nullptr;
     void* map = nullptr;
     size_t size = 0;
+    // Draws recorded but possibly not executed yet read [read_lo, read_hi) of this store (submission serial read_serial).
+    // A write that overlaps them gets a fresh copy of the store first, so earlier draws keep seeing the old bytes (GL semantics).
+    uint64_t read_serial = 0;
+    size_t read_lo = 0, read_hi = 0;
 };
 
 struct Fbo {
@@ -65,9 +69,11 @@ struct Program {
     std::string log;
     pspvk::ConvertedProgram conv;
     VkShaderModule vs = VK_NULL_HANDLE, fs = VK_NULL_HANDLE;
+    uint64_t uid = 0;                   // unique per link: shader module handles can be reused after a delete, this cannot
     std::vector<uint8_t> shadow;        // uniform block contents
     bool dirty = true;
     uint32_t last_offset = 0;           // dynamic offset of the last upload of `shadow`
+    uint64_t upload_epoch = ~0ull;      // frame epoch of that upload: every frame slot has its own UBO ring, so it is only valid in that frame
     int unit[kMaxSamplerBindings] = {0, 0, 0, 0};
     int psize_idx = -1;                 // index of u_psize in conv.uniforms, if any
 };
@@ -122,6 +128,7 @@ struct GLState {
     double clear_depth = 1.0;
     int clear_stencil = 0;
     float point_size = 1.0f;
+    bool point_size_set = false;   // glPointSize was called (desktop); on Android the runtime writes u_psize itself
     // bindings
     GLuint program = 0, vao = 0, array_buffer = 0, copy_write_buffer = 0, draw_fbo = 0, read_fbo = 0, renderbuffer = 0;
     int active_unit = 0;
@@ -156,13 +163,14 @@ GLState& st();
 
 void buf_data(GLuint id, size_t size, const void* data);
 void buf_subdata(GLuint id, size_t off, size_t size, const void* data);
-void* buf_map(GLuint id, size_t off);
+void* buf_map(GLuint id, size_t off, size_t len);
 void tex_image(GLuint id, int level, GLenum ifmt, int w, int h, GLenum fmt, GLenum type, const void* data);
 void tex_subimage(GLuint id, int level, int x, int y, int w, int h, GLenum fmt, GLenum type, const void* data);
 void tex_genmips(GLuint id);
 void rbo_storage(GLuint id, GLenum ifmt, int w, int h);
 bool link_program(Program& p);
 void draw_arrays(GLenum mode, GLint first, GLsizei count);
+void draw_multi(GLenum mode, const GLint* first, const GLsizei* count, GLsizei n);   // state prepared once, n draws
 void clear(GLbitfield mask);
 void blit(int sx0, int sy0, int sx1, int sy1, int dx0, int dy0, int dx1, int dy1, GLbitfield mask, GLenum filter);
 bool read_pixels(int x, int y, int w, int h, GLenum fmt, GLenum type, void* out);

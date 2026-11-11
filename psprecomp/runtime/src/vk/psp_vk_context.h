@@ -1,6 +1,11 @@
 // Vulkan backend foundation: instance, device, queue, allocator, optional SDL swapchain.
 // Design: docs/VULKAN_PORT.md. Desktop links libvulkan directly; Android will dlopen it (same entry points).
 #pragma once
+// VMA targets Vulkan 1.1 here: the 1.3 entry points it would otherwise call (vkGetDeviceBufferMemoryRequirements...) are not
+// exported by libvulkan.so at Android API 29.
+#ifndef VMA_VULKAN_VERSION
+#define VMA_VULKAN_VERSION 1001000
+#endif
 #include <vulkan/vulkan.h>
 #include <cstdint>
 #include <string>
@@ -42,6 +47,7 @@ public:
     VkSurfaceKHR surface() const { return surface_; }
     const VkPhysicalDeviceProperties& props() const { return props_; }
     bool has_ray_query() const { return ray_query_; }
+    bool has_multi_draw() const { return multi_draw_; }
     const std::string& device_name() const { return name_; }
 
     bool create_swapchain(int w, int h, bool vsync, std::string* err);
@@ -65,6 +71,7 @@ private:
     VkPhysicalDeviceProperties props_{};
     std::string name_;
     bool ray_query_ = false;
+    bool multi_draw_ = false;           // VK_EXT_multi_draw enabled (one command for a batch of strip segments)
     Swapchain sc_;
     SDL_Window* window_ = nullptr;
 };

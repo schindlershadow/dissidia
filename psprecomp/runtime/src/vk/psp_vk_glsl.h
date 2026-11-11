@@ -35,8 +35,17 @@ struct ConvertedProgram {
 bool convert_glsl_to_vulkan(const std::string& defines, const std::string& vs, const std::string& fs,
                             ConvertedProgram* out, std::string* err);
 
+/// Drops "#version" and "precision" lines (the GL front matter) from a GL shader source.
+std::string strip_glsl_version(const std::string& src);
+
 enum class Stage { Vertex, Fragment };
-/// glslang. Thread-safe after the first call.
+/// glslang (not available when built with PSPVK_NO_GLSLANG, e.g. Android: those builds only load cached SPIR-V).
+/// Thread-safe after the first call.
 bool compile_to_spirv(Stage stage, const std::string& glsl450, std::vector<uint32_t>* spirv, std::string* err);
+
+/// SPIR-V through the on-disk cache: the key is a hash of the exact Vulkan GLSL text, so the files are portable between
+/// platforms (a desktop run fills the cache; an Android build without glslang loads it). Directory: PSPRECOMP_VK_CACHE_DIR,
+/// else ~/.cache/dissidia-vk (XDG_CACHE_HOME). On a miss it compiles (when glslang is built in) and stores the result.
+bool compile_cached(Stage stage, const std::string& glsl450, std::vector<uint32_t>* spirv, std::string* err);
 
 }  // namespace pspvk

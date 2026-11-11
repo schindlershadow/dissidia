@@ -2,6 +2,7 @@
 // glad's function pointers. Anything the runtime does not call is left null on purpose: a call would crash loudly
 // instead of silently doing nothing.
 #include "vkgl.h"
+#define PSP_GL_TABLE_UNDEF
 #include "vkgl_internal.h"
 #include <SDL.h>
 #include <SDL_vulkan.h>
@@ -57,7 +58,10 @@ static GLboolean APIENTRY f_IsEnabled(GLenum cap) {
 }
 static void APIENTRY f_Viewport(GLint x, GLint y, GLsizei w, GLsizei h) { GLState& s = st(); s.vp[0] = x; s.vp[1] = y; s.vp[2] = w; s.vp[3] = h; }
 static void APIENTRY f_Scissor(GLint, GLint, GLsizei, GLsizei) {}   // the runtime never sets a rectangle; the scissor is the whole target
+#ifndef PSP_GLES
 static void APIENTRY f_DepthRange(GLdouble n, GLdouble f) { st().depth_range[0] = n; st().depth_range[1] = f; }
+#endif
+static void APIENTRY f_DepthRangef(GLfloat n, GLfloat f) { st().depth_range[0] = n; st().depth_range[1] = f; }
 static void APIENTRY f_DepthMask(GLboolean m) { st().depth_mask = m != GL_FALSE; }
 static void APIENTRY f_DepthFunc(GLenum f) { st().depth_func = f; }
 static void APIENTRY f_ColorMask(GLboolean r, GLboolean g, GLboolean b, GLboolean a) { st().color_mask = (r ? 1 : 0) | (g ? 2 : 0) | (b ? 4 : 0) | (a ? 8 : 0); }
@@ -71,9 +75,14 @@ static void APIENTRY f_StencilFunc(GLenum f, GLint ref, GLuint mask) { st().sten
 static void APIENTRY f_StencilOp(GLenum sf, GLenum zf, GLenum zp) { st().sfail = sf; st().zfail = zf; st().zpass = zp; }
 static void APIENTRY f_CullFace(GLenum m) { st().cull_mode = m; }
 static void APIENTRY f_ClearColor(GLfloat r, GLfloat g, GLfloat b, GLfloat a) { float* c = st().clear_color; c[0] = r; c[1] = g; c[2] = b; c[3] = a; }
+#ifndef PSP_GLES
 static void APIENTRY f_ClearDepth(GLdouble d) { st().clear_depth = d; }
+#endif
+static void APIENTRY f_ClearDepthf(GLfloat d) { st().clear_depth = d; }
 static void APIENTRY f_ClearStencil(GLint s) { st().clear_stencil = s; }
-static void APIENTRY f_PointSize(GLfloat s) { st().point_size = s; }
+#ifndef PSP_GLES
+static void APIENTRY f_PointSize(GLfloat s) { st().point_size = s; st().point_size_set = true; }
+#endif
 static void APIENTRY f_LineWidth(GLfloat) {}
 static void APIENTRY f_PixelStorei(GLenum p, GLint v) {
     if (p == GL_UNPACK_ROW_LENGTH) st().unpack_row = v;
@@ -136,11 +145,11 @@ static void APIENTRY f_BindBuffer(GLenum target, GLuint id) { buffer_slot(target
 static void APIENTRY f_BindBufferBase(GLenum, GLuint, GLuint) {}
 static void APIENTRY f_BufferData(GLenum target, GLsizeiptr size, const void* data, GLenum) { buf_data(buffer_slot(target), (size_t)size, data); }
 static void APIENTRY f_BufferSubData(GLenum target, GLintptr off, GLsizeiptr size, const void* data) { buf_subdata(buffer_slot(target), (size_t)off, (size_t)size, data); }
-static void* APIENTRY f_MapBufferRange(GLenum target, GLintptr off, GLsizeiptr, GLbitfield) { return buf_map(buffer_slot(target), (size_t)off); }
+static void* APIENTRY f_MapBufferRange(GLenum target, GLintptr off, GLsizeiptr len, GLbitfield) { return buf_map(buffer_slot(target), (size_t)off, (size_t)len); }
 static GLboolean APIENTRY f_UnmapBuffer(GLenum) { return GL_TRUE; }
 static void APIENTRY f_FlushMappedBufferRange(GLenum, GLintptr, GLsizeiptr) {}
 static void APIENTRY f_GetBufferSubData(GLenum target, GLintptr off, GLsizeiptr size, void* out) {
-    if (void* p = buf_map(buffer_slot(target), (size_t)off)) std::memcpy(out, p, (size_t)size);
+    if (void* p = buf_map(buffer_slot(target), (size_t)off, 0)) std::memcpy(out, p, (size_t)size);
 }
 static void APIENTRY f_GenVertexArrays(GLsizei n, GLuint* ids) { for (GLsizei i = 0; i < n; i++) ids[i] = obj_gen_vao(); }
 static void APIENTRY f_DeleteVertexArrays(GLsizei n, const GLuint* ids) { for (GLsizei i = 0; i < n; i++) del_vao(ids[i]); }
@@ -167,7 +176,9 @@ static void set_param(SamplerParams& sp, GLenum pname, float v) {
     case GL_TEXTURE_MAG_FILTER: sp.mag = (GLenum)v; break;
     case GL_TEXTURE_WRAP_S: sp.wrap_s = (GLenum)v; break;
     case GL_TEXTURE_WRAP_T: sp.wrap_t = (GLenum)v; break;
+#ifdef GL_TEXTURE_LOD_BIAS
     case GL_TEXTURE_LOD_BIAS: sp.lod_bias = v; break;
+#endif
     case GL_TEXTURE_BASE_LEVEL: sp.base_level = (int)v; break;
     case GL_TEXTURE_MAX_LEVEL: sp.max_level = (int)v; break;
     default: break;
@@ -310,32 +321,46 @@ static void APIENTRY f_UniformMatrix4fv(GLint l, GLsizei n, GLboolean tr, const 
 
 // ---- draw ----
 static void APIENTRY f_DrawArrays(GLenum mode, GLint first, GLsizei count) { draw_arrays(mode, first, count); }
-static void APIENTRY f_MultiDrawArrays(GLenum mode, const GLint* first, const GLsizei* count, GLsizei n) { for (GLsizei i = 0; i < n; i++) draw_arrays(mode, first[i], count[i]); }
+static void APIENTRY f_MultiDrawArrays(GLenum mode, const GLint* first, const GLsizei* count, GLsizei n) { draw_multi(mode, first, count, n); }
 
 // ---- queries (diagnostics only: always "nothing drawn / 0 ns") ----
 static void APIENTRY f_GenQueries(GLsizei n, GLuint* ids) { for (GLsizei i = 0; i < n; i++) ids[i] = (GLuint)g_query_next++; }
 static void APIENTRY f_DeleteQueries(GLsizei, const GLuint*) {}
 static void APIENTRY f_BeginQuery(GLenum, GLuint) {}
 static void APIENTRY f_EndQuery(GLenum) {}
+#ifndef PSP_GLES
 static void APIENTRY f_QueryCounter(GLuint, GLenum) {}
+static void APIENTRY f_GetQueryObjectui64v(GLuint, GLenum p, GLuint64* v) { *v = p == GL_QUERY_RESULT_AVAILABLE ? 1 : 0; }
+#endif
 static void APIENTRY f_GetQueryObjectiv(GLuint, GLenum p, GLint* v) { *v = p == GL_QUERY_RESULT_AVAILABLE ? 1 : 0; }
 static void APIENTRY f_GetQueryObjectuiv(GLuint, GLenum p, GLuint* v) { *v = p == GL_QUERY_RESULT_AVAILABLE ? 1 : 0; }
-static void APIENTRY f_GetQueryObjectui64v(GLuint, GLenum p, GLuint64* v) { *v = p == GL_QUERY_RESULT_AVAILABLE ? 1 : 0; }
 static void APIENTRY f_BeginTransformFeedback(GLenum) {}
 static void APIENTRY f_EndTransformFeedback() {}
 
 }  // extern "C++"
 
+#ifdef PSP_GLES
+#define SET(Name) g_psp_gl.gl##Name = f_##Name
+#else
 #define SET(Name) glad_gl##Name = f_##Name
+#endif
 
 static void install() {
-    SET(Enable); SET(Disable); SET(IsEnabled); SET(Viewport); SET(Scissor); SET(DepthRange); SET(DepthMask); SET(DepthFunc);
+#ifdef PSP_GLES
+    SET(DepthRangef); SET(ClearDepthf);
+#else
+    SET(DepthRange); SET(ClearDepth); SET(PointSize); SET(QueryCounter); SET(GetQueryObjectui64v);
+#endif
+    SET(Enable); SET(Disable); SET(IsEnabled); SET(Viewport); SET(Scissor); SET(DepthMask); SET(DepthFunc);
     SET(ColorMask); SET(BlendFunc); SET(BlendFuncSeparate); SET(BlendEquation); SET(BlendEquationSeparate); SET(BlendColor);
-    SET(StencilMask); SET(StencilFunc); SET(StencilOp); SET(CullFace); SET(ClearColor); SET(ClearDepth); SET(ClearStencil);
-    SET(PointSize); SET(LineWidth); SET(PixelStorei); SET(GetError); SET(GetString); SET(GetStringi); SET(GetIntegerv);
+    SET(StencilMask); SET(StencilFunc); SET(StencilOp); SET(CullFace); SET(ClearColor); SET(ClearStencil);
+    SET(LineWidth); SET(PixelStorei); SET(GetError); SET(GetString); SET(GetStringi); SET(GetIntegerv);
     SET(GetBooleanv); SET(GetFloatv);
     SET(GenBuffers); SET(DeleteBuffers); SET(BindBuffer); SET(BindBufferBase); SET(BufferData); SET(BufferSubData);
-    SET(MapBufferRange); SET(UnmapBuffer); SET(FlushMappedBufferRange); SET(GetBufferSubData);
+    SET(MapBufferRange); SET(UnmapBuffer); SET(FlushMappedBufferRange);
+#ifndef PSP_GLES
+    SET(GetBufferSubData);
+#endif
     SET(GenVertexArrays); SET(DeleteVertexArrays); SET(BindVertexArray); SET(VertexAttribPointer);
     SET(EnableVertexAttribArray); SET(DisableVertexAttribArray);
     SET(GenTextures); SET(DeleteTextures); SET(ActiveTexture); SET(BindTexture); SET(TexParameteri); SET(TexParameterf);
@@ -348,9 +373,15 @@ static void install() {
     SET(CreateProgram); SET(AttachShader); SET(BindAttribLocation); SET(TransformFeedbackVaryings); SET(LinkProgram);
     SET(GetProgramiv); SET(GetProgramInfoLog); SET(DeleteProgram); SET(UseProgram); SET(GetUniformLocation);
     SET(Uniform1i); SET(Uniform1f); SET(Uniform2f); SET(Uniform3f); SET(Uniform4f); SET(Uniform3i); SET(Uniform4fv); SET(UniformMatrix4fv);
-    SET(DrawArrays); SET(MultiDrawArrays);
-    SET(GenQueries); SET(DeleteQueries); SET(BeginQuery); SET(EndQuery); SET(QueryCounter); SET(GetQueryObjectiv);
-    SET(GetQueryObjectuiv); SET(GetQueryObjectui64v); SET(BeginTransformFeedback); SET(EndTransformFeedback);
+    SET(DrawArrays);
+#ifndef PSP_GLES
+    SET(MultiDrawArrays);   // ES: psp_gl.h loops glDrawArrays
+#endif
+    SET(GenQueries); SET(DeleteQueries); SET(BeginQuery); SET(EndQuery);
+#ifndef PSP_GLES
+    SET(GetQueryObjectiv);
+#endif
+    SET(GetQueryObjectuiv); SET(BeginTransformFeedback); SET(EndTransformFeedback);
 }
 
 bool requested() {

@@ -1,8 +1,14 @@
 #include "psp_vk_glsl.h"
+#ifndef PSPVK_NO_GLSLANG
 #include <glslang/Public/ShaderLang.h>
 #include <glslang/Public/ResourceLimits.h>
 #include <SPIRV/GlslangToSpv.h>
+#endif
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <sys/stat.h>
 #include <map>
 #include <mutex>
 #include <regex>
@@ -128,6 +134,21 @@ std::string block_text(const std::vector<UniformMember>& us) {
 
 }  // namespace
 
+std::string strip_glsl_version(const std::string& s) {
+    std::string out;
+    size_t i = 0;
+    while (i < s.size()) {
+        size_t e = s.find('\n', i);
+        std::string line = s.substr(i, e == std::string::npos ? std::string::npos : e - i);
+        size_t k = line.find_first_not_of(" \t");
+        if (!(k != std::string::npos && (line.compare(k, 8, "#version") == 0 || line.compare(k, 10, "precision ") == 0))) out += line;
+        out += "\n";
+        if (e == std::string::npos) break;
+        i = e + 1;
+    }
+    return out;
+}
+
 bool convert_glsl_to_vulkan(const std::string& defines, const std::string& vs, const std::string& fs,
                             ConvertedProgram* out, std::string* err) {
     Shared sh;
@@ -160,6 +181,12 @@ bool convert_glsl_to_vulkan(const std::string& defines, const std::string& vs, c
     return true;
 }
 
+#ifdef PSPVK_NO_GLSLANG
+bool compile_to_spirv(Stage, const std::string&, std::vector<uint32_t>*, std::string* err) {
+    if (err) *err = "this build has no GLSL compiler (PSPVK_NO_GLSLANG)";
+    return false;
+}
+#else
 bool compile_to_spirv(Stage stage, const std::string& glsl, std::vector<uint32_t>* spirv, std::string* err) {
     static std::once_flag once;
     std::call_once(once, [] { glslang::InitializeProcess(); });
@@ -183,6 +210,52 @@ bool compile_to_spirv(Stage stage, const std::string& glsl, std::vector<uint32_t
     opts.disableOptimizer = true;   // the driver optimises; avoids needing SPIRV-Tools-opt at runtime
     glslang::GlslangToSpv(*prog.getIntermediate(lang), *spirv, &logger, &opts);
     return !spirv->empty();
+}
+#endif
+
+static std::string cache_dir() {
+    if (const char* d = std::getenv("PSPRECOMP_VK_CACHE_DIR")) if (*d) return d;
+    const char* x = std::getenv("XDG_CACHE_HOME");
+    const char* h = std::getenv("HOME");
+    if (x && *x) return std::string(x) + "/dissidia-vk";
+    if (h && *h) return std::string(h) + "/.cache/dissidia-vk";
+    return "";
+}
+
+bool compile_cached(Stage stage, const std::string& glsl, std::vector<uint32_t>* spirv, std::string* err) {
+    const std::string dir = cache_dir();
+    char name[64] = {};
+    if (!dir.empty()) {
+        uint64_t h = 0xcbf29ce484222325ull ^ 0x5053ull;   // salt: bump when the converter's output semantics change
+        for (unsigned char c : glsl) { h ^= c; h *= 0x100000001b3ull; }
+        h ^= stage == Stage::Vertex ? 1 : 2; h *= 0x100000001b3ull;
+        std::snprintf(name, sizeof name, "/%016llx.%s.spv", (unsigned long long)h, stage == Stage::Vertex ? "vert" : "frag");
+        if (FILE* f = std::fopen((dir + name).c_str(), "rb")) {
+            std::fseek(f, 0, SEEK_END);
+            const long n = std::ftell(f);
+            std::fseek(f, 0, SEEK_SET);
+            if (n > 0 && n % 4 == 0) {
+                spirv->resize((size_t)n / 4);
+                if (std::fread(spirv->data(), 1, (size_t)n, f) == (size_t)n) { std::fclose(f); return true; }
+            }
+            std::fclose(f);
+        }
+    }
+    if (!compile_to_spirv(stage, glsl, spirv, err)) {
+        if (err && !dir.empty() && err->find("PSPVK_NO_GLSLANG") != std::string::npos)
+        {
+            *err = "no precompiled SPIR-V for " + std::string(name + 1) + " in " + dir + " (run the game once on a desktop build with Vulkan and copy the folder)";
+            // Keep the exact text so tools/vk_spirv_tool can compile it on a machine that has glslang.
+            mkdir((dir + "/miss").c_str(), 0755);
+            if (FILE* f = std::fopen((dir + "/miss" + std::string(name, std::strlen(name) - 4) + ".glsl").c_str(), "wb")) { std::fwrite(glsl.data(), 1, glsl.size(), f); std::fclose(f); }
+        }
+        return false;
+    }
+    if (!dir.empty()) {
+        mkdir(dir.c_str(), 0755);
+        if (FILE* f = std::fopen((dir + name).c_str(), "wb")) { std::fwrite(spirv->data(), 4, spirv->size(), f); std::fclose(f); }
+    }
+    return true;
 }
 
 }  // namespace pspvk

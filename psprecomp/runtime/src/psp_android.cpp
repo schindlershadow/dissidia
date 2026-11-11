@@ -77,6 +77,7 @@ void psp_android_init() {
     load_env_file(wd);
     setenv("PSPRECOMP_DISC0", (wd + "/disc0").c_str(), 0);
     setenv("PSPRECOMP_MS0", (wd + "/ms0").c_str(), 0);
+    setenv("PSPRECOMP_VK_CACHE_DIR", (wd + "/vk_cache").c_str(), 0);   // precompiled SPIR-V for the Vulkan backend (src/vk/psp_vk_glsl.h)
     setenv("PSPRECOMP_FULLSCREEN", "1", 0);
     setenv("PSPRECOMP_VSYNC", "1", 0);
     std::fprintf(stderr, "[ANDROID] work folder %s\n", wd.c_str());

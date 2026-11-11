@@ -65,7 +65,7 @@ class Game:
         shutil.copytree(os.path.join(self.work, 'ms0'), ms0)
         ini = os.path.join(self.out, 'settings_%d.ini' % self.fps)
         with open(ini, 'w') as f:
-            f.write('display=window\nfps=%d\nrender_scale=%d\nwidescreen=%d\nvoice=en\ncheck_updates=0\nhd_textures=0\n' % (self.fps, self.render_scale, self.widescreen))
+            f.write('display=window\nfps=%d\nrender_scale=%d\nwidescreen=%d\nvoice=en\ncheck_updates=0\nhd_textures=%d\n' % (self.fps, self.render_scale, self.widescreen, 1 if os.environ.get('PSPRECOMP_TEXPACK') else 0))
         env = dict(os.environ, DISPLAY=self.display, PSPRECOMP_SETTINGS=ini, PSPRECOMP_MS0=ms0, PSPRECOMP_FIGHTER_LOG='1',
                    PSPRECOMP_DEBUG_PORT=str(self.port), PSPRECOMP_SAVEDATA_AUTO='0', PSPRECOMP_TEST_FREEZE_CPU='1')
         env.pop('PSPRECOMP_FPS', None)
@@ -135,7 +135,7 @@ class Game:
             time.sleep(0.25)
         raise RuntimeError('timeout waiting for /%s/' % pattern)
 
-    def settle(self, timeout=12, quiet=0.7):
+    def settle(self, timeout=12, quiet=0.5):
         """wait until the picture stops changing (two shots `quiet` s apart are the same)"""
         end = time.time() + timeout
         prev = None
@@ -146,10 +146,11 @@ class Game:
             prev = cur
             time.sleep(quiet)
 
-    def step(self, *names, wait=1.0):
-        self.press(*names)
-        time.sleep(0.35)
-        self.settle(quiet=wait)
+    def step(self, *names, wait=0.3, settle=True):
+        self.press(*names, ms=70)
+        time.sleep(0.1)
+        if settle:
+            self.settle(quiet=wait)
 
 
 def free_display():
@@ -183,25 +184,25 @@ def walk_menus(g, char, tries=14, stage=12):
     end = time.time() + 120
     while time.time() < end:
         g.press('cross')
-        time.sleep(1.5)
+        time.sleep(0.5)
         if any('list dialog opened' in l or 'complete: mode=4' in l for l in g.lines()):
             break
     else:
         raise RuntimeError('the save list never opened')
-    time.sleep(1.0)
+    time.sleep(0.4)
     g.press('cross')                                   # the save list
     g.wait_log(r'sceUtilitySavedata complete: mode=4 result=0x0+\b', 40)
     time.sleep(2.0)
     g.settle(20)
-    g.step('down')                                     # Story Mode -> Battle Mode
+    g.step('down', wait=0.6)                                     # Story Mode -> Battle Mode
     g.step('cross')
     g.step('cross')                                    # Quick Battle (1-on-1) -> Player Select
     time.sleep(1.0)
     row, col = GRID[char.lower()]
     for _ in range(row):
-        g.step('down', wait=0.3)
+        g.step('down', settle=False)
     for _ in range(col):
-        g.step('right', wait=0.3)
+        g.step('right', settle=False)
     g.step('cross')
     g.step('cross')                                    # YES
     g.step('cross')                                    # CPU Select: Lightning
@@ -209,10 +210,10 @@ def walk_menus(g, char, tries=14, stage=12):
     time.sleep(2.0)
     g.settle(10)
     if stage:                                          # battle setup: STAGE row, entry `stage` of 20 (1 = Random), back to Enter Battle
-        g.step('down', wait=0.4)
+        g.step('down', settle=False)
         for _ in range(stage - 1):
-            g.step('right', wait=0.25)
-        g.step('up', wait=0.4)
+            g.step('right', settle=False)
+        g.step('up', settle=False)
     g.press('cross')                                   # Enter Battle
     # loading / opponent pages: CROSS ("Next") until the fight's HUD (dark gauge bar along the bottom) is on screen
     seen = 0
@@ -225,7 +226,7 @@ def walk_menus(g, char, tries=14, stage=12):
         seen = seen + 1 if dark >= 3 else 0
         if seen >= 2:
             open(g.go_file, 'w').close()                   # the runtime starts its game clock now
-            g.wait_log(r'\[TEST\] battle started', 10)
+            g.wait_log(r'\[TEST\] battle started', int(os.environ.get('BT_START_WAIT', '10')))
             return
         if seen == 0:
             g.press('cross')

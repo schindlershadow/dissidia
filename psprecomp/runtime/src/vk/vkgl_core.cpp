@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 #include <functional>
 
 namespace vkgl {
@@ -29,10 +30,14 @@ struct Frame {
     Buffer ubo, stage;
     size_t ubo_off = 0, stage_off = 0;
     VkDescriptorSet set0 = VK_NULL_HANDLE;
+    VkQueryPool ts = VK_NULL_HANDLE;     // one timestamp pair per submission (kTsPairs)
+    int ts_pairs = 0;                    // pairs written this frame
+    bool ts_open = false;                // the current main command buffer has its begin stamp
     std::vector<VkDescriptorPool> pools;
     size_t pool_idx = 0;
     std::unordered_map<uint64_t, VkDescriptorSet> tex_sets;
     std::vector<std::function<void()>> deferred;
+    uint64_t end_serial = 0;             // last submission serial of the frame (valid once its fence is pending)
 };
 
 struct Globals {
@@ -45,6 +50,8 @@ struct Globals {
     std::vector<VkSemaphore> render_sems;   // one per swapchain image (a semaphore may still be in use by the presentation engine)
     int cur = 0;
     uint64_t serial = 1;                 // current submission serial
+    uint64_t frame_epoch = 1;            // bumped at every frame_begin (swap)
+    uint64_t completed_serial = 0;       // every submission up to this serial has finished on the GPU
     uint64_t next_gen = 1;
     // object tables
     std::vector<std::unique_ptr<Tex>> tex;
@@ -72,6 +79,13 @@ struct Globals {
     Img dummy;                           // 1x1 white
     Img snap;                            // scratch copy of a render target a draw samples from (feedback)
     uint64_t feedback_draws = 0;
+    double gpu_ms_sum = 0; uint64_t gpu_ms_n = 0;
+    double t_submit = 0, t_draw = 0, t_wait = 0, t_upload = 0;   // CPU seconds spent in each since the last stats line
+    uint64_t n_submit = 0;
+    float ts_period = 1.0f;
+    bool no_present = false;
+    bool multi_draw = false;             // VK_EXT_multi_draw enabled
+    PFN_vkCmdDrawMultiEXT cmd_draw_multi = nullptr;
     Buffer dummy_vb;                     // (0,0,0,1) for disabled attributes
     uint32_t ubo_align = 256;
     // current recording state
@@ -88,9 +102,17 @@ struct Globals {
     uint32_t cache_ubo_off = ~0u;
     VkDescriptorSet cache_set1 = VK_NULL_HANDLE;
     uint64_t draws = 0;
+    int draws_since_submit = 0;
+    PipeKey last_key; VkPipeline last_pipe = VK_NULL_HANDLE; bool last_key_valid = false;
     bool warned_feedback = false, warned_mask = false;
     bool validation = false;
 };
+static constexpr int kTsPairs = 64;
+#ifdef __ANDROID__
+static int kSubmitEvery = 1 << 30;   // tiled GPUs: one render pass per target and frame; submit at the sync points only
+#else
+static int kSubmitEvery = 400;
+#endif   // PSPRECOMP_VK_SUBMIT_EVERY (draws); 0 = only at swap/sync points
 Globals* G = nullptr;
 static Globals& g() { return *G; }
 GLState& st() { return G->st; }
@@ -101,10 +123,11 @@ static void vkcheck(VkResult r, const char* what) {
 
 bool PipeKey::operator==(const PipeKey& o) const { return std::memcmp(this, &o, sizeof(PipeKey)) == 0; }
 size_t PipeKeyHash::operator()(const PipeKey& k) const {
-    const uint8_t* p = (const uint8_t*)&k;
-    uint64_t h = 1469598103934665603ull;
-    for (size_t i = 0; i < sizeof(PipeKey); i++) { h ^= p[i]; h *= 1099511628211ull; }
-    return (size_t)h;
+    static_assert(sizeof(PipeKey) % 8 == 0, "PipeKey is hashed in 8-byte words");
+    const uint64_t* p = (const uint64_t*)&k;
+    uint64_t h = 0x9E3779B97F4A7C15ull;
+    for (size_t i = 0; i < sizeof(PipeKey) / 8; i++) { h ^= p[i] + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2); h *= 0xFF51AFD7ED558CCDull; }
+    return (size_t)(h ^ (h >> 32));
 }
 
 // ------------------------------------------------------------------------------------------------------------------
@@ -112,6 +135,11 @@ size_t PipeKeyHash::operator()(const PipeKey& k) const {
 // ------------------------------------------------------------------------------------------------------------------
 
 static Frame& fr() { return G->frames[G->cur]; }
+struct Tmr {
+    double* acc; std::chrono::steady_clock::time_point t0;
+    explicit Tmr(double* a) : acc(a), t0(std::chrono::steady_clock::now()) {}
+    ~Tmr() { *acc += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); }
+};
 
 static void defer(std::function<void()> f) { fr().deferred.push_back(std::move(f)); }
 
@@ -124,7 +152,19 @@ static VkCommandBuffer new_cb(Frame& f) {
     vkBeginCommandBuffer(cb, &bi);
     return cb;
 }
-static VkCommandBuffer main_cb() { Frame& f = fr(); if (!f.main_open) { f.main = new_cb(f); f.main_open = true; } return f.main; }
+static VkCommandBuffer main_cb() {
+    Frame& f = fr();
+    if (!f.main_open) {
+        f.main = new_cb(f);
+        f.main_open = true;
+        if (f.ts && f.ts_pairs < kTsPairs) {
+            vkCmdResetQueryPool(f.main, f.ts, (uint32_t)f.ts_pairs * 2, 2);
+            vkCmdWriteTimestamp(f.main, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, f.ts, (uint32_t)f.ts_pairs * 2);
+            f.ts_open = true;
+        }
+    }
+    return f.main;
+}
 static VkCommandBuffer upload_cb() { Frame& f = fr(); if (!f.upload_open) { f.upload = new_cb(f); f.upload_open = true; } return f.upload; }
 
 static void destroy_buffer_now(Buffer& b) {
@@ -154,11 +194,24 @@ static bool alloc_buffer(Buffer& b, size_t size, VkBufferUsageFlags usage, bool 
 
 static void frame_begin(int i) {
     Frame& f = g().frames[i];
+    g().frame_epoch++;
     if (f.fence_pending) {
+        Tmr tw(&g().t_wait);
         vkWaitForFences(g().dev, 1, &f.fence, VK_TRUE, UINT64_MAX);
         vkResetFences(g().dev, 1, &f.fence);
+        if (f.end_serial > g().completed_serial) g().completed_serial = f.end_serial;
         f.fence_pending = false;
     }
+    if (f.ts && f.ts_pairs > 0) {
+        uint64_t t[kTsPairs * 2];
+        if (vkGetQueryPoolResults(g().dev, f.ts, 0, (uint32_t)f.ts_pairs * 2, sizeof t, t, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+            double ns = 0;
+            for (int i = 0; i < f.ts_pairs; i++) if (t[i * 2 + 1] >= t[i * 2]) ns += (double)(t[i * 2 + 1] - t[i * 2]);
+            g().gpu_ms_sum += ns * g().ts_period * 1e-6;
+            g().gpu_ms_n++;
+        }
+    }
+    f.ts_pairs = 0; f.ts_open = false;
     vkResetCommandPool(g().dev, f.pool, 0);
     f.main_open = f.upload_open = false;
     for (auto& d : f.deferred) d();
@@ -175,10 +228,14 @@ static void end_pass();
 
 static void submit_now(VkSemaphore wait_sem, VkPipelineStageFlags wait_stage, VkSemaphore signal, VkFence fence_in, bool wait) {
     end_pass();
+    Tmr tm(&g().t_submit); g().n_submit++;
     Frame& f = fr();
     VkCommandBuffer cbs[2]; uint32_t n = 0;
     if (f.upload_open) { vkEndCommandBuffer(f.upload); cbs[n++] = f.upload; f.upload_open = false; }
-    if (f.main_open) { vkEndCommandBuffer(f.main); cbs[n++] = f.main; f.main_open = false; }
+    if (f.main_open) {
+        if (f.ts_open) { vkCmdWriteTimestamp(f.main, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, f.ts, (uint32_t)f.ts_pairs * 2 + 1); f.ts_pairs++; f.ts_open = false; }
+        vkEndCommandBuffer(f.main); cbs[n++] = f.main; f.main_open = false;
+    }
     VkFence fence = fence_in;
     VkFence temp = VK_NULL_HANDLE;
     if (wait && !fence) { VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}; vkCreateFence(g().dev, &fi, nullptr, &temp); fence = temp; }
@@ -189,11 +246,12 @@ static void submit_now(VkSemaphore wait_sem, VkPipelineStageFlags wait_stage, Vk
     if (n || wait_sem || signal || fence) vkcheck(vkQueueSubmit(g().ctx.queue(), 1, &si, fence), "vkQueueSubmit");
     g().serial++;
     g().bound_pipe = VK_NULL_HANDLE;
+    g().draws_since_submit = 0;
     if (temp) { vkWaitForFences(g().dev, 1, &temp, VK_TRUE, UINT64_MAX); vkDestroyFence(g().dev, temp, nullptr); }
 }
 
 void flush() { submit_now(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_NULL_HANDLE, false); }
-void finish() { submit_now(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_NULL_HANDLE, true); }
+void finish() { submit_now(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_NULL_HANDLE, true); g().completed_serial = g().serial - 1; }
 
 // ------------------------------------------------------------------------------------------------------------------
 // Formats
@@ -332,14 +390,30 @@ void buf_data(GLuint id, size_t size, const void* data) {
     *b = nb;
     defer_destroy(old);
 }
+// Make [off, off+len) of the store safe to write: if recorded-but-unfinished draws read an overlapping range, move the buffer
+// to a fresh copy (the old store lives on until the GPU is done with it).
+static void make_writable(Buffer& b, size_t off, size_t len) {
+    if (b.read_hi > b.read_lo && b.read_serial > g().completed_serial && off < b.read_hi && off + len > b.read_lo) {
+        Buffer nb;
+        if (!alloc_buffer(nb, b.size, kBufUsage)) return;
+        std::memcpy(nb.map, b.map, b.size);
+        defer_destroy(b);
+        b = nb;
+    } else if (b.read_serial <= g().completed_serial) {
+        b.read_lo = b.read_hi = 0;
+    }
+}
 void buf_subdata(GLuint id, size_t off, size_t size, const void* data) {
     Buffer* b = get_buf(id);
     if (!b || !b->map || off + size > b->size) return;
+    make_writable(*b, off, size);
     std::memcpy((char*)b->map + off, data, size);
 }
-void* buf_map(GLuint id, size_t off) {
+void* buf_map(GLuint id, size_t off, size_t len) {
     Buffer* b = get_buf(id);
-    return b && b->map ? (char*)b->map + off : nullptr;
+    if (!b || !b->map) return nullptr;
+    make_writable(*b, off, len ? len : b->size - off);
+    return (char*)b->map + off;
 }
 
 // ------------------------------------------------------------------------------------------------------------------
@@ -390,6 +464,7 @@ static void copy_region(VkCommandBuffer cb, Img& im, int level, int x, int y, in
 }
 
 static void upload_region(Tex& t, int level, int x, int y, int w, int h, GLenum fmt, GLenum type, const void* data) {
+    Tmr tup(&G->t_upload);
     Img& im = t.img;
     FmtInfo fi{}; fmt_for_internal(t.ifmt, &fi);
     const size_t bytes = (size_t)w * h * fi.bpp;
@@ -777,36 +852,21 @@ static VkDescriptorSet alloc_set1(VkDescriptorSetLayout layout) {
 // Programs
 // ------------------------------------------------------------------------------------------------------------------
 
-static std::string strip_version(const std::string& s) {
-    std::string out;
-    size_t i = 0;
-    while (i < s.size()) {
-        size_t e = s.find('\n', i);
-        std::string line = s.substr(i, e == std::string::npos ? std::string::npos : e - i);
-        size_t k = line.find_first_not_of(" \t");
-        if (!(k != std::string::npos && line.compare(k, 8, "#version") == 0) && !(k != std::string::npos && line.compare(k, 10, "precision ") == 0)) out += line;
-        out += "\n";
-        if (e == std::string::npos) break;
-        i = e + 1;
-    }
-    return out;
-}
-
 bool link_program(Program& p) {
     p.linked = false;
     std::string vs, fs;
     for (GLuint sid : p.shaders) {
         Shader* s = get_shader(sid);
         if (!s) continue;
-        (s->type == GL_VERTEX_SHADER ? vs : fs) = strip_version(s->src);
+        (s->type == GL_VERTEX_SHADER ? vs : fs) = strip_glsl_version(s->src);
     }
     if (vs.empty() || fs.empty()) { p.log = "missing shader stage"; return false; }
     std::string err;
     ConvertedProgram conv;
     if (!convert_glsl_to_vulkan("", vs, fs, &conv, &err)) { p.log = err; return false; }
     std::vector<uint32_t> vspv, fspv;
-    if (!compile_to_spirv(Stage::Vertex, conv.vertex, &vspv, &err)) { p.log = "vertex: " + err; return false; }
-    if (!compile_to_spirv(Stage::Fragment, conv.fragment, &fspv, &err)) { p.log = "fragment: " + err; return false; }
+    if (!compile_cached(Stage::Vertex, conv.vertex, &vspv, &err)) { p.log = "vertex: " + err; return false; }
+    if (!compile_cached(Stage::Fragment, conv.fragment, &fspv, &err)) { p.log = "fragment: " + err; return false; }
     if (conv.ubo_size > kUboRange) { p.log = "uniform block too large"; return false; }
     if (conv.samplers.size() > (size_t)kMaxSamplerBindings) { p.log = "too many samplers"; return false; }
     VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -816,6 +876,7 @@ bool link_program(Program& p) {
     VkShaderModule ov = p.vs, of = p.fs;
     if (ov || of) defer([ov, of]() { if (ov) vkDestroyShaderModule(G->dev, ov, nullptr); if (of) vkDestroyShaderModule(G->dev, of, nullptr); });
     p.vs = nv; p.fs = nf;
+    p.uid = g().next_gen++;
     p.conv = std::move(conv);
     p.shadow.assign(p.conv.ubo_size ? p.conv.ubo_size : 16, 0);
     p.dirty = true;
@@ -855,10 +916,27 @@ static Img* snapshot_of(Img& src) {
     return &sn;
 }
 
-void draw_arrays(GLenum mode, GLint first, GLsizei count) {
+void draw_arrays(GLenum mode, GLint first, GLsizei count) { draw_multi(mode, &first, &count, 1); }
+
+void draw_multi(GLenum mode, const GLint* firsts, const GLsizei* counts, GLsizei ndraws) {
+    Tmr tdraw(&G->t_draw);
     GLState& s = st();
-    if (s.discard || count <= 0) return;
+    if (s.discard || ndraws <= 0) return;
     Program* p = get_prog(s.program);
+    static const bool trace = std::getenv("PSPRECOMP_VK_TRACE") != nullptr;
+    if (trace) std::fprintf(stderr, "[VKTRACE] draw prog=%u linked=%d fbo=%u n=%d first=%d count=%d vp=%d,%d,%d,%d blend=%d depth=%d\n", s.program, p ? p->linked : -1, s.draw_fbo, ndraws, firsts[0], counts[0], s.vp[0], s.vp[1], s.vp[2], s.vp[3], s.blend, s.depth_test);
+    if (trace && p && p->linked && p->conv.samplers.empty()) {
+        Vao* tv = get_vao(s.vao);
+        for (int loc = 0; tv && loc < 2; loc++) {
+            const Attrib& a = tv->a[loc];
+            Buffer* bf = get_buf(a.buffer);
+            std::fprintf(stderr, "[VKTRACE]  attr %d en=%d size=%d type=0x%x stride=%d off=%zu buf=%u store=%p map=%p inputs=0x%x\n", loc, a.enabled, a.size, a.type, a.stride, a.offset, a.buffer, bf ? (void*)bf->buf : nullptr, bf ? bf->map : nullptr, p->conv.vertex_inputs);
+            if (bf && bf->map && loc == 0) { const float* f = (const float*)((char*)bf->map + a.offset); std::fprintf(stderr, "[VKTRACE]  first floats %g %g | %g %g\n", f[0], f[1], f[6], f[7]); }
+        }
+        float res[2] = {0, 0};
+        if (const pspvk::UniformMember* u = p->conv.find("u_res")) std::memcpy(res, &p->shadow[u->offset], 8);
+        std::fprintf(stderr, "[VKTRACE]  u_res %g %g\n", res[0], res[1]);
+    }
     if (!p || !p->linked) return;
     Target t = resolve(s.draw_fbo);
     if (!t.color) return;
@@ -914,7 +992,7 @@ void draw_arrays(GLenum mode, GLint first, GLsizei count) {
     // 3. pipeline
     PipeKey k;
     std::memset(&k, 0, sizeof k);
-    k.prog = (uint64_t)(uintptr_t)p->vs ^ ((uint64_t)(uintptr_t)p->fs << 1);
+    k.prog = p->uid;
     k.rp = (uint64_t)(uintptr_t)g().pass_rp;
     k.topology = topo;
     const bool has_depth = t.depth != nullptr;
@@ -952,8 +1030,12 @@ void draw_arrays(GLenum mode, GLint first, GLsizei count) {
     }
     k.nattr = (uint8_t)nattr; k.nbind = (uint8_t)nb;
     VkPipeline pipe;
-    auto it = g().pipelines.find(k);
-    if (it == g().pipelines.end()) { pipe = make_pipeline(k, *p); g().pipelines.emplace(k, pipe); } else pipe = it->second;
+    if (g().last_key_valid && std::memcmp(&k, &g().last_key, sizeof k) == 0) pipe = g().last_pipe;   // same state as the previous draw
+    else {
+        auto it = g().pipelines.find(k);
+        if (it == g().pipelines.end()) { pipe = make_pipeline(k, *p); g().pipelines.emplace(k, pipe); } else pipe = it->second;
+        g().last_key = k; g().last_pipe = pipe; g().last_key_valid = pipe != VK_NULL_HANDLE;
+    }
     if (!pipe) return;
     if (g().bound_pipe != pipe) { vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe); g().bound_pipe = pipe; }
 
@@ -975,13 +1057,14 @@ void draw_arrays(GLenum mode, GLint first, GLsizei count) {
     }
 
     // 5. uniforms (dynamic UBO) and samplers (descriptor set 1)
-    if (p->psize_idx >= 0) {
+    if (p->psize_idx >= 0 && s.point_size_set) {
         const UniformMember& u = p->conv.uniforms[p->psize_idx];
         float cur; std::memcpy(&cur, &p->shadow[u.offset], 4);
         if (cur != s.point_size) { std::memcpy(&p->shadow[u.offset], &s.point_size, 4); p->dirty = true; }
     }
     Frame& f = fr();
-    if (p->dirty) {
+    if (p->dirty || p->upload_epoch != g().frame_epoch) {
+        p->upload_epoch = g().frame_epoch;
         const size_t sz = (p->shadow.size() + g().ubo_align - 1) & ~size_t(g().ubo_align - 1);
         if (f.ubo_off + sz > f.ubo.size) f.ubo_off = 0;   // exhausted (sized for >10k uniform updates a frame); wraps over finished data
         std::memcpy((char*)f.ubo.map + f.ubo_off, p->shadow.data(), p->shadow.size());
@@ -1035,14 +1118,43 @@ void draw_arrays(GLenum mode, GLint first, GLsizei count) {
     }
 
     // 6. vertex buffers + draw
+    {
+        GLint lo = firsts[0], hi = firsts[0] + counts[0];
+        for (GLsizei i = 1; i < ndraws; i++) { lo = std::min(lo, firsts[i]); hi = std::max(hi, firsts[i] + counts[i]); }
+        for (int loc = 0; loc < kMaxAttribs; loc++) {
+            const Attrib* a = vao ? &vao->a[loc] : nullptr;
+            if (!a || !a->enabled || !(p->conv.vertex_inputs & (1u << loc))) continue;
+            Buffer* bf = get_buf(a->buffer);
+            if (!bf) continue;
+            const size_t stride = a->stride ? (size_t)a->stride : attr_bytes(a->size, a->type);
+            const size_t r0 = a->offset + (size_t)lo * stride, r1 = a->offset + (size_t)hi * stride;
+            if (bf->read_serial <= g().completed_serial || bf->read_hi <= bf->read_lo) { bf->read_lo = r0; bf->read_hi = r1; }
+            else { bf->read_lo = std::min(bf->read_lo, r0); bf->read_hi = std::max(bf->read_hi, r1); }
+            bf->read_serial = g().serial;
+        }
+    }
     bool vb_changed = false;
     for (int i = 0; i < nb; i++) if (g().cache_vb[i] != vbufs[i]) vb_changed = true;
     if (vb_changed && nb) {
         vkCmdBindVertexBuffers(cb, 0, nb, vbufs, voffs);
         for (int i = 0; i < nb; i++) g().cache_vb[i] = vbufs[i];
     }
-    vkCmdDraw(cb, (uint32_t)count, 1, (uint32_t)first, 0);
-    g().draws++;
+    if (ndraws == 1) {
+        if (counts[0] > 0) vkCmdDraw(cb, (uint32_t)counts[0], 1, (uint32_t)firsts[0], 0);
+    } else if (g().multi_draw) {
+        VkMultiDrawInfoEXT mi[256];
+        for (GLsizei base = 0; base < ndraws; base += 256) {
+            const uint32_t n = (uint32_t)std::min<GLsizei>(256, ndraws - base);
+            for (uint32_t i = 0; i < n; i++) mi[i] = {(uint32_t)firsts[base + i], (uint32_t)counts[base + i]};
+            g().cmd_draw_multi(cb, n, mi, 1, 0, sizeof(VkMultiDrawInfoEXT));
+        }
+    } else {
+        for (GLsizei i = 0; i < ndraws; i++) if (counts[i] > 0) vkCmdDraw(cb, (uint32_t)counts[i], 1, (uint32_t)firsts[i], 0);
+    }
+    g().draws += (uint64_t)ndraws;
+    // Let the GPU start on what is recorded while the CPU keeps recording (GL drivers stream like this; a frame submitted
+    // only at the end would run the CPU and the GPU one after the other).
+    if (++g().draws_since_submit >= kSubmitEvery) { g().draws_since_submit = 0; flush(); }
 }
 
 void clear(GLbitfield mask) {
@@ -1157,6 +1269,14 @@ bool core_init(SDL_Window* w, bool vsync, std::string* err) {
     int dw = 0, dh = 0;
     SDL_Vulkan_GetDrawableSize(w, &dw, &dh);
     if (!gl.ctx.create_swapchain(dw, dh, vsync, err)) { core_shutdown(); return false; }
+    gl.ts_period = gl.ctx.props().limits.timestampPeriod;
+    if (gl.ctx.has_multi_draw() && !std::getenv("PSPRECOMP_VK_NO_MULTIDRAW")) {
+        gl.cmd_draw_multi = (PFN_vkCmdDrawMultiEXT)vkGetDeviceProcAddr(gl.dev, "vkCmdDrawMultiEXT");
+        gl.multi_draw = gl.cmd_draw_multi != nullptr;
+    }
+    std::fprintf(stderr, "[VKGL] multi-draw: %s\n", gl.multi_draw ? "VK_EXT_multi_draw" : "loop of vkCmdDraw");
+    gl.no_present = std::getenv("PSPRECOMP_VK_NO_PRESENT") != nullptr;
+    if (const char* e = std::getenv("PSPRECOMP_VK_SUBMIT_EVERY")) kSubmitEvery = std::atoi(e) > 0 ? std::atoi(e) : 1 << 30;
     gl.ubo_align = (uint32_t)std::max<VkDeviceSize>(256, gl.ctx.props().limits.minUniformBufferOffsetAlignment);
 
     // depth/stencil format
@@ -1189,6 +1309,10 @@ bool core_init(SDL_Window* w, bool vsync, std::string* err) {
         VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         vkCreateSemaphore(gl.dev, &si, nullptr, &f.acquire_sem);
         alloc_buffer(f.ubo, 32u << 20, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+        if (gl.ctx.props().limits.timestampComputeAndGraphics) {
+            VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO}; qi.queryType = VK_QUERY_TYPE_TIMESTAMP; qi.queryCount = kTsPairs * 2;
+            vkCreateQueryPool(gl.dev, &qi, nullptr, &f.ts);
+        }
         VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         ai.descriptorPool = gl.set0_pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &gl.set0_layout;
         vkAllocateDescriptorSets(gl.dev, &ai, &f.set0);
@@ -1227,6 +1351,7 @@ void core_shutdown() {
         f.deferred.clear();
         for (auto p : f.pools) vkDestroyDescriptorPool(gl.dev, p, nullptr);
         destroy_buffer_now(f.ubo); destroy_buffer_now(f.stage);
+        if (f.ts) vkDestroyQueryPool(gl.dev, f.ts, nullptr);
         if (f.pool) vkDestroyCommandPool(gl.dev, f.pool, nullptr);
         if (f.fence) vkDestroyFence(gl.dev, f.fence, nullptr);
         if (f.acquire_sem) vkDestroySemaphore(gl.dev, f.acquire_sem, nullptr);
@@ -1267,6 +1392,18 @@ void core_drawable_query(SDL_Window* window, int* w, int* h) {
     *w = dw; *h = dh;
 }
 
+static void log_stats() {
+    Globals& gl = *G;
+    static uint64_t swaps = 0, last_draws = 0, last_fb = 0;
+    if (++swaps % 600 == 0) {
+        std::fprintf(stderr, "[VKGL] %llu frames: %llu draws/frame, %llu feedback copies/frame, %zu pipelines, GPU %.2f ms/frame | CPU ms/frame: draw %.2f (incl. submit), submit %.2f in %.1f calls, upload %.2f, fence wait %.2f\n", (unsigned long long)swaps,
+                     (unsigned long long)((gl.draws - last_draws) / 600), (unsigned long long)((gl.feedback_draws - last_fb) / 600), gl.pipelines.size(),
+                     gl.gpu_ms_n ? gl.gpu_ms_sum / (double)gl.gpu_ms_n : 0.0, gl.t_draw * 1e3 / 600, gl.t_submit * 1e3 / 600, (double)gl.n_submit / 600, gl.t_upload * 1e3 / 600, gl.t_wait * 1e3 / 600);
+        gl.gpu_ms_sum = 0; gl.gpu_ms_n = 0; gl.t_draw = gl.t_submit = gl.t_wait = gl.t_upload = 0; gl.n_submit = 0;
+        last_draws = gl.draws; last_fb = gl.feedback_draws;
+    }
+}
+
 void core_swap() {
     Globals& gl = *G;
     Context& c = gl.ctx;
@@ -1275,6 +1412,18 @@ void core_swap() {
     int dw = 0, dh = 0;
     SDL_Vulkan_GetDrawableSize(gl.window, &dw, &dh);
     Frame& f = fr();
+    if (gl.no_present) {
+        // Measurement mode: no swapchain, just run the frame (the default framebuffer is never shown).
+        VkCommandBuffer cbn = main_cb();
+        (void)cbn;
+        submit_now(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, f.fence, false);
+        f.end_serial = gl.serial - 1;
+        f.fence_pending = true;
+        log_stats();
+        gl.cur = (gl.cur + 1) % kFrames;
+        frame_begin(gl.cur);
+        return;
+    }
     uint32_t idx = 0;
     VkResult r = vkAcquireNextImageKHR(gl.dev, c.swapchain().handle, UINT64_MAX, f.acquire_sem, VK_NULL_HANDLE, &idx);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || (dw > 0 && dh > 0 && ((uint32_t)dw != c.swapchain().extent.width || (uint32_t)dh != c.swapchain().extent.height))) {
@@ -1320,18 +1469,14 @@ void core_swap() {
     }
     VkSemaphore render_sem = gl.render_sems[idx];
     submit_now(f.acquire_sem, VK_PIPELINE_STAGE_TRANSFER_BIT, render_sem, f.fence, false);
+    f.end_serial = gl.serial - 1;
     f.fence_pending = true;
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &render_sem;
     VkSwapchainKHR sc = c.swapchain().handle; pi.swapchainCount = 1; pi.pSwapchains = &sc; pi.pImageIndices = &idx;
     VkResult pr = vkQueuePresentKHR(c.queue(), &pi);
     if (pr != VK_SUCCESS && pr != VK_SUBOPTIMAL_KHR && pr != VK_ERROR_OUT_OF_DATE_KHR) std::fprintf(stderr, "[VKGL] present failed (%d)\n", (int)pr);
-    static uint64_t swaps = 0, last_draws = 0, last_fb = 0;
-    if (++swaps % 600 == 0) {
-        std::fprintf(stderr, "[VKGL] %llu frames: %llu draws/frame, %llu feedback copies/frame, %zu pipelines\n", (unsigned long long)swaps,
-                     (unsigned long long)((gl.draws - last_draws) / 600), (unsigned long long)((gl.feedback_draws - last_fb) / 600), gl.pipelines.size());
-        last_draws = gl.draws; last_fb = gl.feedback_draws;
-    }
+    log_stats();
     gl.cur = (gl.cur + 1) % kFrames;
     frame_begin(gl.cur);
 }

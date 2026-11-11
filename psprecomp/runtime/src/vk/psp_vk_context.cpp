@@ -100,6 +100,12 @@ bool Context::init(const ContextOptions& opt, std::string* err) {
         // Feature chain is filled in when the RT milestone lands; recorded here so callers can query the capability.
         ray_query_ = false;
     }
+    VkPhysicalDeviceMultiDrawFeaturesEXT mdf{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTI_DRAW_FEATURES_EXT};
+    if (has_ext(dep, VK_EXT_MULTI_DRAW_EXTENSION_NAME) && vkGetPhysicalDeviceFeatures2) {
+        VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2}; f2.pNext = &mdf;
+        vkGetPhysicalDeviceFeatures2(phys_, &f2);
+        if (mdf.multiDraw) { dext.push_back(VK_EXT_MULTI_DRAW_EXTENSION_NAME); multi_draw_ = true; }
+    }
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qi{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
     qi.queueFamilyIndex = qfam_; qi.queueCount = 1; qi.pQueuePriorities = &prio;
@@ -112,6 +118,7 @@ bool Context::init(const ContextOptions& opt, std::string* err) {
     di.queueCreateInfoCount = 1; di.pQueueCreateInfos = &qi;
     di.enabledExtensionCount = (uint32_t)dext.size(); di.ppEnabledExtensionNames = dext.data();
     di.pEnabledFeatures = &feat;
+    if (multi_draw_) { mdf.pNext = nullptr; di.pNext = &mdf; }
     r = vkCreateDevice(phys_, &di, nullptr, &dev_);
     if (r != VK_SUCCESS) return fail("vkCreateDevice failed", r);
     vkGetDeviceQueue(dev_, qfam_, 0, &queue_);
@@ -140,6 +147,13 @@ bool Context::create_swapchain(int w, int h, bool vsync, std::string* err) {
     VkSurfaceFormatKHR sf = fm.empty() ? VkSurfaceFormatKHR{VK_FORMAT_B8G8R8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR} : fm[0];
     for (auto& f : fm) if (f.format == VK_FORMAT_B8G8R8A8_UNORM || f.format == VK_FORMAT_R8G8B8A8_UNORM) { sf = f; break; }  // UNORM: the GE is not sRGB
     VkExtent2D ext = caps.currentExtent;
+    // Android reports the panel's native (portrait) orientation as currentTransform ROTATE_90/270: ask for the identity
+    // transform instead and let the compositor rotate, so the window keeps the landscape size SDL reports.
+    VkSurfaceTransformFlagBitsKHR pre = caps.currentTransform;
+    if ((pre & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)) && (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)) {
+        pre = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+        ext = {(uint32_t)w, (uint32_t)h};
+    }
     if (ext.width == 0xFFFFFFFFu) { ext.width = std::clamp<uint32_t>(w, caps.minImageExtent.width, caps.maxImageExtent.width);
                                     ext.height = std::clamp<uint32_t>(h, caps.minImageExtent.height, caps.maxImageExtent.height); }
     uint32_t np = 0; vkGetPhysicalDeviceSurfacePresentModesKHR(phys_, surface_, &np, nullptr);
@@ -152,7 +166,7 @@ bool Context::create_swapchain(int w, int h, bool vsync, std::string* err) {
     si.surface = surface_; si.minImageCount = cnt; si.imageFormat = sf.format; si.imageColorSpace = sf.colorSpace;
     si.imageExtent = ext; si.imageArrayLayers = 1;
     si.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;   // present = blit/copy from the scaled target
-    si.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE; si.preTransform = caps.currentTransform;
+    si.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE; si.preTransform = pre;
     si.compositeAlpha = (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR : VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
     si.presentMode = mode; si.clipped = VK_TRUE; si.oldSwapchain = sc_.handle;
     VkSwapchainKHR nsc = VK_NULL_HANDLE;

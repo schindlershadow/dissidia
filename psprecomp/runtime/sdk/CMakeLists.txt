@@ -67,6 +67,11 @@ target_link_libraries(psprecomp_core INTERFACE PkgConfig::SDL2 PkgConfig::FREETY
 if(AVCODEC_FOUND)
     target_link_libraries(psprecomp_core INTERFACE PkgConfig::AVCODEC)
 endif()
+include("${CMAKE_CURRENT_LIST_DIR}/psp_vkgl_link.cmake" OPTIONAL)   # the core was built with the Vulkan backend
+if(PSP_VKGL_LIBS)
+    target_compile_definitions(psprecomp_core INTERFACE PSPRECOMP_HAVE_VKGL)
+    target_link_libraries(psprecomp_core INTERFACE ${PSP_VKGL_LIBS})
+endif()
 if(TARGET PkgConfig::MBEDTLS)
     target_link_libraries(psprecomp_core INTERFACE PkgConfig::MBEDTLS)
 endif()

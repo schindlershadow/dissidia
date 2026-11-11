@@ -627,6 +627,10 @@ int psp_runtime_init_sdl() {
     // 5. Load GL function pointers via GLAD2 (MUST be after context creation)
     //    GLAD2 requires a loader function; SDL2 provides SDL_GL_GetProcAddress.
 #if defined(PSPRECOMP_HAVE_VKGL)
+#ifdef PSP_GLES
+    void psp_gl_table_use_gles();   // psp_gl_table.cpp
+    psp_gl_table_use_gles();   // the GL calls go through a table here (psp_gl_table.h); the Vulkan layer replaces its entries
+#endif
     if (use_vk) {
         std::string verr;
         if (!vkgl::init(g_window, std::getenv("PSPRECOMP_VSYNC") != nullptr, &verr)) {
