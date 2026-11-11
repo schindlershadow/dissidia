@@ -384,6 +384,14 @@ PspDebugReply psp_debug_handle_line(const char* line,
         ge_draw_dump_targets(skip_spaces(line + 2));
         return make_ok_empty();
     }
+    if (line[0] == 'F' && line[1] == 'X' && line[2] == ' ') {
+        // FX <ssao> <contact shadows> <ssr>: each 0..3, screen-space effects at run time (A/B aid)
+        extern void psp_fx_set_ssao(int), psp_fx_set_contact(int), psp_fx_set_ssr(int);
+        int a = 0, c = 0, r = 0;
+        std::sscanf(line + 3, "%d %d %d", &a, &c, &r);
+        psp_fx_set_ssao(a); psp_fx_set_contact(c); psp_fx_set_ssr(r);
+        return make_ok_empty();
+    }
     if (line[0] == 'F' && line[1] == 'T' && (line[2] == ' ' || line[2] == 0)) {
         // FT [n]: trace every draw of the next n frames ([FTRACE] lines in the log)
         extern void ge_draw_frame_trace(int n);

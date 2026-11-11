@@ -1,6 +1,7 @@
 #include "hle/psp_savedata_dialog.h"
 #include "psp_ge_draw.h"
 #include "psp_post.h"
+#include "psp_screenfx.h"
 #include "psp_ge.h"
 #include "psp_ge_constants.h"
 #include "psp_ge_vertex.h"
@@ -2282,6 +2283,49 @@ void ge_draw_prim(uint8_t* rdram, int prim_type, int count) {
     glBindFramebuffer(GL_FRAMEBUFFER, t.fbo);
 }
 
+// ---- Screen-space effects (psp_screenfx.cpp) ----
+// A displayed buffer's 3D scene is complete when the first through-mode (2D) draw follows a run of 3D draws: the game
+// then copies the picture into its glow chain and draws the HUD. The effects run right there, on the scene alone.
+static int g_fx_n[GE_MAX_TARGETS];
+static bool g_fx_done[GE_MAX_TARGETS];
+static ScreenFxScene g_fx_scene[GE_MAX_TARGETS];
+static float g_fx_clearz[GE_MAX_TARGETS];
+static bool wide_on();
+static void fx_track(const GeState& st) {
+    if (g_current_target < 0 || g_ab_shadow) return;
+    const int cur = g_current_target;
+    if (st.clear_mode) {
+        if (st.clear_flags == 0 || (st.clear_flags & 4)) { g_fx_n[cur] = 0; g_fx_done[cur] = false; }
+        return;
+    }
+    if (!ge_vtype_through(st.vertex_type)) {
+        if (st.depth_test_enable && !st.depth_write_disable) {
+            g_fx_n[cur]++;
+            ScreenFxScene& s = g_fx_scene[cur];
+            std::memcpy(s.proj, st.proj_matrix, sizeof s.proj);
+            std::memcpy(s.view, st.view_matrix, sizeof s.view);
+            const GeViewportDepth vp = compute_state_viewport_depth(st);
+            s.near_z = vp.near_z; s.far_z = vp.far_z;
+        }
+        return;
+    }
+    for (int i = 0; i < GE_MAX_TARGETS; ++i) {
+        GeTarget& t = g_targets[i];
+        if (!t.fbo || g_fx_done[i] || g_fx_n[i] < 60 || !is_main_key(t.key)) continue;
+        g_fx_done[i] = true;
+        g_fx_n[i] = 0;
+        if (wide_on()) continue;   // widescreen rescales x outside the projection matrix: not handled
+        flush_batch();
+        ScreenFxScene s = g_fx_scene[i];
+        s.clear_z = g_fx_clearz[i];
+        psp_screenfx_run(t.fbo, t.color_tex, t.w480 * t.rs, 272 * t.rs, s);
+        glBindFramebuffer(GL_FRAMEBUFFER, g_targets[g_current_target].fbo);
+        glc::invalidate();
+        ge_texture_invalidate_bind_cache();
+        ge_shader_note_external_program();
+    }
+}
+
 static void ge_draw_prim_one(
     uint8_t* rdram,
     int prim_type,
@@ -2517,6 +2561,7 @@ static void ge_draw_prim_one(
             fbo_tex ? 1 : 0, fbo_tex ? g_fbtex_w480 : 0, state.alpha_blend_enable ? 1 : 0, (unsigned)state.blend_mode, (unsigned)state.blend_fix_a,
             fvp.x, fvp.y, fvp.w, fvp.h, draw_wide_x(state));
     }
+    if (psp_screenfx_active()) fx_track(state);
     static const bool draw_trace_mat_env = std::getenv("PSPRECOMP_DRAW_TRACE_MAT") != nullptr;
     if (!state.clear_mode && prim_type == 3 && count > 30 && draw_trace_mat_env) {
         static int mat_n = 0;
@@ -2586,6 +2631,7 @@ static void ge_draw_prim_one(
             if (cz < 0.0) cz = 0.0;
             if (cz > 1.0) cz = 1.0;
             glClearDepth(cz);
+            if (g_current_target >= 0) g_fx_clearz[g_current_target] = float(cz);
         }
 
         // Temporarily disable depth mask restriction. In clear mode the PSP

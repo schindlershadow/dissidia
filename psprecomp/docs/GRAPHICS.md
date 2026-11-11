@@ -441,3 +441,26 @@ Always-on instrumentation in `ge_draw_prim` / `psp_ge.cpp` (no env var needed):
 For live inspection of display-list memory and GE-adjacent guest structures, the runtime's TCP
 debug socket on port 9999 (live memory inspection) works while the game runs; PPSSPP serves as the
 behavioral oracle for diffing (see README, Verification Methodology).
+
+## Screen-space effects (SSAO, contact shadows, reflections)
+
+`runtime/src/psp_screenfx.cpp`, settings rows Ambient Occlusion / Contact Shadows / Reflections (levels 0-3; env
+`PSPRECOMP_SSAO`, `PSPRECOMP_CONTACT_SHADOWS`, `PSPRECOMP_SSR`; debug socket `FX <ssao> <contact> <ssr>`). All off by default.
+
+They run on the finished 3D scene of a displayed buffer, not on the presented picture: by present time the depth buffer
+holds only the game's glow / HUD passes (all ~0). `fx_track` in `psp_ge_draw.cpp` counts depth-writing 3D draws per target
+and, at the first through-mode draw that follows a run of them (the glow downsample, then the HUD), copies depth and colour
+and runs three passes: AO + ray-marched contact shadow into an RG texture, a depth-aware blur, and a composite back into
+the scene buffer (RGB only: the buffer's alpha is the GE stencil). The glow chain and HUD are drawn afterwards, so neither
+is darkened or reflected. Skipped in widescreen (x is rescaled outside the projection matrix).
+
+- View-space positions come from the inverse of the PSP projection matrix and the draw's `glDepthRange` (the depth is
+  non-linear and 16-bit; the matrix of the last depth-writing 3D draw is used).
+- The sky dome is real geometry (~250 units away on the stages tried): everything beyond `PSPRECOMP_FX_SKY_DIST` (150) is
+  background. Effects fade out between `PSPRECOMP_FX_FADE_START` (30) and `_END` (70) view units: the 16-bit depth is too
+  coarse there and AO / shadows hallucinate occluders (a distant backdrop wall went black without the fade).
+- Reflections only apply to upward-facing surfaces (world up from the view matrix) and only show what is on screen.
+- Tuning: `PSPRECOMP_SSAO_RADIUS` (0.09 of the distance to the camera), `PSPRECOMP_CONTACT_LEN` (0.14),
+  `PSPRECOMP_SSR_LEN` (0.6), `PSPRECOMP_LIGHT_X/Y/Z` (world direction to the light, a fixed guess: the game's own lights
+  are not read). `PSPRECOMP_FX_VIEW=1..8` shows an intermediate (AO, shadow, reflection mask, normals, depth).
+

@@ -56,6 +56,7 @@ class Game:
         self.go_file = os.path.join(out, 'go_%d' % fps)
         self.pos = 0
         self.n = 0
+        self.window, self.render_scale = '480x272', 1     # a visual test can ask for a bigger window / render scale
 
     def start(self):
         ms0 = os.path.join(self.out, 'ms0_%d' % self.fps)
@@ -64,7 +65,7 @@ class Game:
         shutil.copytree(os.path.join(self.work, 'ms0'), ms0)
         ini = os.path.join(self.out, 'settings_%d.ini' % self.fps)
         with open(ini, 'w') as f:
-            f.write('display=window\nfps=%d\nrender_scale=1\nwidescreen=0\nvoice=en\ncheck_updates=0\nhd_textures=0\n' % self.fps)
+            f.write('display=window\nfps=%d\nrender_scale=%d\nwidescreen=0\nvoice=en\ncheck_updates=0\nhd_textures=0\n' % (self.fps, self.render_scale))
         env = dict(os.environ, DISPLAY=self.display, PSPRECOMP_SETTINGS=ini, PSPRECOMP_MS0=ms0, PSPRECOMP_FIGHTER_LOG='1',
                    PSPRECOMP_DEBUG_PORT=str(self.port), PSPRECOMP_SAVEDATA_AUTO='0', PSPRECOMP_TEST_FREEZE_CPU='1')
         env.pop('PSPRECOMP_FPS', None)
@@ -76,7 +77,7 @@ class Game:
         if self.record:
             env['PSPRECOMP_INPUT_RECORD'] = self.record
         env.update(self.extra_env)
-        self.proc = subprocess.Popen([os.path.join(HERE, 'run.sh'), self.work, '--window', '480x272', '--log', self.log], env=env,
+        self.proc = subprocess.Popen([os.path.join(HERE, 'run.sh'), self.work, '--window', self.window, '--log', self.log], env=env,
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
     def alive(self):
