@@ -338,12 +338,121 @@ static void test_real(const fs::path& T) {
     CHECK(resign_is_noop(out / "ULUS10566GameData00" / "PARAM.SFO"));
 }
 
+// ---- the Cloud sync screens (fake service) ----
+namespace svc = psp_cloud_svc;
+struct FakeCloud {
+    svc::Status st;
+    svc::Config cfg;
+    bool configured = false;
+    int syncs = 0, signins = 0, cancels = 0, signouts = 0;
+    std::vector<std::pair<std::string, psp_cloud::Choice>> resolved;
+};
+static void test_cloud(const fs::path& T) {
+    const fs::path saves = T / "csaves", bak = T / "cbak";
+    fs::create_directories(saves);
+    FakeCloud f;
+    f.st.state = svc::Status::Off; f.st.text = "Off"; f.st.revision = 1;
+    ManagerConfig c = make_cfg(saves, bak, {}, {});
+    c.cloud_status = [&] { return f.st; };
+    c.cloud_config = [&] { return f.cfg; };
+    c.cloud_configured = [&] { return f.configured; };
+    c.cloud_sync = [&] { ++f.syncs; f.st.state = svc::Status::Syncing; f.st.text = "Syncing..."; ++f.st.revision; };
+    c.cloud_signin = [&] { ++f.signins; f.st.state = svc::Status::SigningIn; f.st.user_code = "ABCD-EFGH"; f.st.verify_url = "https://www.google.com/device"; ++f.st.revision; };
+    c.cloud_signin_cancel = [&] { ++f.cancels; f.st.state = svc::Status::Off; f.st.user_code.clear(); ++f.st.revision; };
+    c.cloud_signout = [&] { ++f.signouts; f.configured = false; f.cfg.provider = svc::Provider::Off; ++f.st.revision; };
+    c.cloud_resolve = [&](const std::string& s, psp_cloud::Choice ch) { f.resolved.push_back({s, ch}); };
+
+    // without the hooks the first screen is the old one (Back is the third row)
+    {
+        Drv v;
+        v.d.begin(make_cfg(saves, bak, {}, {}));
+        v.tick(0);
+        down(v, 2);
+        CHECK(v.d.selected() == 2);
+        down(v, 1);
+        CHECK(v.d.selected() == 2);                               // clamped: no Cloud row, three rows only
+    }
+
+    Drv v;
+    v.d.begin(c);
+    v.tick(0);
+    CHECK(v.d.screen() == Screen::Main);
+    down(v, 2);
+    v.tap(CROSS);                                                // Cloud sync
+    CHECK(v.d.screen() == Screen::Cloud && v.d.selected() == 0);
+    // not set up: Info, Sign in, Back
+    down(v, 1); v.tap(CROSS);
+    CHECK(f.signins == 1);
+    v.tick(0);
+    {   // while signing in the same row is "Cancel sign-in" (Info, Cancel, Back)
+        CHECK(v.d.selected() == 1);
+        v.tap(CROSS);
+        CHECK(f.cancels == 1);
+    }
+    // set up and signed in to Google: Info, Sync now, Sign out, Back
+    f.configured = true; f.cfg.provider = svc::Provider::Google; f.st.state = svc::Status::Idle; f.st.text = "Synced"; ++f.st.revision;
+    v.tick(0);
+    v.d.update(0, 5000);
+    v.d.begin(c);                                                // reopen from the first screen
+    v.tick(0); down(v, 2); v.tap(CROSS);
+    CHECK(v.d.screen() == Screen::Cloud);
+    down(v, 1); v.tap(CROSS);
+    CHECK(f.syncs == 1);                                         // Sync now
+    v.tap(CROSS);
+    CHECK(f.syncs == 1);                                         // still syncing: ignored
+    // the sync found a conflict and a download
+    psp_cloud::Item conflict; conflict.suffix = "GameData00"; conflict.action = psp_cloud::Action::Conflict; conflict.local_mtime = 1700000000; conflict.remote.mtime = 1700100000;
+    psp_cloud::Item pulled; pulled.suffix = "FCard00"; pulled.action = psp_cloud::Action::Pulled;
+    f.st.state = svc::Status::NeedsChoice; f.st.conflicts = 1; f.st.items = {conflict, pulled}; f.st.text = "1 save changed on both sides"; ++f.st.revision;
+    CHECK(!v.d.changed());
+    v.tick(0);
+    CHECK(v.d.changed());                                        // the save list behind must refresh
+    CHECK(v.d.screen() == Screen::Cloud);
+    v.d.begin(c);
+    v.tick(0); down(v, 2); v.tap(CROSS);
+    down(v, 2);                                                  // Info, Sync now, "Choose: GameData00"
+    v.tap(CROSS);
+    CHECK(v.d.screen() == Screen::CloudConflict);
+    down(v, 1); v.tap(CROSS);                                    // Take the cloud save
+    CHECK(f.resolved.size() == 1 && f.resolved[0].first == "GameData00" && f.resolved[0].second == psp_cloud::Choice::KeepRemote);
+    CHECK(v.d.screen() == Screen::Cloud);
+    down(v, 2); v.tap(CROSS);
+    CHECK(v.d.screen() == Screen::CloudConflict);
+    v.tap(CROSS);                                                // Keep this device's save
+    CHECK(f.resolved.size() == 2 && f.resolved[1].second == psp_cloud::Choice::KeepLocal);
+    down(v, 2); v.tap(CROSS);
+    v.tap(DOWN); v.tap(DOWN); v.tap(CROSS);                      // Decide later
+    CHECK(f.resolved.size() == 2 && v.d.screen() == Screen::Cloud);
+    // Circle goes back one level at a time
+    down(v, 2); v.tap(CROSS);
+    CHECK(v.d.screen() == Screen::CloudConflict);
+    v.tap(CIRCLE);
+    CHECK(v.d.screen() == Screen::Cloud);
+    v.tap(CIRCLE);
+    CHECK(v.d.screen() == Screen::Main && v.d.selected() == 2);
+    // sign out (Google only)
+    f.st.conflicts = 0; f.st.items.clear(); f.st.state = svc::Status::Idle; ++f.st.revision;
+    v.tap(CROSS);
+    down(v, 2);                                                  // Info, Sync now, Sign out
+    v.tap(CROSS);
+    CHECK(f.signouts == 1 && v.d.screen() == Screen::Cloud);
+    // the screen's revision follows the service, so it redraws when the status changes
+    const uint32_t r1 = v.d.revision();
+    ++f.st.revision;
+    CHECK(v.d.revision() != r1);
+    // Circle on the first screen leaves the dialog
+    v.tap(CIRCLE);
+    CHECK(v.d.screen() == Screen::Main);
+    CHECK(v.d.update(CIRCLE, v.t + 1000) == Result::Cancelled);
+}
+
 int main() {
     char tmpl[] = "/tmp/savemgrtestXXXXXX";
     if (!mkdtemp(tmpl)) return 2;
     const fs::path T = tmpl;
     test_synthetic(T / "syn");
     test_real(T);
+    test_cloud(T / "cloud");
     if (!std::getenv("KEEP")) fs::remove_all(T);
     else std::printf("kept %s\n", tmpl);
     if (g_fail) { std::printf("test_savemgr: %d FAILURES\n", g_fail); return 1; }

@@ -44,6 +44,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Player Select grid: (row, column) of each character with the cursor starting on (0, 0); read off the screen
 GRID = {'lightning': (0, 0), 'vaan': (0, 1), 'squall': (1, 5)}
+CHAR_ID = {'lightning': 31, 'squall': 15}      # the game's charId (the fighter the tests drive; the other one is the dummy)
 
 
 class Game:
@@ -235,12 +236,16 @@ def run(a, fps=None):
     os.makedirs(a.out, exist_ok=True)
     xp, disp = start_xvfb()
     g = Game(os.path.abspath(a.work), fps, a.out, disp, free_port(), script=os.path.abspath(a.script) if a.script else None,
-             record=os.path.abspath(a.record) if getattr(a, 'record', None) else None)
+             record=os.path.abspath(a.record) if getattr(a, 'record', None) else None,
+             extra_env={'PSPRECOMP_TEST_PLAYER_CHAR': str(CHAR_ID[a.char.lower()])})
     try:
         g.start()
         t0 = time.time()
         walk_menus(g, a.char, stage=getattr(a, 'stage', 12))
         print('[battle_test] %d fps: in battle after %.0f s' % (fps, time.time() - t0), file=sys.stderr)
+        if getattr(a, 'watch', None):                  # arm the runtime's memory-write watch (debug socket M) `watch_after` s after the clock starts
+            time.sleep(a.watch_after)
+            g.cmd('M ' + a.watch)
         if a.script:
             end = time.time() + a.timeout
             while g.alive() and time.time() < end:
@@ -486,6 +491,8 @@ def main(argv):
         if name == 'run':
             p.add_argument('--fps', type=int, default=30)
             p.add_argument('--record', help='write the pad input of this session as a test script')
+            p.add_argument('--watch', help='hex guest address: log which functions change it ([MEM_WATCH] lines)')
+            p.add_argument('--watch-after', dest='watch_after', type=float, default=4.0)
         else:
             p.add_argument('--rates', default='30,120')
             p.add_argument('--tolerance', type=float, default=0.5)

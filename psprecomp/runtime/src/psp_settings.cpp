@@ -8,6 +8,7 @@
 #include "psp_ge_draw.h"
 #include "hle/psp_savedata_dialog.h"
 #include "hle/psp_hle_adhoc.h"
+#include "hle/psp_cloud_service.h"
 
 #include <SDL.h>
 #include <algorithm>
@@ -84,13 +85,15 @@ bool texpack_at_start();
 
 enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_VOICE, ROW_TEXPACK, ROW_TOUCH, ROW_TOUCH_EDIT, ROW_UPDATES, ROW_QUIT,
            ROW_NET_MODE, ROW_NET_SERVER, ROW_NET_ROOM, ROW_NET_PEERS, ROW_NET_STATUS,   // Network page
+           ROW_CLOUD_PROVIDER, ROW_CLOUD_FOLDER, ROW_CLOUD_URL, ROW_CLOUD_USER, ROW_CLOUD_PASS, ROW_CLOUD_GOOGLE,
+           ROW_CLOUD_AUTO, ROW_CLOUD_REPLAYS, ROW_CLOUD_NOW, ROW_CLOUD_STATUS,   // Cloud page
            ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS };   // the last six: Debug page
 std::vector<Row> g_rows;
 int g_sel = 0;
-constexpr int PAGE_SYSTEM = 0, PAGE_NETWORK = 1, PAGE_DEBUG = 2, PAGES = 3;
-const char* const k_page_names[PAGES] = {"System", "Network", "Debug"};
+constexpr int PAGE_SYSTEM = 0, PAGE_NETWORK = 1, PAGE_CLOUD = 2, PAGE_DEBUG = 3, PAGES = 4;
+const char* const k_page_names[PAGES] = {"System", "Network", "Cloud", "Debug"};
 int g_page = 0;                        // L / R shoulder, Q / E or Tab: next page
-int g_sel_page[PAGES] = {0, 0, 0};
+int g_sel_page[PAGES] = {0, 0, 0, 0};
 int g_ring_next = -1;                  // vertex upload mode saved for the next launch (-1 = unchanged)
 bool g_quit_armed = false;
 bool g_dirty = true;
@@ -189,15 +192,28 @@ int64_t g_status_next = 0;
 // (left / right), adds it (Cross) and deletes (Circle), as on a console.
 struct Edit {
     bool active = false;
-    int field = 0;          // 0 server, 1 room, 2 peers
+    int field = 0;          // 0 server, 1 room, 2 peers, 3 sync folder, 4 WebDAV address, 5 WebDAV user, 6 WebDAV password
     std::string buf;
     int ci = 0;             // index into the letter list
     int sel = 1;            // selected row of the editor
 } g_edit;
-const char* const k_edit_chars = "abcdefghijklmnopqrstuvwxyz0123456789.-_:,ABCDEFGHIJKLMNOPQRSTUVWXYZ ";
+const char* const k_edit_chars = "abcdefghijklmnopqrstuvwxyz0123456789.-_:,ABCDEFGHIJKLMNOPQRSTUVWXYZ /@%?=&+#~!$*()[]\\";
 constexpr int EDIT_ROWS = 5;   // text, letter, delete, done, cancel
-const char* edit_label() { return g_edit.field == 0 ? "Server" : g_edit.field == 1 ? "Room" : "Direct Peers"; }
-size_t edit_max() { return g_edit.field == 0 ? 63 : g_edit.field == 1 ? 31 : 127; }
+const char* edit_label() {
+    static const char* const n[] = {"Server", "Room", "Direct Peers", "Sync Folder", "WebDAV Address", "WebDAV User", "WebDAV Password"};
+    return n[g_edit.field];
+}
+size_t edit_max() {
+    static const size_t m[] = {63, 31, 127, 255, 255, 63, 63};
+    return m[g_edit.field];
+}
+
+// ---- Cloud page: the settings live in the cloud service (cloud.ini); this is the page's working copy ----
+psp_cloud_svc::Config g_cloud;
+unsigned g_cloud_rev = 0;
+void cloud_load() { g_cloud = psp_cloud_svc::config(); }
+void cloud_apply() { if (psp_cloud_svc::initialised()) psp_cloud_svc::set_config(g_cloud); }
+std::string tail_fit(const std::string& s, size_t n) { return s.size() <= n ? s : "..." + s.substr(s.size() - (n - 3)); }
 
 void net_load() {
     if (g_net_loaded) return;
@@ -220,7 +236,17 @@ void net_apply() {   // use and remember the Network page's values
     save("net_peers", g_net_peers);
     g_status_next = 0;
 }
-std::string& edit_target() { return g_edit.field == 0 ? g_net_server : g_edit.field == 1 ? g_net_room : g_net_peers; }
+std::string& edit_target() {
+    switch (g_edit.field) {
+    case 0: return g_net_server;
+    case 1: return g_net_room;
+    case 2: return g_net_peers;
+    case 3: return g_cloud.folder;
+    case 4: return g_cloud.webdav_url;
+    case 5: return g_cloud.webdav_user;
+    default: return g_cloud.webdav_pass;
+    }
+}
 void edit_begin(int field) {
     g_edit = Edit{};
     g_edit.active = true;
@@ -237,7 +263,8 @@ void edit_commit() {
     if (g_edit.field == 0 && v.empty()) v = NET_DEFAULT_SERVER;
     edit_target() = v;
     edit_end();
-    net_apply();
+    if (g_edit.field >= 3) cloud_apply();
+    else net_apply();
 }
 void edit_append(char c) {
     if (c < 0x20 || c > 0x7e || g_edit.buf.size() >= edit_max()) return;
@@ -248,7 +275,7 @@ void edit_backspace() { if (!g_edit.buf.empty()) { g_edit.buf.pop_back(); g_dirt
 
 std::vector<psp_sddialog::MenuRow> make_edit_rows() {
     std::vector<psp_sddialog::MenuRow> out(EDIT_ROWS);
-    std::string shown = g_edit.buf + "_";
+    std::string shown = g_edit.field == 6 ? std::string(g_edit.buf.size(), '*') + "_" : g_edit.buf + "_";   // a password is never shown
     if (shown.size() > 30) shown = "..." + shown.substr(shown.size() - 27);
     out[0].label = edit_label();
     out[0].value = shown;
@@ -407,6 +434,81 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.value = g_net_status.empty() ? "..." : g_net_status;
             m.help = "Network status\nWhether the server answers and how many players are in your room (or nearby, on a LAN). Communications mode starts the connection.";
             break;
+        case ROW_CLOUD_PROVIDER:
+            m.label = "Cloud Sync";
+            m.value = psp_cloud_svc::provider_name(g_cloud.provider);
+            m.can_dec = g_cloud.provider != psp_cloud_svc::Provider::Off;
+            m.can_inc = g_cloud.provider != psp_cloud_svc::Provider::Google;
+            m.help = "Keep saves in step between devices\nOff, a synced Folder (Syncthing, a Drive / OneDrive folder, a NAS), a WebDAV server (Nextcloud and most NAS boxes) or Google Drive. Saves from every region sync with each other. On the save list, Triangle > Cloud sync shows the status and lets you choose when both sides changed.";
+            break;
+        case ROW_CLOUD_FOLDER:
+            m.label = "Sync Folder";
+            m.value = g_cloud.folder.empty() ? "not set" : tail_fit(g_cloud.folder, 30);
+            m.help = "Folder\nA folder another program keeps in sync between your devices (or a network share). The saves are stored there as small files. Press Cross to type the path. " + g_cloud.folder;
+            break;
+        case ROW_CLOUD_URL:
+            m.label = "WebDAV Address";
+            m.value = g_cloud.webdav_url.empty() ? "not set" : tail_fit(g_cloud.webdav_url, 30);
+            m.help = "WebDAV folder address\nThe folder on the server that holds the saves, e.g. https://cloud.example.com/remote.php/dav/files/me/Dissidia (the parent folder must exist). Press Cross to type it. " + g_cloud.webdav_url;
+            break;
+        case ROW_CLOUD_USER:
+            m.label = "WebDAV User";
+            m.value = g_cloud.webdav_user.empty() ? "not set" : tail_fit(g_cloud.webdav_user, 30);
+            m.help = "WebDAV user name\nPress Cross to type it.";
+            break;
+        case ROW_CLOUD_PASS:
+            m.label = "WebDAV Password";
+            m.value = g_cloud.webdav_pass.empty() ? "not set" : "set";
+            m.help = "WebDAV password\nFor Nextcloud / ownCloud create an app password in the security settings and use that. It is kept in cloud.ini next to settings.ini; keep that file private. Press Cross to type it.";
+            break;
+        case ROW_CLOUD_GOOGLE: {
+            const psp_cloud_svc::Status st = psp_cloud_svc::status();
+            m.label = "Google Drive";
+            if (st.state == psp_cloud_svc::Status::SigningIn) {
+                m.value = st.user_code.empty() ? "contacting..." : st.user_code;
+                m.help = "Signing in\n" + st.text + "\nPress Cross to cancel.";
+            } else if (g_cloud.google_refresh.empty()) {
+                m.value = "Sign in...";
+                m.help = "Sign in to Google Drive\nPress Cross: a code appears. Enter it at google.com/device on your phone or computer. The game gets access to its own hidden folder only, never to your other files.";
+            } else {
+                m.value = "Signed in";
+                m.help = "Signed in to Google Drive\nPress Cross to sign out on this device. The saves in your Drive stay where they are.";
+            }
+            break;
+        }
+        case ROW_CLOUD_AUTO:
+            m.label = "Sync Automatically";
+            m.value = g_cloud.auto_sync ? "On" : "Off";
+            m.can_dec = g_cloud.auto_sync; m.can_inc = !g_cloud.auto_sync;
+            m.help = "Automatic sync\nOn: a sync runs at start-up (before the game reads saves) and a few seconds after each save. Downloads only happen at start-up or from Sync Now, never during play. Off: only Sync Now.";
+            break;
+        case ROW_CLOUD_REPLAYS:
+            m.label = "Include Replays";
+            m.value = g_cloud.replays ? "On" : "Off";
+            m.can_dec = g_cloud.replays; m.can_inc = !g_cloud.replays;
+            m.help = "Replays\nReplay saves are large; leave this off unless you want them on every device.";
+            break;
+        case ROW_CLOUD_NOW: {
+            const bool busy = psp_cloud_svc::status().state == psp_cloud_svc::Status::Syncing;
+            m.label = "Sync Now";
+            m.value = busy ? "working..." : "";
+            m.help = "Sync now\nUpload changed saves and download newer ones. The game is paused while this menu is open, so downloading is safe.";
+            break;
+        }
+        case ROW_CLOUD_STATUS: {
+            const psp_cloud_svc::Status st = psp_cloud_svc::status();
+            m.label = "Status";
+            if (!psp_cloud_svc::initialised()) {
+                m.value = "disabled";
+                m.help = "Cloud sync\nCloud sync is switched off for this run (PSPRECOMP_CLOUD=0).";
+                break;
+            }
+            m.value = st.state == psp_cloud_svc::Status::Syncing ? "working..." : st.state == psp_cloud_svc::Status::Error ? "problem" :
+                      st.state == psp_cloud_svc::Status::NeedsChoice ? "needs choice" : st.state == psp_cloud_svc::Status::SigningIn ? "signing in" :
+                      st.state == psp_cloud_svc::Status::Off ? "off" : "ok";
+            m.help = "Cloud sync status\n" + st.text + (st.conflicts ? "\nChoose which save to keep on the save list: Triangle > Cloud sync." : "");
+            break;
+        }
         case ROW_QUIT:
             m.label = "Quit Game";
             m.value = g_quit_armed ? "Press again to quit" : "";
@@ -635,6 +737,20 @@ void change(int d) {   // left / right on the selected row
         }
         break;
     case ROW_NET_SERVER: case ROW_NET_ROOM: case ROW_NET_PEERS: case ROW_NET_STATUS: break;
+    case ROW_CLOUD_PROVIDER: {
+        const int cur = int(g_cloud.provider), nx = std::clamp(cur + d, 0, 3);
+        if (nx != cur) {
+            g_cloud.provider = psp_cloud_svc::Provider(nx);
+            cloud_apply();
+            g_sel_page[g_page] = g_sel;
+            build_rows();   // the rows differ per provider
+        }
+        break;
+    }
+    case ROW_CLOUD_AUTO: if (g_cloud.auto_sync != (d > 0)) { g_cloud.auto_sync = d > 0; cloud_apply(); } break;
+    case ROW_CLOUD_REPLAYS: if (g_cloud.replays != (d > 0)) { g_cloud.replays = d > 0; cloud_apply(); } break;
+    case ROW_CLOUD_FOLDER: case ROW_CLOUD_URL: case ROW_CLOUD_USER: case ROW_CLOUD_PASS: case ROW_CLOUD_GOOGLE:
+    case ROW_CLOUD_NOW: case ROW_CLOUD_STATUS: break;
     case ROW_PERF:
         if ((d > 0) != ge_draw_perf_overlay()) {
             ge_draw_set_perf_overlay(d > 0);
@@ -674,6 +790,21 @@ void build_rows() {
         if (g_net_internet) { g_rows.push_back(ROW_NET_SERVER); g_rows.push_back(ROW_NET_ROOM); }
         else g_rows.push_back(ROW_NET_PEERS);
         g_rows.push_back(ROW_NET_STATUS);
+    } else if (g_page == PAGE_CLOUD) {
+        cloud_load();
+        if (psp_cloud_svc::initialised()) {
+            g_rows = {ROW_CLOUD_PROVIDER};
+            using P = psp_cloud_svc::Provider;
+            if (g_cloud.provider == P::Folder) g_rows.push_back(ROW_CLOUD_FOLDER);
+            else if (g_cloud.provider == P::WebDav) { g_rows.push_back(ROW_CLOUD_URL); g_rows.push_back(ROW_CLOUD_USER); g_rows.push_back(ROW_CLOUD_PASS); }
+            else if (g_cloud.provider == P::Google) g_rows.push_back(ROW_CLOUD_GOOGLE);
+            if (g_cloud.provider != P::Off) {
+                g_rows.push_back(ROW_CLOUD_AUTO);
+                g_rows.push_back(ROW_CLOUD_REPLAYS);
+                g_rows.push_back(ROW_CLOUD_NOW);
+            }
+            g_rows.push_back(ROW_CLOUD_STATUS);
+        } else g_rows = {ROW_CLOUD_STATUS};     // cloud sync is not running in this session (PSPRECOMP_CLOUD=0)
     } else if (g_page == PAGE_DEBUG) {
         g_rows = {ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS};
     } else {
@@ -781,6 +912,22 @@ void confirm() {
     case ROW_NET_ROOM: edit_begin(1); return;
     case ROW_NET_PEERS: edit_begin(2); return;
     case ROW_NET_STATUS: break;
+    case ROW_CLOUD_PROVIDER: change(g_cloud.provider == psp_cloud_svc::Provider::Google ? -3 : 1); return;   // cycles round
+    case ROW_CLOUD_FOLDER: edit_begin(3); return;
+    case ROW_CLOUD_URL: edit_begin(4); return;
+    case ROW_CLOUD_USER: edit_begin(5); return;
+    case ROW_CLOUD_PASS: edit_begin(6); return;
+    case ROW_CLOUD_GOOGLE:
+        if (psp_cloud_svc::status().state == psp_cloud_svc::Status::SigningIn) psp_cloud_svc::signin_cancel();
+        else if (g_cloud.google_refresh.empty()) psp_cloud_svc::signin_start();
+        else { psp_cloud_svc::signout(); cloud_load(); g_sel_page[g_page] = g_sel; build_rows(); }
+        break;
+    case ROW_CLOUD_AUTO: change(g_cloud.auto_sync ? -1 : 1); return;
+    case ROW_CLOUD_REPLAYS: change(g_cloud.replays ? -1 : 1); return;
+    case ROW_CLOUD_NOW:
+        if (psp_cloud_svc::configured() && psp_cloud_svc::status().state != psp_cloud_svc::Status::Syncing) psp_cloud_svc::sync_now();
+        break;
+    case ROW_CLOUD_STATUS: break;
     case ROW_PERF: change(ge_draw_perf_overlay() ? -1 : 1); return;
     case ROW_FX: change(ge_draw_fx_shaders() ? -1 : 1); return;
     case ROW_SYNC: ge_draw_set_sync_mode((ge_draw_sync_mode() + 1) % 5); break;
@@ -994,6 +1141,15 @@ void psp_settings_tick() {
         char st[128];
         psp_adhoc_status(st, sizeof st);
         if (g_net_status != st) { g_net_status = st; g_dirty = true; }
+    }
+    if (g_page == PAGE_CLOUD && !g_edit.active) {   // the sync runs on its own thread: redraw when its status changes
+        const unsigned rev = psp_cloud_svc::status().revision;
+        if (rev != g_cloud_rev) {
+            g_cloud_rev = rev;
+            const psp_cloud_svc::Config now = psp_cloud_svc::config();
+            if (now.google_refresh != g_cloud.google_refresh || now.provider != g_cloud.provider) { cloud_load(); build_rows(); }   // a sign-in finished
+            g_dirty = true;
+        }
     }
     if (g_dirty || scale != g_drawn_scale) {
         g_dirty = false;

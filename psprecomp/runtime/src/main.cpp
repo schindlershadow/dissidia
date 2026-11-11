@@ -18,6 +18,7 @@
 #include "psp_debug_socket.h"
 #include "psp_game_module.h"
 #include "psp_settings.h"
+#include "hle/psp_cloud_glue.h"
 #include "psp_vfpu.h"  // vfpu_init_context — VFPU prefix reset default
 
 // Build fingerprint of the output/ this binary was generated from (issue #36).
@@ -171,6 +172,7 @@ int main(int argc, char* argv[]) {
         }
     }
     psp_io_init(disc0_path);
+    psp_cloud_glue_boot(disc0_path ? disc0_path : "./disc0", psp_io_ms0_host_path());   // cloud sync: start-up sync in the background
 
     // 3c. Initialize HLE subsystem — overrides dispatch entries for
     //     237 import stubs with HLE implementations
@@ -481,6 +483,7 @@ int main(int argc, char* argv[]) {
     ge_draw_shutdown();
     ge_texture_shutdown();
     ge_shutdown();
+    psp_cloud_glue_shutdown();   // lets a running upload finish
     psp_runtime_shutdown();
 
     psp_memory_cleanup(rdram);

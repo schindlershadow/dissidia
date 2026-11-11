@@ -10,6 +10,7 @@ Everything about the game itself, the native build and the modding tools, in one
 - [texture-packs.md](texture-packs.md): HD texture replacement: dumping, upscaling, the built-in upscaler.
 - [multiplayer.md](multiplayer.md): Communications mode over UDP (LAN, one machine, internet), options, how the ad-hoc stack is emulated.
 - [savedata.md](savedata.md): saves between regions: `savemgr` list / import / export.
+- [cloud-sync.md](cloud-sync.md): saves between devices through a folder, WebDAV or Google Drive.
 - [frame-rate.md](frame-rate.md): native 60 fps battles (how the game paces itself, what was patched), and the in-game settings menu.
 
 ## Making characters

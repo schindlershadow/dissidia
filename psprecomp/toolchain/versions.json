@@ -1,6 +1,6 @@
 {
   "_comment": "Pinned inputs of the portable toolchain bundle (build_bundle.py). Every download is checked against its sha256. To upgrade a component: change version/url, run build_bundle.py --print-hashes, paste the new hashes. The bundle version (below) must change whenever anything here changes: the prebuilt runtime core is only link-compatible with generated code compiled by the very same compiler + C++ library.",
-  "bundle_version": 2,
+  "bundle_version": 3,
   "zig": {
     "version": "0.15.2",
     "files": {
@@ -55,6 +55,11 @@
       "version": "2.32.10",
       "url": "https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.tar.gz",
       "sha256": "5f5993c530f084535c65a6879e9b26ad441169b3e25d789d83287040a9ca5165"
+    },
+    "mbedtls": {
+      "version": "3.6.4",
+      "url": "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.4/mbedtls-3.6.4.tar.bz2",
+      "sha256": "ec35b18a6c593cf98c3e30db8b98ff93e8940a8c4e690e66b41dfc011d678110"
     },
     "openssl": {
       "version": "3.0.18",

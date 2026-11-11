@@ -8,6 +8,7 @@
 #include "psp_savedata_crypto.h"
 #include "psp_savedata_dialog.h"
 #include "psp_savemgr_ui.h"
+#include "psp_cloud_glue.h"
 #include "psp_scheduler.h"
 #include "psp_tex_pack.h"   // psp_png_decode_rgba (ICON0.PNG thumbnails)
 #include "recomp.h"
@@ -2098,6 +2099,7 @@ static int32_t savedata_do_save(uint8_t* rdram, uint32_t p,
     fprintf(stderr, "[HLE] sceUtilitySavedata: saved %s/%s (%u bytes%s)\n",
             dirname.c_str(), file.c_str(), sz,
             encrypted ? psp_sdcrypto::crypt_mode_has_key(crypt_mode) ? ", encrypted+key" : ", encrypted" : "");
+    psp_cloud_glue_after_save();     // cloud sync (if on) pushes this save a few seconds from now
     return 0;
 }
 
@@ -2330,6 +2332,7 @@ static bool sd_ui_step(uint8_t* rdram, uint32_t p, uint32_t mode,
                 if (sd_is_dir(sd_base() + "/" + id + suffix)) return id + suffix;
             return "";
         };
+        psp_cloud_glue_manager_hooks(mc);
         mc.confirm_cross = psp_mem_read<int32_t>(rdram, p + 8) == 1;
         if (const char* e = std::getenv("PSPRECOMP_SAVEDATA_CONFIRM")) mc.confirm_cross = std::strcmp(e, "circle") != 0;
         g_sd_ui.mgr.begin(mc);
@@ -2409,6 +2412,7 @@ static void msgdialog_complete(UtilityDialogState& dlg, uint8_t* rdram) {
 static void hle_sceUtilitySavedataInitStart(
     uint8_t* rdram, recomp_context* ctx
 ) {
+    psp_cloud_glue_before_savedata();    // a start-up download must be finished before the game reads saves
     utility_dialog_init_start(g_savedata_dialog, ctx);
     (void)rdram;
 }

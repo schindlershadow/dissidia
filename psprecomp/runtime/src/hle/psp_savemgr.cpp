@@ -283,6 +283,17 @@ std::string copy_save(const SaveInfo& s, const std::string& dest_root_s, const s
     return "";
 }
 
+std::vector<std::string> save_files(const std::string& dir) {
+    Sfo sfo;
+    sfo.d = read_file(P(dir) / "PARAM.SFO");
+    std::vector<std::string> out;
+    if (!sfo.parse()) return out;
+    std::error_code ec;
+    for (const std::string& f : files_to_copy(sfo))   // std::set: already sorted
+        if (fs::is_regular_file(P(dir) / P(f), ec)) out.push_back(f);
+    return out;
+}
+
 std::string installed_disc_id(const std::string& workdir) {
     Sfo s;
     s.d = read_file(P(workdir) / "disc0" / "PSP_GAME" / "PARAM.SFO");

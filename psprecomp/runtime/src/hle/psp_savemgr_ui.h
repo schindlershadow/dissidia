@@ -6,6 +6,7 @@
 #pragma once
 
 #include "psp_savedata_dialog.h"
+#include "psp_cloud_service.h"
 #include "psp_savemgr.h"
 
 #include <functional>
@@ -23,6 +24,13 @@ struct ManagerConfig {
     bool confirm_cross = true;
     // Where to look for other installs. Default (null) = psp_savemgr::detect_sources; tests inject their own.
     std::function<std::vector<psp_savemgr::Source>(bool with_saves)> detect;
+    // Cloud sync (psp_cloud_service): the "Cloud sync" row appears on the first screen when `cloud_status` is set. The
+    // service is injected so the screen is testable with fakes.
+    std::function<psp_cloud_svc::Status()> cloud_status;
+    std::function<psp_cloud_svc::Config()> cloud_config;
+    std::function<bool()> cloud_configured;
+    std::function<void()> cloud_sync, cloud_signin, cloud_signin_cancel, cloud_signout;
+    std::function<void(const std::string& suffix, psp_cloud::Choice)> cloud_resolve;
 };
 
 class ManagerDialog {
@@ -35,7 +43,7 @@ public:
     bool changed() const { return changed_; }   // saves were added or replaced: refresh the list behind it
 
     // ---- for tests ----
-    enum class Screen { Main, PickSource, PickDest, TypePath, PickSaves, Confirm, Result };
+    enum class Screen { Main, PickSource, PickDest, TypePath, PickSaves, Confirm, Result, Cloud, CloudConflict };
     Screen screen() const { return screen_; }
     int selected() const { return sel_; }
     const std::vector<std::string>& result_lines() const { return result_; }
@@ -60,6 +68,15 @@ private:
     uint32_t prev_ = 0, held_dir_ = 0;
     int64_t next_repeat_ = 0;
     uint32_t rev_ = 1;
+    std::string cloud_suffix_;       // the conflict being decided
+    unsigned cloud_seen_rev_ = 0;
+
+    enum class CloudAct { Info, SyncNow, SignIn, CancelSignIn, Conflict, SignOut, Back };
+    struct CloudRow { CloudAct act; std::string suffix; };
+    std::vector<CloudRow> cloud_rows() const;
+    void activate_cloud();
+    void activate_conflict();
+    int main_back() const { return cfg_.cloud_status ? 3 : 2; }
 
     void go(Screen s, int sel = 0);
     void back();

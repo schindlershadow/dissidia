@@ -164,8 +164,10 @@ double g_gt_ms = 0;                     // game time in the battle, ms
 bool g_gt_started = false, g_test_on = false;
 uint32_t g_test_buttons = 0, g_test_analog = 0x8080;
 bool g_test_freeze_cpu = false;   // PSPRECOMP_TEST_FREEZE_CPU=1: every fighter but the first one seen gets time step 0 while a test runs (a standing dummy)
+int g_player_char = -1;   // PSPRECOMP_TEST_PLAYER_CHAR=<charId>: the fighter under test (default: the first one seen)
 uint32_t g_human_vt = 0;   // vtable of the human's controller object (found at the first battle: the one a scripted press reaches)
 FILE* g_record = nullptr;
+char g_record_path[512] = {};
 uint32_t g_rec_buttons = 0xFFFFFFFFu, g_rec_analog = 0;
 
 uint32_t parse_buttons(const std::string& s) {
@@ -247,6 +249,20 @@ bool test_go() {
 
 // the fighter a script command means: 0 = the player's, 1 = the CPU's, 2+n = the n-th known fighter. The human's is the one whose
 // controller object (actor +0x5C4) has the virtual-pad owner flag... found by looking at what [TEST] fighters prints (see below).
+int fighter_char(uint32_t a) {
+    const uint32_t info = r32(a + 0x2F8u);
+    return ok(info) ? static_cast<int8_t>(g_ram[(info + 6u) & 0x07FFFFFFu]) : -99;
+}
+uint32_t test_player() {   // the fighter under test
+    uint32_t first = 0;
+    for (int i = 0; i < 4; i++) {
+        const uint32_t a = g_fighters[i];
+        if (!a || !ok(a) || g_tick - g_fighter_seen[i] > 60) continue;
+        if (!first) first = a;
+        if (g_player_char >= 0 && fighter_char(a) == g_player_char) return a;
+    }
+    return g_player_char >= 0 ? 0u : first;
+}
 uint32_t test_fighter(uint32_t who) {
     uint32_t list[4]; int n = 0;
     for (int i = 0; i < 4; i++) {
@@ -254,11 +270,8 @@ uint32_t test_fighter(uint32_t who) {
         if (a && ok(a) && g_tick - g_fighter_seen[i] < 60) list[n++] = a;
     }
     if (who >= 2) return static_cast<int>(who - 2) < n ? list[who - 2] : 0u;
-    for (int i = 0; i < n; i++) {
-        const uint32_t ctrl = r32(list[i] + 0x5C4u);
-        const bool human = ok(ctrl) && ok(r32(ctrl)) && r32(ctrl) == g_human_vt;
-        if (human == (who == 0)) return list[i];
-    }
+    const uint32_t pl = test_player();
+    for (int i = 0; i < n; i++) if ((list[i] == pl) == (who == 0)) return list[i];
     return 0u;
 }
 void test_describe_fighters() {
@@ -267,7 +280,7 @@ void test_describe_fighters() {
         if (!a || !ok(a) || g_tick - g_fighter_seen[i] > 60) continue;
         const uint32_t ctrl = r32(a + 0x5C4u), info = r32(a + 0x1108u - 0x1108u + 0x0u);
         (void)info;
-        std::fprintf(stderr, "[TEST] fighter %08X ctrl=%08X vt=%08X scr=%u pos=%.2f,%.2f\n", a, ctrl, ok(ctrl) ? r32(ctrl) : 0u, r32(a + 0x540u) & 0xFFFFu, rdf(a + 0x80u), rdf(a + 0x88u));
+        std::fprintf(stderr, "[TEST] fighter %08X char=%d ctrl=%08X vt=%08X scr=%u pos=%.2f,%.2f\n", a, fighter_char(a), ctrl, ok(ctrl) ? r32(ctrl) : 0u, r32(a + 0x540u) & 0xFFFFu, rdf(a + 0x80u), rdf(a + 0x88u));
     }
 }
 
@@ -287,6 +300,17 @@ void testdrive_frame(uint8_t* rdram, recomp_context* ctx) {
     if (!g_gt_started) {
         g_gt_started = true; g_gt_ms = 0; g_test_next = 0; g_test_buttons = 0; g_test_analog = 0x8080;
         std::fprintf(stderr, "[TEST] battle started (tick %llu)\n", (unsigned long long)g_tick);
+        if (g_record_path[0]) {   // one file per fight: <file>, <file>.2, <file>.3 ...
+            static int fights = 0;
+            fights++;
+            char path[600];
+            if (fights == 1) std::snprintf(path, sizeof path, "%s", g_record_path); else std::snprintf(path, sizeof path, "%s.%d", g_record_path, fights);
+            if (g_record) std::fclose(g_record);
+            g_record = std::fopen(path, "w");
+            if (g_record) std::fprintf(g_record, "# recorded pad input, game-time ms (PSPRECOMP_TEST_SCRIPT=this file)\n");
+            g_rec_buttons = 0xFFFFFFFFu; g_rec_analog = 0;
+            std::fprintf(stderr, "[TEST] recording to %s\n", path);
+        }
     } else {
         g_gt_ms += g_ticks * (1000.0 / 60.0);
     }
@@ -303,9 +327,9 @@ void testdrive_frame(uint8_t* rdram, recomp_context* ctx) {
     if (!described && g_gt_ms >= 1000) { described = true; test_describe_fighters(); }
     if (g_test_freeze_cpu) {   // the dummy keeps the HP it started with (actor +0x10B0): a hit never ends the fight
         static uint32_t keep_actor = 0, keep_hp = 0;
-        for (int i = 1; i < 4; i++) {
+        for (int i = 0; i < 4; i++) {
             const uint32_t a = g_fighters[i];
-            if (!a || !ok(a) || g_tick - g_fighter_seen[i] > 60) continue;
+            if (!a || !ok(a) || g_tick - g_fighter_seen[i] > 60 || a == test_player()) continue;
             if (a != keep_actor || !g_gt_started || g_gt_ms < 34) { keep_actor = a; keep_hp = r32(a + 0x10B0u); }
             else if (keep_hp) w32(a + 0x10B0u, keep_hp);
         }
@@ -329,13 +353,14 @@ void testdrive_frame(uint8_t* rdram, recomp_context* ctx) {
 
 void testdrive_install() {
     if (const char* fz = std::getenv("PSPRECOMP_TEST_FREEZE_CPU"); fz && fz[0] && fz[0] != '0') g_test_freeze_cpu = true;
+    if (const char* pc = std::getenv("PSPRECOMP_TEST_PLAYER_CHAR"); pc && pc[0]) g_player_char = std::atoi(pc);
     g_test_go = std::getenv("PSPRECOMP_TEST_GO");
     if (g_test_go && !g_test_go[0]) g_test_go = nullptr;
     const char* e = std::getenv("PSPRECOMP_TEST_SCRIPT");
     if (e && e[0]) { testdrive_load(e); g_test_on = true; }
     if ((e = std::getenv("PSPRECOMP_INPUT_RECORD")) && e[0]) {
-        g_record = std::fopen(e, "w");
-        if (g_record) { std::fprintf(g_record, "# recorded pad input, game-time ms (PSPRECOMP_TEST_SCRIPT=this file)\n"); g_test_on = true; }
+        std::snprintf(g_record_path, sizeof g_record_path, "%s", e);   // opened at each fight's start
+        g_test_on = true;
     }
 }
 
@@ -471,6 +496,9 @@ void root_motion_hook(uint8_t* rdram, recomp_context* ctx) {
 void move_toward_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t timer = r32(TIMER_PTR);
     const float dt = ok(timer) ? rdf(timer + 0x18u) : 2.f;
+    static int calls = 0;
+    if (g_test_on && (calls < 6 || calls % 400 == 0)) std::fprintf(stderr, "[TEST] move-toward call %d actor %08X f12 %.3f dt %.3f\n", calls, (unsigned)ctx->r[4], ctx->f[12], dt);
+    calls++;
     if (dt > 0.f && dt < 2.f) ctx->f[12] *= dt * 0.5f;
     g_orig_move_toward(rdram, ctx);
 }
@@ -625,7 +653,7 @@ void actor_dt_hook(uint8_t* rdram, recomp_context* ctx) {
         }
     }
     const float before = ctx->f[0];
-    if (g_test_freeze_cpu && g_gt_started && ok(actor) && g_ram[(actor + 0x542u) & 0x07FFFFFFu] == 0 && g_fighters[0] && actor != g_fighters[0]) { ctx->f[0] = 0.f; return; }
+    if (g_test_freeze_cpu && g_gt_started && ok(actor) && g_ram[(actor + 0x542u) & 0x07FFFFFFu] == 0 && actor != test_player()) { ctx->f[0] = 0.f; return; }
     if (g_ticks != 2.0f && ok(actor) && own) ctx->f[0] *= g_ticks * 0.5f;   // own clock: a fixed 2.0 per frame
     if (g_actor_log && g_actor_log_left > 0 && ok(actor)) {
         ActorSeen* slot = nullptr;
