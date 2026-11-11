@@ -77,9 +77,11 @@ constexpr uint32_t ACTOR_DT = 0x08838300u;      // EBOOT: an actor's time step
 constexpr uint32_t SLOWMO_FRAME = 0x08864DD8u;  // EBOOT: per-frame update of the slow-motion object, writes the global step
 constexpr uint32_t SLOWMO_PTR = 0x089D5EA8u;    // EBOOT: pointer to that object (+0 step value, +4 time left, +8 flags)
 constexpr uint32_t ROOT_MOTION = 0x0882F784u;   // EBOOT: adds (bone pose now - pose last tick) to the motion player's accumulator
-constexpr uint32_t MOVE_TOWARD = 0x08834E08u;  // EBOOT: moves an actor toward a point by at most f12 metres per call (timeline op 0x0219 ranged: Revolver Drive's rush)
 constexpr uint32_t CPU_AI = 0x08A75D38u;        // battle overlay: CPU AI action chooser (returns -1 / -4: no action)
 constexpr uint32_t STEER_MOVE = 0x08A2C960u;   // battle overlay: ground steered move controller (Squall's Revolver Drive rush): a0 = out vector (metres to move this update)
+constexpr uint32_t UI_PARAM_STEP = 0x088DA520u; // EBOOT: UI animation parameter stepper (value += rate x UI step toward a target)
+constexpr uint32_t UI_MGR_PTR = 0x089D7830u;    // EBOOT: pointer to the UI manager (+33: use the frame dt as the UI step, +34: paused)
+constexpr uint32_t UI_STEP = 0x089D7834u;       // EBOOT: the UI step FUN_088CF550 sets every update (0 paused, 1.0 fixed, or the frame dt)
 constexpr uint32_t OWN_MASK0 = 0x089C7FD8u, OWN_MASK1 = 0x089C7FDCu;
 constexpr uint32_t EXB_PRESSED = 0x08B326C4u;   // battle overlay: 'virtual button pressed this update' test of an actor (r4), used by the EX Burst code
 constexpr uint32_t EXB_PROMPT = 0x08A3D1C4u;    // battle overlay: EX Burst button prompt update (state machine with a timer at +28; log only)
@@ -88,7 +90,7 @@ constexpr uint32_t EXB_CTRL = 0x08A3FE10u;      // battle overlay: EX Burst cont
 constexpr uint32_t CAM_DT = 0x08B3B4FCu;        // battle overlay: a camera's time step
 
 uint8_t* g_ram = nullptr;
-FuncPtr g_orig_steer_move = nullptr, g_orig_move_toward = nullptr, g_orig_pressed = nullptr, g_orig_rootmotion = nullptr, g_orig_slowmo = nullptr, g_orig_frame_end = nullptr, g_orig_pad = nullptr, g_orig_actor_dt = nullptr, g_orig_cam_dt = nullptr, g_orig_exb_ctrl = nullptr, g_orig_exb_pressed = nullptr, g_orig_exb_prompt = nullptr, g_orig_exb_ui = nullptr;
+FuncPtr g_orig_ui_param = nullptr, g_orig_steer_move = nullptr, g_orig_pressed = nullptr, g_orig_rootmotion = nullptr, g_orig_slowmo = nullptr, g_orig_frame_end = nullptr, g_orig_pad = nullptr, g_orig_actor_dt = nullptr, g_orig_cam_dt = nullptr, g_orig_exb_ctrl = nullptr, g_orig_exb_pressed = nullptr, g_orig_exb_prompt = nullptr, g_orig_exb_ui = nullptr;
 std::atomic<int> g_target{30};     // requested rate (settings / env)
 int g_interval = 2;                // interval written on the last frame end (2 = 30 Hz, 1 = 60 Hz and above)
 int g_rate = 30;                   // logic rate in effect (30, 60, 90, ... one frame per vblank above 30)
@@ -172,8 +174,10 @@ double g_gt_ms = 0;                     // game time in the battle, ms
 bool g_gt_started = false, g_test_on = false;
 uint32_t g_test_buttons = 0, g_test_analog = 0x8080;
 bool g_test_freeze_cpu = false;   // PSPRECOMP_TEST_FREEZE_CPU=1: every fighter but the first one seen gets time step 0 while a test runs (a standing dummy)
+int g_player_char = -1;   // PSPRECOMP_TEST_PLAYER_CHAR=<charId>: the fighter under test (default: the first one seen)
 uint32_t g_human_vt = 0;   // vtable of the human's controller object (found at the first battle: the one a scripted press reaches)
 FILE* g_record = nullptr;
+char g_record_path[512] = {};
 uint32_t g_rec_buttons = 0xFFFFFFFFu, g_rec_analog = 0;
 
 uint32_t parse_buttons(const std::string& s) {
@@ -255,6 +259,20 @@ bool test_go() {
 
 // the fighter a script command means: 0 = the player's, 1 = the CPU's, 2+n = the n-th known fighter. The human's is the one whose
 // controller object (actor +0x5C4) has the virtual-pad owner flag... found by looking at what [TEST] fighters prints (see below).
+int fighter_char(uint32_t a) {
+    const uint32_t info = r32(a + 0x2F8u);
+    return ok(info) ? static_cast<int8_t>(g_ram[(info + 6u) & 0x07FFFFFFu]) : -99;
+}
+uint32_t test_player() {   // the fighter under test
+    uint32_t first = 0;
+    for (int i = 0; i < 4; i++) {
+        const uint32_t a = g_fighters[i];
+        if (!a || !ok(a) || g_tick - g_fighter_seen[i] > 60) continue;
+        if (!first) first = a;
+        if (g_player_char >= 0 && fighter_char(a) == g_player_char) return a;
+    }
+    return g_player_char >= 0 ? 0u : first;
+}
 uint32_t test_fighter(uint32_t who) {
     uint32_t list[4]; int n = 0;
     for (int i = 0; i < 4; i++) {
@@ -262,11 +280,8 @@ uint32_t test_fighter(uint32_t who) {
         if (a && ok(a) && g_tick - g_fighter_seen[i] < 60) list[n++] = a;
     }
     if (who >= 2) return static_cast<int>(who - 2) < n ? list[who - 2] : 0u;
-    for (int i = 0; i < n; i++) {
-        const uint32_t ctrl = r32(list[i] + 0x5C4u);
-        const bool human = ok(ctrl) && ok(r32(ctrl)) && r32(ctrl) == g_human_vt;
-        if (human == (who == 0)) return list[i];
-    }
+    const uint32_t pl = test_player();
+    for (int i = 0; i < n; i++) if ((list[i] == pl) == (who == 0)) return list[i];
     return 0u;
 }
 void test_describe_fighters() {
@@ -275,7 +290,7 @@ void test_describe_fighters() {
         if (!a || !ok(a) || g_tick - g_fighter_seen[i] > 60) continue;
         const uint32_t ctrl = r32(a + 0x5C4u), info = r32(a + 0x1108u - 0x1108u + 0x0u);
         (void)info;
-        std::fprintf(stderr, "[TEST] fighter %08X ctrl=%08X vt=%08X scr=%u pos=%.2f,%.2f\n", a, ctrl, ok(ctrl) ? r32(ctrl) : 0u, r32(a + 0x540u) & 0xFFFFu, rdf(a + 0x80u), rdf(a + 0x88u));
+        std::fprintf(stderr, "[TEST] fighter %08X char=%d ctrl=%08X vt=%08X scr=%u pos=%.2f,%.2f\n", a, fighter_char(a), ctrl, ok(ctrl) ? r32(ctrl) : 0u, r32(a + 0x540u) & 0xFFFFu, rdf(a + 0x80u), rdf(a + 0x88u));
     }
 }
 
@@ -295,6 +310,17 @@ void testdrive_frame(uint8_t* rdram, recomp_context* ctx) {
     if (!g_gt_started) {
         g_gt_started = true; g_gt_ms = 0; g_test_next = 0; g_test_buttons = 0; g_test_analog = 0x8080;
         std::fprintf(stderr, "[TEST] battle started (tick %llu)\n", (unsigned long long)g_tick);
+        if (g_record_path[0]) {   // one file per fight: <file>, <file>.2, <file>.3 ...
+            static int fights = 0;
+            fights++;
+            char path[600];
+            if (fights == 1) std::snprintf(path, sizeof path, "%s", g_record_path); else std::snprintf(path, sizeof path, "%s.%d", g_record_path, fights);
+            if (g_record) std::fclose(g_record);
+            g_record = std::fopen(path, "w");
+            if (g_record) std::fprintf(g_record, "# recorded pad input, game-time ms (PSPRECOMP_TEST_SCRIPT=this file)\n");
+            g_rec_buttons = 0xFFFFFFFFu; g_rec_analog = 0;
+            std::fprintf(stderr, "[TEST] recording to %s\n", path);
+        }
     } else {
         g_gt_ms += g_ticks * (1000.0 / 60.0);
     }
@@ -311,9 +337,9 @@ void testdrive_frame(uint8_t* rdram, recomp_context* ctx) {
     if (!described && g_gt_ms >= 1000) { described = true; test_describe_fighters(); }
     if (g_test_freeze_cpu) {   // the dummy keeps the HP it started with (actor +0x10B0): a hit never ends the fight
         static uint32_t keep_actor = 0, keep_hp = 0;
-        for (int i = 1; i < 4; i++) {
+        for (int i = 0; i < 4; i++) {
             const uint32_t a = g_fighters[i];
-            if (!a || !ok(a) || g_tick - g_fighter_seen[i] > 60) continue;
+            if (!a || !ok(a) || g_tick - g_fighter_seen[i] > 60 || a == test_player()) continue;
             if (a != keep_actor || !g_gt_started || g_gt_ms < 34) { keep_actor = a; keep_hp = r32(a + 0x10B0u); }
             else if (keep_hp) w32(a + 0x10B0u, keep_hp);
         }
@@ -342,13 +368,14 @@ void testdrive_install() {
     if (const char* ap = std::getenv("PSPRECOMP_ALLOW_PTRACE"); ap && ap[0] && ap[0] != '0') prctl(PR_SET_PTRACER, (unsigned long)-1 /* PR_SET_PTRACER_ANY */, 0, 0, 0);
 #endif
     if (const char* fz = std::getenv("PSPRECOMP_TEST_FREEZE_CPU"); fz && fz[0] && fz[0] != '0') g_test_freeze_cpu = true;
+    if (const char* pc = std::getenv("PSPRECOMP_TEST_PLAYER_CHAR"); pc && pc[0]) g_player_char = std::atoi(pc);
     g_test_go = std::getenv("PSPRECOMP_TEST_GO");
     if (g_test_go && !g_test_go[0]) g_test_go = nullptr;
     const char* e = std::getenv("PSPRECOMP_TEST_SCRIPT");
     if (e && e[0]) { testdrive_load(e); g_test_on = true; }
     if ((e = std::getenv("PSPRECOMP_INPUT_RECORD")) && e[0]) {
-        g_record = std::fopen(e, "w");
-        if (g_record) { std::fprintf(g_record, "# recorded pad input, game-time ms (PSPRECOMP_TEST_SCRIPT=this file)\n"); g_test_on = true; }
+        std::snprintf(g_record_path, sizeof g_record_path, "%s", e);   // opened at each fight's start
+        g_test_on = true;
     }
 }
 
@@ -440,6 +467,22 @@ void slowmo_frame_hook(uint8_t* rdram, recomp_context* ctx) {
     wrf(obj, was);
 }
 
+// UI animation step. FUN_088CF550 (the UI update) stores the step the UI animations advance by (0x089D7834) before it runs
+// them: 0 while the UI is paused, the frame dt when the UI manager's flag +33 is set, else a FIXED 1.0 per update. The fixed
+// ones were written for 30 updates a second, so at 60 and above they ran twice (or more) as fast: the 'VS <name>' banner that
+// opens a fight flashed by in 0.3 s instead of 0.6 s. The stepper FUN_088DA520 is the only reader (value += rate x step), so
+// the fixed step is scaled by ticks / 2 for the call and put back. The dt-driven ones already follow the frame time.
+// PSPRECOMP_UI_STEP=0 turns it off (A/B).
+bool g_ui_step = true;
+void ui_param_hook(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t mgr = r32(UI_MGR_PTR);
+    if (!g_ui_step || g_ticks == 2.0f || overlay_id() != 1 || !ok(mgr) || g_ram[(mgr + 33u) & 0x07FFFFFFu] != 0 || g_ram[(mgr + 34u) & 0x07FFFFFFu] != 0) { g_orig_ui_param(rdram, ctx); return; }
+    const float was = rdf(UI_STEP);
+    wrf(UI_STEP, was * g_ticks * 0.5f);
+    g_orig_ui_param(rdram, ctx);
+    wrf(UI_STEP, was);
+}
+
 // Root motion across a loop. A looping motion (Kain's Sky Spear dive, Sky Rave: a 12-tick loop of travel) moves the
 // fighter by the change of the root bone's pose each tick. On the last tick before the loop wraps (time 31 of a loop
 // that ends at 32, with the player's end at +112) the change is minus the whole loop's travel (5.3 against 0.48 on
@@ -477,16 +520,6 @@ void root_motion_hook(uint8_t* rdram, recomp_context* ctx) {
     else prev_mag = mag;
 }
 
-
-// FUN_08834E08(actor, point, f12 = max distance): the 'move toward target' timeline event (op 0x0219 ranged, 137 uses, e.g.
-// Squall's Revolver Drive rush) and a second caller step the actor by f12 metres on every call, not f12 x dt, so at 120
-// updates a second the rush covered four times the ground per second. Scale the allowance by the frame time (dt 2 = 30 Hz).
-void move_toward_hook(uint8_t* rdram, recomp_context* ctx) {
-    const uint32_t timer = r32(TIMER_PTR);
-    const float dt = ok(timer) ? rdf(timer + 0x18u) : 2.f;
-    if (dt > 0.f && dt < 2.f) ctx->f[12] *= dt * 0.5f;
-    g_orig_move_toward(rdram, ctx);
-}
 
 // FUN_08A2C960(out, ctrl, actor): the movement of a steered ground move (Squall's Revolver Drive rush: timeline op 0x0225, actor
 // controller +0x3A4). It writes how far the actor moves THIS UPDATE (0.595 m at full speed) and never reads the frame time: on the PSP
@@ -585,7 +618,7 @@ void fighter_dump_frame() {
         const uint32_t a = g_fighters[i];
         if (!a || !ok(a)) continue;
         const uint32_t scr = r32(a + 0x540u) & 0xFFFFu;
-        if (scr == 0xFFFFu) continue;
+        if (scr == 0xFFFFu && !g_test_on) continue;
         const bool fresh = g_dump_prev_actor[i] != a;
         g_dump_prev_actor[i] = a;
         for (const auto& rg : ranges)
@@ -650,7 +683,7 @@ void actor_dt_hook(uint8_t* rdram, recomp_context* ctx) {
         }
     }
     const float before = ctx->f[0];
-    if (g_test_freeze_cpu && g_gt_started && ok(actor) && g_ram[(actor + 0x542u) & 0x07FFFFFFu] == 0 && g_fighters[0] && actor != g_fighters[0]) { ctx->f[0] = 0.f; return; }
+    if (g_test_freeze_cpu && g_gt_started && ok(actor) && g_ram[(actor + 0x542u) & 0x07FFFFFFu] == 0 && actor != test_player()) { ctx->f[0] = 0.f; return; }
     if (g_ticks != 2.0f && ok(actor) && own) ctx->f[0] *= g_ticks * 0.5f;   // own clock: a fixed 2.0 per frame
     if (g_actor_log && g_actor_log_left > 0 && ok(actor)) {
         ActorSeen* slot = nullptr;
@@ -1027,12 +1060,12 @@ void dissidia_framerate_install(uint8_t* rdram) {
     std::fprintf(stderr, "[FPS] press latch %s (pressed-test hook %s)\n", g_press_latch ? "on" : "off", g_orig_pressed ? "installed" : "NOT FOUND");
     if ((g_orig_rootmotion = psp_dispatch_probe_lookup(ROOT_MOTION))) psp_dispatch_register(ROOT_MOTION, root_motion_hook);
     else std::fprintf(stderr, "[FPS] root motion hook NOT installed (no function at %08X)\n", ROOT_MOTION);
+    if (const char* us = std::getenv("PSPRECOMP_UI_STEP"); us && us[0] == '0') g_ui_step = false;
+    if ((g_orig_ui_param = psp_dispatch_probe_lookup(UI_PARAM_STEP))) psp_dispatch_register(UI_PARAM_STEP, ui_param_hook);
+    else std::fprintf(stderr, "[FPS] UI step hook NOT installed (no function at %08X)\n", UI_PARAM_STEP);
     if ((g_orig_slowmo = psp_dispatch_probe_lookup(SLOWMO_FRAME))) psp_dispatch_register(SLOWMO_FRAME, slowmo_frame_hook);
     else std::fprintf(stderr, "[FPS] slow-motion hook NOT installed (no function at %08X)\n", SLOWMO_FRAME);
     if (const char* sm = std::getenv("PSPRECOMP_STEER_MOVE"); !(sm && sm[0] == '0') && (g_orig_steer_move = ovl_battle_lookup(STEER_MOVE))) { psp_dispatch_register(STEER_MOVE, steer_move_hook); std::fprintf(stderr, "[FPS] steered-move hook installed\n"); }
-    if (const char* mt = std::getenv("PSPRECOMP_MOVE_TOWARD"); mt && mt[0] == '0') std::fprintf(stderr, "[FPS] move-toward hook OFF (PSPRECOMP_MOVE_TOWARD=0)\n");
-    else if ((g_orig_move_toward = psp_dispatch_probe_lookup(MOVE_TOWARD))) psp_dispatch_register(MOVE_TOWARD, move_toward_hook);
-    else std::fprintf(stderr, "[FPS] move-toward hook NOT installed (no function at %08X)\n", MOVE_TOWARD);
     if (g_log && (g_orig_skel = psp_dispatch_probe_lookup(SKEL_BUILD))) psp_dispatch_register(SKEL_BUILD, skel_build_hook);
     fx_install();
     psp_settings_set_frame_rate_hook({k_rates, static_cast<int>(std::size(k_rates)), fps_get, fps_set});

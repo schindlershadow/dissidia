@@ -15,12 +15,13 @@ import json
 
 LICENSES = {
     "zlib": "zlib license", "freetype": "FreeType License (FTL) or GPL-2.0", "sdl2": "zlib license",
-    "openssl": "Apache-2.0", "pspdecrypt": "GPL-3.0", "ffmpeg": "LGPL-2.1-or-later",
+    "mbedtls": "Apache-2.0 or GPL-2.0-or-later", "openssl": "Apache-2.0", "pspdecrypt": "GPL-3.0", "ffmpeg": "LGPL-2.1-or-later",
 }
 USES = {
     "zlib": "linked into the game; used by the toolchain's pspdecrypt",
     "freetype": "linked into the game (menu text)",
     "sdl2": "linked into the game and the setup wizard (window, input, audio)",
+    "mbedtls": "TLS for the optional cloud-sync feature, statically linked into the game (the Mozilla CA root bundle it trusts, MPL-2.0, is embedded too: runtime/assets/ca)",
     "openssl": "libcrypto statically linked into pspdecrypt only (SHA-256, DES-CBC)",
     "pspdecrypt": "separate executable the installer runs to decrypt the game's EBOOT.BIN (not linked into anything)",
     "ffmpeg": "libavcodec/libavutil, ATRAC3, ATRAC3+ and H.264 decoders only, linked statically into the game",

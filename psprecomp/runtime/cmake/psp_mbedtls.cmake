@@ -1,0 +1,25 @@
+# Optional mbedTLS (HTTPS for cloud sync). Defines the imported target PkgConfig::MBEDTLS when mbedTLS >= 3.6 is available:
+# from the bundle's deps.cmake (already defined), or found on this machine (pass -DPSPRECOMP_MBEDTLS_PREFIX=<install prefix>
+# for one that is not in the system paths). Without it psp_http still builds: https requests report "no TLS support".
+set(PSPRECOMP_MBEDTLS_PREFIX "" CACHE PATH "mbedTLS 3.6+ install prefix (optional; enables HTTPS for cloud sync)")
+if(NOT TARGET PkgConfig::MBEDTLS)
+    find_path(PSP_MBEDTLS_INCLUDE mbedtls/ssl.h HINTS "${PSPRECOMP_MBEDTLS_PREFIX}/include")
+    find_library(PSP_MBEDTLS_LIB mbedtls HINTS "${PSPRECOMP_MBEDTLS_PREFIX}/lib")
+    find_library(PSP_MBEDX509_LIB mbedx509 HINTS "${PSPRECOMP_MBEDTLS_PREFIX}/lib")
+    find_library(PSP_MBEDCRYPTO_LIB mbedcrypto HINTS "${PSPRECOMP_MBEDTLS_PREFIX}/lib")
+    if(PSP_MBEDTLS_INCLUDE AND PSP_MBEDTLS_LIB AND PSP_MBEDX509_LIB AND PSP_MBEDCRYPTO_LIB)
+        file(STRINGS "${PSP_MBEDTLS_INCLUDE}/mbedtls/build_info.h" _mb_major REGEX "^#define MBEDTLS_VERSION_MAJOR +[0-9]+")
+        file(STRINGS "${PSP_MBEDTLS_INCLUDE}/mbedtls/build_info.h" _mb_minor REGEX "^#define MBEDTLS_VERSION_MINOR +[0-9]+")
+        string(REGEX REPLACE ".* ([0-9]+)$" "\\1" _mb_major "${_mb_major}")
+        string(REGEX REPLACE ".* ([0-9]+)$" "\\1" _mb_minor "${_mb_minor}")
+        if(_mb_major GREATER 3 OR (_mb_major EQUAL 3 AND NOT _mb_minor LESS 6))
+            add_library(PkgConfig::MBEDTLS INTERFACE IMPORTED GLOBAL)
+            set_property(TARGET PkgConfig::MBEDTLS PROPERTY INTERFACE_INCLUDE_DIRECTORIES "${PSP_MBEDTLS_INCLUDE}")
+            set_property(TARGET PkgConfig::MBEDTLS PROPERTY INTERFACE_LINK_LIBRARIES
+                "${PSP_MBEDTLS_LIB};${PSP_MBEDX509_LIB};${PSP_MBEDCRYPTO_LIB}")
+            set(MBEDTLS_VERSION "${_mb_major}.${_mb_minor}")
+        else()
+            message(STATUS "psprecomp: mbedTLS ${_mb_major}.${_mb_minor} found but 3.6+ is needed -> no HTTPS")
+        endif()
+    endif()
+endif()

@@ -5,6 +5,7 @@
 #include "psp_ge_draw.h"
 #include "psp_settings.h"
 #include "hle/psp_savedata_dialog.h"   // on-screen keyboard: host typing
+#include "hle/psp_cloud_service.h"      // cloud sync sign-in helper
 
 #include <SDL.h>
 #include "psp_gl.h"
@@ -643,6 +644,39 @@ int psp_runtime_init_sdl() {
     return 0;
 }
 
+// Google sign-in (cloud sync): when a sign-in code appears, copy it to the clipboard and open the verification page in the
+// browser, so the person only has to paste it. SDL's URL opener belongs on this (main) thread, so it is done here, not in the
+// sync worker. Once per code.
+static void cloud_signin_assist() {
+    static std::string opened_code;
+    static bool minimized = false;   // we stepped aside for the browser: come back when the sign-in is over
+    const psp_cloud_svc::Status st = psp_cloud_svc::status();
+    if (st.state != psp_cloud_svc::Status::SigningIn || st.user_code.empty()) {
+        if (st.state != psp_cloud_svc::Status::SigningIn) {
+            opened_code.clear();
+            if (minimized && g_window) {
+                minimized = false;
+                SDL_RestoreWindow(g_window);
+                SDL_RaiseWindow(g_window);
+            }
+        }
+        return;
+    }
+    if (st.user_code == opened_code) return;
+    opened_code = st.user_code;
+    if (SDL_SetClipboardText(st.user_code.c_str()) != 0) std::fprintf(stderr, "[CLOUD] cannot copy the code: %s\n", SDL_GetError());
+    if (SDL_OpenURL(st.verify_url.c_str()) != 0) std::fprintf(stderr, "[CLOUD] cannot open the browser: %s\n", SDL_GetError());
+    else std::fprintf(stderr, "[CLOUD] opened %s (code %s copied)\n", st.verify_url.c_str(), st.user_code.c_str());
+#ifndef __ANDROID__
+    // A fullscreen game window would hide the browser: minimize it until the sign-in finishes (it is restored above).
+    // (Android opens the browser as its own app on top of the game.)
+    if (g_window && (SDL_GetWindowFlags(g_window) & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_FULLSCREEN_DESKTOP))) {
+        SDL_MinimizeWindow(g_window);
+        minimized = true;
+    }
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // psp_event_loop — main-thread loop: SDL events + render queue + alive check
 // ---------------------------------------------------------------------------
@@ -669,6 +703,7 @@ void psp_event_loop(uint8_t* rdram) {
         // 2c. Settings menu: input repeat, drawing and presenting while the game is paused.
         psp_settings_tick();
         osk_tick();
+        cloud_signin_assist();
 
         // 3. Check if any game threads are still alive
         if (g_alive_threads.load() == 0) {
