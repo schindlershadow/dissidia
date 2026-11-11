@@ -2294,7 +2294,6 @@ static float g_fx_clearz[GE_MAX_TARGETS];
 // and "up" come from the view matrix, so a per-object one made shadows follow the player.
 struct FxVote { float proj[16]; float view[12]; float near_z, far_z; int n; };
 static FxVote g_fx_vote[GE_MAX_TARGETS];
-static bool wide_on();
 static void fx_track(const GeState& st) {
     if (g_current_target < 0 || g_ab_shadow) return;
     const int cur = g_current_target;
@@ -2306,11 +2305,15 @@ static void fx_track(const GeState& st) {
         if (st.depth_test_enable && !st.depth_write_disable) {
             g_fx_n[cur]++;
             FxVote& v = g_fx_vote[cur];
-            const bool same = v.n > 0 && !std::memcmp(v.proj, st.proj_matrix, sizeof v.proj) && !std::memcmp(v.view, st.view_matrix, sizeof v.view);
+            // widescreen: the x of the clip position is scaled outside the matrix (build_xf), so the effects get the same
+            float proj[16];
+            std::memcpy(proj, st.proj_matrix, sizeof proj);
+            if (const float wx = draw_wide_x(st); wx != 1.0f) { proj[0] *= wx; proj[4] *= wx; proj[8] *= wx; proj[12] *= wx; }
+            const bool same = v.n > 0 && !std::memcmp(v.proj, proj, sizeof v.proj) && !std::memcmp(v.view, st.view_matrix, sizeof v.view);
             if (same) v.n++;
             else if (v.n > 0) v.n--;
             else {
-                std::memcpy(v.proj, st.proj_matrix, sizeof v.proj);
+                std::memcpy(v.proj, proj, sizeof v.proj);
                 std::memcpy(v.view, st.view_matrix, sizeof v.view);
                 const GeViewportDepth vp = compute_state_viewport_depth(st);
                 v.near_z = vp.near_z; v.far_z = vp.far_z;
@@ -2324,7 +2327,6 @@ static void fx_track(const GeState& st) {
         if (!t.fbo || g_fx_done[i] || g_fx_n[i] < 60 || !is_main_key(t.key)) continue;
         g_fx_done[i] = true;
         g_fx_n[i] = 0;
-        if (wide_on()) continue;   // widescreen rescales x outside the projection matrix: not handled
         flush_batch();
         ScreenFxScene s;
         std::memcpy(s.proj, g_fx_vote[i].proj, sizeof s.proj);

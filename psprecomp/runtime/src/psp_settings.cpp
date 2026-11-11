@@ -574,9 +574,9 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.label = ao ? "Ambient Occlusion" : cs ? "Contact Shadows" : "Reflections";
             m.value = v ? "Level " + std::to_string(v) : "Off";
             m.can_dec = v > 0; m.can_inc = v < 3;
-            m.help = ao ? "Ambient occlusion, SSAO (PSPRECOMP_SSAO)\nDarkens creases and the ground around characters and objects. Levels 1 to 3. Runs on the 3D scene before the glow and the HUD, so the HUD is never darkened. Costs GPU time; not for the Steam Deck at a high render scale. Not in widescreen. Saved."
-                : cs ? "Contact shadows (PSPRECOMP_CONTACT_SHADOWS)\nA short ray-marched shadow cast from fighters and objects onto the floor and each other. Levels 1 to 3. Not in widescreen. Saved."
-                     : "Screen-space reflections (PSPRECOMP_SSR)\nFloors mirror the characters, ruins and sky that are on screen. Levels 1 to 3. Only what is visible in the picture can be reflected. Not in widescreen. Saved.";
+            m.help = ao ? "Ambient occlusion, SSAO (PSPRECOMP_SSAO)\nDarkens creases and the ground around characters and objects. Levels 1 to 3. Runs on the 3D scene before the glow and the HUD, so the HUD is never darkened. Costs GPU time; not for the Steam Deck at a high render scale. Saved."
+                : cs ? "Contact shadows (PSPRECOMP_CONTACT_SHADOWS)\nA short ray-marched shadow cast from fighters and objects onto the floor and each other. Levels 1 to 3. Saved."
+                     : "Screen-space reflections (PSPRECOMP_SSR)\nFloors mirror the characters, ruins and sky that are on screen. Levels 1 to 3. Only what is visible in the picture can be reflected. Saved.";
             break;
         }
         case ROW_ANISO: {

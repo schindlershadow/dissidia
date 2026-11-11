@@ -450,8 +450,9 @@ behavioral oracle for diffing (see README, Verification Methodology).
 They run on the finished 3D scene of a displayed buffer, not on the presented picture: by present time the depth buffer
 holds only the game's glow / HUD passes (all ~0). `fx_track` in `psp_ge_draw.cpp` counts depth-writing 3D draws per target
 and, at the first through-mode draw that follows a run of them (the glow downsample, then the HUD), copies the depth and
-runs the passes. The glow chain and HUD are drawn afterwards, so neither is darkened or reflected. Skipped in widescreen
-(x is rescaled outside the projection matrix).
+runs the passes. The glow chain and HUD are drawn afterwards, so neither is darkened or reflected. Widescreen works: the
+game rescales clip x outside the projection matrix (`draw_wide_x`), so the effects take the projection with that same
+scale applied to row 0.
 
 Passes (cost is what matters on a handheld: the first version, full resolution, took the RP6 from 120 to 55 fps):
 1. half resolution: one pass computes AO + contact shadow (RG) and the reflection (premultiplied RGBA, MRT);
