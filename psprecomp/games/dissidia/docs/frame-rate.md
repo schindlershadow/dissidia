@@ -136,6 +136,33 @@ Generic runtime code (`runtime/src/psp_settings.cpp`, see ARCHITECTURE.md). The 
 dialog (`psp_sddialog::render_menu`) and uses the same `SdTheme`. The Dissidia theme adds the d-pad left/right glyphs
 (button sheet, entry 8) and the blue/white selector triangles (common UI sheet, entry 0) for the value arrows.
 
+### EX Burst quicktime and release gauge (fixed 10 Nov)
+
+The EX Burst code steps with fixed amounts per call and counts in integers, not by dt. Above 30 Hz the quicktime after the HP
+attack, the countdown and the release pointer ran 2x (60 Hz) to 4x (120 Hz) too fast. Two pieces:
+
+| Code | What it does per call | Hook |
+|---|---|---|
+| EX Burst controller `0x08A3FE10` (battle overlay; one call per update from `FUN_088413D0`) | Phase state machine (`+632`: 1 start, 2, 3 slow motion and prompt, 4 release gauge). Phase 4 calls `0x08A3E4A8`: pointer position `+596` += velocity `+604`, velocity += constants, decay, no dt. `+636` is an int timer advanced by `trunc(timer + global step)` | `exb_ctrl_hook` |
+| Quicktime UI `0x08A40E60` (calls the `0x08A41558` / `0x08A41774` states, which set game speed 0 with `FUN_08A62020` and wait on a timer) | Fixed steps; the countdown reads the frame timer's dt (`+0x18`), not the global step | `exb_ui_hook` |
+
+Fix: each runs once per 30 Hz frame's worth of time (accumulator of `ticks / 2` per update, the other updates skip it) and for that
+call the global step (`0x089D5EAC`) and the frame timer's dt are scaled by `2 / ticks`, so it sees what a 30 Hz frame has. Three things
+had to be right, each found by the way it failed:
+
+- **Sticky presses.** The code reads "pressed this update" with `FUN_08B326C4(actor)`, true for one update. On a skipped update the
+  press was lost: the burst waited for a button press it never saw (a freeze before the minigame) and the timing felt off. On skipped
+  updates the actors the burst asked about are polled and the edge is kept until the next run.
+- **Timer dt as well as the global step.** Scaling only the global step left the countdown at a quarter of its speed (2:00 held for
+  12 s). The PSP counts 2:00 to the end in about 4 s.
+- **No double gating.** The UI is called from inside the controller; gating both throttled the inner one to every 16th update and the
+  pointer jumped back and forth. Inside a gated call the other hook passes through.
+
+The cost: the prompt and the pointer move 30 times a second while the picture draws at the full rate (looks slightly steppy).
+`PSPRECOMP_EXB30=0` / `PSPRECOMP_EXB_UI=0` turn each hook off for A/B checks; `PSPRECOMP_EXB_LOG=1` logs `[EXB]` (phase, timers,
+pointer position / velocity, step) and `[EXBP]` (button prompt `0x08A3D1C4`, which turned out not to be the quicktime). Checked by
+play on Jecht at 120 Hz (video against a 30 Hz run). Cloud of Darkness uses the same code. Not checked at 60 / 240 Hz.
+
 ### Timed button inputs above 30 Hz (press latch)
 
 The fighter code asks the virtual pad whether a button was *pressed this update* (`FUN_08AB399C`: state and not previous state), so
