@@ -43,11 +43,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build dependencies of the bundle (SDL2 loads these libraries at run time; only their headers are needed here)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends perl make python3 \
-            libx11-dev libxext-dev libxcursor-dev libxi-dev libxfixes-dev libxrandr-dev libxss-dev libxkbcommon-dev \
-            libwayland-dev wayland-protocols libdecor-0-dev libasound2-dev libpulse-dev libpipewire-0.3-dev \
-            libdrm-dev libgbm-dev libudev-dev libdbus-1-dev libgl-dev libegl-dev
+          # The runner image points apt at azure.archive.ubuntu.com. On 2026-11-11 that name did not resolve for hours (v0.1.8 failed twice
+          # here), so use the main archive and retry with short timeouts instead of hanging for 20 minutes.
+          sudo sed -i 's#azure\.archive\.ubuntu\.com#archive.ubuntu.com#g' /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
+          APT="sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          ok=
+          for i in 1 2 3; do $APT update && ok=1 && break; sleep 15; done
+          [ -n "$ok" ]
+          ok=
+          for i in 1 2 3; do
+            $APT install -y --no-install-recommends perl make python3 \
+              libx11-dev libxext-dev libxcursor-dev libxi-dev libxfixes-dev libxrandr-dev libxss-dev libxkbcommon-dev \
+              libwayland-dev wayland-protocols libdecor-0-dev libasound2-dev libpulse-dev libpipewire-0.3-dev \
+              libdrm-dev libgbm-dev libudev-dev libdbus-1-dev libgl-dev libegl-dev && ok=1 && break
+            sleep 20
+          done
+          [ -n "$ok" ]
       - uses: actions/download-artifact@v4
         with:
           name: recompiler-windows
