@@ -364,6 +364,21 @@ Two consequences of how this is implemented:
   16.667 ms on the game thread to simulate the 60 Hz vblank. No `SDL_GL_SetSwapInterval` is
   called, so vsync is whatever the platform defaults to.
 
+### Present-time post-processing
+
+`runtime/src/psp_post.cpp` replaces the final `glBlitFramebuffer` in `present_blit` when any effect is on. It draws the shown
+render target's colour texture through one fragment shader into the window rectangle, so the game's own glow and blur chain is
+never touched and the effects work at every render scale. All three effects are Settings > System rows and are saved:
+
+| Setting | Env | Values |
+|---|---|---|
+| Anti-Aliasing | `PSPRECOMP_POST_AA` | 0 off, 1 FXAA (compact edge-directed blend) |
+| Sharpening | `PSPRECOMP_SHARPEN` | 0 off, 1..4 (contrast-adaptive sharpening, after AMD CAS) |
+| Upscale Filter | `PSPRECOMP_UPSCALE` | `bilinear` (as before), `sharp` (sharp bilinear), `bicubic` (Catmull-Rom) |
+
+An exact integer-scale (nearest) present keeps its hard pixels: the upscale filter does not apply there, FXAA and sharpening still do.
+If the shader fails to build, the plain blit is used. The pass resets the cached GL state afterwards (`glc::invalidate`).
+
 ## What Is Not Implemented
 
 Honest inventory of GE features the interpreter accepts but does not execute, with the

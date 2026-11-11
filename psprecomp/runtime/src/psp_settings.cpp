@@ -6,6 +6,7 @@
 #include "psp_runtime.h"
 #include "psp_event_loop.h"
 #include "psp_ge_draw.h"
+#include "psp_post.h"
 #include "hle/psp_savedata_dialog.h"
 #include "hle/psp_hle_adhoc.h"
 #include "hle/psp_cloud_service.h"
@@ -83,7 +84,7 @@ bool updates_choice();
 bool texpack_choice();
 bool texpack_at_start();
 
-enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_VOICE, ROW_TEXPACK, ROW_TOUCH, ROW_TOUCH_EDIT, ROW_UPDATES, ROW_QUIT,
+enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_AA, ROW_SHARP, ROW_UPSCALE, ROW_VOICE, ROW_TEXPACK, ROW_TOUCH, ROW_TOUCH_EDIT, ROW_UPDATES, ROW_QUIT,
            ROW_NET_MODE, ROW_NET_SERVER, ROW_NET_ROOM, ROW_NET_PEERS, ROW_NET_STATUS,   // Network page
            ROW_CLOUD_PROVIDER, ROW_CLOUD_FOLDER, ROW_CLOUD_URL, ROW_CLOUD_USER, ROW_CLOUD_PASS, ROW_CLOUD_GOOGLE,
            ROW_CLOUD_AUTO, ROW_CLOUD_REPLAYS, ROW_CLOUD_NOW, ROW_CLOUD_STATUS,   // Cloud page
@@ -549,6 +550,31 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.help = "Soft focus (PSPRECOMP_SOFT_FOCUS)\nSome stages (Order's Sanctuary) blend a blurred copy of the picture over the scene for a dreamy look. Off gives a sharper picture. Saved.";
             break;
         }
+        case ROW_AA: {
+            const bool on = psp_post_aa() != 0;
+            m.label = "Anti-Aliasing";
+            m.value = on ? "FXAA" : "Off";
+            m.can_dec = on; m.can_inc = !on;
+            m.help = "Post-process anti-aliasing (PSPRECOMP_POST_AA)\nSmooths jagged edges on the finished picture (FXAA). It does not touch the game's glow, so it is safe at any render scale. Saved.";
+            break;
+        }
+        case ROW_SHARP: {
+            const int v = psp_post_sharpen();
+            m.label = "Sharpening";
+            m.value = v ? "Level " + std::to_string(v) : "Off";
+            m.can_dec = v > 0; m.can_inc = v < 4;
+            m.help = "Sharpening (PSPRECOMP_SHARPEN)\nContrast-adaptive sharpening of the finished picture. Levels 1 to 4; use it with FXAA to win back crispness. Saved.";
+            break;
+        }
+        case ROW_UPSCALE: {
+            static const char* const names[3] = {"Bilinear", "Sharp Bilinear", "Bicubic"};
+            const int v = psp_post_upscale();
+            m.label = "Upscale Filter";
+            m.value = names[v];
+            m.can_dec = v > 0; m.can_inc = v < 2;
+            m.help = "Upscale filter (PSPRECOMP_UPSCALE)\nHow the picture is stretched to the window when its size is not a whole multiple. Sharp Bilinear keeps texels crisp, Bicubic is smoother and sharper than Bilinear. Saved.";
+            break;
+        }
         case ROW_GLOWSOFT: {
             const bool on = ge_draw_fb_prefilter();
             m.label = "Glow Softening";
@@ -768,6 +794,20 @@ void change(int d) {   // left / right on the selected row
     case ROW_SOFT:
         if ((d > 0) != ge_soft_focus()) { ge_set_soft_focus(d > 0); save("soft_focus", d > 0 ? "1" : "0"); }
         break;
+    case ROW_AA:
+        if ((d > 0) != (psp_post_aa() != 0)) { psp_post_set_aa(d > 0); save("post_aa", d > 0 ? "1" : "0"); }
+        break;
+    case ROW_SHARP: {
+        const int v = std::min(4, std::max(0, psp_post_sharpen() + d));
+        if (v != psp_post_sharpen()) { psp_post_set_sharpen(v); save("sharpen", std::to_string(v)); }
+        break;
+    }
+    case ROW_UPSCALE: {
+        static const char* const keys[3] = {"bilinear", "sharp", "bicubic"};
+        const int v = std::min(2, std::max(0, psp_post_upscale() + d));
+        if (v != psp_post_upscale()) { psp_post_set_upscale(v); save("upscale", keys[v]); }
+        break;
+    }
     case ROW_GLOWSOFT: ge_draw_set_fb_prefilter(d > 0); break;
     case ROW_GLOWPASS: ge_draw_set_fb_snapshot(d > 0); break;
     case ROW_RING: {
@@ -812,6 +852,9 @@ void build_rows() {
         if (g_fps.get && g_fps.count > 1) g_rows.push_back(ROW_FPS);
         g_rows.push_back(ROW_WIDE);
         g_rows.push_back(ROW_SOFT);
+        g_rows.push_back(ROW_AA);
+        g_rows.push_back(ROW_SHARP);
+        g_rows.push_back(ROW_UPSCALE);
         if (voice_row_wanted()) g_rows.push_back(ROW_VOICE);
         if (texpack_row_wanted()) g_rows.push_back(ROW_TEXPACK);
 #ifdef __ANDROID__   // the on-screen controls exist for Android only
@@ -933,6 +976,9 @@ void confirm() {
     case ROW_SYNC: ge_draw_set_sync_mode((ge_draw_sync_mode() + 1) % 5); break;
     case ROW_RING: change((g_ring_next >= 0 ? g_ring_next : ge_draw_ring_mode()) ? -1 : 1); return;
     case ROW_SOFT: change(ge_soft_focus() ? -1 : 1); return;
+    case ROW_AA: change(psp_post_aa() ? -1 : 1); return;
+    case ROW_SHARP: change(psp_post_sharpen() >= 4 ? -4 : 1); return;
+    case ROW_UPSCALE: change(psp_post_upscale() >= 2 ? -2 : 1); return;
     case ROW_GLOWSOFT: change(ge_draw_fb_prefilter() ? -1 : 1); return;
     case ROW_GLOWPASS: change(ge_draw_fb_snapshot() ? -1 : 1); return;
     }
@@ -1001,6 +1047,10 @@ void psp_settings_load_early() {
         put("PSPRECOMP_RENDER_SCALE", it->second);
     if ((it = g_saved.find("widescreen")) != g_saved.end()) put("PSPRECOMP_WIDESCREEN", it->second == "1" ? "1" : "0");
     if ((it = g_saved.find("soft_focus")) != g_saved.end()) put("PSPRECOMP_SOFT_FOCUS", it->second == "0" ? "0" : "1");
+    if ((it = g_saved.find("post_aa")) != g_saved.end()) put("PSPRECOMP_POST_AA", it->second == "1" ? "1" : "0");
+    if ((it = g_saved.find("sharpen")) != g_saved.end()) put("PSPRECOMP_SHARPEN", it->second);
+    if ((it = g_saved.find("upscale")) != g_saved.end() && (it->second == "bilinear" || it->second == "sharp" || it->second == "bicubic"))
+        put("PSPRECOMP_UPSCALE", it->second);
     if ((it = g_saved.find("fps")) != g_saved.end() && std::atoi(it->second.c_str()) > 0) put("PSPRECOMP_FPS", it->second);
     if ((it = g_saved.find("voice")) != g_saved.end() && (it->second == "jp" || it->second == "en"))
         put("PSPRECOMP_VOICE", it->second);
