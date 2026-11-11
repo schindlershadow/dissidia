@@ -900,6 +900,11 @@ void switch_page(int dir = 1) {   // dir +1 = the next tab (R), -1 = the previou
 
 void set_open(bool open) {
     if (open == g_open.load()) return;
+    if (open && psp_adhoc_in_session()) {   // opening pauses the game, which would stall the other players
+        ge_draw_toast("Settings are unavailable during multiplayer", 2500);
+        std::fprintf(stderr, "[SETTINGS] menu not opened: in a multiplayer session\n");
+        return;
+    }
     if (open) {
         build_res_options();
         pick_window_size();
