@@ -7,6 +7,8 @@ Verified: title, menus, settings, 3D battle, render scale 3, screen-space effect
 errors on desktop. Measured on the GTX 1660 SUPER in a heavy fight (3.5k draws, render scale 3, no present): GPU about 2.2 ms/frame; render-thread CPU
 about 3.2 ms for Vulkan vs 2.65 ms for NVIDIA's GL, so **Vulkan is not faster yet**; the layer's own CPU cost is ~0.4 ms/frame. Retroid Pocket 6 (Adreno 740, 120 fps mode, render scale 4, widescreen, SSAO/contact shadows/SSR on, same verified stage and fighters, Order's
 Sanctuary, Squall vs Lightning): GLES about 112 fps, Vulkan about 110 fps; render-thread CPU 5.85+0.7 ms (GL) vs 6.97+0.56 ms (Vulkan), Vulkan GPU about 7 ms/frame.
+With root on the RP6 (GPU pinned to 680 MHz via `devfreq/min_freq`, game set to 240 fps so nothing paces it) both APIs hit the same ceiling:
+GLES 113 fps, Vulkan 114 fps, Vulkan GPU 6.4 ms/frame (room for ~150 fps). The limit is therefore not the renderer but the game's own CPU work.
 **So parity, not a win.** Both sit near the 120 fps pacing, so headroom still has to be measured uncapped. Earlier device numbers that showed Vulkan faster (no
 screen-space effects yet) or slower (stage not reliably selected) were measurement errors: the harness must verify the stage (`BT_SETUP_SHOT`). Known gaps (also: pixel-level differences in the screen-space effects were only checked by eye): partial colour mask on glClear, blit within one image, occlusion/timer queries are stubs, no ray tracing yet, no async pipeline creation or
 pipeline cache on disk, FX shader hot reload untested on Vulkan, Android needs the SPIR-V cache (`vk_cache/`) filled by a desktop run (`vk_spirv_tool` compiles
