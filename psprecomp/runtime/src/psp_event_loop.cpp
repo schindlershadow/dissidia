@@ -360,7 +360,11 @@ static void handle_sdl_event(const SDL_Event& ev) {
     {   // settings menu first: its hotkey is swallowed; opening / closing re-gates the game's input
         const bool was_open = psp_settings_menu_open();
         const bool eaten = psp_settings_handle_event(ev);
-        if (was_open != psp_settings_menu_open()) publish_input();
+        // A button or key that closes the menu (Back, Start) is not eaten: its press is recorded just below and published
+        // there. Publishing here, before that, would see no held button, end the menu's wait-for-release at once and
+        // let the very press that closed the menu through to the game.
+        const bool closed_by_press = was_open && !psp_settings_menu_open() && !eaten;
+        if (was_open != psp_settings_menu_open() && !closed_by_press) publish_input();
         if (eaten) return;
     }
     if (psp_sddialog::osk_active()) {   // the on-screen keyboard is open: the host keyboard types into it

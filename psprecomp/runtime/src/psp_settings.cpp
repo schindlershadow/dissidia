@@ -881,8 +881,17 @@ void build_rows() {
     g_sel = std::min(std::max(g_sel_page[g_page], 0), int(g_rows.size()) - 1);
 }
 
+// Length of the tab switch animation; PSPRECOMP_TAB_ANIM_MS=<ms> overrides it (0 = no animation).
+int64_t tab_anim_ms() {
+    static const int64_t v = [] { const char* e = std::getenv("PSPRECOMP_TAB_ANIM_MS"); return e && e[0] ? int64_t(std::atoi(e)) : int64_t(200); }();
+    return v;
+}
+int g_anim_from = -1, g_anim_dir = 0;  // a tab switch in progress: the tab left, and the direction (+1 = R)
+int64_t g_anim_t0 = 0;
+
 void switch_page(int dir = 1) {   // dir +1 = the next tab (R), -1 = the previous one (L); wraps around
     g_sel_page[g_page] = g_sel;
+    g_anim_from = g_page; g_anim_dir = dir; g_anim_t0 = now_ms();
     g_page = (g_page + dir + PAGES) % PAGES;
     build_rows();
     g_quit_armed = false;
@@ -1226,8 +1235,18 @@ void psp_settings_tick() {
         g_drawn_scale = scale;
         psp_sddialog::Canvas c(scale);
         static const std::vector<std::string> page_tabs(k_page_names, k_page_names + PAGES);
+        psp_sddialog::MenuAnim anim;
+        if (g_anim_from >= 0) {
+            const float u = tab_anim_ms() > 0 ? float(t - g_anim_t0) / float(tab_anim_ms()) : 1.f;
+            if (u >= 1.f) g_anim_from = -1;
+            else {
+                anim.from_tab = g_anim_from; anim.dir = g_anim_dir;
+                anim.p = 0.2f + 0.8f * (1.f - (1.f - u) * (1.f - u) * (1.f - u));   // ease out, starting a little in so no frame shows an empty list
+                g_dirty = true;                                       // keep drawing until it has settled
+            }
+        }
         psp_sddialog::render_menu(c, "Settings", k_page_names[g_page], make_rows(), g_edit.active ? g_edit.sel : g_sel, g_confirm_cross,
-                                  &page_tabs, g_page);
+                                  &page_tabs, g_page, g_anim_from >= 0 ? &anim : nullptr);
         psp_sddialog::menu_overlay_publish(c);
         ge_draw_present_overlay_now();
         g_last_present = t;
