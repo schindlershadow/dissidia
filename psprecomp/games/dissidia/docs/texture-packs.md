@@ -81,3 +81,46 @@ A textures.ini may list textures the pack does not ship: Niosa's D012FFRT has ab
 not in the download (names without `.png`, DLC/test art, `ui/selogo.png`, `ui/opencredits.png`...). The loader checks every entry once at start,
 drops those and logs `[TEXPACK] N pack entries point to a file the pack does not contain (ignored)`; before, such a texture logged `HIT` and then
 `bad replacement ...: unreadable (using original)`. Those textures stay original either way.
+
+## Precedence and pixel-repeated pack entries
+
+The runtime looks a texture up in the id-named files (`<id>.png`, see above) first and in a PPSSPP `textures.ini` pack second. About 45% of
+Niosa's D012FFRT files (360 of 808) are only the original with every pixel repeated 2x or 4x, so they look as blocky as the PSP art (item icons,
+`ui/equipmenticons.png`, many character textures). `tools/texpack_extract.py` + `tools/texpack_upscale.py` produce real upscales of the same
+textures under our ids; because id files win, they replace those entries without editing the foreign pack. `PSPRECOMP_TEXPACK_LOG_MAX=N`
+raises the number of PPSSPP lookups logged (default 400 with `PSPRECOMP_TEXPACK_LOG=1`).
+
+## The extra textures repository
+
+`tools/fetch_textures.py` (run by the wizard when "HD texture pack" is on) installs two things into `<workdir>/mods/textures`: Niosa's pack
+(about 200 MB) and our own upscales from https://github.com/schindlershadow/dissidia-hd-textures (3,366 `<id>.png` files, about 1.1 GB, built with
+`texpack_extract.py` and `texpack_upscale.py`; its README and `manifest.json` say what each file is). Total download about 1.3 GB, on disk about
+1.4 GB. If the second download fails the first is still installed; `--no-ids` skips it, `--ids-zip FILE` uses a local archive.
+
+## Hand-redrawn pieces
+
+Tiny text inside an atlas (6 to 10 px) is beyond the model: it either blurs or invents letters. `tools/texpack_patches.py` redraws the two
+that matter most after `texpack_upscale.py`: the title screen's copyright strip (`texpack_crisp.py`) and the YES / NO labels of every
+confirm prompt (a 26x9 and a 20x9 px grey sprite cell in the UI atlas `c6f05e9985eebe31`, drawn again in Cinzel Bold; the game tints it).
+`PSPRECOMP_TEXPACK_LOG_IDS=1` logs each id-named file the first time it is bound, and `FT 1` on the debug socket lists a frame's draws with
+texture address and UV window: that is how to find which cell of which atlas draws something on screen.
+
+Label atlases of the customization screens (`ea8da23a5f4cfe83`, `01a8235b4aef00cb`, `40c5a7313b7c99d5`: TOTAL / BASE, ACCESSORY INFO, CATEGORY, CURRENT,
+RANK, ITEM INFO, EQUIPMENT, SET A B C ...) are handled the same way: `LABELS` in `texpack_patches.py` lists each line's ink box, the model's blur inside
+the box is cleared and the string is drawn in Cinzel Bold in the line's original colour. To add one: find the atlas id with
+`PSPRECOMP_TEXPACK_LOG_IDS=1`, read the cells off the atlas picture, add the boxes.
+
+White stat names with a shadow (MAX HP BRV CP ATK DEF LUK in `ea8da23a5f4cfe83`) use `SHADOWED` in `texpack_patches.py`: the letters are drawn in
+Cinzel Bold over a softened navy shadow offset by one source pixel, as in the original.
+
+### Finding more baked-in text (`texpack_text.py`)
+
+`tools/texpack_text.py <extract dir> <pack dir> --scan scan.json` runs an OCR (RapidOCR, `pip install rapidocr-onnxruntime`) over the originals and
+writes proposals: string, ink box, colour, shadow. Spaces are worked out from the ink gaps. The OCR drops spaces and misreads letters, so the
+JSON is meant to be read and corrected by hand (fix `text`, set `"skip": true`), then `--apply scan.json` draws it: Cinzel Bold for capitals,
+Crimson Text SemiBold for mixed case, in the line's colour, skipping any line the font would have to stretch by more than 25%. Lines of
+10 px or less only; the 480x272 tutorial slides (whole sentences) are left to the model. `tools/texpack_text_reviewed.json` is the reviewed set that
+produced the current pack. Known limits: outlined or glowing lettering becomes plain coloured lettering, and condensed fonts are skipped.
+
+The 480x272 images (tutorial slides, story and event art, 77 textures) are run with `texpack_upscale.py --max4x 480`, i.e. 1920x1088, so they fill a
+1080p screen without being stretched; every other texture above 256 px stays at 2x to keep the pack small.

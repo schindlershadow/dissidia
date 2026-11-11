@@ -9,6 +9,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <set>
 #include <cstdlib>
 #include <cstring>
 #include <list>
@@ -436,7 +437,13 @@ bool psp_texpack_load_replacement(uint64_t id, std::vector<uint8_t>& rgba, int& 
     if (!g.replace || !g.pack.count(id) || g.bad.count(id)) return false;
     char name[40];
     std::snprintf(name, sizeof name, "/%016llx.png", (unsigned long long)id);
-    return load_png_cached(id, g.dir + name, rgba, w, h);
+    const bool ok = load_png_cached(id, g.dir + name, rgba, w, h);
+    static const bool log_ids = std::getenv("PSPRECOMP_TEXPACK_LOG_IDS") != nullptr;   // one line per id the first time it is bound
+    if (ok && log_ids) {
+        static std::set<uint64_t> seen;
+        if (seen.insert(id).second) std::fprintf(stderr, "[TEXPACK] id %016llx HIT %dx%d\n", (unsigned long long)id, w, h);
+    }
+    return ok;
 }
 
 // ------------------------------------------------------- PPSSPP compatibility ----
@@ -586,7 +593,8 @@ bool psp_texpack_ppsspp_lookup(const PspPpssppTex& t, std::vector<uint8_t>& rgba
     if (it == pp.files.end() && pp.ignore_addr) it = pp.files.find(noaddr);
     const bool hit = it != pp.files.end();
     // The first lookups are always logged (so a log tells whether the pack matches); PSPRECOMP_TEXPACK_LOG=1 logs more.
-    if (pp.logged < (pp.log ? 400u : 40u)) {
+    static const unsigned log_max = [] { const char* v = std::getenv("PSPRECOMP_TEXPACK_LOG_MAX"); return v ? (unsigned)std::strtoul(v, nullptr, 10) : 0u; }();
+    if (pp.logged < (log_max ? log_max : (pp.log ? 400u : 40u))) {
         pp.logged++;
         std::string hint;
         if (!hit) {
