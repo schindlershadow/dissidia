@@ -451,32 +451,6 @@ Common common_locs(GLuint p) {
 }
 
 #ifndef PSP_GLES
-// PSPRECOMP_FX_DEBUG: GPU time of the passes, averaged over 120 runs (the previous run's query is read, never waiting)
-GLuint g_tq = 0;
-bool g_tq_busy = false;
-double g_tq_sum = 0;
-int g_tq_n = 0;
-struct FxTimer {
-    bool started = false;
-    FxTimer() {
-        static const bool on = std::getenv("PSPRECOMP_FX_DEBUG") != nullptr;
-        if (!on) return;
-        if (!g_tq) glGenQueries(1, &g_tq);
-        if (g_tq_busy) {
-            GLuint ok = 0;
-            glGetQueryObjectuiv(g_tq, GL_QUERY_RESULT_AVAILABLE, &ok);
-            if (ok) {
-                GLuint64 ns = 0;
-                glGetQueryObjectui64v(g_tq, GL_QUERY_RESULT, &ns);
-                g_tq_sum += double(ns) * 1e-6; g_tq_n++; g_tq_busy = false;
-                if (g_tq_n == 120) { std::fprintf(stderr, "[SCREENFX] gpu %.3f ms per run\n", g_tq_sum / g_tq_n); g_tq_sum = 0; g_tq_n = 0; }
-            }
-        }
-        if (!g_tq_busy) { glBeginQuery(GL_TIME_ELAPSED, g_tq); g_tq_busy = true; started = true; }
-    }
-    ~FxTimer() { if (started) glEndQuery(GL_TIME_ELAPSED); }
-};
-
 // per-pass GPU timestamps (PSPRECOMP_FX_DEBUG): marks 0 start, 1 copies, 2 main pass, 3 blur, 4 AO/shadow composite, 5 reflection composite
 GLuint g_ts[6] = {0, 0, 0, 0, 0, 0};
 bool g_ts_busy = false;
@@ -508,6 +482,9 @@ void ts_mark(int i) {
     static const bool on = std::getenv("PSPRECOMP_FX_DEBUG") != nullptr;
     if (on && g_ts_busy && g_ts[0] && i > 0) glQueryCounter(g_ts[i], GL_TIMESTAMP);
 }
+#else
+inline void ts_begin() {}   // GLES has no timestamp queries here
+inline void ts_mark(int) {}
 #endif
 
 }  // namespace
