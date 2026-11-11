@@ -41,6 +41,9 @@
 #include "hle/psp_hle_adhoc.h"
 #include "psp_ge_draw.h"
 #include <algorithm>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -74,13 +77,17 @@ constexpr uint32_t ACTOR_DT = 0x08838300u;      // EBOOT: an actor's time step
 constexpr uint32_t SLOWMO_FRAME = 0x08864DD8u;  // EBOOT: per-frame update of the slow-motion object, writes the global step
 constexpr uint32_t SLOWMO_PTR = 0x089D5EA8u;    // EBOOT: pointer to that object (+0 step value, +4 time left, +8 flags)
 constexpr uint32_t ROOT_MOTION = 0x0882F784u;   // EBOOT: adds (bone pose now - pose last tick) to the motion player's accumulator
-constexpr uint32_t MOVE_TOWARD = 0x08834E08u;  // EBOOT: moves an actor toward a point by at most f12 metres per call (timeline op 0x0219 ranged: Revolver Drive's rush)
 constexpr uint32_t CPU_AI = 0x08A75D38u;        // battle overlay: CPU AI action chooser (returns -1 / -4: no action)
+constexpr uint32_t STEER_MOVE = 0x08A2C960u;   // battle overlay: ground steered move controller (Squall's Revolver Drive rush): a0 = out vector (metres to move this update)
 constexpr uint32_t OWN_MASK0 = 0x089C7FD8u, OWN_MASK1 = 0x089C7FDCu;
+constexpr uint32_t EXB_PRESSED = 0x08B326C4u;   // battle overlay: 'virtual button pressed this update' test of an actor (r4), used by the EX Burst code
+constexpr uint32_t EXB_PROMPT = 0x08A3D1C4u;    // battle overlay: EX Burst button prompt update (state machine with a timer at +28; log only)
+constexpr uint32_t EXB_UI = 0x08A40E60u;        // battle overlay: EX Burst quicktime UI update (calls the 08A41558 / 08A41774 states)
+constexpr uint32_t EXB_CTRL = 0x08A3FE10u;      // battle overlay: EX Burst controller update (prompt, release gauge, slow motion)
 constexpr uint32_t CAM_DT = 0x08B3B4FCu;        // battle overlay: a camera's time step
 
 uint8_t* g_ram = nullptr;
-FuncPtr g_orig_move_toward = nullptr, g_orig_pressed = nullptr, g_orig_rootmotion = nullptr, g_orig_slowmo = nullptr, g_orig_frame_end = nullptr, g_orig_pad = nullptr, g_orig_actor_dt = nullptr, g_orig_cam_dt = nullptr;
+FuncPtr g_orig_steer_move = nullptr, g_orig_pressed = nullptr, g_orig_rootmotion = nullptr, g_orig_slowmo = nullptr, g_orig_frame_end = nullptr, g_orig_pad = nullptr, g_orig_actor_dt = nullptr, g_orig_cam_dt = nullptr, g_orig_exb_ctrl = nullptr, g_orig_exb_pressed = nullptr, g_orig_exb_prompt = nullptr, g_orig_exb_ui = nullptr;
 std::atomic<int> g_target{30};     // requested rate (settings / env)
 int g_interval = 2;                // interval written on the last frame end (2 = 30 Hz, 1 = 60 Hz and above)
 int g_rate = 30;                   // logic rate in effect (30, 60, 90, ... one frame per vblank above 30)
@@ -352,6 +359,11 @@ void testdrive_frame(uint8_t* rdram, recomp_context* ctx) {
 }
 
 void testdrive_install() {
+#ifdef __linux__
+    // PSPRECOMP_ALLOW_PTRACE=1: let any process of this user attach a debugger (Yama ptrace_scope 1 only allows a parent); for
+    // `gdb -p` write traces ("which function stores this guest word") on an unstripped build
+    if (const char* ap = std::getenv("PSPRECOMP_ALLOW_PTRACE"); ap && ap[0] && ap[0] != '0') prctl(PR_SET_PTRACER, (unsigned long)-1 /* PR_SET_PTRACER_ANY */, 0, 0, 0);
+#endif
     if (const char* fz = std::getenv("PSPRECOMP_TEST_FREEZE_CPU"); fz && fz[0] && fz[0] != '0') g_test_freeze_cpu = true;
     if (const char* pc = std::getenv("PSPRECOMP_TEST_PLAYER_CHAR"); pc && pc[0]) g_player_char = std::atoi(pc);
     g_test_go = std::getenv("PSPRECOMP_TEST_GO");
@@ -490,17 +502,16 @@ void root_motion_hook(uint8_t* rdram, recomp_context* ctx) {
 }
 
 
-// FUN_08834E08(actor, point, f12 = max distance): the 'move toward target' timeline event (op 0x0219 ranged, 137 uses, e.g.
-// Squall's Revolver Drive rush) and a second caller step the actor by f12 metres on every call, not f12 x dt, so at 120
-// updates a second the rush covered four times the ground per second. Scale the allowance by the frame time (dt 2 = 30 Hz).
-void move_toward_hook(uint8_t* rdram, recomp_context* ctx) {
+// FUN_08A2C960(out, ctrl, actor): the movement of a steered ground move (Squall's Revolver Drive rush: timeline op 0x0225, actor
+// controller +0x3A4). It writes how far the actor moves THIS UPDATE (0.595 m at full speed) and never reads the frame time: on the PSP
+// that was 30 updates a second, so at 120 the rush went 4 times as fast (found with a write trace, tools/battle_test.py). The vector it
+// returns is scaled by the frame time (dt 2 = 30 Hz).
+void steer_move_hook(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t out = static_cast<uint32_t>(ctx->r[4]);
+    g_orig_steer_move(rdram, ctx);
     const uint32_t timer = r32(TIMER_PTR);
     const float dt = ok(timer) ? rdf(timer + 0x18u) : 2.f;
-    static int calls = 0;
-    if (g_test_on && (calls < 6 || calls % 400 == 0)) std::fprintf(stderr, "[TEST] move-toward call %d actor %08X f12 %.3f dt %.3f\n", calls, (unsigned)ctx->r[4], ctx->f[12], dt);
-    calls++;
-    if (dt > 0.f && dt < 2.f) ctx->f[12] *= dt * 0.5f;
-    g_orig_move_toward(rdram, ctx);
+    if (dt > 0.f && dt < 2.f && ok(out)) for (uint32_t i = 0; i < 3; i++) wrf(out + 4 * i, rdf(out + 4 * i) * dt * 0.5f);
 }
 
 void pad_set_hook(uint8_t* rdram, recomp_context* ctx) {
@@ -681,6 +692,140 @@ void cam_dt_hook(uint8_t* rdram, recomp_context* ctx) {
     if (g_ticks != 2.0f && ok(cam) && r32(cam + 0x100u) == 2u) ctx->f[0] *= g_ticks * 0.5f;
 }
 
+
+// EX Burst controller (FUN_08A3FE10, called once per update from FUN_088413D0): every phase of the burst runs from it, the
+// button prompt (quicktime) and the release gauge (FUN_08A3E4A8: position += velocity per call) among them, with fixed per-call
+// steps and integer counters that do not scale with dt, so at 60 / 120 Hz the prompt and the pointer ran 2x / 4x too fast.
+// Run it once per 30 Hz frame's worth of time (an accumulator of ticks / 2 per update, held updates skipped) with the global
+// step scaled to what a 30 Hz frame has (2.0 normally, the slow-motion value otherwise) for the call.
+// PSPRECOMP_EXB30=0 turns it off.
+bool g_exb30 = true;
+// The controller reads 'pressed this update' edges (FUN_08B326C4(actor)), which last one update. With the controller run on one
+// update in 2 / 4, an edge on a held update would be lost (the burst waited for a press it never saw, and timing felt off).
+// While held, every actor the controller asked about is polled and the edge kept until the next controller run.
+bool g_exb_in = false;
+uint32_t g_exb_args[8] = {};
+bool g_exb_sticky[8] = {};
+int g_exb_nargs = 0;
+void exb_pressed_hook(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t id = overlay_id();
+    if (id != 1) {
+        FuncPtr f = id == 2 ? ovl_menu_lookup(EXB_PRESSED) : id == 3 ? ovl_extra_lookup(EXB_PRESSED) : nullptr;
+        if (f) f(rdram, ctx);
+        return;
+    }
+    const uint32_t actor = static_cast<uint32_t>(ctx->r[4]);
+    g_orig_exb_pressed(rdram, ctx);
+    if (!g_exb_in) return;
+    int i = 0;
+    while (i < g_exb_nargs && g_exb_args[i] != actor) i++;
+    if (i == g_exb_nargs && i < 8) { g_exb_args[i] = actor; g_exb_sticky[i] = false; g_exb_nargs++; }
+    if (i < 8) {
+        if (g_exb_sticky[i]) ctx->r[2] = 1;
+        g_exb_sticky[i] = false;
+    }
+}
+void exb_poll_held(uint8_t* rdram, recomp_context* ctx) {
+    for (int i = 0; i < g_exb_nargs; i++) {
+        recomp_context tmp = *ctx;
+        tmp.r[4] = static_cast<int32_t>(g_exb_args[i]);
+        g_orig_exb_pressed(rdram, &tmp);
+        if (tmp.r[2] != 0) g_exb_sticky[i] = true;
+    }
+}
+// PSPRECOMP_EXB_LOG=1: one line per controller update (before the gate) while a burst is active: phase (+632), phase timer (+636),
+// +644 flag, the global step, slow-motion object value / time left, whether the update ran the controller.
+void exb_log(const char* what, uint32_t ctl, bool ran) {
+    static const bool on = std::getenv("PSPRECOMP_EXB_LOG") != nullptr;
+    if (!on || !ok(ctl)) return;
+    const uint32_t ph = r32(ctl + 632u);
+    static uint32_t last_ph = 0xFFFFFFFFu;
+    static int n = 0;
+    if (ph == 0 && last_ph == 0) return;
+    const uint32_t sm = r32(SLOWMO_PTR);
+    if (ph != last_ph) n = 0;
+    last_ph = ph;
+    if (n++ > 400) return;
+    std::fprintf(stderr, "[EXB] gt=%.0f %s ran=%d phase=%u t636=%d f644=%u pointer=(pos %.2f vel %.2f held %u) step=%.3f slow=(%.3f,%.3f) ticks=%.2f\n", g_gt_ms, what, ran ? 1 : 0, ph,
+                 static_cast<int>(r32(ctl + 636u)), r32(ctl + 644u), rdf(ctl + 596u), rdf(ctl + 604u), r32(ctl + 593u) & 0xFFu, rdf(FRAME_STEP), ok(sm) ? rdf(sm) : -1.f, ok(sm) ? rdf(sm + 4u) : -1.f, g_ticks);
+}
+// Log only (PSPRECOMP_EXB_LOG=1): the prompt object (r4+20 -> state words +0 state, +4 stage, +8 / +12 button counters, +16 / +20 gauges, +28 timer).
+void exb_prompt_hook(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t id = overlay_id();
+    if (id != 1) {
+        FuncPtr f = id == 2 ? ovl_menu_lookup(EXB_PROMPT) : id == 3 ? ovl_extra_lookup(EXB_PROMPT) : nullptr;
+        if (f) f(rdram, ctx);
+        return;
+    }
+    static const bool on = std::getenv("PSPRECOMP_EXB_LOG") != nullptr;
+    const uint32_t self = static_cast<uint32_t>(ctx->r[4]);
+    g_orig_exb_prompt(rdram, ctx);
+    if (!on || !ok(self)) return;
+    const uint32_t o = r32(self + 20u);
+    if (!ok(o)) return;
+    static int n = 0;
+    static uint32_t last_state = 0xFFFFFFFFu, last_stage = 0xFFFFFFFFu;
+    const uint32_t st = r32(o), sg = r32(o + 4u);
+    if (st != last_state || sg != last_stage) n = 0;
+    last_state = st; last_stage = sg;
+    if (n++ > 150) return;
+    std::fprintf(stderr, "[EXBP] state=%u stage=%u cnt=(%u,%u) g=(%.1f,%.1f) timer=%.2f step=%.3f ticks=%.2f\n", st, sg, r32(o + 8u), r32(o + 12u),
+                 rdf(o + 16u), rdf(o + 20u), rdf(o + 28u), rdf(FRAME_STEP), g_ticks);
+}
+// The quicktime that starts the burst (FUN_08A40E60 and its 08A41558 / 08A41774 states) is the same kind of code: fixed steps per call,
+// no dt. Same treatment as the controller (PSPRECOMP_EXB_UI=0 turns it off).
+// Scales the frame time the gated EX Burst code reads: the global step and the frame timer's dt (+0x18, what menus and 2D code
+// use, e.g. the countdown of the quicktime), both to what a 30 Hz frame has.
+struct ExbStep {
+    float step, dt; uint32_t timer;
+    ExbStep() : step(rdf(FRAME_STEP)), dt(0.f), timer(r32(TIMER_PTR)) {
+        const float k = 2.f / g_ticks;
+        wrf(FRAME_STEP, step * k);
+        if (ok(timer)) { dt = rdf(timer + 0x18u); wrf(timer + 0x18u, dt * k); }
+    }
+    ~ExbStep() { wrf(FRAME_STEP, step); if (ok(timer)) wrf(timer + 0x18u, dt); }
+};
+bool g_exb_ui = true;
+void exb_ui_hook(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t id = overlay_id();
+    if (id != 1) {
+        FuncPtr f = id == 2 ? ovl_menu_lookup(EXB_UI) : id == 3 ? ovl_extra_lookup(EXB_UI) : nullptr;
+        if (f) f(rdram, ctx);
+        return;
+    }
+    static float acc = 1.f;
+    if (g_ticks == 2.0f || !g_exb_ui || !g_orig_exb_pressed || g_exb_in) { g_orig_exb_ui(rdram, ctx); return; }   // inside a gated call: already at 30 Hz, do not gate twice
+    acc += g_ticks * 0.5f;
+    if (acc < 1.f - 1e-4f) { exb_poll_held(rdram, ctx); return; }
+    acc -= 1.f;
+    if (acc > 1.f) acc = 0.f;
+    ExbStep scaled;
+    const bool was_in = g_exb_in;
+    g_exb_in = true;
+    g_orig_exb_ui(rdram, ctx);
+    g_exb_in = was_in;
+}
+void exb_ctrl_hook(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t id = overlay_id();
+    if (id != 1) {
+        FuncPtr f = id == 2 ? ovl_menu_lookup(EXB_CTRL) : id == 3 ? ovl_extra_lookup(EXB_CTRL) : nullptr;
+        if (f) f(rdram, ctx);
+        return;
+    }
+    static float acc = 1.f;
+    const uint32_t ctl = static_cast<uint32_t>(ctx->r[4]);
+    if (g_ticks == 2.0f || !g_exb30 || !g_orig_exb_pressed || g_exb_in) { exb_log("all", ctl, true); g_orig_exb_ctrl(rdram, ctx); return; }   // g_exb_in: called from the gated UI, already at 30 Hz
+    acc += g_ticks * 0.5f;
+    if (acc < 1.f - 1e-4f) { exb_poll_held(rdram, ctx); exb_log("held", ctl, false); return; }
+    exb_log("run ", ctl, true);
+    acc -= 1.f;
+    if (acc > 1.f) acc = 0.f;
+    ExbStep scaled;
+    g_exb_in = true;
+    g_orig_exb_ctrl(rdram, ctx);
+    g_exb_in = false;
+}
+
 // ---- Effect components ------------------------------------------------------------------------------------------
 // The effect runtime advances its components by dt = instance+352 (the global step x the handle's scale, written by
 // FUN_0894B48C): 2.0 per update on the PSP, 1.0 per update at 60 Hz. Most components scale by it. These step once
@@ -815,6 +960,7 @@ void fx_log_window() {
 void fx_install() {
     const char* e = std::getenv("PSPRECOMP_FX60");
     g_fx60 = !(e && e[0] == '0');
+    if (const char* x = std::getenv("PSPRECOMP_EXB30"); x && x[0] == '0') g_exb30 = false;
     int n = 0;
     for (int i = 0; i < kFxHooks; i++) {
         g_fx_orig[i] = psp_dispatch_probe_lookup(k_fx_hooks[i].addr);
@@ -885,15 +1031,19 @@ void dissidia_framerate_install(uint8_t* rdram) {
     psp_dispatch_register(PAD_SET, pad_set_hook);
     psp_dispatch_register(ACTOR_DT, actor_dt_hook);
     psp_dispatch_register(CAM_DT, cam_dt_hook);
+    if ((g_orig_exb_pressed = ovl_battle_lookup(EXB_PRESSED))) psp_dispatch_register(EXB_PRESSED, exb_pressed_hook);
+    if (std::getenv("PSPRECOMP_EXB_LOG") && (g_orig_exb_prompt = ovl_battle_lookup(EXB_PROMPT))) psp_dispatch_register(EXB_PROMPT, exb_prompt_hook);
+    if (const char* x = std::getenv("PSPRECOMP_EXB_UI"); x && x[0] == '0') g_exb_ui = false;
+    if ((g_orig_exb_ui = ovl_battle_lookup(EXB_UI))) psp_dispatch_register(EXB_UI, exb_ui_hook);
+    if ((g_orig_exb_ctrl = ovl_battle_lookup(EXB_CTRL))) psp_dispatch_register(EXB_CTRL, exb_ctrl_hook);
+    else std::fprintf(stderr, "[FPS] EX Burst controller hook NOT installed\n");
     if (g_orig_pressed) psp_dispatch_register(PRESSED, pressed_hook);
     std::fprintf(stderr, "[FPS] press latch %s (pressed-test hook %s)\n", g_press_latch ? "on" : "off", g_orig_pressed ? "installed" : "NOT FOUND");
     if ((g_orig_rootmotion = psp_dispatch_probe_lookup(ROOT_MOTION))) psp_dispatch_register(ROOT_MOTION, root_motion_hook);
     else std::fprintf(stderr, "[FPS] root motion hook NOT installed (no function at %08X)\n", ROOT_MOTION);
     if ((g_orig_slowmo = psp_dispatch_probe_lookup(SLOWMO_FRAME))) psp_dispatch_register(SLOWMO_FRAME, slowmo_frame_hook);
     else std::fprintf(stderr, "[FPS] slow-motion hook NOT installed (no function at %08X)\n", SLOWMO_FRAME);
-    if (const char* mt = std::getenv("PSPRECOMP_MOVE_TOWARD"); mt && mt[0] == '0') std::fprintf(stderr, "[FPS] move-toward hook OFF (PSPRECOMP_MOVE_TOWARD=0)\n");
-    else if ((g_orig_move_toward = psp_dispatch_probe_lookup(MOVE_TOWARD))) psp_dispatch_register(MOVE_TOWARD, move_toward_hook);
-    else std::fprintf(stderr, "[FPS] move-toward hook NOT installed (no function at %08X)\n", MOVE_TOWARD);
+    if (const char* sm = std::getenv("PSPRECOMP_STEER_MOVE"); !(sm && sm[0] == '0') && (g_orig_steer_move = ovl_battle_lookup(STEER_MOVE))) { psp_dispatch_register(STEER_MOVE, steer_move_hook); std::fprintf(stderr, "[FPS] steered-move hook installed\n"); }
     if (g_log && (g_orig_skel = psp_dispatch_probe_lookup(SKEL_BUILD))) psp_dispatch_register(SKEL_BUILD, skel_build_hook);
     fx_install();
     psp_settings_set_frame_rate_hook({k_rates, static_cast<int>(std::size(k_rates)), fps_get, fps_set});
