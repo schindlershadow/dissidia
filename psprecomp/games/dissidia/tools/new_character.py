@@ -602,7 +602,7 @@ def apply_slot(a, pkg, out, man, log):
 
     # --- shared pack entries (tile, slide-in, name plate, logo) and the text record ---------------
     tokens = []
-    like_tpl = like_id if 1 <= like_id <= 32 else 9
+    like_tpl = like_id if 1 <= like_id <= 31 else 9      # 32 = Feral Chaos: no grid art of its own
     g0 = mp.parse(pkg.read("menu/menu_pk_free_battle_gim_0.bin"))
     g2 = mp.parse(pkg.read("menu/menu_pk_free_battle_gim_2.bin"))
     lg = mp.parse(pkg.read("menu/en/menu_lpk_free_battle_gim_0.bin"))

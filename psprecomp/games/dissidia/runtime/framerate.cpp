@@ -863,7 +863,8 @@ void dissidia_framerate_install(uint8_t* rdram) {
     else std::fprintf(stderr, "[FPS] root motion hook NOT installed (no function at %08X)\n", ROOT_MOTION);
     if ((g_orig_slowmo = psp_dispatch_probe_lookup(SLOWMO_FRAME))) psp_dispatch_register(SLOWMO_FRAME, slowmo_frame_hook);
     else std::fprintf(stderr, "[FPS] slow-motion hook NOT installed (no function at %08X)\n", SLOWMO_FRAME);
-    if ((g_orig_move_toward = psp_dispatch_probe_lookup(MOVE_TOWARD))) psp_dispatch_register(MOVE_TOWARD, move_toward_hook);
+    if (const char* mt = std::getenv("PSPRECOMP_MOVE_TOWARD"); mt && mt[0] == '0') std::fprintf(stderr, "[FPS] move-toward hook OFF (PSPRECOMP_MOVE_TOWARD=0)\n");
+    else if ((g_orig_move_toward = psp_dispatch_probe_lookup(MOVE_TOWARD))) psp_dispatch_register(MOVE_TOWARD, move_toward_hook);
     else std::fprintf(stderr, "[FPS] move-toward hook NOT installed (no function at %08X)\n", MOVE_TOWARD);
     if (g_log && (g_orig_skel = psp_dispatch_probe_lookup(SKEL_BUILD))) psp_dispatch_register(SKEL_BUILD, skel_build_hook);
     fx_install();
