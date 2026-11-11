@@ -9,7 +9,8 @@ Reads <extract>/index.tsv, upscales every uncovered texture (covered=0) into <ou
   - small cut-out textures (<=128 px with transparency: face icons, sprites) are 60% Lanczos + 40% model, because the model
     invents faces from so few pixels;
   - the original alpha channel is resized (bilinear) and re-attached, and the original colour is restored where alpha ~ 0;
-  - textures whose larger side is > 256 are brought back down to 2x (repo size), the rest stay 4x.
+  - textures whose larger side is > --max4x (256) are brought back down to 2x (repo size), the rest stay 4x (the 480x272 slides and
+    backgrounds are run with --max4x 480).
 Finished ids are skipped, so a run can be resumed. Needs numpy + Pillow.
 """
 import argparse, os, shutil, subprocess, sys
@@ -20,6 +21,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('ext'); ap.add_argument('out'); ap.add_argument('--esrgan', required=True)
     ap.add_argument('--limit', type=int, default=0)
+    ap.add_argument('--max4x', type=int, default=256, help='textures with a larger side up to this get the full 4x (default 256; larger ones 2x)')
     a = ap.parse_args()
     rows = []
     for l in open(os.path.join(a.ext, 'index.tsv')):
@@ -50,7 +52,7 @@ def main():
     def finish(i, up):
         o = Image.open(os.path.join(a.ext, 'src', i + '.png')).convert('RGBA')
         w, h = o.size
-        s = 4 if max(w, h) <= 256 else 2
+        s = 4 if max(w, h) <= a.max4x else 2
         tgt = (w * s, h * s)
         if up is None: u = o.resize(tgt, Image.LANCZOS)
         else:
