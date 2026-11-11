@@ -444,7 +444,7 @@ behavioral oracle for diffing (see README, Verification Methodology).
 
 ## Screen-space effects (SSAO, contact shadows, reflections)
 
-`runtime/src/psp_screenfx.cpp`, settings rows Ambient Occlusion / Contact Shadows / Reflections (levels 0-3; env
+`runtime/src/psp_screenfx.cpp`, settings rows Ambient Occlusion / Contact Shadows / Reflections (Off / Low / Medium / High = 0-3; env
 `PSPRECOMP_SSAO`, `PSPRECOMP_CONTACT_SHADOWS`, `PSPRECOMP_SSR`; debug socket `FX <ssao> <contact> <ssr>`). All off by default.
 
 They run on the finished 3D scene of a displayed buffer, not on the presented picture: by present time the depth buffer

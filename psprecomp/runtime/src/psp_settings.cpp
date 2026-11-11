@@ -572,11 +572,12 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             const bool ao = r == ROW_SSAO, cs = r == ROW_CONTACT;
             const int v = ao ? psp_fx_ssao() : cs ? psp_fx_contact() : psp_fx_ssr();
             m.label = ao ? "Ambient Occlusion" : cs ? "Contact Shadows" : "Reflections";
-            m.value = v ? "Level " + std::to_string(v) : "Off";
+            static const char* const k_q[4] = {"Off", "Low", "Medium", "High"};
+            m.value = k_q[v];
             m.can_dec = v > 0; m.can_inc = v < 3;
-            m.help = ao ? "Ambient occlusion, SSAO (PSPRECOMP_SSAO)\nDarkens creases and the ground around characters and objects. Levels 1 to 3. Runs on the 3D scene before the glow and the HUD, so the HUD is never darkened. Costs GPU time; not for the Steam Deck at a high render scale. Saved."
-                : cs ? "Contact shadows (PSPRECOMP_CONTACT_SHADOWS)\nA short ray-marched shadow cast from fighters and objects onto the floor and each other. Levels 1 to 3. Saved."
-                     : "Screen-space reflections (PSPRECOMP_SSR)\nFloors mirror the characters, ruins and sky that are on screen. Levels 1 to 3. Only what is visible in the picture can be reflected. Saved.";
+            m.help = ao ? "Ambient occlusion, SSAO (PSPRECOMP_SSAO)\nDarkens creases and the ground around characters and objects. Low, Medium or High (more samples, more GPU time). Runs on the 3D scene before the glow and the HUD, so the HUD is never darkened. Costs GPU time; not for the Steam Deck at a high render scale. Saved."
+                : cs ? "Contact shadows (PSPRECOMP_CONTACT_SHADOWS)\nA short ray-marched shadow cast from fighters and objects onto the floor and each other. Low, Medium or High (more samples, more GPU time). Saved."
+                     : "Screen-space reflections (PSPRECOMP_SSR)\nFloors mirror the characters, ruins and sky that are on screen. Low, Medium or High (more samples, more GPU time). Only what is visible in the picture can be reflected. Saved.";
             break;
         }
         case ROW_ANISO: {
