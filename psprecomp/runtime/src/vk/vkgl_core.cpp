@@ -79,6 +79,7 @@ struct Globals {
     Img dummy;                           // 1x1 white
     Img snap;                            // scratch copy of a render target a draw samples from (feedback)
     uint64_t feedback_draws = 0;
+    uint64_t conflict_copies = 0, conflict_bytes = 0;   // buffer stores copied because a write overlapped unfinished reads
     double gpu_ms_sum = 0; uint64_t gpu_ms_n = 0;
     double t_submit = 0, t_draw = 0, t_wait = 0, t_upload = 0;   // CPU seconds spent in each since the last stats line
     uint64_t n_submit = 0;
@@ -396,6 +397,7 @@ static void make_writable(Buffer& b, size_t off, size_t len) {
     if (b.read_hi > b.read_lo && b.read_serial > g().completed_serial && off < b.read_hi && off + len > b.read_lo) {
         Buffer nb;
         if (!alloc_buffer(nb, b.size, kBufUsage)) return;
+        g().conflict_copies++; g().conflict_bytes += b.size;
         std::memcpy(nb.map, b.map, b.size);
         defer_destroy(b);
         b = nb;
@@ -1127,7 +1129,7 @@ void draw_multi(GLenum mode, const GLint* firsts, const GLsizei* counts, GLsizei
             Buffer* bf = get_buf(a->buffer);
             if (!bf) continue;
             const size_t stride = a->stride ? (size_t)a->stride : attr_bytes(a->size, a->type);
-            const size_t r0 = a->offset + (size_t)lo * stride, r1 = a->offset + (size_t)hi * stride;
+            const size_t r0 = a->offset + (size_t)lo * stride, r1 = a->offset + (size_t)(hi - 1) * stride + attr_bytes(a->size, a->type);   // end of the last vertex's attribute, not past it
             if (bf->read_serial <= g().completed_serial || bf->read_hi <= bf->read_lo) { bf->read_lo = r0; bf->read_hi = r1; }
             else { bf->read_lo = std::min(bf->read_lo, r0); bf->read_hi = std::max(bf->read_hi, r1); }
             bf->read_serial = g().serial;
@@ -1396,9 +1398,10 @@ static void log_stats() {
     Globals& gl = *G;
     static uint64_t swaps = 0, last_draws = 0, last_fb = 0;
     if (++swaps % 600 == 0) {
-        std::fprintf(stderr, "[VKGL] %llu frames: %llu draws/frame, %llu feedback copies/frame, %zu pipelines, GPU %.2f ms/frame | CPU ms/frame: draw %.2f (incl. submit), submit %.2f in %.1f calls, upload %.2f, fence wait %.2f\n", (unsigned long long)swaps,
+        std::fprintf(stderr, "[VKGL] %llu frames: %llu draws/frame, %llu feedback copies/frame, %zu pipelines, GPU %.2f ms/frame | CPU ms/frame: draw %.2f (incl. submit), submit %.2f in %.1f calls, upload %.2f, fence wait %.2f | buffer conflicts %.2f/frame (%.2f MB/frame)\n", (unsigned long long)swaps,
                      (unsigned long long)((gl.draws - last_draws) / 600), (unsigned long long)((gl.feedback_draws - last_fb) / 600), gl.pipelines.size(),
-                     gl.gpu_ms_n ? gl.gpu_ms_sum / (double)gl.gpu_ms_n : 0.0, gl.t_draw * 1e3 / 600, gl.t_submit * 1e3 / 600, (double)gl.n_submit / 600, gl.t_upload * 1e3 / 600, gl.t_wait * 1e3 / 600);
+                     gl.gpu_ms_n ? gl.gpu_ms_sum / (double)gl.gpu_ms_n : 0.0, gl.t_draw * 1e3 / 600, gl.t_submit * 1e3 / 600, (double)gl.n_submit / 600, gl.t_upload * 1e3 / 600, gl.t_wait * 1e3 / 600, (double)gl.conflict_copies / 600, (double)gl.conflict_bytes / 600 / 1048576.0);
+        gl.conflict_copies = gl.conflict_bytes = 0;
         gl.gpu_ms_sum = 0; gl.gpu_ms_n = 0; gl.t_draw = gl.t_submit = gl.t_wait = gl.t_upload = 0; gl.n_submit = 0;
         last_draws = gl.draws; last_fb = gl.feedback_draws;
     }
