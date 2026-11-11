@@ -147,8 +147,8 @@ class Game:
             time.sleep(quiet)
 
     def step(self, *names, wait=0.3, settle=True):
-        self.press(*names, ms=70)
-        time.sleep(0.1)
+        self.press(*names, ms=110)
+        time.sleep(0.12 if settle else 0.22)   # a cursor move needs a release gap or the game merges / drops the next one
         if settle:
             self.settle(quiet=wait)
 
@@ -213,6 +213,9 @@ def walk_menus(g, char, tries=14, stage=12):
         g.step('down', settle=False)
         for _ in range(stage - 1):
             g.step('right', settle=False)
+        if os.environ.get('BT_SETUP_SHOT'):                # debugging: what the battle setup page shows before Enter Battle
+            time.sleep(0.5)
+            g.shot().save(os.environ['BT_SETUP_SHOT'])
         g.step('up', settle=False)
     g.press('cross')                                   # Enter Battle
     # loading / opponent pages: CROSS ("Next") until the fight's HUD (dark gauge bar along the bottom) is on screen

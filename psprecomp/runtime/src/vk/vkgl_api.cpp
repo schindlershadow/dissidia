@@ -213,6 +213,7 @@ static Fbo* bound_fbo(GLenum target) { return get_fbo(target == GL_READ_FRAMEBUF
 static void APIENTRY f_FramebufferTexture2D(GLenum target, GLenum attachment, GLenum, GLuint tex, GLint) {
     if (Fbo* f = bound_fbo(target)) {
         if (attachment == GL_COLOR_ATTACHMENT0) { f->color_tex = tex; f->color_rb = 0; }
+        else if (attachment == GL_COLOR_ATTACHMENT0 + 1) f->color_tex1 = tex;
         else if (attachment == GL_DEPTH_STENCIL_ATTACHMENT || attachment == GL_DEPTH_ATTACHMENT) { f->depth_tex = tex; f->depth_rb = 0; }
     }
 }
@@ -233,7 +234,7 @@ static void APIENTRY f_BlitFramebuffer(GLint sx0, GLint sy0, GLint sx1, GLint sy
     blit(sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, mask, filter);
 }
 static void APIENTRY f_ReadBuffer(GLenum) {}
-static void APIENTRY f_DrawBuffers(GLsizei, const GLenum*) {}
+static void APIENTRY f_DrawBuffers(GLsizei n, const GLenum*) { set_draw_buffers(n); }
 static void APIENTRY f_ReadPixels(GLint x, GLint y, GLsizei w, GLsizei h, GLenum fmt, GLenum type, void* px) { read_pixels(x, y, w, h, fmt, type, px); }
 static void APIENTRY f_Clear(GLbitfield mask) { clear(mask); }
 static void APIENTRY f_Finish() { finish(); }

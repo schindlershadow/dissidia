@@ -55,9 +55,15 @@ struct Buffer {
 
 struct Fbo {
     GLuint color_tex = 0, color_rb = 0, depth_rb = 0, depth_tex = 0;
+    GLuint color_tex1 = 0;              // second colour attachment (GL_COLOR_ATTACHMENT1: the screen-space effects pass writes two targets)
+    int ndraw = 1;                      // draw buffers enabled (glDrawBuffers): 1 or 2
     VkFramebuffer fb = VK_NULL_HANDLE;
     VkRenderPass rp = VK_NULL_HANDLE;
-    uint64_t built_color = 0, built_depth = 0;   // Img::gen of the attachments the VkFramebuffer was built from
+    uint64_t built_color = 0, built_color1 = 0, built_depth = 0;
+    // The same target without its depth attachment (passes that never test depth: no depth load/store traffic on tiled GPUs).
+    VkFramebuffer fb_nd = VK_NULL_HANDLE;
+    VkRenderPass rp_nd = VK_NULL_HANDLE;
+    uint64_t bnd_color = 0, bnd_color1 = 0;   // Img::gen of the attachments the VkFramebuffer was built from
     int w = 0, h = 0;
 };
 
@@ -102,7 +108,7 @@ struct PipeKey {
     uint8_t cmask = 15;
     uint8_t depth_func = 0, stencil_func = 0, sfail = 0, zfail = 0, zpass = 0, cull = 0;
     uint8_t bsrc_rgb = 0, bdst_rgb = 0, bsrc_a = 0, bdst_a = 0, beq_rgb = 0, beq_a = 0;
-    uint8_t nbind = 0, nattr = 0;
+    uint8_t nbind = 0, nattr = 0, ncolor = 1, pad_[5] = {};
     uint32_t strides[kMaxAttribs] = {};
     uint32_t attr[kMaxAttribs][4] = {};   // location, binding, format, offset
     bool operator==(const PipeKey& o) const;
@@ -177,5 +183,6 @@ bool read_pixels(int x, int y, int w, int h, GLenum fmt, GLenum type, void* out)
 void finish();
 void flush();
 bool fbo_complete(GLuint id);
+void set_draw_buffers(GLsizei n);
 
 }  // namespace vkgl

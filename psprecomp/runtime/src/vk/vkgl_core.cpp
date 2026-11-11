@@ -30,6 +30,8 @@ struct Frame {
     Buffer ubo, stage;
     size_t ubo_off = 0, stage_off = 0;
     VkDescriptorSet set0 = VK_NULL_HANDLE;
+    VkQueryPool pp = VK_NULL_HANDLE;     // PSPRECOMP_VK_PASSPROF: boundary stamps between render passes / other work
+    std::vector<std::string> pp_labels;  // label of the segment that starts at each stamp
     VkQueryPool ts = VK_NULL_HANDLE;     // one timestamp pair per submission (kTsPairs)
     int ts_pairs = 0;                    // pairs written this frame
     bool ts_open = false;                // the current main command buffer has its begin stamp
@@ -79,8 +81,11 @@ struct Globals {
     Img dummy;                           // 1x1 white
     Img snap;                            // scratch copy of a render target a draw samples from (feedback)
     uint64_t feedback_draws = 0;
+    uint64_t clears_folded = 0, passes = 0;   // glClear turned into a load op / render passes begun
     uint64_t conflict_copies = 0, conflict_bytes = 0;   // buffer stores copied because a write overlapped unfinished reads
     double gpu_ms_sum = 0; uint64_t gpu_ms_n = 0;
+    bool passprof = false;
+    std::unordered_map<std::string, std::pair<double, uint64_t>> pp_acc;   // label -> (ms, count) since the last stats line
     double t_submit = 0, t_draw = 0, t_wait = 0, t_upload = 0;   // CPU seconds spent in each since the last stats line
     uint64_t n_submit = 0;
     float ts_period = 1.0f;
@@ -92,6 +97,8 @@ struct Globals {
     // current recording state
     bool pass_active = false;
     GLuint pass_fbo = 0;
+    int pass_ncolor = 1;
+    bool pass_has_depth = false;
     VkRenderPass pass_rp = VK_NULL_HANDLE;
     int pass_w = 0, pass_h = 0;
     VkPipeline bound_pipe = VK_NULL_HANDLE;
@@ -109,6 +116,7 @@ struct Globals {
     bool validation = false;
 };
 static constexpr int kTsPairs = 64;
+static bool g_narrow_sync = false;   // PSPRECOMP_VK_SYNC=narrow: barriers/dependencies limited to the stages the renderer really uses
 #ifdef __ANDROID__
 static int kSubmitEvery = 1 << 30;   // tiled GPUs: one render pass per target and frame; submit at the sync points only
 #else
@@ -136,6 +144,16 @@ size_t PipeKeyHash::operator()(const PipeKey& k) const {
 // ------------------------------------------------------------------------------------------------------------------
 
 static Frame& fr() { return G->frames[G->cur]; }
+static constexpr int kPpMax = 256;
+// Per-pass GPU profile: a stamp outside render passes whenever the kind of work changes; the time up to the next stamp is
+// charged to `label`. Only with PSPRECOMP_VK_PASSPROF=1.
+static void pp_mark(VkCommandBuffer cb, const std::string& label) {
+    Frame& f = fr();
+    if (!f.pp || (int)f.pp_labels.size() >= kPpMax) return;
+    if (!f.pp_labels.empty() && f.pp_labels.back() == label && label == "other") return;
+    vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, f.pp, (uint32_t)f.pp_labels.size());
+    f.pp_labels.push_back(label);
+}
 struct Tmr {
     double* acc; std::chrono::steady_clock::time_point t0;
     explicit Tmr(double* a) : acc(a), t0(std::chrono::steady_clock::now()) {}
@@ -158,6 +176,7 @@ static VkCommandBuffer main_cb() {
     if (!f.main_open) {
         f.main = new_cb(f);
         f.main_open = true;
+        if (f.pp && f.pp_labels.empty()) { vkCmdResetQueryPool(f.main, f.pp, 0, kPpMax); pp_mark(f.main, "other"); }
         if (f.ts && f.ts_pairs < kTsPairs) {
             vkCmdResetQueryPool(f.main, f.ts, (uint32_t)f.ts_pairs * 2, 2);
             vkCmdWriteTimestamp(f.main, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, f.ts, (uint32_t)f.ts_pairs * 2);
@@ -212,6 +231,13 @@ static void frame_begin(int i) {
             g().gpu_ms_n++;
         }
     }
+    if (f.pp && f.pp_labels.size() > 1) {
+        uint64_t t[kPpMax];
+        const uint32_t n = (uint32_t)f.pp_labels.size();
+        if (vkGetQueryPoolResults(g().dev, f.pp, 0, n, sizeof(uint64_t) * n, t, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
+            for (uint32_t i = 0; i + 1 < n; i++) if (t[i + 1] >= t[i]) { auto& a = g().pp_acc[f.pp_labels[i]]; a.first += (double)(t[i + 1] - t[i]) * g().ts_period * 1e-6; a.second++; }
+    }
+    f.pp_labels.clear();
     f.ts_pairs = 0; f.ts_open = false;
     vkResetCommandPool(g().dev, f.pool, 0);
     f.main_open = f.upload_open = false;
@@ -225,10 +251,12 @@ static void frame_begin(int i) {
 
 // Submit everything recorded so far. wait: block until the GPU is done with it.
 static void submit_now(VkSemaphore wait_sem, VkPipelineStageFlags wait_stage, VkSemaphore signal, VkFence fence_in, bool wait);
+static const char* g_end_reason = "?";
 static void end_pass();
 
 static void submit_now(VkSemaphore wait_sem, VkPipelineStageFlags wait_stage, VkSemaphore signal, VkFence fence_in, bool wait) {
-    end_pass();
+    g_end_reason = "submit"; end_pass();
+    if (fr().main_open && g().passprof) pp_mark(fr().main, "other");
     Tmr tm(&g().t_submit); g().n_submit++;
     Frame& f = fr();
     VkCommandBuffer cbs[2]; uint32_t n = 0;
@@ -297,7 +325,14 @@ static void barrier(VkCommandBuffer cb, Img& im, VkImageLayout nl) {
     b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = im.image;
     b.subresourceRange = {im.aspect, 0, (uint32_t)im.levels, 0, 1};
-    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+    VkPipelineStageFlags ss = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, ds = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    if (g_narrow_sync) {
+        ss = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        ds = ss;
+        b.srcAccessMask = im.layout == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : (VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+        b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    }
+    vkCmdPipelineBarrier(cb, ss, ds, 0, 0, nullptr, 0, nullptr, 1, &b);
     im.layout = nl;
 }
 
@@ -360,6 +395,7 @@ void del_rbo(GLuint id) { if (Rbo* r = get_rbo(id)) { defer_destroy(r->img); g()
 void del_fbo(GLuint id) {
     if (Fbo* f = get_fbo(id)) {
         if (f->fb) { VkFramebuffer fb = f->fb; defer([fb]() { vkDestroyFramebuffer(G->dev, fb, nullptr); }); }
+        if (f->fb_nd) { VkFramebuffer fb = f->fb_nd; defer([fb]() { vkDestroyFramebuffer(G->dev, fb, nullptr); }); }
         g().fbo[id].reset();
     }
 }
@@ -476,7 +512,7 @@ static void upload_region(Tex& t, int level, int x, int y, int w, int h, GLenum 
     convert_rows(p, fi.bpp, (const uint8_t*)data, fmt, type, w, h, st().unpack_row, st().unpack_align);
     // Not used by the commands recorded so far -> the upload can run before them (no render pass break).
     const bool early = im.used_serial != g().serial;
-    if (!early) end_pass();
+    if (!early) { g_end_reason = "tex-upload"; end_pass(); }
     VkCommandBuffer cb = early ? upload_cb() : main_cb();
     barrier(cb, im, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     copy_region(cb, im, level, x, y, w, h, sb, so);
@@ -516,7 +552,7 @@ void tex_genmips(GLuint id) {
     Tex* t = get_tex(id);
     if (!t || !t->img.valid() || t->img.levels < 2) return;
     Img& im = t->img;
-    end_pass();
+    g_end_reason = "genmips"; end_pass();
     VkCommandBuffer cb = main_cb();
     im.used_serial = g().serial;
     // level 0 -> TRANSFER_SRC, the rest -> TRANSFER_DST; blit down the chain; finish all levels in SHADER_READ.
@@ -559,22 +595,35 @@ void rbo_storage(GLuint id, GLenum ifmt, int w, int h) {
 // Render passes and framebuffers
 // ------------------------------------------------------------------------------------------------------------------
 
-static VkRenderPass get_rp(VkFormat color, VkFormat depth) {
-    const uint64_t key = ((uint64_t)color << 32) | (uint64_t)depth;
+static VkRenderPass get_rp(VkFormat color, VkFormat color1, VkFormat depth, unsigned clear = 0) {
+    // clear: 1 colour, 2 depth, 4 stencil are cleared by the pass's load op (compatible with the plain LOAD variant: pipelines use that one)
+    uint64_t key = 1469598103934665603ull;
+    for (uint64_t v : {(uint64_t)color, (uint64_t)color1, (uint64_t)depth, (uint64_t)clear}) { key ^= v + 0x9E3779B97F4A7C15ull; key *= 1099511628211ull; }
     auto it = g().render_passes.find(key);
     if (it != g().render_passes.end()) return it->second;
-    VkAttachmentDescription at[2]{};
-    at[0].format = color; at[0].samples = VK_SAMPLE_COUNT_1_BIT;
-    at[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; at[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    at[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; at[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    at[0].initialLayout = at[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    at[1] = at[0];
-    at[1].format = depth;
-    at[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD; at[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
-    at[1].initialLayout = at[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    VkAttachmentReference cr{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}, dr{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+    VkAttachmentDescription at[3]{};
+    VkAttachmentReference cr[2]{}, dr{};
+    uint32_t n = 0, ncol = 0;
+    auto color_att = [&](VkFormat f) {
+        at[n].format = f; at[n].samples = VK_SAMPLE_COUNT_1_BIT;
+        at[n].loadOp = (clear & 1) ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD; at[n].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        at[n].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; at[n].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        at[n].initialLayout = at[n].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        cr[ncol++] = {n, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        n++;
+    };
+    if (color) color_att(color);
+    if (color1) color_att(color1);
+    if (depth) {
+        at[n].format = depth; at[n].samples = VK_SAMPLE_COUNT_1_BIT;
+        at[n].loadOp = (clear & 2) ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD; at[n].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        at[n].stencilLoadOp = (clear & 4) ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD; at[n].stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+        at[n].initialLayout = at[n].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        dr = {n, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+        n++;
+    }
     VkSubpassDescription sp{};
-    sp.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS; sp.colorAttachmentCount = 1; sp.pColorAttachments = &cr;
+    sp.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS; sp.colorAttachmentCount = ncol; sp.pColorAttachments = ncol ? cr : nullptr;
     sp.pDepthStencilAttachment = depth ? &dr : nullptr;
     VkSubpassDependency dep[2]{};
     const VkPipelineStageFlags stages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
@@ -582,11 +631,13 @@ static VkRenderPass get_rp(VkFormat color, VkFormat depth) {
     dep[0].srcSubpass = VK_SUBPASS_EXTERNAL; dep[0].dstSubpass = 0;
     dep[0].srcStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT; dep[0].dstStageMask = stages;
     dep[0].srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT; dep[0].dstAccessMask = acc;
+    if (g_narrow_sync) { dep[0].srcStageMask = stages | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT; dep[0].srcAccessMask = acc | VK_ACCESS_TRANSFER_WRITE_BIT; }
     dep[1].srcSubpass = 0; dep[1].dstSubpass = VK_SUBPASS_EXTERNAL;
     dep[1].srcStageMask = stages; dep[1].dstStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
     dep[1].srcAccessMask = acc; dep[1].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    if (g_narrow_sync) { dep[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT | stages; dep[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | acc; }
     VkRenderPassCreateInfo ri{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
-    ri.attachmentCount = depth ? 2 : 1; ri.pAttachments = at; ri.subpassCount = 1; ri.pSubpasses = &sp;
+    ri.attachmentCount = n; ri.pAttachments = at; ri.subpassCount = 1; ri.pSubpasses = &sp;
     ri.dependencyCount = 2; ri.pDependencies = dep;
     VkRenderPass rp = VK_NULL_HANDLE;
     vkcheck(vkCreateRenderPass(g().dev, &ri, nullptr, &rp), "vkCreateRenderPass");
@@ -596,6 +647,7 @@ static VkRenderPass get_rp(VkFormat color, VkFormat depth) {
 
 struct Target {
     Img* color = nullptr;
+    Img* color1 = nullptr;      // second colour attachment, only when two draw buffers are enabled
     Img* depth = nullptr;
     Fbo* fbo = nullptr;
     int w = 0, h = 0;
@@ -611,56 +663,106 @@ static Target resolve(GLuint fbo_id) {
         t.fbo = f;
         if (f->color_tex) { if (Tex* x = get_tex(f->color_tex)) t.color = &x->img; }
         else if (f->color_rb) { if (Rbo* r = get_rbo(f->color_rb)) t.color = &r->img; }
+        if (f->ndraw >= 2 && f->color_tex1) { if (Tex* x = get_tex(f->color_tex1)) t.color1 = &x->img; }
         if (f->depth_tex) { if (Tex* x = get_tex(f->depth_tex)) t.depth = &x->img; }
         else if (f->depth_rb) { if (Rbo* r = get_rbo(f->depth_rb)) t.depth = &r->img; }
     }
     if (t.color && !t.color->valid()) t.color = nullptr;
+    if (t.color1 && !t.color1->valid()) t.color1 = nullptr;
     if (t.depth && !t.depth->valid()) t.depth = nullptr;
     if (t.color) { t.w = t.color->w; t.h = t.color->h; }
+    else if (t.depth) { t.w = t.depth->w; t.h = t.depth->h; }   // depth-only framebuffer (blit target)
     return t;
 }
 
-bool fbo_complete(GLuint id) { return resolve(id).color != nullptr; }
+bool fbo_complete(GLuint id) { Target t = resolve(id); return t.color != nullptr || t.depth != nullptr; }
+void set_draw_buffers(GLsizei n) { if (Fbo* f = get_fbo(st().draw_fbo)) f->ndraw = n >= 2 ? 2 : 1; }
 
 static void end_pass() {
     if (!g().pass_active) return;
     vkCmdEndRenderPass(fr().main);
     g().pass_active = false;
+    if (g().passprof) pp_mark(fr().main, "other");
 }
 
-static bool begin_pass(GLuint fbo_id, const Target& t) {
-    if (g().pass_active && g().pass_fbo == fbo_id) {
-        // The same FBO id, but it may have been re-attached/re-allocated: fall through if the images changed.
-        if (t.fbo->built_color == t.color->gen && t.fbo->built_depth == (t.depth ? t.depth->gen : 0)) return true;
-    }
+struct ClearReq { unsigned flags; float color[4]; float depth; uint32_t stencil; };
+
+// A pass on this target that can take draws needing (want_depth) / not needing depth: a pass that has the depth attachment serves both.
+static bool pass_matches(GLuint fbo_id, const Target& t, bool want_depth) {
+    Globals& gl = g();
+    if (!gl.pass_active || gl.pass_fbo != fbo_id) return false;
+    if (want_depth && t.depth && !gl.pass_has_depth) return false;
+    const uint64_t cg = t.color->gen, c1g = t.color1 ? t.color1->gen : 0;
+    if (gl.pass_has_depth) return t.fbo->built_color == cg && t.fbo->built_color1 == c1g && t.fbo->built_depth == (t.depth ? t.depth->gen : 0);
+    return t.fbo->bnd_color == cg && t.fbo->bnd_color1 == c1g;
+}
+
+static bool begin_pass(GLuint fbo_id, const Target& t, const ClearReq* clr = nullptr, bool want_depth = true) {
+    Globals& gl = g();
+    if (pass_matches(fbo_id, t, want_depth)) return true;
+    if (gl.pass_active) g_end_reason = gl.pass_fbo != fbo_id ? "fbo-switch" : "needs-depth/attach";
     end_pass();
+    const bool use_depth = want_depth && t.depth;
     VkCommandBuffer cb = main_cb();
     barrier(cb, *t.color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    if (t.depth) barrier(cb, *t.depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-    t.color->used_serial = g().serial;
-    if (t.depth) t.depth->used_serial = g().serial;
+    if (t.color1) barrier(cb, *t.color1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    if (use_depth) barrier(cb, *t.depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    t.color->used_serial = gl.serial;
+    if (t.color1) t.color1->used_serial = gl.serial;
+    if (use_depth) t.depth->used_serial = gl.serial;
     Fbo& f = *t.fbo;
-    const uint64_t cg = t.color->gen, dg = t.depth ? t.depth->gen : 0;
-    if (!f.fb || f.built_color != cg || f.built_depth != dg) {
-        if (f.fb) { VkFramebuffer old = f.fb; defer([old]() { vkDestroyFramebuffer(G->dev, old, nullptr); }); }
-        f.rp = get_rp(t.color->fmt, t.depth ? t.depth->fmt : VK_FORMAT_UNDEFINED);
-        VkImageView views[2] = {t.color->att_view, t.depth ? t.depth->att_view : VK_NULL_HANDLE};
-        VkFramebufferCreateInfo fi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
-        fi.renderPass = f.rp; fi.attachmentCount = t.depth ? 2 : 1; fi.pAttachments = views;
-        fi.width = t.w; fi.height = t.h; fi.layers = 1;
-        vkcheck(vkCreateFramebuffer(g().dev, &fi, nullptr, &f.fb), "vkCreateFramebuffer");
-        f.built_color = cg; f.built_depth = dg; f.w = t.w; f.h = t.h;
+    const uint64_t cg = t.color->gen, c1g = t.color1 ? t.color1->gen : 0, dg = t.depth ? t.depth->gen : 0;
+    VkFramebuffer fb;
+    VkRenderPass rp;
+    VkImageView views[3]; uint32_t nv = 0;
+    views[nv++] = t.color->att_view;
+    if (t.color1) views[nv++] = t.color1->att_view;
+    const VkFormat f0 = t.color->fmt, f1 = t.color1 ? t.color1->fmt : VK_FORMAT_UNDEFINED;
+    if (use_depth) {
+        views[nv++] = t.depth->att_view;
+        if (!f.fb || f.built_color != cg || f.built_color1 != c1g || f.built_depth != dg) {
+            if (f.fb) { VkFramebuffer old = f.fb; defer([old]() { vkDestroyFramebuffer(G->dev, old, nullptr); }); }
+            f.rp = get_rp(f0, f1, t.depth->fmt);
+            VkFramebufferCreateInfo fi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+            fi.renderPass = f.rp; fi.attachmentCount = nv; fi.pAttachments = views; fi.width = t.w; fi.height = t.h; fi.layers = 1;
+            vkcheck(vkCreateFramebuffer(gl.dev, &fi, nullptr, &f.fb), "vkCreateFramebuffer");
+            f.built_color = cg; f.built_color1 = c1g; f.built_depth = dg; f.w = t.w; f.h = t.h;
+        }
+        fb = f.fb; rp = f.rp;
+    } else {
+        if (!f.fb_nd || f.bnd_color != cg || f.bnd_color1 != c1g) {
+            if (f.fb_nd) { VkFramebuffer old = f.fb_nd; defer([old]() { vkDestroyFramebuffer(G->dev, old, nullptr); }); }
+            f.rp_nd = get_rp(f0, f1, VK_FORMAT_UNDEFINED);
+            VkFramebufferCreateInfo fi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+            fi.renderPass = f.rp_nd; fi.attachmentCount = nv; fi.pAttachments = views; fi.width = t.w; fi.height = t.h; fi.layers = 1;
+            vkcheck(vkCreateFramebuffer(gl.dev, &fi, nullptr, &f.fb_nd), "vkCreateFramebuffer");
+            f.bnd_color = cg; f.bnd_color1 = c1g; f.w = t.w; f.h = t.h;
+        }
+        fb = f.fb_nd; rp = f.rp_nd;
     }
     VkRenderPassBeginInfo bi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-    bi.renderPass = f.rp; bi.framebuffer = f.fb; bi.renderArea = {{0, 0}, {(uint32_t)t.w, (uint32_t)t.h}};
+    bi.renderPass = rp; bi.framebuffer = fb; bi.renderArea = {{0, 0}, {(uint32_t)t.w, (uint32_t)t.h}};
+    VkClearValue cvs[3]{};
+    unsigned clear_flags = 0;
+    if (clr && clr->flags) {   // the first thing on this target is a glClear: make it the load op (no read of the old contents)
+        clear_flags = clr->flags & (use_depth ? 7u : 1u);
+        bi.renderPass = get_rp(f0, f1, use_depth ? t.depth->fmt : VK_FORMAT_UNDEFINED, clear_flags);
+        uint32_t na = 1;
+        for (int i = 0; i < 4; i++) cvs[0].color.float32[i] = clr->color[i];
+        if (t.color1) { cvs[1] = cvs[0]; na = 2; }
+        if (use_depth) { cvs[na].depthStencil = {clr->depth, clr->stencil}; na++; }
+        bi.clearValueCount = na; bi.pClearValues = cvs;
+    }
+    if (gl.passprof) { char lb[96]; std::snprintf(lb, sizeof lb, "pass fbo%u %dx%d%s%s%s <-%s", fbo_id, t.w, t.h, t.color1 ? " mrt" : "", use_depth ? " d" : "", clear_flags ? " clr" : "", g_end_reason); pp_mark(cb, lb); g_end_reason = "?"; }
     vkCmdBeginRenderPass(cb, &bi, VK_SUBPASS_CONTENTS_INLINE);
-    g().pass_active = true; g().pass_fbo = fbo_id; g().pass_rp = f.rp; g().pass_w = t.w; g().pass_h = t.h;
-    g().bound_pipe = VK_NULL_HANDLE;
-    for (int& v : g().cache_vp) v = -1;
-    g().cache_dr[0] = g().cache_dr[1] = -1; g().cache_bc[0] = -1;
-    g().cache_st[0] = g().cache_st[1] = g().cache_st[2] = -1;
-    for (auto& b : g().cache_vb) b = VK_NULL_HANDLE;
-    g().cache_ubo_off = ~0u; g().cache_set1 = VK_NULL_HANDLE;
+    gl.passes++;
+    gl.pass_active = true; gl.pass_fbo = fbo_id; gl.pass_rp = rp; gl.pass_w = t.w; gl.pass_h = t.h; gl.pass_ncolor = t.color1 ? 2 : 1; gl.pass_has_depth = use_depth;
+    gl.bound_pipe = VK_NULL_HANDLE;
+    for (int& v : gl.cache_vp) v = -1;
+    gl.cache_dr[0] = gl.cache_dr[1] = -1; gl.cache_bc[0] = -1;
+    gl.cache_st[0] = gl.cache_st[1] = gl.cache_st[2] = -1;
+    for (auto& b : gl.cache_vb) b = VK_NULL_HANDLE;
+    gl.cache_ubo_off = ~0u; gl.cache_set1 = VK_NULL_HANDLE;
     return true;
 }
 
@@ -815,8 +917,9 @@ static VkPipeline make_pipeline(const PipeKey& k, Program& p) {
     cba.srcAlphaBlendFactor = (VkBlendFactor)k.bsrc_a; cba.dstAlphaBlendFactor = (VkBlendFactor)k.bdst_a;
     cba.colorBlendOp = (VkBlendOp)k.beq_rgb; cba.alphaBlendOp = (VkBlendOp)k.beq_a;
     cba.colorWriteMask = k.cmask;
+    VkPipelineColorBlendAttachmentState cbas[2] = {cba, cba};
     VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    cb.attachmentCount = 1; cb.pAttachments = &cba;
+    cb.attachmentCount = k.ncolor; cb.pAttachments = cbas;
     static const VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
         VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK, VK_DYNAMIC_STATE_STENCIL_REFERENCE};
     VkPipelineDynamicStateCreateInfo dy{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
@@ -892,7 +995,7 @@ bool link_program(Program& p) {
 // Draw
 // ------------------------------------------------------------------------------------------------------------------
 
-static bool is_attachment_of(const Img* im, const Target& t) { return im == t.color || im == t.depth; }
+static bool is_attachment_of(const Img* im, const Target& t) { return im == t.color || im == t.color1 || im == t.depth; }
 
 // A draw samples the colour image it renders into (the GE's in-place glow/blur passes). The hardware reads the pre-draw
 // contents; Vulkan forbids a feedback loop, so copy the target to a scratch image and sample that.
@@ -903,7 +1006,7 @@ static Img* snapshot_of(Img& src) {
         sn = Img{};
         create_img(sn, src.fmt, src.w, src.h, 1, kTexUsage, VK_IMAGE_ASPECT_COLOR_BIT);
     }
-    end_pass();
+    g_end_reason = "feedback"; end_pass();
     VkCommandBuffer cb = main_cb();
     barrier(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     barrier(cb, sn, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -964,7 +1067,7 @@ void draw_multi(GLenum mode, const GLint* firsts, const GLsizei* counts, GLsizei
         Tex* tx = get_tex(s.unit_tex[unit]);
         Img* im = tx && tx->img.valid() && tx->img.valid_levels > 0 ? &tx->img : nullptr;
         if (im && is_attachment_of(im, t)) {
-            if (im == t.depth) im = nullptr;                 // sampling the depth buffer while drawing: not used by the runtime
+            if (im == t.depth || im == t.color1) im = nullptr;   // sampling the depth buffer / second target while drawing: not used by the runtime
             else {
                 // reuse the snapshot if an earlier binding of this draw already took one
                 Img* prev = nullptr;
@@ -981,14 +1084,15 @@ void draw_multi(GLenum mode, const GLint* firsts, const GLsizei* counts, GLsizei
         if (im->layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) need_barrier = true;
     }
     if (need_barrier) {
-        end_pass();
+        g_end_reason = "sample-barrier"; end_pass();
         VkCommandBuffer cb = main_cb();
         for (size_t b = 0; b < nsamp; b++) barrier(cb, *simg[b], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
     for (size_t b = 0; b < nsamp; b++) simg[b]->used_serial = g().serial;
 
     // 2. render pass
-    begin_pass(s.draw_fbo, t);
+    // Depth is only needed by draws that test it or the stencil (GL: depth writes need the test). Other passes get no depth attachment.
+    begin_pass(s.draw_fbo, t, nullptr, s.depth_test || s.stencil);
     VkCommandBuffer cb = fr().main;
 
     // 3. pipeline
@@ -996,8 +1100,9 @@ void draw_multi(GLenum mode, const GLint* firsts, const GLsizei* counts, GLsizei
     std::memset(&k, 0, sizeof k);
     k.prog = p->uid;
     k.rp = (uint64_t)(uintptr_t)g().pass_rp;
+    k.ncolor = (uint8_t)g().pass_ncolor;
     k.topology = topo;
-    const bool has_depth = t.depth != nullptr;
+    const bool has_depth = g().pass_has_depth;
     k.flags = (s.depth_test ? 1 : 0) | (s.depth_mask ? 2 : 0) | (s.stencil ? 4 : 0) | (s.blend ? 8 : 0) | (s.cull ? 16 : 0) | (has_depth ? 32 : 0);
     k.cmask = s.color_mask;
     k.depth_func = (uint8_t)cop(s.depth_func);
@@ -1163,15 +1268,26 @@ void clear(GLbitfield mask) {
     GLState& s = st();
     Target t = resolve(s.draw_fbo);
     if (!t.color) return;
-    begin_pass(s.draw_fbo, t);
-    VkClearAttachment ca[2]; uint32_t n = 0;
+    if (s.color_mask != 15 && (mask & GL_COLOR_BUFFER_BIT) && !g().warned_mask) { g().warned_mask = true; std::fprintf(stderr, "[VKGL] glClear with a partial colour mask is cleared in full\n"); }
+    const bool clr_depth = (mask & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) != 0;
+    if (!pass_matches(s.draw_fbo, t, clr_depth)) {
+        // Starting a pass on this target: fold the clear into the load op. Aspects not cleared keep LOAD.
+        ClearReq c{};
+        c.flags = ((mask & GL_COLOR_BUFFER_BIT) ? 1u : 0u) | ((mask & GL_DEPTH_BUFFER_BIT) ? 2u : 0u) | ((mask & GL_STENCIL_BUFFER_BIT) ? 4u : 0u);
+        for (int i = 0; i < 4; i++) c.color[i] = s.clear_color[i];
+        c.depth = (float)s.clear_depth; c.stencil = (uint32_t)s.clear_stencil & 0xFF;
+        begin_pass(s.draw_fbo, t, &c, clr_depth);
+        g().clears_folded++;
+        return;
+    }
+    VkClearAttachment ca[3]; uint32_t n = 0;
     if (mask & GL_COLOR_BUFFER_BIT) {
-        if (s.color_mask != 15 && !g().warned_mask) { g().warned_mask = true; std::fprintf(stderr, "[VKGL] glClear with a partial colour mask is cleared in full\n"); }
         ca[n] = {}; ca[n].aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; ca[n].colorAttachment = 0;
         for (int i = 0; i < 4; i++) ca[n].clearValue.color.float32[i] = s.clear_color[i];
         n++;
+        if (t.color1) { ca[n] = ca[n - 1]; ca[n].colorAttachment = 1; n++; }
     }
-    if (t.depth && (mask & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT))) {
+    if (t.depth && g().pass_has_depth && (mask & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT))) {
         ca[n] = {};
         if (mask & GL_DEPTH_BUFFER_BIT) ca[n].aspectMask |= VK_IMAGE_ASPECT_DEPTH_BIT;
         if (mask & GL_STENCIL_BUFFER_BIT) ca[n].aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
@@ -1186,8 +1302,9 @@ void clear(GLbitfield mask) {
 void blit(int sx0, int sy0, int sx1, int sy1, int dx0, int dy0, int dx1, int dy1, GLbitfield mask, GLenum filter) {
     GLState& s = st();
     Target src = resolve(s.read_fbo), dst = resolve(s.draw_fbo);
-    if (!src.color || !dst.color) return;
-    end_pass();
+    if ((mask & GL_COLOR_BUFFER_BIT) && (!src.color || !dst.color)) return;
+    if (!(mask & GL_COLOR_BUFFER_BIT) && (!src.depth || !dst.depth)) return;
+    g_end_reason = "blit"; end_pass();
     VkCommandBuffer cb = main_cb();
     Img* simg = (mask & GL_COLOR_BUFFER_BIT) ? src.color : src.depth;
     Img* dimg = (mask & GL_COLOR_BUFFER_BIT) ? dst.color : dst.depth;
@@ -1205,14 +1322,24 @@ void blit(int sx0, int sy0, int sx1, int sy1, int dx0, int dy0, int dx1, int dy1
         vkCmdBlitImage(cb, si->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, di->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, flt);
     };
     if (mask & GL_COLOR_BUFFER_BIT) do_blit(src.color, dst.color, VK_IMAGE_ASPECT_COLOR_BIT, filter == GL_LINEAR ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
-    if ((mask & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) && src.depth && dst.depth && src.depth != dst.depth)
-        do_blit(src.depth, dst.depth, VK_IMAGE_ASPECT_DEPTH_BIT | ((mask & GL_STENCIL_BUFFER_BIT) ? VK_IMAGE_ASPECT_STENCIL_BIT : 0), VK_FILTER_NEAREST);
+    if ((mask & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) && src.depth && dst.depth && src.depth != dst.depth) {
+        const VkImageAspectFlags asp = VK_IMAGE_ASPECT_DEPTH_BIT | ((mask & GL_STENCIL_BUFFER_BIT) ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
+        if (sx1 - sx0 == dx1 - dx0 && sy1 - sy0 == dy1 - dy0 && sx1 > sx0 && sy1 > sy0) {   // same size: a copy (the depth format may not support blits)
+            barrier(cb, *src.depth, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            barrier(cb, *dst.depth, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            src.depth->used_serial = dst.depth->used_serial = g().serial;
+            VkImageCopy rg{};
+            rg.srcSubresource = {asp, 0, 0, 1}; rg.dstSubresource = {asp, 0, 0, 1};
+            rg.srcOffset = {sx0, sy0, 0}; rg.dstOffset = {dx0, dy0, 0}; rg.extent = {(uint32_t)(sx1 - sx0), (uint32_t)(sy1 - sy0), 1};
+            vkCmdCopyImage(cb, src.depth->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.depth->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &rg);
+        } else do_blit(src.depth, dst.depth, asp, VK_FILTER_NEAREST);
+    }
 }
 
 bool read_pixels(int x, int y, int w, int h, GLenum fmt, GLenum type, void* out) {
     Target src = resolve(st().read_fbo);
     if (!src.color || w <= 0 || h <= 0) return false;
-    end_pass();
+    g_end_reason = "readpix"; end_pass();
     VkCommandBuffer cb = main_cb();
     barrier(cb, *src.color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     src.color->used_serial = g().serial;
@@ -1242,6 +1369,7 @@ static bool create_fb0(int w, int h) {
         defer_destroy(g().fb0_color); defer_destroy(g().fb0_depth);
         g().fb0_color = Img{}; g().fb0_depth = Img{};
         if (g().fb0.fb) { VkFramebuffer old = g().fb0.fb; defer([old]() { vkDestroyFramebuffer(G->dev, old, nullptr); }); g().fb0.fb = VK_NULL_HANDLE; }
+        if (g().fb0.fb_nd) { VkFramebuffer old = g().fb0.fb_nd; defer([old]() { vkDestroyFramebuffer(G->dev, old, nullptr); }); g().fb0.fb_nd = VK_NULL_HANDLE; }
     }
     if (!create_img(g().fb0_color, VK_FORMAT_R8G8B8A8_UNORM, w, h, 1, kTexUsage, VK_IMAGE_ASPECT_COLOR_BIT)) return false;
     create_img(g().fb0_depth, g().depth_fmt, w, h, 1, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
@@ -1272,6 +1400,8 @@ bool core_init(SDL_Window* w, bool vsync, std::string* err) {
     SDL_Vulkan_GetDrawableSize(w, &dw, &dh);
     if (!gl.ctx.create_swapchain(dw, dh, vsync, err)) { core_shutdown(); return false; }
     gl.ts_period = gl.ctx.props().limits.timestampPeriod;
+    gl.passprof = std::getenv("PSPRECOMP_VK_PASSPROF") != nullptr;
+    { const char* sy = std::getenv("PSPRECOMP_VK_SYNC"); g_narrow_sync = sy && !std::strcmp(sy, "narrow"); }
     if (gl.ctx.has_multi_draw() && !std::getenv("PSPRECOMP_VK_NO_MULTIDRAW")) {
         gl.cmd_draw_multi = (PFN_vkCmdDrawMultiEXT)vkGetDeviceProcAddr(gl.dev, "vkCmdDrawMultiEXT");
         gl.multi_draw = gl.cmd_draw_multi != nullptr;
@@ -1283,7 +1413,9 @@ bool core_init(SDL_Window* w, bool vsync, std::string* err) {
 
     // depth/stencil format
     VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(gl.ctx.physical(), VK_FORMAT_D24_UNORM_S8_UINT, &fp);
-    if ((fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) && (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT)) gl.depth_fmt = VK_FORMAT_D24_UNORM_S8_UINT;
+    if ((fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) && (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) gl.depth_fmt = VK_FORMAT_D24_UNORM_S8_UINT;   // depth "blits" are same-size copies (no blit feature needed)
+
+    std::fprintf(stderr, "[VKGL] depth/stencil format %s, sync mode %s, driver %u, vendor 0x%x\n", gl.depth_fmt == VK_FORMAT_D24_UNORM_S8_UINT ? "D24S8" : "D32S8", g_narrow_sync ? "narrow" : "full", gl.ctx.props().driverVersion, gl.ctx.props().vendorID);
 
     // layouts
     VkDescriptorSetLayoutBinding b0{0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -1311,6 +1443,10 @@ bool core_init(SDL_Window* w, bool vsync, std::string* err) {
         VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         vkCreateSemaphore(gl.dev, &si, nullptr, &f.acquire_sem);
         alloc_buffer(f.ubo, 32u << 20, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+        if (gl.passprof && gl.ctx.props().limits.timestampComputeAndGraphics) {
+            VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO}; qi.queryType = VK_QUERY_TYPE_TIMESTAMP; qi.queryCount = kPpMax;
+            vkCreateQueryPool(gl.dev, &qi, nullptr, &f.pp);
+        }
         if (gl.ctx.props().limits.timestampComputeAndGraphics) {
             VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO}; qi.queryType = VK_QUERY_TYPE_TIMESTAMP; qi.queryCount = kTsPairs * 2;
             vkCreateQueryPool(gl.dev, &qi, nullptr, &f.ts);
@@ -1354,6 +1490,7 @@ void core_shutdown() {
         for (auto p : f.pools) vkDestroyDescriptorPool(gl.dev, p, nullptr);
         destroy_buffer_now(f.ubo); destroy_buffer_now(f.stage);
         if (f.ts) vkDestroyQueryPool(gl.dev, f.ts, nullptr);
+        if (f.pp) vkDestroyQueryPool(gl.dev, f.pp, nullptr);
         if (f.pool) vkDestroyCommandPool(gl.dev, f.pool, nullptr);
         if (f.fence) vkDestroyFence(gl.dev, f.fence, nullptr);
         if (f.acquire_sem) vkDestroySemaphore(gl.dev, f.acquire_sem, nullptr);
@@ -1362,13 +1499,14 @@ void core_shutdown() {
     for (auto& t : gl.tex) if (t) destroy_img_now(t->img);
     for (auto& r : gl.rbo) if (r) destroy_img_now(r->img);
     for (auto& b : gl.buf) if (b) destroy_buffer_now(*b);
-    for (auto& f : gl.fbo) if (f && f->fb) vkDestroyFramebuffer(gl.dev, f->fb, nullptr);
+    for (auto& f : gl.fbo) if (f) { if (f->fb) vkDestroyFramebuffer(gl.dev, f->fb, nullptr); if (f->fb_nd) vkDestroyFramebuffer(gl.dev, f->fb_nd, nullptr); }
     for (auto& p : gl.prg) if (p) { if (p->vs) vkDestroyShaderModule(gl.dev, p->vs, nullptr); if (p->fs) vkDestroyShaderModule(gl.dev, p->fs, nullptr); }
     for (auto& kv : gl.pipelines) vkDestroyPipeline(gl.dev, kv.second, nullptr);
     for (auto& kv : gl.render_passes) vkDestroyRenderPass(gl.dev, kv.second, nullptr);
     for (auto& kv : gl.samplers) vkDestroySampler(gl.dev, kv.second, nullptr);
     destroy_img_now(gl.fb0_color); destroy_img_now(gl.fb0_depth); destroy_img_now(gl.dummy); destroy_img_now(gl.snap);
     if (gl.fb0.fb) vkDestroyFramebuffer(gl.dev, gl.fb0.fb, nullptr);
+    if (gl.fb0.fb_nd) vkDestroyFramebuffer(gl.dev, gl.fb0.fb_nd, nullptr);
     destroy_buffer_now(gl.dummy_vb);
     if (gl.pipe_cache) vkDestroyPipelineCache(gl.dev, gl.pipe_cache, nullptr);
     if (gl.pipe_layout) vkDestroyPipelineLayout(gl.dev, gl.pipe_layout, nullptr);
@@ -1398,10 +1536,17 @@ static void log_stats() {
     Globals& gl = *G;
     static uint64_t swaps = 0, last_draws = 0, last_fb = 0;
     if (++swaps % 600 == 0) {
-        std::fprintf(stderr, "[VKGL] %llu frames: %llu draws/frame, %llu feedback copies/frame, %zu pipelines, GPU %.2f ms/frame | CPU ms/frame: draw %.2f (incl. submit), submit %.2f in %.1f calls, upload %.2f, fence wait %.2f | buffer conflicts %.2f/frame (%.2f MB/frame)\n", (unsigned long long)swaps,
+        std::fprintf(stderr, "[VKGL] %llu frames: %llu draws/frame, %llu feedback copies/frame, %zu pipelines, GPU %.2f ms/frame | CPU ms/frame: draw %.2f (incl. submit), submit %.2f in %.1f calls, upload %.2f, fence wait %.2f | buffer conflicts %.2f/frame (%.2f MB/frame) | passes %.1f/frame, clears folded %.1f/frame\n", (unsigned long long)swaps,
                      (unsigned long long)((gl.draws - last_draws) / 600), (unsigned long long)((gl.feedback_draws - last_fb) / 600), gl.pipelines.size(),
-                     gl.gpu_ms_n ? gl.gpu_ms_sum / (double)gl.gpu_ms_n : 0.0, gl.t_draw * 1e3 / 600, gl.t_submit * 1e3 / 600, (double)gl.n_submit / 600, gl.t_upload * 1e3 / 600, gl.t_wait * 1e3 / 600, (double)gl.conflict_copies / 600, (double)gl.conflict_bytes / 600 / 1048576.0);
-        gl.conflict_copies = gl.conflict_bytes = 0;
+                     gl.gpu_ms_n ? gl.gpu_ms_sum / (double)gl.gpu_ms_n : 0.0, gl.t_draw * 1e3 / 600, gl.t_submit * 1e3 / 600, (double)gl.n_submit / 600, gl.t_upload * 1e3 / 600, gl.t_wait * 1e3 / 600, (double)gl.conflict_copies / 600, (double)gl.conflict_bytes / 600 / 1048576.0, (double)gl.passes / 600, (double)gl.clears_folded / 600);
+        gl.conflict_copies = gl.conflict_bytes = 0; gl.passes = gl.clears_folded = 0;
+        if (gl.passprof) {
+            std::vector<std::pair<std::string, std::pair<double, uint64_t>>> v(gl.pp_acc.begin(), gl.pp_acc.end());
+            std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.second.first > b.second.first; });
+            for (size_t i = 0; i < v.size() && i < 8; i++)
+                std::fprintf(stderr, "[VKPASS]   %-34s %6.2f ms/frame  (%.1f x/frame)\n", v[i].first.c_str(), v[i].second.first / 600.0, (double)v[i].second.second / 600.0);
+            gl.pp_acc.clear();
+        }
         gl.gpu_ms_sum = 0; gl.gpu_ms_n = 0; gl.t_draw = gl.t_submit = gl.t_wait = gl.t_upload = 0; gl.n_submit = 0;
         last_draws = gl.draws; last_fb = gl.feedback_draws;
     }

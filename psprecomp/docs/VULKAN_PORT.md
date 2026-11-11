@@ -5,8 +5,10 @@ Status (2026-11-12): **works on desktop (NVIDIA) and on the Retroid Pocket 6 (Ad
 function pointers (an equivalent pointer table on Android), so the PSP logic exists once. In-game: Settings > System > Graphics API (next start).
 Verified: title, menus, settings, 3D battle, render scale 3, screen-space effects, touch overlay, resize; static screens match GL to 2/255; zero validation
 errors on desktop. Measured on the GTX 1660 SUPER in a heavy fight (3.5k draws, render scale 3, no present): GPU about 2.2 ms/frame; render-thread CPU
-about 3.2 ms for Vulkan vs 2.65 ms for NVIDIA's GL, so **Vulkan is not faster yet**; the layer's own CPU cost is ~0.4 ms/frame. Not yet measured: GL vs Vulkan on the
-RP6. Known gaps: partial colour mask on glClear, blit within one image, occlusion/timer queries are stubs, no ray tracing yet, no async pipeline creation or
+about 3.2 ms for Vulkan vs 2.65 ms for NVIDIA's GL, so **Vulkan is not faster yet**; the layer's own CPU cost is ~0.4 ms/frame. Retroid Pocket 6 (Adreno 740, 120 fps mode, render scale 4, widescreen, SSAO/contact shadows/SSR on, same verified stage and fighters, Order's
+Sanctuary, Squall vs Lightning): GLES about 112 fps, Vulkan about 110 fps; render-thread CPU 5.85+0.7 ms (GL) vs 6.97+0.56 ms (Vulkan), Vulkan GPU about 7 ms/frame.
+**So parity, not a win.** Both sit near the 120 fps pacing, so headroom still has to be measured uncapped. Earlier device numbers that showed Vulkan faster (no
+screen-space effects yet) or slower (stage not reliably selected) were measurement errors: the harness must verify the stage (`BT_SETUP_SHOT`). Known gaps (also: pixel-level differences in the screen-space effects were only checked by eye): partial colour mask on glClear, blit within one image, occlusion/timer queries are stubs, no ray tracing yet, no async pipeline creation or
 pipeline cache on disk, FX shader hot reload untested on Vulkan, Android needs the SPIR-V cache (`vk_cache/`) filled by a desktop run (`vk_spirv_tool` compiles
 what a device build reports in `vk_cache/miss`). Bugs found by device testing and worth remembering: per-frame-slot UBO offsets go stale when a program's
 uniforms never change; debug-socket screenshots read the game's framebuffer, not the display (use `adb screencap`).
