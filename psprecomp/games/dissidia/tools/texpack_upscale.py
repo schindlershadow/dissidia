@@ -6,6 +6,8 @@
 Reads <extract>/index.tsv, upscales every uncovered texture (covered=0) into <out>/<id>.png:
   - map/stage textures (sources under map/ ) use realesrgan-x4plus, everything else realesrgan-x4plus-anime;
   - near-uniform textures (colour+alpha std < 3) get a plain Lanczos 4x: a model would invent detail on flat art;
+  - small cut-out textures (<=128 px with transparency: face icons, sprites) are 60% Lanczos + 40% model, because the model
+    invents faces from so few pixels;
   - the original alpha channel is resized (Lanczos) and re-attached, so sprite edges stay exact;
   - textures whose larger side is > 256 are brought back down to 2x (repo size), the rest stay 4x.
 Finished ids are skipped, so a run can be resumed. Needs numpy + Pillow.
@@ -54,7 +56,11 @@ def main():
         else:
             u = Image.open(up).convert('RGBA')
             if u.size != tgt: u = u.resize(tgt, Image.LANCZOS)
-            if o.getchannel('A').getextrema() != (255, 255): u.putalpha(o.getchannel('A').resize(tgt, Image.LANCZOS))
+            cut = o.getchannel('A').getextrema() != (255, 255)
+            if cut and max(w, h) <= 128:
+                # small cut-out art (portraits, icons): the model redraws faces from ~40 px of source; keep 60% Lanczos
+                u = Image.blend(o.resize(tgt, Image.LANCZOS), u, 0.4)
+            if cut: u.putalpha(o.getchannel('A').resize(tgt, Image.LANCZOS))
             else: u.putalpha(255)
         u.save(os.path.join(a.out, i + '.png'), optimize=True)
     n = 0
