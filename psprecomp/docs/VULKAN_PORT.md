@@ -1,15 +1,17 @@
 # Vulkan backend: design and plan
 
-Status (2026-11-11): **milestone 1 (skeleton) done**: `runtime/src/vk/psp_vk_context.*` (instance, device pick, VMA, SDL
-swapchain) and `tests/test_vk_context.cpp` (`test_vk_context [--window]`) pass on the NVIDIA, Intel and lavapipe devices of the dev
-host, headless and with a swapchain under Xvfb. Not yet linked into the runtime; GL code untouched.
+Status (2026-11-12): **works on desktop (NVIDIA) and on the Retroid Pocket 6 (Adreno 740), opt-in.** The route taken is a GL-on-Vulkan layer
+(`runtime/src/vk/`), not a native rewrite of `psp_ge_draw`: the ~110 GL entry points the runtime uses are implemented on Vulkan and installed in glad's
+function pointers (an equivalent pointer table on Android), so the PSP logic exists once. In-game: Settings > System > Graphics API (next start).
+Verified: title, menus, settings, 3D battle, render scale 3, screen-space effects, touch overlay, resize; static screens match GL to 2/255; zero validation
+errors on desktop. Measured on the GTX 1660 SUPER in a heavy fight (3.5k draws, render scale 3, no present): GPU about 2.2 ms/frame; render-thread CPU
+about 3.2 ms for Vulkan vs 2.65 ms for NVIDIA's GL, so **Vulkan is not faster yet**; the layer's own CPU cost is ~0.4 ms/frame. Not yet measured: GL vs Vulkan on the
+RP6. Known gaps: partial colour mask on glClear, blit within one image, occlusion/timer queries are stubs, no ray tracing yet, no async pipeline creation or
+pipeline cache on disk, FX shader hot reload untested on Vulkan, Android needs the SPIR-V cache (`vk_cache/`) filled by a desktop run (`vk_spirv_tool` compiles
+what a device build reports in `vk_cache/miss`). Bugs found by device testing and worth remembering: per-frame-slot UBO offsets go stale when a program's
+uniforms never change; debug-socket screenshots read the game's framebuffer, not the display (use `adb screencap`).
 
-Test-host facts found in milestone 0: the battle harness's Xvfb gives **llvmpipe (software) GL**, so GL numbers from it say
-nothing about real GPU speed, while Vulkan under the same Xvfb does reach the real GPU (NVIDIA swapchain works). Fair GL vs
-Vulkan timing needs a real display or a headless GL path. Software-GL profile of a 60 fps battle: ~3.5k draws and 300 batches per
-frame, list=7.5 ms, draw submission 4.2 ms, 4 feedback snapshots/frame. The validation layer is not installed on this host.
-GL state already goes through ~15 cached setters (`gl_blend_func`, ... in `psp_ge_draw.cpp`), which is the natural seam
-for a `PipelineState` struct.
+Earlier notes (milestones 0-2): the battle harness's Xvfb gives **llvmpipe (software) GL**; SDL's `offscreen` video driver gives real NVIDIA GL for fair timing.
 
 Original status: planning. Goals: (1) better performance, (2) a base for ray-traced effects later.
 Decisions (2026-11-11): Vulkan is a **selectable backend alongside GL** (GL stays the default and the fallback until

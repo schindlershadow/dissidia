@@ -14,6 +14,9 @@
 #include "hle/psp_cloud_service.h"
 
 #include <SDL.h>
+#if defined(PSPRECOMP_HAVE_VKGL)
+#include "vk/vkgl.h"
+#endif
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -80,13 +83,32 @@ PspFrameRateHook g_fps{nullptr, 0, nullptr, nullptr};
 PspVoiceHook g_voice{nullptr};
 PspTexPackHook g_texpack{nullptr};
 
+// Graphics API (OpenGL / Vulkan). Chosen at start-up (the window is created for one or the other), so a change applies at the next start.
+bool renderer_vulkan_at_start() {
+#if defined(PSPRECOMP_HAVE_VKGL)
+    return vkgl::active();
+#else
+    return false;
+#endif
+}
+bool renderer_vulkan_choice() {
+    auto it = g_saved.find("renderer");
+    return it != g_saved.end() ? it->second == "vulkan" : renderer_vulkan_at_start();
+}
+bool renderer_row_wanted() {
+#if defined(PSPRECOMP_HAVE_VKGL)
+    return true;
+#else
+    return false;
+#endif
+}
 bool voice_jp_choice();
 bool voice_at_start();
 bool updates_choice();
 bool texpack_choice();
 bool texpack_at_start();
 
-enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_AA, ROW_SHARP, ROW_SSAO, ROW_CONTACT, ROW_SSR, ROW_ANISO, ROW_UPSCALE, ROW_VOICE, ROW_TEXPACK, ROW_TOUCH, ROW_TOUCH_EDIT, ROW_UPDATES, ROW_QUIT,
+enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_RENDERER, ROW_AA, ROW_SHARP, ROW_SSAO, ROW_CONTACT, ROW_SSR, ROW_ANISO, ROW_UPSCALE, ROW_VOICE, ROW_TEXPACK, ROW_TOUCH, ROW_TOUCH_EDIT, ROW_UPDATES, ROW_QUIT,
            ROW_NET_MODE, ROW_NET_SERVER, ROW_NET_ROOM, ROW_NET_PEERS, ROW_NET_STATUS,   // Network page
            ROW_CLOUD_PROVIDER, ROW_CLOUD_FOLDER, ROW_CLOUD_URL, ROW_CLOUD_USER, ROW_CLOUD_PASS, ROW_CLOUD_GOOGLE,
            ROW_CLOUD_AUTO, ROW_CLOUD_REPLAYS, ROW_CLOUD_NOW, ROW_CLOUD_STATUS,   // Cloud page
@@ -367,6 +389,15 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.can_dec = i > 0;
             m.can_inc = i + 1 < g_fps.count;
             m.help = "Battle logic rate (multiples of 30)\nBattles run at this many updates a second; the PSP ran 30. Costs CPU and GPU time in proportion. Menus stay at 30.";
+            break;
+        }
+        case ROW_RENDERER: {
+            const bool vk = renderer_vulkan_choice();
+            m.label = "Graphics API";
+            m.value = std::string(vk ? "Vulkan" : "OpenGL") + (vk != renderer_vulkan_at_start() ? "  (next start)" : "");
+            m.can_dec = vk;
+            m.can_inc = !vk;
+            m.help = "Graphics API (PSPRECOMP_RENDERER)\nOpenGL is the default and the most tested. Vulkan renders the same picture through a Vulkan layer (experimental; needs a Vulkan 1.1 GPU). Takes effect the next time the game starts. Saved.";
             break;
         }
         case ROW_VOICE: {
@@ -762,6 +793,7 @@ void change(int d) {   // left / right on the selected row
         if (i >= 0 && i < g_fps.count) apply_fps(i);
         break;
     }
+    case ROW_RENDERER: save("renderer", d > 0 ? "vulkan" : "gl"); break;   // left: OpenGL, right: Vulkan
     case ROW_VOICE: apply_voice(d > 0); break;   // left: English, right: Japanese
     case ROW_TEXPACK: apply_texpack(d > 0); break;
     case ROW_UPDATES: apply_updates(d > 0); break;
@@ -901,6 +933,7 @@ void build_rows() {
         g_rows.push_back(ROW_SSR);
         g_rows.push_back(ROW_ANISO);
         g_rows.push_back(ROW_UPSCALE);
+        if (renderer_row_wanted()) g_rows.push_back(ROW_RENDERER);
         if (voice_row_wanted()) g_rows.push_back(ROW_VOICE);
 #ifdef __ANDROID__   // the on-screen controls exist for Android only
         g_rows.push_back(ROW_TOUCH);
@@ -1004,6 +1037,7 @@ void confirm() {
     case ROW_FPS:
         apply_fps((fps_index() + 1) % g_fps.count);
         break;
+    case ROW_RENDERER: save("renderer", renderer_vulkan_choice() ? "gl" : "vulkan"); break;
     case ROW_VOICE: apply_voice(!voice_jp_choice()); break;
     case ROW_TEXPACK: apply_texpack(!texpack_choice()); break;
     case ROW_UPDATES: apply_updates(!updates_choice()); break;
@@ -1123,6 +1157,7 @@ void psp_settings_load_early() {
         put("PSPRECOMP_VOICE", it->second);
     if ((it = g_saved.find("hd_textures")) != g_saved.end() && (it->second == "0" || it->second == "1"))
         put("PSPRECOMP_TEX_REPLACE", it->second);
+    if ((it = g_saved.find("renderer")) != g_saved.end() && (it->second == "gl" || it->second == "vulkan")) put("PSPRECOMP_RENDERER", it->second);
     if ((it = g_saved.find("touch")) != g_saved.end() && (it->second == "auto" || it->second == "on" || it->second == "off"))
         put("PSPRECOMP_TOUCH", it->second);
     if ((it = g_saved.find("window_size")) != g_saved.end() && g_saved.count("display") && g_saved["display"] == "window"

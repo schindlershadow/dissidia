@@ -111,6 +111,14 @@ These are read by the `psprecomp` Rust binary during `analyze`/`recompile`/`dump
 
 Read by the runtime binary at start-up or during execution.
 
+### `PSPRECOMP_RENDERER`
+`gl` (default) or `vulkan`. Vulkan runs the same renderer through a GL-on-Vulkan layer (`runtime/src/vk/`, [docs/VULKAN_PORT.md](VULKAN_PORT.md)); if the Vulkan
+backend is not built in or no device is usable the runtime stops at start-up (set it to `gl`). Also chosen in Settings > System > Graphics API (saved as
+`renderer=gl|vulkan`, applied at the next start, and wins over this variable). Related, all Vulkan-only: `PSPRECOMP_VK_VALIDATION=1` (validation layer),
+`PSPRECOMP_VK_DEVICE=<index|name>` (GPU), `PSPRECOMP_VK_CACHE_DIR` (SPIR-V cache; default `~/.cache/dissidia-vk`, `<workdir>/vk_cache` on Android),
+`PSPRECOMP_VK_SUBMIT_EVERY=<draws>` (early GPU submits; 0 = only at sync points), `PSPRECOMP_VK_NO_PRESENT=1` (benchmark: never present),
+`PSPRECOMP_VK_NO_MULTIDRAW=1`, `PSPRECOMP_VK_TRACE=1` (log every draw). `[VKGL]` lines in the log give draws, pipelines, GPU time and CPU cost per frame.
+
 ### `PSPRECOMP_DISC0`
 - **Read in:** `runtime/src/main.cpp`
 - **Type:** env (path string).
