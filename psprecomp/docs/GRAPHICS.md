@@ -449,18 +449,28 @@ behavioral oracle for diffing (see README, Verification Methodology).
 
 They run on the finished 3D scene of a displayed buffer, not on the presented picture: by present time the depth buffer
 holds only the game's glow / HUD passes (all ~0). `fx_track` in `psp_ge_draw.cpp` counts depth-writing 3D draws per target
-and, at the first through-mode draw that follows a run of them (the glow downsample, then the HUD), copies depth and colour
-and runs three passes: AO + ray-marched contact shadow into an RG texture, a depth-aware blur, and a composite back into
-the scene buffer (RGB only: the buffer's alpha is the GE stencil). The glow chain and HUD are drawn afterwards, so neither
-is darkened or reflected. Skipped in widescreen (x is rescaled outside the projection matrix).
+and, at the first through-mode draw that follows a run of them (the glow downsample, then the HUD), copies the depth and
+runs the passes. The glow chain and HUD are drawn afterwards, so neither is darkened or reflected. Skipped in widescreen
+(x is rescaled outside the projection matrix).
+
+Passes (cost is what matters on a handheld: the first version, full resolution, took the RP6 from 120 to 55 fps):
+1. half resolution: one pass computes AO + contact shadow (RG) and the reflection (premultiplied RGBA, MRT);
+2. half resolution: depth-aware blur of the AO / shadow in two directions (5 taps each);
+3. full resolution: AO * (1 - shadow) multiplied into the scene (2x2 depth-weighted upsample, so nothing bleeds across a
+   silhouette), then the reflection blended over the result, so a shadow darkens the floor but not the reflection in it.
+RGB only: the buffer's alpha is the GE stencil. Samples per effect scale with the level (AO 5/8/12, shadow 6/10/14,
+reflection 10/16/22 steps). `PSPRECOMP_FX_DEBUG=1` logs the GPU time (desktop) and per-pass timestamps.
 
 - View-space positions come from the inverse of the PSP projection matrix and the draw's `glDepthRange` (the depth is
-  non-linear and 16-bit; the matrix of the last depth-writing 3D draw is used).
+  non-linear and 16-bit). The projection / view pair is the one most depth-writing draws used (majority vote): the last
+  draw's can belong to a character or effect with a matrix of its own, which made the light direction, and so the shadows,
+  follow the player.
 - The sky dome is real geometry (~250 units away on the stages tried): everything beyond `PSPRECOMP_FX_SKY_DIST` (150) is
   background. Effects fade out between `PSPRECOMP_FX_FADE_START` (30) and `_END` (70) view units: the 16-bit depth is too
   coarse there and AO / shadows hallucinate occluders (a distant backdrop wall went black without the fade).
+- Contact shadows: ray length `PSPRECOMP_CONTACT_LEN` view units (2.5, a fighter is about 2.4 tall), `PSPRECOMP_CONTACT_THICK`
+  (0.5); the light is mostly overhead in world space (`PSPRECOMP_LIGHT_X/Y/Z`, default 0.4 / 1 / 0.3; the game's own lights
+  are not read) and only lights surfaces that face it.
 - Reflections only apply to upward-facing surfaces (world up from the view matrix) and only show what is on screen.
-- Tuning: `PSPRECOMP_SSAO_RADIUS` (0.09 of the distance to the camera), `PSPRECOMP_CONTACT_LEN` (0.14),
-  `PSPRECOMP_SSR_LEN` (0.6), `PSPRECOMP_LIGHT_X/Y/Z` (world direction to the light, a fixed guess: the game's own lights
-  are not read). `PSPRECOMP_FX_VIEW=1..8` shows an intermediate (AO, shadow, reflection mask, normals, depth).
-
+- Tuning: `PSPRECOMP_SSAO_RADIUS` (0.09 of the distance to the camera), `PSPRECOMP_SSR_LEN` (0.6).
+  `PSPRECOMP_FX_VIEW` is gone with the single-pass rewrite; use the `FX` socket command to compare.

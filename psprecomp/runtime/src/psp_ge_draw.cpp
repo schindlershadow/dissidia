@@ -2288,24 +2288,34 @@ void ge_draw_prim(uint8_t* rdram, int prim_type, int count) {
 // then copies the picture into its glow chain and draws the HUD. The effects run right there, on the scene alone.
 static int g_fx_n[GE_MAX_TARGETS];
 static bool g_fx_done[GE_MAX_TARGETS];
-static ScreenFxScene g_fx_scene[GE_MAX_TARGETS];
 static float g_fx_clearz[GE_MAX_TARGETS];
+// The projection / view pair the scene was drawn with: the one most depth-writing draws used (a Boyer-Moore majority
+// vote), not the last draw's, which can belong to a character or an effect with a matrix of its own. The light direction
+// and "up" come from the view matrix, so a per-object one made shadows follow the player.
+struct FxVote { float proj[16]; float view[12]; float near_z, far_z; int n; };
+static FxVote g_fx_vote[GE_MAX_TARGETS];
 static bool wide_on();
 static void fx_track(const GeState& st) {
     if (g_current_target < 0 || g_ab_shadow) return;
     const int cur = g_current_target;
     if (st.clear_mode) {
-        if (st.clear_flags == 0 || (st.clear_flags & 4)) { g_fx_n[cur] = 0; g_fx_done[cur] = false; }
+        if (st.clear_flags == 0 || (st.clear_flags & 4)) { g_fx_n[cur] = 0; g_fx_done[cur] = false; g_fx_vote[cur].n = 0; }
         return;
     }
     if (!ge_vtype_through(st.vertex_type)) {
         if (st.depth_test_enable && !st.depth_write_disable) {
             g_fx_n[cur]++;
-            ScreenFxScene& s = g_fx_scene[cur];
-            std::memcpy(s.proj, st.proj_matrix, sizeof s.proj);
-            std::memcpy(s.view, st.view_matrix, sizeof s.view);
-            const GeViewportDepth vp = compute_state_viewport_depth(st);
-            s.near_z = vp.near_z; s.far_z = vp.far_z;
+            FxVote& v = g_fx_vote[cur];
+            const bool same = v.n > 0 && !std::memcmp(v.proj, st.proj_matrix, sizeof v.proj) && !std::memcmp(v.view, st.view_matrix, sizeof v.view);
+            if (same) v.n++;
+            else if (v.n > 0) v.n--;
+            else {
+                std::memcpy(v.proj, st.proj_matrix, sizeof v.proj);
+                std::memcpy(v.view, st.view_matrix, sizeof v.view);
+                const GeViewportDepth vp = compute_state_viewport_depth(st);
+                v.near_z = vp.near_z; v.far_z = vp.far_z;
+                v.n = 1;
+            }
         }
         return;
     }
@@ -2316,8 +2326,12 @@ static void fx_track(const GeState& st) {
         g_fx_n[i] = 0;
         if (wide_on()) continue;   // widescreen rescales x outside the projection matrix: not handled
         flush_batch();
-        ScreenFxScene s = g_fx_scene[i];
+        ScreenFxScene s;
+        std::memcpy(s.proj, g_fx_vote[i].proj, sizeof s.proj);
+        std::memcpy(s.view, g_fx_vote[i].view, sizeof s.view);
+        s.near_z = g_fx_vote[i].near_z; s.far_z = g_fx_vote[i].far_z;
         s.clear_z = g_fx_clearz[i];
+        g_fx_vote[i].n = 0;
         psp_screenfx_run(t.fbo, t.color_tex, t.w480 * t.rs, 272 * t.rs, s);
         glBindFramebuffer(GL_FRAMEBUFFER, g_targets[g_current_target].fbo);
         glc::invalidate();
