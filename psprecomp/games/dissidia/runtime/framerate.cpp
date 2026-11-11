@@ -64,6 +64,7 @@ extern FuncPtr ovl_extra_lookup(uint32_t vaddr);
 
 int dissidia_test_action(uint8_t* rdram, recomp_context* ctx, uint32_t actor, int id);   // roster.cpp
 
+void psp_mem_watch_set(uint32_t addr);   // runtime/src/psp_dispatch.cpp
 namespace {
 
 constexpr uint32_t OVL_BASE = 0x089DD4C0u;
@@ -229,6 +230,9 @@ void testdrive_load(const char* path) {
         } else if (cmd == "action") {   // action <id> [who]: start the action; who = player (default) | cpu | <slot>; id -1 lists them
             int id = -1; std::string who = "player"; ss >> id >> who;
             g_test_events.push_back({t, 4, static_cast<uint32_t>(id), who == "cpu" ? 1u : (who == "player" ? 0u : 2u + static_cast<uint32_t>(std::atoi(who.c_str()))), ""});
+        } else if (cmd == "gauge") {   // gauge <side> <0..10000>: set a side's assist gauge (side 0 / 1 = the controller table order of the HUD)
+            unsigned side = 1; double v = 0; ss >> side >> v;
+            g_test_events.push_back({t, 5, side, 0, std::to_string(v)});
         } else if (cmd == "quit") g_test_events.push_back({t, 3, 0, 0, ""});
         else std::fprintf(stderr, "[TEST] unknown command '%s'\n", cmd.c_str());
     }
@@ -236,6 +240,7 @@ void testdrive_load(const char* path) {
     std::fprintf(stderr, "[TEST] script %s: %zu events\n", path, g_test_events.size());
 }
 
+uint32_t assist_gauge_addr(int side);
 bool battle_running() {
     if (overlay_id() != 1) return false;
     for (int i = 0; i < 4; i++) {
@@ -355,6 +360,11 @@ void testdrive_frame(uint8_t* rdram, recomp_context* ctx) {
             const int r = a ? dissidia_test_action(rdram, ctx, a, static_cast<int>(e.a)) : -2;
             std::fprintf(stderr, "[TEST] gt=%.0f action %d on %08X (%s): %s\n", g_gt_ms, static_cast<int>(e.a), a, e.b == 1 ? "cpu" : "player",
                          r == 1 ? "started" : r == 0 ? "NOT started" : r == -1 ? "no such record" : "no such fighter");
+        }
+        else if (e.kind == 5) {
+            const uint32_t ga = assist_gauge_addr(static_cast<int>(e.a));
+            if (ga) wrf(ga, static_cast<float>(std::atof(e.text.c_str())));
+            std::fprintf(stderr, "[TEST] gt=%.0f gauge side %u = %s (%s)\n", g_gt_ms, e.a, e.text.c_str(), ga ? "set" : "no gauge");
         }
         else if (e.kind == 3) { std::fprintf(stderr, "[TEST] quit at gt=%.0f ms\n", g_gt_ms); g_should_exit.store(true); }
     }
@@ -609,11 +619,18 @@ int g_object_log_left = 30000;
 // (input windows that shrink above 30 Hz) and the fields behind a move's speed. Needs PSPRECOMP_FIGHTER_LOG=1 as well.
 bool g_fighter_dump = false;
 int g_fighter_dump_left = 400000;
-uint32_t g_dump_prev[4][0x700 / 4] = {};
+uint32_t g_dump_prev[4][0x1400 / 4] = {};
 uint32_t g_dump_prev_actor[4] = {};
 void fighter_dump_frame() {
     if (!g_fighter_dump) return;
-    static const uint32_t ranges[][2] = {{0x20, 0x140}, {0x180, 0x200}, {0x380, 0x3A0}, {0x540, 0x600}, {0x1A0, 0x1C0}};
+    static uint32_t ranges[][2] = {{0x20, 0x140}, {0x180, 0x200}, {0x380, 0x3A0}, {0x540, 0x600}, {0x1A0, 0x1C0}};
+    static bool ranged = false;
+    if (!ranged) {   // PSPRECOMP_FIGHTER_DUMP_RANGE=<lo>-<hi> (hex actor offsets, below 0x700): dump only that range instead
+        ranged = true;
+        unsigned lo = 0, hi = 0;
+        const char* e = std::getenv("PSPRECOMP_FIGHTER_DUMP_RANGE");
+        if (e && std::sscanf(e, "%x-%x", &lo, &hi) == 2 && lo < hi && hi <= 0x1400) { ranges[0][0] = lo; ranges[0][1] = hi; for (int k = 1; k < 5; k++) ranges[k][0] = ranges[k][1] = 0; }
+    }
     for (int i = 0; i < 4 && g_fighter_dump_left > 0; i++) {
         const uint32_t a = g_fighters[i];
         if (!a || !ok(a)) continue;
@@ -634,6 +651,38 @@ void fighter_dump_frame() {
             }
     }
 }
+// PSPRECOMP_ASSIST_GAUGE=1 (with FIGHTER_LOG): logs each fighter's assist gauge when it changes. The gauge is a float 0..10000 at
+// [ctrl+0x52C]+0x18 (ctrl = [[0x089D6A10]+56+4*side]; the HUD reads it in ovl FUN_089E97FC: value x 100 / 10000 = percent). With =2 the write watch is armed on the
+// first gauge word that becomes non-zero ([MEM_WATCH] lines: who changes it).
+
+uint32_t assist_gauge_addr(int side) {   // guest address of a side's assist gauge float, 0 if not there
+    const uint32_t base = r32(0x089D6A10u);
+    if (!base || !ok(base) || side < 0 || side > 1) return 0;
+    const uint32_t pc = r32(base + 56u + 4u * static_cast<uint32_t>(side));
+    if (!pc || !ok(pc)) return 0;
+    const uint32_t gp = r32(pc + 0x52Cu);
+    return gp && ok(gp) ? gp + 0x18u : 0;
+}
+void assist_gauge_log() {
+    static const char* e = std::getenv("PSPRECOMP_ASSIST_GAUGE");
+    if (!e || !e[0] || e[0] == '0') return;
+    static float last[2] = {-1, -1};
+    static int armed = 0;
+    const uint32_t base = r32(0x089D6A10u);   // per-side controller table (ovl FUN_089E95B0(side) = [base + 56 + 4 * side])
+    if (!base || !ok(base)) return;
+    for (int i = 0; i < 2; i++) {
+        const uint32_t pc = r32(base + 56u + 4u * i);
+        if (!pc || !ok(pc)) continue;
+        const uint32_t gp = r32(pc + 0x52Cu);
+        if (!gp || !ok(gp)) continue;
+        const float v = rdf(gp + 0x18u);
+        if (v == last[i]) continue;
+        const bool changed = last[i] >= 0;
+        last[i] = v;
+        std::fprintf(stderr, "[ASSIST] gt=%.0f side=%d ctrl=%08X gauge=%.2f addr=%08X step=%.3f\n", g_gt_ms, i, pc, v, gp + 0x18u, rdf(FRAME_STEP));
+        if (e[0] == '2' && !armed && g_test_on && changed && g_gt_ms > 500) { armed = 1; psp_mem_watch_set(gp + 0x18u); }
+    }
+}
 void fighter_log_frame() {
     if (!g_fighter_log) return;
     for (int i = 0; i < 12 && g_object_log_left > 0; i++) {   // motion time of the other actors, whenever it changes
@@ -648,6 +697,7 @@ void fighter_log_frame() {
                      r32(a + 0x540u) & 0xFFFFu);
     }
     fighter_dump_frame();
+    assist_gauge_log();
     if (g_fighter_log_left <= 0) return;
     for (uint32_t a : g_fighters) {
         if (!a || !ok(a)) continue;
@@ -843,6 +893,63 @@ void exb_ctrl_hook(uint8_t* rdram, recomp_context* ctx) {
     g_exb_in = true;
     g_orig_exb_ctrl(rdram, ctx);
     g_exb_in = false;
+}
+
+// ---- Assist gauge ---------------------------------------------------------------------------------------------------------
+// ovl FUN_08AEC1EC(this, ctrl-ish, float amount in f12): gauge (+0x18 of [ctrl+0x52C]) = clamp(gauge + amount, 0, 10000).
+// PSPRECOMP_ASSIST_GAUGE=1 logs every call: amount and the return address (who adds).
+constexpr uint32_t GAUGE_ADD = 0x08AEC1ECu;
+FuncPtr g_orig_gauge_add = nullptr;
+void gauge_add_hook(uint8_t* rdram, recomp_context* ctx) {
+    static const char* e = std::getenv("PSPRECOMP_ASSIST_GAUGE");
+    if (e && e[0] && e[0] != '0') {
+        static int left = 20000;
+        if (left > 0) { left--; std::fprintf(stderr, "[GAUGE_ADD] gt=%.0f amount=%.3f ra=%08X this=%08X step=%.3f\n", g_gt_ms, ctx->f[12], (unsigned)ctx->r[31], (unsigned)ctx->r[4], rdf(FRAME_STEP)); }
+    }
+    g_orig_gauge_add(rdram, ctx);
+}
+
+// ovl FUN_08AEC7D8(this): per update, for each assist on the field, gauge -= table * 0.01 * K (no frame step in sight).
+constexpr uint32_t GAUGE_DRAIN = 0x08AEC7D8u;
+FuncPtr g_orig_gauge_drain = nullptr;
+uint32_t gauge_of_this(uint32_t self) {
+    if (!self || !ok(self)) return 0;
+    const uint32_t pc = r32(self + 8u);
+    if (!pc || !ok(pc)) return 0;
+    const uint32_t gp = r32(pc + 0x52Cu);
+    return gp && ok(gp) ? gp + 0x18u : 0;
+}
+void gauge_drain_hook(uint8_t* rdram, recomp_context* ctx) {
+    static const char* e = std::getenv("PSPRECOMP_ASSIST_GAUGE");
+    const bool log = e && e[0] && e[0] != '0';
+    const uint32_t self = static_cast<uint32_t>(ctx->r[4]);
+    const uint32_t ga = log ? gauge_of_this(self) : 0;
+    const float before = ga ? rdf(ga) : 0.f;
+    g_orig_gauge_drain(rdram, ctx);
+    if (ga) {
+        static int left = 20000;
+        const float after = rdf(ga);
+        if (after != before && left > 0) { left--; std::fprintf(stderr, "[GAUGE_DRAIN] gt=%.0f %.3f -> %.3f (%.3f) step=%.3f\n", g_gt_ms, before, after, after - before, rdf(FRAME_STEP)); }
+    }
+}
+
+// ovl FUN_089E97FC(side): the HUD's read of the gauge, returns the percent in f0. PSPRECOMP_ASSIST_GAUGE=1 logs it when it changes.
+constexpr uint32_t GAUGE_HUD = 0x089E97FCu;
+FuncPtr g_orig_gauge_hud = nullptr;
+void gauge_hud_hook(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t side = static_cast<uint32_t>(ctx->r[4]);
+    g_orig_gauge_hud(rdram, ctx);
+    static const char* e = std::getenv("PSPRECOMP_ASSIST_GAUGE");
+    if (e && e[0] && e[0] != '0' && side < 2) {
+        static float last[2] = {-1, -1};
+        static int left = 20000;
+        if (ctx->f[0] != last[side] && left > 0) {
+            left--;
+            const uint32_t ga = assist_gauge_addr(static_cast<int>(side));
+            std::fprintf(stderr, "[GAUGE_HUD] gt=%.0f side=%u pct=%.0f raw=%.2f addr=%08X step=%.3f\n", g_gt_ms, side, ctx->f[0], ga ? rdf(ga) : -1.f, ga, rdf(FRAME_STEP));
+        }
+        last[side] = ctx->f[0];
+    }
 }
 
 // ---- Effect components ------------------------------------------------------------------------------------------
@@ -1056,6 +1163,9 @@ void dissidia_framerate_install(uint8_t* rdram) {
     if ((g_orig_exb_ui = ovl_battle_lookup(EXB_UI))) psp_dispatch_register(EXB_UI, exb_ui_hook);
     if ((g_orig_exb_ctrl = ovl_battle_lookup(EXB_CTRL))) psp_dispatch_register(EXB_CTRL, exb_ctrl_hook);
     else std::fprintf(stderr, "[FPS] EX Burst controller hook NOT installed\n");
+    if ((g_orig_gauge_add = ovl_battle_lookup(GAUGE_ADD))) psp_dispatch_register(GAUGE_ADD, gauge_add_hook);
+    if ((g_orig_gauge_drain = ovl_battle_lookup(GAUGE_DRAIN))) psp_dispatch_register(GAUGE_DRAIN, gauge_drain_hook);
+    if ((g_orig_gauge_hud = ovl_battle_lookup(GAUGE_HUD))) psp_dispatch_register(GAUGE_HUD, gauge_hud_hook);
     if (g_orig_pressed) psp_dispatch_register(PRESSED, pressed_hook);
     std::fprintf(stderr, "[FPS] press latch %s (pressed-test hook %s)\n", g_press_latch ? "on" : "off", g_orig_pressed ? "installed" : "NOT FOUND");
     if ((g_orig_rootmotion = psp_dispatch_probe_lookup(ROOT_MOTION))) psp_dispatch_register(ROOT_MOTION, root_motion_hook);

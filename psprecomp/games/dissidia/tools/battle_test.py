@@ -478,6 +478,92 @@ def compare(a):
     return 1 if worst > a.tolerance else 0
 
 
+# ---- memory scan: find a value that changes per update instead of per game second --------------------------------------
+
+def read_ram(g, lo, hi):
+    """RAW reads (64 KB each) of guest memory lo..hi through the debug socket"""
+    out = bytearray()
+    for a in range(lo, hi, 0x10000):
+        with socket.create_connection(('127.0.0.1', g.port), timeout=30) as s:
+            s.sendall(('RAW %X %d\n' % (a, min(0x10000, hi - a))).encode())
+            buf = b''
+            n = min(0x10000, hi - a)
+            while len(buf) < n:
+                c = s.recv(n - len(buf))
+                if not c:
+                    break
+                buf += c
+            out += buf
+    return bytes(out)
+
+
+def game_ms(g):
+    """the game clock (ms) of the last [FIGHTER] gt= line of the log"""
+    try:
+        with open(g.log, 'rb') as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 60000))
+            m = re.findall(rb'\[FIGHTER\] gt=(\d+)', f.read())
+        return int(m[-1]) if m else -1
+    except OSError:
+        return -1
+
+
+def scan_run(a, fps):
+    """one battle at `fps`; RAM snapshots at the game times of --at (ms); returns {gt: bytes}"""
+    os.makedirs(a.out, exist_ok=True)
+    lo, hi = (int(x, 16) for x in a.range.split('-'))
+    xp, disp = start_xvfb()
+    g = Game(os.path.abspath(a.work), fps, a.out, disp, free_port(), script=os.path.abspath(a.script) if a.script else None,
+             extra_env={'PSPRECOMP_TEST_PLAYER_CHAR': str(CHAR_ID[a.char.lower()])})
+    snaps = {}
+    try:
+        g.start()
+        walk_menus(g, a.char, stage=a.stage)
+        for t in [int(x) for x in a.at.split(',')]:
+            end = time.time() + a.timeout
+            while g.alive() and game_ms(g) < t and time.time() < end:
+                time.sleep(0.02)
+            snaps[t] = (game_ms(g), read_ram(g, lo, hi))
+            print('[scan] %d fps: snapshot at gt=%d' % (fps, snaps[t][0]), file=sys.stderr)
+        return snaps, lo
+    finally:
+        g.stop()
+        xp.terminate()
+
+
+def scan(a):
+    import struct, math
+    res = {}
+    for fps in [int(x) for x in a.rates.split(',')]:
+        snaps, lo = scan_run(argparse.Namespace(**dict(vars(a), out=os.path.join(a.out, 'scan_%d' % fps))), fps)
+        ts = sorted(snaps)
+        (g0, b0), (g1, b1) = snaps[ts[0]], snaps[ts[-1]]
+        n = min(len(b0), len(b1)) // 4
+        w0, w1 = struct.unpack('<%dI' % n, b0[:n * 4]), struct.unpack('<%dI' % n, b1[:n * 4])
+        found = {}
+        for i in range(n):
+            if w0[i] == w1[i]:
+                continue
+            f0, f1 = struct.unpack('<ff', struct.pack('<II', w0[i], w1[i]))
+            if not (math.isfinite(f0) and math.isfinite(f1)) or abs(f0) > 1e5 or abs(f1) > 1e5 or abs(f0) < 1e-6 and abs(f1) < 1e-6:
+                continue
+            found[lo + i * 4] = (f0, f1, (f1 - f0) / max(1, g1 - g0) * 1000.0)     # per game second
+        res[fps] = found
+        print('[scan] %d fps: %d float words changed over %d ms' % (fps, len(found), g1 - g0), file=sys.stderr)
+    rates = sorted(res)
+    lo_r, hi_r = rates[0], rates[-1]
+    print('addr       %s -> %s   per-second change at %d fps | at %d fps | ratio' % ('A', 'B', lo_r, hi_r))
+    for ad in sorted(set(res[lo_r]) & set(res[hi_r])):
+        d0, d1 = res[lo_r][ad][2], res[hi_r][ad][2]
+        if d0 == 0 or d1 == 0:
+            continue
+        r = d1 / d0
+        if abs(d0) > a.min_rate and (r > a.ratio or r < 1 / a.ratio) and r > 0:
+            print('%08X  %12.5g -> %-12.5g  %10.4g | %10.4g | x%.2f' % (ad, res[hi_r][ad][0], res[hi_r][ad][1], d0, d1, r))
+    return 0
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     sub = ap.add_subparsers(dest='what', required=True)
@@ -517,7 +603,21 @@ def main(argv):
     p = sub.add_parser('analyze')
     p.add_argument('logs', nargs='+')
     p.add_argument('--tolerance', type=float, default=0.5)
+    p = sub.add_parser('scan', help='RAM snapshots at game times, at each rate: words whose change per game second differs between rates')
+    p.add_argument('--work', required=True)
+    p.add_argument('--script')
+    p.add_argument('--out', default=tempfile.mkdtemp(prefix='battle_test_'))
+    p.add_argument('--char', default='squall')
+    p.add_argument('--stage', type=int, default=12)
+    p.add_argument('--rates', default='30,120')
+    p.add_argument('--at', default='3000,13000')
+    p.add_argument('--range', default='08800000-0A000000')
+    p.add_argument('--timeout', type=int, default=120)
+    p.add_argument('--ratio', type=float, default=1.5)
+    p.add_argument('--min-rate', dest='min_rate', type=float, default=0.001)
     a = ap.parse_args(argv)
+    if a.what == 'scan':
+        return scan(a)
     if a.what == 'run':
         print(run(a))
         return 0
