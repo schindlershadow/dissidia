@@ -881,9 +881,9 @@ void build_rows() {
     g_sel = std::min(std::max(g_sel_page[g_page], 0), int(g_rows.size()) - 1);
 }
 
-void switch_page() {
+void switch_page(int dir = 1) {   // dir +1 = the next tab (R), -1 = the previous one (L); wraps around
     g_sel_page[g_page] = g_sel;
-    g_page = (g_page + 1) % PAGES;
+    g_page = (g_page + dir + PAGES) % PAGES;
     build_rows();
     g_quit_armed = false;
     g_dirty = true;
@@ -1129,8 +1129,11 @@ bool psp_settings_handle_event(const SDL_Event& ev) {
         case SDLK_z: case SDLK_BACKSPACE:
             if (!ev.key.repeat) set_open(false);
             break;
-        case SDLK_q: case SDLK_e: case SDLK_TAB: case SDLK_PAGEUP: case SDLK_PAGEDOWN:
-            if (!ev.key.repeat) switch_page();
+        case SDLK_q: case SDLK_PAGEUP:
+            if (!ev.key.repeat) switch_page(-1);
+            break;
+        case SDLK_e: case SDLK_TAB: case SDLK_PAGEDOWN:
+            if (!ev.key.repeat) switch_page(1);
             break;
         default: break;
         }
@@ -1161,7 +1164,8 @@ bool psp_settings_handle_event(const SDL_Event& ev) {
         }
         if (b == ok) confirm();
         else if (b == back || b == SDL_CONTROLLER_BUTTON_START) set_open(false);
-        else if (b == SDL_CONTROLLER_BUTTON_LEFTSHOULDER || b == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) switch_page();
+        else if (b == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) switch_page(-1);
+        else if (b == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) switch_page(1);
         return false;
     }
     case SDL_TEXTINPUT:
