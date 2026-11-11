@@ -8,7 +8,17 @@ You need your own copy of the game as an `.iso` or `.cso`. The European PSN rele
 
 ## Install and play
 
-A prebuilt release with a setup wizard (Linux and Windows) is being worked on; the plan and status are in [psprecomp/docs/installer.md](psprecomp/docs/installer.md). Until then, use the steps below.
+### Prebuilt release (Windows, Linux, Android)
+
+Download the latest **Dissidia Recomp** from the [Releases page](https://github.com/schindlershadow/dissidia/releases): a single-file setup (`DissidiaRecomp-Setup-...-windows-x86_64.exe` or `...-linux-x86_64`) that asks for your game file, builds nothing locally and installs the game, with in-app update checks against a signed manifest. Each release lists its changes. Installer details: [psprecomp/docs/installer.md](psprecomp/docs/installer.md). On Android, the release APK has touch controls with an editable layout. The steps below build from source instead.
+
+### What the runtime adds
+
+- **Frame rates** above the PSP's 30: any multiple of 30 up to 240, with game logic, UI and EX Burst timing scaled to match ([docs/frame-rate.md](psprecomp/games/dissidia/docs/frame-rate.md)).
+- **HD textures** from community packs (on by default when present) and **undub audio** (Japanese voices and movies extracted from an undub disc) ([texture packs](psprecomp/games/dissidia/docs/texture-packs.md), [audio](psprecomp/games/dissidia/docs/audio.md)).
+- **Cloud save sync** between devices through a folder, WebDAV or Google Drive ([docs/cloud-sync.md](psprecomp/games/dissidia/docs/cloud-sync.md)).
+- **Cross-region saves** and **internet multiplayer** (below).
+- A headless battle test harness for checking moves at different frame rates ([docs/testing.md](psprecomp/games/dissidia/docs/testing.md)).
 
 ### Steam Deck
 
