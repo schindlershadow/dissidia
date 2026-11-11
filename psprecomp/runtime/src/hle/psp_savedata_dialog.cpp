@@ -1129,7 +1129,8 @@ static std::vector<std::string> wrap_text(Painter& P, FT_Face f, float size, con
 }
 
 void render_menu_themed(const SdTheme& T, Canvas& c, const std::string& title, const std::string& tab,
-                        const std::vector<MenuRow>& rows, int sel, bool confirm_cross) {
+                        const std::vector<MenuRow>& rows, int sel, bool confirm_cross,
+                        const std::vector<std::string>* tabs, int tab_active) {
     const Fonts& F = fonts();
     ThemeFaces& TF = theme_faces(T);
     FT_Face body = TF.reg ? TF.reg : F.body;
@@ -1153,8 +1154,26 @@ void render_menu_themed(const SdTheme& T, Canvas& c, const std::string& title, c
             }
         }
     }
+    if (tabs && tabs->size() > 1) {   // every page as a tab: the shown one raised and bright, the others lower and darker
+        float tx = 12;
+        const float tfs = 9.5f * fs;
+        for (size_t ti = 0; ti < tabs->size(); ++ti) {
+            const std::string& nm = (*tabs)[ti];
+            const bool act = int(ti) == tab_active;
+            const float tw = std::max(58.f, P.text_width(bodyb, tfs, nm) + 26.f);
+            const float ty = act ? 43.f : 47.f, th = act ? 21.f : 17.f;
+            draw_sprite(c, T.tab, tx, ty, tw, th);
+            if (!act) P.rrect(tx + 1.f, ty + 0.5f, tw - 2.f, th - 1.f, 5.f, Ramp(rgb(20, 22, 60), rgb(20, 22, 60), ty, ty + th), 0.f, 0.55f);
+            const Col hc = unpack(T.hint_text);
+            const float base = ty + th * 0.5f + 3.6f;
+            if (act) themed_hint(P, bodyb, tfs, tx + tw / 2.f, base, nm, hc, 2);
+            else P.text(bodyb, tfs, tx + tw / 2.f, base, nm, {hc.r, hc.g, hc.b, 0.55f}, 0, 2);
+            tx += tw + 2.f;
+        }
+    } else {
     draw_sprite(c, T.tab, 12, 43, 146, 21);
     themed_hint(P, bodyb, 9.5f * fs, 12 + 146 / 2.f, 43 + 14.f, tab, unpack(T.hint_text), 2);
+    }
 
     const int total = int(rows.size());
     const int first = menu_first_row(total, sel);
@@ -1227,6 +1246,17 @@ void render_menu_themed(const SdTheme& T, Canvas& c, const std::string& title, c
         x += P.text_width(bodyb, 8.8f * fs, "Select") + 22;
         x += glyph(g2, x) + 3;
         themed_hint(P, bodyb, 8.8f * fs, x, base, "Back", wh);
+        x += P.text_width(bodyb, 8.8f * fs, "Back") + 22;
+        if (tabs && tabs->size() > 1) {   // the shoulder keys that flip the pages
+            for (int ki = 0; ki < 2; ++ki) {
+                P.rrect(x, by + bh / 2 - 4.6f, 13.f, 9.2f, 2.4f, wh);
+                P.rrect(x + 0.9f, by + bh / 2 - 3.7f, 11.2f, 7.4f, 1.8f, rgb(46, 50, 124));
+                P.text(bodyb, 6.8f * fs, x + 6.5f, by + bh / 2 + 2.4f, ki ? "R" : "L", wh, 0, 2);
+                x += 15.f;
+            }
+            x += 2;
+            themed_hint(P, bodyb, 8.8f * fs, x, base, "Page", wh);
+        }
         // right: "<d-pad up/down> Choose   <d-pad left/right> Change", the game's d-pad glyphs
         const float dk = 0.78f;
         auto pad = [&](const SdSprite& g, float gx) {
@@ -1262,7 +1292,7 @@ void render_menu_themed(const SdTheme& T, Canvas& c, const std::string& title, c
 
 // Built-in look (no game theme): the generic lavender page of the save dialog.
 void render_menu_plain(Canvas& c, const std::string& title, const std::string& tab, const std::vector<MenuRow>& rows,
-                       int sel, bool confirm_cross) {
+                       int sel, bool confirm_cross, const std::vector<std::string>* tabs, int tab_active) {
     const Fonts& F = fonts();
     c.px = background(c.scale);
     Painter P(c);
@@ -1277,6 +1307,21 @@ void render_menu_plain(Canvas& c, const std::string& title, const std::string& t
             P.hline(x0, x1, y, 1.f, kc);
         }
     }
+    if (tabs && tabs->size() > 1) {
+        float tx = 16;
+        for (size_t ti = 0; ti < tabs->size(); ++ti) {
+            const bool act = int(ti) == tab_active;
+            const float tw = std::max(58.f, P.text_width(F.cinzel, 10.f, (*tabs)[ti]) + 26.f);
+            if (act) header_tab(P, F.cinzel, tx, 41, tw, 16, (*tabs)[ti]);
+            else {   // inactive: lower, muted
+                Poly cp = chevron(tx, 44, tw, 13, 6.5f);
+                P.poly(cp, 0.9f, [](float, float) { return rgb(190, 193, 214); });
+                P.poly(cp, 0, [](float, float) { return rgb(96, 98, 140); });
+                P.text(F.cinzel, 10.f, tx + tw / 2, 54.f, (*tabs)[ti], rgb(214, 216, 236), tw - 10, 2);
+            }
+            tx += tw + 2.f;
+        }
+    } else
     header_tab(P, F.cinzel, 16, 41, 150.f, 16, tab);
     P.shadow(PANEL_X, PANEL_Y, PANEL_W, PANEL_H, 7, 4.5f, 0.28f);
     P.rrect(PANEL_X, PANEL_Y, PANEL_W, PANEL_H, 7, EDGE);
@@ -1329,7 +1374,16 @@ void render_menu_plain(Canvas& c, const std::string& title, const std::string& t
     x += P.text(F.cinzel, 10.5f, x, base, "Select", wh) + 18;
     draw_btn_glyph(P, !confirm_cross, x + 5.5f, by + bh / 2, wh);
     x += 14;
-    P.text(F.cinzel, 10.5f, x, base, "Back", wh);
+    x += P.text(F.cinzel, 10.5f, x, base, "Back", wh) + 18;
+    if (tabs && tabs->size() > 1) {
+        for (int ki = 0; ki < 2; ++ki) {
+            P.rrect(x, by + bh / 2 - 5.f, 14.f, 10.f, 2.4f, wh);
+            P.rrect(x + 1.f, by + bh / 2 - 4.f, 12.f, 8.f, 1.8f, rgb(40, 42, 116));
+            P.text(F.cinzel, 7.5f, x + 7.f, by + bh / 2 + 2.6f, ki ? "R" : "L", wh, 0, 2);
+            x += 16.f;
+        }
+        P.text(F.cinzel, 10.5f, x + 2, base, "Page", wh);
+    }
     const float rx = PANEL_X + PANEL_W - 26;
     const float tw = P.text_width(F.cinzel, 10.5f, "Change");
     P.text(F.cinzel, 10.5f, rx - tw, base, "Change", wh);
@@ -1340,9 +1394,9 @@ void render_menu_plain(Canvas& c, const std::string& title, const std::string& t
 }  // namespace
 
 void render_menu(Canvas& c, const std::string& title, const std::string& tab, const std::vector<MenuRow>& rows,
-                 int sel, bool confirm_cross) {
-    if (std::shared_ptr<const SdTheme> th = theme()) render_menu_themed(*th, c, title, tab, rows, sel, confirm_cross);
-    else render_menu_plain(c, title, tab, rows, sel, confirm_cross);
+                 int sel, bool confirm_cross, const std::vector<std::string>* tabs, int tab_active) {
+    if (std::shared_ptr<const SdTheme> th = theme()) render_menu_themed(*th, c, title, tab, rows, sel, confirm_cross, tabs, tab_active);
+    else render_menu_plain(c, title, tab, rows, sel, confirm_cross, tabs, tab_active);
 }
 
 // ---- overlay hand-off ----

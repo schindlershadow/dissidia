@@ -610,10 +610,6 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             break;
         }
         }
-        {   // every row's help title says how to change pages
-            const size_t nl = m.help.find('\n');
-            m.help.insert(nl == std::string::npos ? m.help.size() : nl, m.help.empty() ? "L / R: change page" : "  (L / R: change page)");
-        }
         out.push_back(std::move(m));
     }
     return out;
@@ -869,12 +865,12 @@ void build_rows() {
         if (g_fps.get && g_fps.count > 1) g_rows.push_back(ROW_FPS);
         g_rows.push_back(ROW_WIDE);
         g_rows.push_back(ROW_SOFT);
+        if (texpack_row_wanted()) g_rows.push_back(ROW_TEXPACK);
         g_rows.push_back(ROW_AA);
         g_rows.push_back(ROW_SHARP);
         g_rows.push_back(ROW_ANISO);
         g_rows.push_back(ROW_UPSCALE);
         if (voice_row_wanted()) g_rows.push_back(ROW_VOICE);
-        if (texpack_row_wanted()) g_rows.push_back(ROW_TEXPACK);
 #ifdef __ANDROID__   // the on-screen controls exist for Android only
         g_rows.push_back(ROW_TOUCH);
         g_rows.push_back(ROW_TOUCH_EDIT);
@@ -1225,7 +1221,9 @@ void psp_settings_tick() {
         g_dirty = false;
         g_drawn_scale = scale;
         psp_sddialog::Canvas c(scale);
-        psp_sddialog::render_menu(c, "Settings", k_page_names[g_page], make_rows(), g_edit.active ? g_edit.sel : g_sel, g_confirm_cross);
+        static const std::vector<std::string> page_tabs(k_page_names, k_page_names + PAGES);
+        psp_sddialog::render_menu(c, "Settings", k_page_names[g_page], make_rows(), g_edit.active ? g_edit.sel : g_sel, g_confirm_cross,
+                                  &page_tabs, g_page);
         psp_sddialog::menu_overlay_publish(c);
         ge_draw_present_overlay_now();
         g_last_present = t;
