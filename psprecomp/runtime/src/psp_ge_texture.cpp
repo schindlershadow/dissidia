@@ -541,8 +541,9 @@ static uint32_t average_rgba(const uint8_t* px, long n) {
         const uint32_t al = px[i * 4 + 3];
         r += px[i * 4] * al; g += px[i * 4 + 1] * al; b += px[i * 4 + 2] * al; w += al; a += al; cnt++;
     }
-    if (!w) return 0xFF808080u;
-    return (uint32_t)(r / w) | (uint32_t)(g / w) << 8 | (uint32_t)(b / w) << 16 | 0xFF000000u;
+    if (!w) return 0x00808080u;   // fully transparent
+    const uint32_t ma = (uint32_t)(a / cnt);   // mean alpha in the top byte: cut-out / glow cards are told apart from solid surfaces by it
+    return (uint32_t)(r / w) | (uint32_t)(g / w) << 8 | (uint32_t)(b / w) << 16 | ma << 24;
 }
 
 extern bool ge_draw_prefilter(GLuint tex, float* bias);   // psp_ge_draw.cpp

@@ -327,6 +327,7 @@ uniform vec3 u_light_w;     // world space, towards the light
 uniform float u_rt_len;     // ray length, world units
 uniform int u_use_rt_refl;
 uniform int u_rt_dbg;       // debug (PSPRECOMP_RT_REFL_DEBUG=1): colour by what the ray found (red tri colour, green visible on screen, blue miss, yellow sky)
+uniform float u_rt_hidden;   // brightness / strength of a hit on a surface that is not visible on screen
 uniform float u_rt_sky_amt;  // strength of a reflection of the sky relative to one of geometry
 uniform float u_rt_sky_dist; // view units past which a hit counts as the sky dome
 uniform int u_refl_split;   // debug (PSPRECOMP_RT_REFL_SPLIT=1): the left half of the picture keeps the screen-space reflection
@@ -358,6 +359,7 @@ const char* const k_rt_refl = R"GLSL(
                 dbg = vec3(1.0, 0.0, 0.0);                                    // hit, shaded by the triangle's colour
             }
             vec3 H = O + R * (hit ? hit_t : 500.0);
+            bool hidden = hit;                                                    // cleared below when the hit shows its real on-screen colour
             bool sky = !hit || length(H) >= u_rt_sky_dist;                        // the sky dome (or nothing): the floor already carries a baked sky, so it counts less
             vec4 ch = u_proj * vec4(H, 1.0);
             if (ch.w > 1e-5) {
@@ -366,18 +368,19 @@ const char* const k_rt_refl = R"GLSL(
                 if (hit && length(H) < u_rt_sky_dist) {
                     if (on) {
                         float wdh = wd_at(uvh);
-                        if (!is_far(wdh) && abs(length(vpos(uvh, wdh)) - length(H)) < 0.03 * length(H) + 0.05) { col = texture(u_color, uvh).rgb; dbg = vec3(0.0, 1.0, 0.0); }   // visible: the real shaded colour
+                        if (!is_far(wdh) && abs(length(vpos(uvh, wdh)) - length(H)) < 0.03 * length(H) + 0.05) { col = texture(u_color, uvh).rgb; dbg = vec3(0.0, 1.0, 0.0); hidden = false; }   // visible: the real shaded colour
                     }
                 } else {                                                      // the sky (a miss or a hit on the dome): the picture's sky in that direction
                     vec2 uvs = clamp(uvh, vec2(0.02), vec2(0.98));
-                    if ((on || !hit) && is_far(wd_at(uvs))) { col = texture(u_color, uvs).rgb; dbg = vec3(1.0, 1.0, 0.0); }   // off screen, a dome hit keeps its triangle colour
+                    if ((on || !hit) && is_far(wd_at(uvs))) { col = texture(u_color, uvs).rgb; dbg = vec3(1.0, 1.0, 0.0); hidden = false; }   // off screen, a dome hit keeps its triangle colour
                     hit_t = 0.25 * u_rt_refl_len;
                 }
             } else if (hit && length(H) >= u_rt_sky_dist) hit_t = 0.25 * u_rt_refl_len;
+            if (hidden && !sky) col *= u_rt_hidden;      // a surface the camera cannot see (an underside, a back): its flat colour is unlit, so show it dim
             float fres = 0.04 + 0.96 * pow(1.0 - clamp(dot(n, -V), 0.0, 1.0), 5.0);
-            float k = clamp(fres * 1.6 + 0.08, 0.0, 1.0) * (1.0 - hit_t / u_rt_refl_len * 0.5) * smoothstep(0.7, 0.95, upness) * fd * u_ssr_amt * (sky ? u_rt_sky_amt : 1.0);
+            float k = clamp(fres * 1.6 + 0.08, 0.0, 1.0) * (hidden && !sky ? u_rt_hidden : 1.0) * (1.0 - hit_t / u_rt_refl_len * 0.5) * smoothstep(0.7, 0.95, upness) * fd * u_ssr_amt * (sky ? u_rt_sky_amt : 1.0);
             o_refl = vec4(col * k, k);
-            if (u_rt_dbg != 0) o_refl = vec4(dbg * 0.6, 0.6);
+            if (u_rt_dbg == 1 || (u_rt_dbg == 2 && v_uv.x > 0.5)) o_refl = vec4(dbg * 0.6, 0.6);
         } else
 )GLSL";
 const char* const k_rt_code = R"GLSL(
@@ -389,6 +392,7 @@ const char* const k_rt_code = R"GLSL(
                 if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) sh = facing * fd;
             } else
 )GLSL";
+static int env_int_dbg() { const char* e = std::getenv("PSPRECOMP_RT_REFL_DEBUG"); return e ? (std::atoi(e) == 2 ? 2 : 1) : 0; }
 std::string rt_main_source() {
     std::string s = k_fs_main;
     auto rep = [&](const char* marker, const char* with) { size_t i = s.find(marker); if (i != std::string::npos) s.replace(i, std::strlen(marker), with); };
@@ -759,7 +763,8 @@ void psp_screenfx_run(GLuint fbo, GLuint color_tex, int w, int h, const ScreenFx
     if (use_rt) {
         glUniform1i(loc(mp.id, "u_use_rt"), use_rt_sh ? 1 : 0);
         glUniform1i(loc(mp.id, "u_use_rt_refl"), use_rt_refl ? 1 : 0);
-        glUniform1i(loc(mp.id, "u_rt_dbg"), std::getenv("PSPRECOMP_RT_REFL_DEBUG") ? 1 : 0);
+        glUniform1i(loc(mp.id, "u_rt_dbg"), env_int_dbg());
+        glUniform1f(loc(mp.id, "u_rt_hidden"), env_float("PSPRECOMP_RT_HIDDEN", 0.45f));
         glUniform1f(loc(mp.id, "u_rt_sky_amt"), env_float("PSPRECOMP_RT_SKY_AMT", 0.4f));
         glUniform1f(loc(mp.id, "u_rt_sky_dist"), env_float("PSPRECOMP_FX_SKY_DIST", 150.f));
         glUniform1i(loc(mp.id, "u_refl_split"), std::getenv("PSPRECOMP_RT_REFL_SPLIT") ? 1 : 0);

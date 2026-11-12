@@ -2322,6 +2322,9 @@ static void rt_capture(const GeState& st, uint8_t* rdram, int prim_type, int cou
     // What a reflection shows where it hits one of these triangles (cheap hit shade, docs/VULKAN_PORT.md): the average of the
     // texture bound for the draw times the vertex colour (or the lit material), one RGBA8 per triangle.
     const uint32_t tex = st.texture_enable ? ge_texture_bound_avg_color() : 0xFFFFFFFFu;
+    // A texture that is mostly transparent is a cut-out / glow / haze card: the game draws it alpha-tested or blended, and as an opaque
+    // reflector it showed up as a bright flat quad behind far ruins. Leave such draws out of the scene.
+    if (st.texture_enable && (tex >> 24) < 200 && (st.tex_func_rgba || st.alpha_test_enable)) return;
     const float tr = float(tex & 255) / 255.f, tg = float((tex >> 8) & 255) / 255.f, tb = float((tex >> 16) & 255) / 255.f;
     const bool lit = st.lighting_enable != 0;
     const bool replace = st.texture_enable && st.tex_func == 3;
