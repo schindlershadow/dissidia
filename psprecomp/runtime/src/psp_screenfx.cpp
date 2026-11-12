@@ -33,7 +33,7 @@ const char* psp_rt_unavailable_reason() {
     if (psp_rt_available()) return "";
     if (g_psp_rt.unavailable_reason) { const char* r = g_psp_rt.unavailable_reason(); if (r && r[0]) return r; }
 #ifdef __ANDROID__
-    return "Not supported on Android: phone GPUs have no ray query hardware.";
+    return "Needs the Vulkan renderer and a driver with ray query: on an Adreno 740 or newer, set Graphics API to Vulkan and pick a Turnip driver under GPU Driver, then restart.";
 #else
     return "Needs the Vulkan renderer: set Graphics API to Vulkan and restart.";
 #endif

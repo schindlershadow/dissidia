@@ -97,7 +97,13 @@ bool RtShadow::init(Context& ctx, std::string* err) {
     LOAD(p_addr, vkGetAccelerationStructureDeviceAddressKHR)
 #undef LOAD
     std::vector<uint32_t> spv;
-    if (!compile_to_spirv(Stage::Compute, kShader, &spv, err)) { *err = "shader: " + *err; return false; }
+    if (!compile_cached(Stage::Compute, kShader, &spv, err)) {
+        // The in-game shadows run in the fragment shader (vkgl_core.cpp) and need only the acceleration structures built here; this compute
+        // pass is the stage-1 test path (tests/test_vk_rt.cpp). A build without glslang (Android) and without that shader cached skips it.
+        if (err->find("PSPVK_NO_GLSLANG") != std::string::npos || err->find("no precompiled SPIR-V") != std::string::npos) { err->clear(); return true; }
+        *err = "shader: " + *err;
+        return false;
+    }
     VkShaderModuleCreateInfo si{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO}; si.codeSize = spv.size() * 4; si.pCode = spv.data();
     VkShaderModule sm; if (vkCreateShaderModule(d, &si, nullptr, &sm) != VK_SUCCESS) { *err = "vkCreateShaderModule"; return false; }
     VkDescriptorSetLayoutBinding b[3] = {};
@@ -224,6 +230,7 @@ bool RtShadow::build_scene(const float* xyz, uint32_t tri_count, std::string* er
 bool RtShadow::trace_points(const float* pts, uint32_t n, const float dir[3], float max_dist, float bias, uint8_t* out, std::string* err) {
     std::string e; if (!err) err = &e;
     if (!ctx_ || !tris_) { *err = "no scene"; return false; }
+    if (!pipe_) { *err = "the compute trace shader is not available in this build"; return false; }
     const double t0 = now_ms();
     VkDevice d = ctx_->device();
     if (pts_.size < (VkDeviceSize)n * 12) { free_buffer(&pts_); if (!make_buffer(&pts_, (VkDeviceSize)n * 12, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, err)) return false; }

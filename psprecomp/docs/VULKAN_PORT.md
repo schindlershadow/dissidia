@@ -157,3 +157,6 @@ calls GL directly, so introducing Vulkan means first isolating the GL calls.
 * Runtime GLSL compile on Android is heavy; plan for precompiled SPIR-V for the shipped shaders and runtime compile
   only for user FX shaders.
 * `localtuya`-style local patches do not matter here, but `glad.c` / `psp_gl.h` (GLES mapping) stay for the GL backend.
+
+**Custom GPU drivers and ray query on Android (2026-11-12, RP6 Adreno 740):** `psp_gpu_driver.cpp` + libadrenotools load a Turnip driver (Settings > GPU Driver, live download list). Mesa Turnip v26.0.0 R8 comes up as "Turnip Adreno (TM) 740, Vulkan 1.4.335" and the game renders the title screen on it. The phone's own driver (Vulkan 1.3.128) already exposes `VK_KHR_ray_query` + `VK_KHR_acceleration_structure` on this device, so the earlier "no ray query on Adreno 740" note was wrong; `psp_vk_rt.cpp` and the `RtAccel` path are now compiled and enabled on Android (the compute test shader there is optional: Android has only the SPIR-V cache). Ray query initialises (`[VKGL] ray query: available`); shadows in a real fight on the phone are not verified yet, and the ray-query fragment variant needs its SPIR-V in `vk_cache/` like every other shader (a desktop run with ray-traced shadows fills it).
+

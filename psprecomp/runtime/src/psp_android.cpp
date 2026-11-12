@@ -8,6 +8,7 @@
 
 #include <SDL.h>
 #include <android/log.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <unistd.h>
@@ -15,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <string>
 
 namespace {
@@ -56,6 +58,41 @@ static void load_env_file(const std::string& wd) {
 }
 __attribute__((constructor(101))) static void early_env() { load_env_file("/sdcard/Android/data/org.psprecomp.game/files/game"); }
 
+// Android Dynamic Performance Framework (API 33, loaded at run time so the app still runs on API 29): a performance hint session tells the
+// system how long a frame should take and how long it really took, and it raises the CPU / GPU clocks in time. Without it the GPU governor
+// (msm-adreno-tz on Adreno) sits at its lowest clock until a frame is already late: a heavy-but-not-full GPU load, such as ray-traced
+// shadows at 90 fps, then misses its rate (84 fps instead of 90 measured on the RP6; pinning the GPU clock gave 88-89).
+// Called once per presented frame by the thread that presents (psp_gl_swap). PSPRECOMP_ADPF=0 turns it off.
+void psp_android_frame_hint() {
+    typedef void* (*PFN_mgr)();
+    typedef void* (*PFN_create)(void*, const int32_t*, size_t, int64_t);
+    typedef int (*PFN_report)(void*, int64_t);
+    static PFN_report report = nullptr;
+    static void* session = nullptr;
+    static bool tried = false;
+    static int64_t last = 0, target = 0;
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    const int64_t now = int64_t(ts.tv_sec) * 1000000000ll + ts.tv_nsec;
+    if (!tried) {
+        tried = true;
+        const char* off = std::getenv("PSPRECOMP_ADPF");
+        const char* f = std::getenv("PSPRECOMP_FPS");
+        const int fps = f && std::atoi(f) >= 30 ? std::atoi(f) : 30;
+        target = 1000000000ll / fps;
+        void* lib = (off && off[0] == '0') ? nullptr : dlopen("libandroid.so", RTLD_NOW);
+        auto get = lib ? reinterpret_cast<PFN_mgr>(dlsym(lib, "APerformanceHint_getManager")) : nullptr;
+        auto create = lib ? reinterpret_cast<PFN_create>(dlsym(lib, "APerformanceHint_createSession")) : nullptr;
+        report = lib ? reinterpret_cast<PFN_report>(dlsym(lib, "APerformanceHint_reportActualWorkDuration")) : nullptr;
+        void* mgr = get ? get() : nullptr;
+        const int32_t tid = int32_t(gettid());
+        if (mgr && create && report) session = create(mgr, &tid, 1, target);
+        std::fprintf(stderr, "[ANDROID] performance hint session: %s (target %.1f ms)\n", session ? "on" : "unavailable", target / 1e6);
+    }
+    if (session && last && now - last < 2 * target) report(session, now - last);   // slower than twice the target = a menu or a load: no hint
+    last = now;
+}
+
 std::string psp_android_workdir() {
     const char* ext = SDL_AndroidGetExternalStoragePath();
     return std::string(ext ? ext : "/sdcard") + "/game";
@@ -78,6 +115,8 @@ void psp_android_init() {
     setenv("PSPRECOMP_DISC0", (wd + "/disc0").c_str(), 0);
     setenv("PSPRECOMP_MS0", (wd + "/ms0").c_str(), 0);
     setenv("PSPRECOMP_VK_CACHE_DIR", (wd + "/vk_cache").c_str(), 0);   // precompiled SPIR-V for the Vulkan backend (src/vk/psp_vk_glsl.h)
+    if (const char* in = SDL_AndroidGetInternalStoragePath())   // custom GPU drivers (psp_gpu_driver.h): dlopen refuses a library on the sd card
+        setenv("PSPRECOMP_GPU_DRIVER_DIR", (std::string(in) + "/gpu_drivers").c_str(), 0);
     setenv("PSPRECOMP_FULLSCREEN", "1", 0);
     setenv("PSPRECOMP_VSYNC", "1", 0);
     std::fprintf(stderr, "[ANDROID] work folder %s\n", wd.c_str());

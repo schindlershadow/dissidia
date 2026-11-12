@@ -139,6 +139,11 @@ def pack_apk(adir, work, libmain, run, say, env):
          "--key", os.path.join(adir, "apk", "debug_key.json"),
          "--lib", "lib/%s/libmain.so=%s" % (abi, stripped),
          "--lib", "lib/%s/libSDL2.so=%s" % (abi, os.path.join(adir, "deps", "deps", "lib", "libSDL2.so")),
-         "--lib", "lib/%s/libc++_shared.so=%s" % (abi, os.path.join(adir, "libc++_shared.so")),
-         "-o", apk], env=env)
+         "--lib", "lib/%s/libc++_shared.so=%s" % (abi, os.path.join(adir, "libc++_shared.so"))]
+        # libadrenotools' hook libraries (custom GPU drivers): they must sit in nativeLibraryDir, next to libmain.so
+        + sum((["--lib", "lib/%s/%s=%s" % (abi, n, os.path.join(adir, "deps", "deps", "lib", n))]
+               for n in ("libhook_impl.so", "libmain_hook.so", "libfile_redirect_hook.so", "libgsl_alloc_hook.so")
+               if os.path.isfile(os.path.join(adir, "deps", "deps", "lib", n))), [])
+        + (["--lib", "assets/shaders.pack=" + os.path.join(adir, "shaders.pack")] if os.path.isfile(os.path.join(adir, "shaders.pack")) else [])   # shaders compiled at start ("Preparing graphics")
+        + ["-o", apk], env=env)
     return apk

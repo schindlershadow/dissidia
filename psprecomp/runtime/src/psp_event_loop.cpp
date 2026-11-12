@@ -671,6 +671,9 @@ int psp_runtime_init_sdl() {
     glClear(GL_COLOR_BUFFER_BIT);
     psp_gl_swap(g_window);
 
+#if defined(PSPRECOMP_HAVE_VKGL)
+    if (use_vk) vkgl::warmup_shaders();   // compile the shader pack's missing shaders behind a progress screen (vk/psp_vk_warmup.cpp)
+#endif
     std::fprintf(stderr, "[RT] SDL/GL initialized (480x272)\n");
     return 0;
 }

@@ -77,6 +77,9 @@ endif()
 if(TARGET PkgConfig::MBEDTLS)
     target_link_libraries(psprecomp_core INTERFACE PkgConfig::MBEDTLS)
 endif()
+if(TARGET PkgConfig::ADRENOTOOLS)   # custom GPU drivers on Android (the core was built with it when the bundle's deps.cmake had it)
+    target_link_libraries(psprecomp_core INTERFACE PkgConfig::ADRENOTOOLS)
+endif()
 
 if(ANDROID)
     # SDL's Java activity loads libmain.so and calls SDL_main (src/main.cpp); android/build_game.py packs it into the APK.

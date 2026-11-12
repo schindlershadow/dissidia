@@ -16,6 +16,7 @@
 #define PSP_MKDIR(p) mkdir((p), 0755)
 #endif
 #include <map>
+#include <set>
 #include <mutex>
 #include <regex>
 #include <sstream>
@@ -241,14 +242,76 @@ static std::string cache_dir() {
     return "";
 }
 
+static void cache_name(Stage stage, const std::string& glsl, char* name, size_t n, const char** ext_out = nullptr) {
+    uint64_t h = 0xcbf29ce484222325ull ^ 0x5053ull;   // salt: bump when the converter's output semantics change
+    for (unsigned char c : glsl) { h ^= c; h *= 0x100000001b3ull; }
+    h ^= stage == Stage::Vertex ? 1 : stage == Stage::Fragment ? 2 : 3; h *= 0x100000001b3ull;
+    const char* ext = stage == Stage::Vertex ? "vert" : stage == Stage::Fragment ? "frag" : "comp";
+    std::snprintf(name, n, "/%016llx.%s", (unsigned long long)h, ext);   // without ".spv"
+    if (ext_out) *ext_out = ext;
+}
+
+bool shader_recording() {
+    static const bool on = [] {
+        const char* e = std::getenv("PSPRECOMP_VK_RECORD");
+        if (e && e[0]) return e[0] != '0';
+#ifdef __ANDROID__
+        return true;
+#else
+        return false;
+#endif
+    }();
+    return on;
+}
+
+// Writes <cache>/src/<name>.glsl once per source (an in-memory set avoids touching the disk again).
+static void record_source(const std::string& dir, const char* name, const std::string& glsl) {
+    static std::mutex mu;
+    static std::set<std::string> seen;
+    std::lock_guard<std::mutex> lk(mu);
+    if (!seen.insert(name).second) return;
+    PSP_MKDIR(dir.c_str());
+    PSP_MKDIR((dir + "/src").c_str());
+    const std::string path = dir + "/src" + name + ".glsl";
+    if (FILE* t = std::fopen(path.c_str(), "rb")) { std::fclose(t); return; }
+    if (FILE* f = std::fopen(path.c_str(), "wb")) { std::fwrite(glsl.data(), 1, glsl.size(), f); std::fclose(f); }
+}
+
+bool cache_has(Stage stage, const std::string& glsl) {
+    const std::string dir = cache_dir();
+    if (dir.empty()) return false;
+    char name[64];
+    cache_name(stage, glsl, name, sizeof name);
+    FILE* f = std::fopen((dir + name + ".spv").c_str(), "rb");
+    if (!f) return false;
+    std::fclose(f);
+    return true;
+}
+
+bool parse_shader_pack(const std::vector<uint8_t>& d, std::vector<PackShader>* out) {
+    auto rd32 = [&](size_t o) { return uint32_t(d[o]) | uint32_t(d[o + 1]) << 8 | uint32_t(d[o + 2]) << 16 | uint32_t(d[o + 3]) << 24; };
+    if (d.size() < 8 || std::memcmp(d.data(), "PSHD", 4) != 0) return false;
+    const uint32_t n = rd32(4);
+    size_t p = 8;
+    for (uint32_t i = 0; i < n; i++) {
+        if (p + 5 > d.size()) return false;
+        const char st = char(d[p]);
+        const uint32_t len = rd32(p + 1);
+        p += 5;
+        if (len > d.size() - p || (st != 'v' && st != 'f' && st != 'c')) return false;
+        out->push_back({st == 'v' ? Stage::Vertex : st == 'f' ? Stage::Fragment : Stage::Compute, std::string(reinterpret_cast<const char*>(&d[p]), len)});
+        p += len;
+    }
+    return true;
+}
+
 bool compile_cached(Stage stage, const std::string& glsl, std::vector<uint32_t>* spirv, std::string* err) {
     const std::string dir = cache_dir();
     char name[64] = {};
     if (!dir.empty()) {
-        uint64_t h = 0xcbf29ce484222325ull ^ 0x5053ull;   // salt: bump when the converter's output semantics change
-        for (unsigned char c : glsl) { h ^= c; h *= 0x100000001b3ull; }
-        h ^= stage == Stage::Vertex ? 1 : stage == Stage::Fragment ? 2 : 3; h *= 0x100000001b3ull;
-        std::snprintf(name, sizeof name, "/%016llx.%s.spv", (unsigned long long)h, stage == Stage::Vertex ? "vert" : stage == Stage::Fragment ? "frag" : "comp");
+        cache_name(stage, glsl, name, sizeof name);
+        if (shader_recording()) record_source(dir, name, glsl);
+        std::strcat(name, ".spv");
         if (FILE* f = std::fopen((dir + name).c_str(), "rb")) {
             std::fseek(f, 0, SEEK_END);
             const long n = std::ftell(f);

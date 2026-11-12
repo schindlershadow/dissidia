@@ -39,6 +39,15 @@ The launcher icon is original artwork (a crystal), drawn by `android/icon/make_i
   fractions of the window, so it survives a change of screen size).
 - **Frame rate / render scale**: Settings > System. 30 fps is the PSP's own rate; the 120 fps mode needs a fast device. Rooted devices can set the
   CPU governor to `performance` for steadier clocks.
+- **GPU drivers (Adreno phones)**: the Settings > Drivers tab (shown only on devices that can use it: an Adreno GPU). **GPU Driver** picks the Vulkan driver (System default, or a downloaded
+  one); **Download Driver** loads a live list of community Mesa Turnip builds (GitHub releases of `K11MCH1/AdrenoToolsDrivers`), Cross downloads and
+  installs the one shown and selects it; **Delete Driver** removes the selected one. Takes effect at the next start and needs Graphics API: Vulkan.
+  A driver that crashes while Vulkan starts is skipped on the next start. Drivers are stored in the app's private storage (not the game folder).
+  Ray-Traced Shadows needs a driver with `VK_KHR_ray_query` (the Adreno 740's own driver has it).
+- **Preparing graphics**: with Graphics API: Vulkan the game compiles its shaders for the phone once. After a first start or an update a progress
+  screen ("Preparing graphics", a bar and a count) runs before the game; later starts skip it. The shaders are the pack in the APK
+  (`assets/shaders.pack`, built from `android/shaders/`); the compiled results are the SPIR-V cache in `<game folder>/vk_cache`. Anything the pack
+  does not cover is still compiled when first needed (a short hitch) and recorded for the next build.
 - **Debug flags**: `<game folder>/env.txt` with `KEY=VALUE` lines sets `PSPRECOMP_*` variables (for example `PSPRECOMP_PROF=1`); the log is
   `<game folder>/last_run.log` and logcat tag `psprecomp`.
 - Updating: install the new APK over the old one (same key, so saves and settings stay); rebuild first when the release says the game changed.
@@ -48,3 +57,12 @@ The launcher icon is original artwork (a crystal), drawn by `android/icon/make_i
 See [installer.md](installer.md), "Android progress": the renderer talks OpenGL ES through `runtime/include/psp_gl.h`; the release ships the prebuilt
 Android core and libraries (SDL2, FreeType, FFmpeg decoders) built with NDK r27c, an unsigned APK skeleton (manifest + SDL's Java activity) and a
 pure-Python packer/signer (APK Signature Scheme v2, `android/apk_pack.py`, a public debug key), so the player's machine needs only the NDK compiler.
+
+## Keeping the shader list complete
+
+The game records every shader source it asks for in `<game folder>/vk_cache/src/` (Android, always; `PSPRECOMP_VK_RECORD=1` elsewhere). Before every
+Android build `android/sync_shader_list.py` (called by `android/build_game_and.sh`) pulls the recorded sources from a phone reachable over adb into
+`android/shaders/` (new ones only; it does nothing when no phone is connected), and `android/pack_shaders.py` packs them into `shaders.pack`, which the
+APK carries. To grow the list, play or run `games/dissidia/tools/android_battle.py` with the settings you want covered (ray-traced shadows, SSAO,
+reflections...) and build again. `sync_shader_list.py --prune` drops entries the phone did not record (clear `vk_cache/src` on the phone first).
+

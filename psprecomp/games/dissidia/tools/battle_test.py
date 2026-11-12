@@ -69,7 +69,9 @@ class Game:
         env = dict(os.environ, DISPLAY=self.display, PSPRECOMP_SETTINGS=ini, PSPRECOMP_MS0=ms0, PSPRECOMP_FIGHTER_LOG='1',
                    PSPRECOMP_DEBUG_PORT=str(self.port), PSPRECOMP_SAVEDATA_AUTO='0', PSPRECOMP_TEST_FREEZE_CPU='1')
         env.pop('PSPRECOMP_FPS', None)
-        if os.environ.get('BT_NO_FREEZE'):      # let the CPU fighter act (the dummy is the default)
+        env.setdefault('PSPRECOMP_TEST_NO_AI', '1')   # the CPU brain never ticks: the dummy does not attack (BT_NO_FREEZE=1 lets it act)
+        if os.environ.get('BT_NO_FREEZE'):
+            env['PSPRECOMP_TEST_NO_AI'] = '0'      # let the CPU fighter act (the dummy is the default)
             env['PSPRECOMP_TEST_FREEZE_CPU'] = '0'
         if os.path.exists(self.go_file):
             os.remove(self.go_file)
@@ -81,6 +83,9 @@ class Game:
         env.update(self.extra_env)
         self.proc = subprocess.Popen([os.path.join(HERE, 'run.sh'), self.work, '--window', self.window, '--log', self.log], env=env,
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+    def touch_go(self):
+        open(self.go_file, 'w').close()
 
     def alive(self):
         return self.proc is not None and self.proc.poll() is None
@@ -239,7 +244,7 @@ def walk_menus(g, char, tries=14, stage=12):
         dark = sum(1 for p in ((120, 262), (360, 262), (30, 262), (450, 262)) if sum(im.getpixel(p)) < 330)
         seen = seen + 1 if dark >= 3 else 0
         if seen >= 2:
-            open(g.go_file, 'w').close()                   # the runtime starts its game clock now
+            g.touch_go()                                   # the runtime starts its game clock now
             g.wait_log(r'\[TEST\] battle started', int(os.environ.get('BT_START_WAIT', '10')))
             return
         if seen == 0:

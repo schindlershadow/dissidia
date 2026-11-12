@@ -26,5 +26,9 @@ void set_swap_interval(bool vsync);
 /// half-applied by the renderer).
 void drawable_size(SDL_Window* window, int* w, int* h);
 bool active();
+/// "Preparing graphics": compiles the shaders of the shader pack (assets/shaders.pack; PSPRECOMP_SHADER_PACK=<file>) that the SPIR-V cache
+/// lacks, on worker threads, with a progress screen. Returns at once (and shows nothing) when the pack is absent or everything is cached.
+/// Call after init(), before the game starts.
+void warmup_shaders();
 
 }  // namespace vkgl
