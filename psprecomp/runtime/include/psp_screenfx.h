@@ -16,6 +16,10 @@ bool psp_screenfx_active();
 /// The game module reports the stage being fought (-1 = unknown / no battle); used for per-stage lighting looks.
 void psp_set_stage_id_provider(int (*fn)());
 int psp_stage_id();
+/// Stage light placement (F6 drop at camera + forward * distance, F7 undo, PageUp/PageDown distance); see psp_screenfx.cpp "Stage lights".
+void psp_stage_light_drop();
+void psp_stage_light_undo();
+void psp_stage_light_dist(int delta);
 
 /// What the scene was drawn with (the last 3D draw of the buffer).
 struct ScreenFxScene {

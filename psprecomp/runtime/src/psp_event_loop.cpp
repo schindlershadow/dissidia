@@ -1,4 +1,5 @@
 #include "psp_rt.h"
+#include "psp_screenfx.h"
 #include "psp_gl_window.h"
 #include "psp_event_loop.h"
 #include "psp_runtime.h"
@@ -402,6 +403,9 @@ static void handle_sdl_event(const SDL_Event& ev) {
             toggle_fullscreen(SDL_GetWindowFromID(ev.key.windowID));
             return;
         }
+        if (down && k == SDLK_F6) { psp_stage_light_drop(); return; }
+        if (down && k == SDLK_F7) { psp_stage_light_undo(); return; }
+        if (down && (k == SDLK_PAGEUP || k == SDLK_PAGEDOWN) && !psp_settings_menu_open()) { psp_stage_light_dist(k == SDLK_PAGEUP ? 1 : -1); return; }
         if (down && k == SDLK_F9) {
             // RT scene debugging: log the next frame's draws and save a full-resolution screenshot of the same moment (rtdump_N.tga)
             static int seq = 0;
