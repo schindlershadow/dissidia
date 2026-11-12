@@ -2573,7 +2573,9 @@ static void fx_track(const GeState& st, uint8_t* rdram, int prim_type, int count
         s.clear_z = g_fx_clearz[i];
         { static int dbg = 0; if (psp_rt_available() && dbg++ % 600 == 0) std::fprintf(stderr, "[RT] scene complete: %zu captured triangles, rt %d\n", g_rt_tris[i].size() / 9, (int)psp_rt_available()); }
         if (psp_rt_scene_wanted() && !g_rt_tris[i].empty()) rt_persist_merge(i, s.proj, s.view);
-        if (g_rtdump.load() == 2) { g_rtdump.store(0); rtdump_printf("[RTDUMP] end: %zu scene triangles, %zu effects triangles\n", g_rt_tris[i].size() / 9, g_rt_fx_tris[i].size() / 9); }
+        if (g_rtdump.load() == 2) { g_rtdump.store(0); rtdump_printf("[RTDUMP] end: %zu scene triangles, %zu effects triangles\n", g_rt_tris[i].size() / 9, g_rt_fx_tris[i].size() / 9);
+            rtdump_printf("[RTDUMP] proj"); for (int k = 0; k < 16; ++k) rtdump_printf(" %g", s.proj[k]); rtdump_printf("\n");
+            rtdump_printf("[RTDUMP] view"); for (int k = 0; k < 12; ++k) rtdump_printf(" %g", s.view[k]); rtdump_printf("\n"); }
         s.rt_ready = !g_rt_tris[i].empty() && psp_rt_scene_wanted() && g_psp_rt.set_scene(g_rt_tris[i].data(), (uint32_t)(g_rt_tris[i].size() / 9), g_rt_cols[i].size() == g_rt_tris[i].size() / 9 ? g_rt_cols[i].data() : nullptr, g_rt_fx_tris[i].data(), g_rt_fx_cols[i].size() == g_rt_fx_tris[i].size() / 9 ? (uint32_t)g_rt_fx_cols[i].size() : 0u, g_rt_fx_cols[i].data());
         s.rt_fx = s.rt_ready && !g_rt_fx_cols[i].empty();
         if (s.rt_ready) {
