@@ -2424,6 +2424,8 @@ static void rtdump_printf(const char* fmt, ...) {
     std::vfprintf(stderr, fmt, a); va_end(a);
 }
 void psp_rt_request_dump() { g_rtdump.store(1); }
+static std::atomic<bool> g_rt_ignore_far{false};   // F10: leave out draws whose world matrix puts them far below / above the stage (parked objects)
+bool psp_rt_toggle_ignore_far() { bool v = !g_rt_ignore_far.load(); g_rt_ignore_far.store(v); return v; }
 static void rt_capture(const GeState& st, uint8_t* rdram, int prim_type, int count, int target, bool fx = false) {
     static const bool dbg = std::getenv("PSPRECOMP_RT_DEBUG") != nullptr;
     static int why[4] = {}, seen = 0;
@@ -2510,8 +2512,12 @@ static void fx_track(const GeState& st, uint8_t* rdram, int prim_type, int count
         }
         if (st.depth_test_enable && !st.depth_write_disable) {
             g_fx_n[cur]++;
-            if (psp_rt_scene_wanted()) { const size_t t0 = g_rt_tris[cur].size(), c0 = g_rt_cols[cur].size(); rt_capture(st, rdram, prim_type, count, cur); rt_persist_note(cur, t0, c0); }
+            const size_t dump_t0 = g_rt_tris[cur].size();
+            if (psp_rt_scene_wanted() && !(g_rt_ignore_far.load() && std::fabs(st.world_matrix[10]) > 50.f)) { const size_t t0 = g_rt_tris[cur].size(), c0 = g_rt_cols[cur].size(); rt_capture(st, rdram, prim_type, count, cur); rt_persist_note(cur, t0, c0); }
             if (g_rtdump.load() == 2) rtdump_printf("[RTDUMP] draw prim %d n %d  %s: blend %d atest %d tex %d texalpha %u rgba %d lit %d  pos %.1f %.1f %.1f  vt %08x\n", prim_type, count, g_rt_why, st.alpha_blend_enable, st.alpha_test_enable, st.texture_enable, (unsigned)(st.texture_enable ? ge_texture_bound_avg_color() >> 24 : 255u), st.tex_func_rgba, st.lighting_enable, st.world_matrix[9], st.world_matrix[10], st.world_matrix[11], (unsigned)st.vertex_type);
+            if (g_rtdump.load() == 2 && g_rt_tris[cur].size() > dump_t0) { float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f}; const std::vector<float>& tv = g_rt_tris[cur];
+                for (size_t q = dump_t0; q + 2 < tv.size(); q += 3) for (int k = 0; k < 3; ++k) { lo[k] = std::min(lo[k], tv[q + k]); hi[k] = std::max(hi[k], tv[q + k]); }
+                rtdump_printf("[RTDUMP]   bbox %.1f %.1f %.1f .. %.1f %.1f %.1f\n", lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]); }
             FxVote& v = g_fx_vote[cur];
             // widescreen: the x of the clip position is scaled outside the matrix (build_xf), so the effects get the same
             float proj[16];

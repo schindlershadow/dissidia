@@ -402,6 +402,7 @@ static void handle_sdl_event(const SDL_Event& ev) {
             toggle_fullscreen(SDL_GetWindowFromID(ev.key.windowID));
             return;
         }
+        if (down && k == SDLK_F10) { const bool on = psp_rt_toggle_ignore_far(); std::fprintf(stderr, "[RTDUMP] ignoring objects parked far below/above the stage: %s (F10)\n", on ? "ON" : "off"); return; }
         if (down && k == SDLK_F9) {
             // RT scene debugging: log the next frame's draws and save a full-resolution screenshot of the same moment (rtdump_N.tga)
             static int seq = 0;
