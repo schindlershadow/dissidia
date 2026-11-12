@@ -12,23 +12,28 @@
 // RGB only: the buffer's alpha is the GE stencil.
 #include "psp_screenfx.h"
 #include "psp_rt.h"
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 PspRtHooks g_psp_rt;
 static std::atomic<int> g_rt_on{-1};
 bool psp_rt_enabled() {
     int v = g_rt_on.load();
-    if (v < 0) { const char* e = std::getenv("PSPRECOMP_VK_RT"); v = (e && e[0] && e[0] != '0') ? 1 : 0; g_rt_on.store(v); }
+    if (v < 0) { const char* e = std::getenv("PSPRECOMP_VK_RT"); v = e && e[0] ? std::min(3, std::max(0, std::atoi(e))) : 0; g_rt_on.store(v); }
     return v != 0;
 }
-void psp_rt_set_enabled(bool on) { g_rt_on.store(on ? 1 : 0); }
+int psp_rt_quality() { return psp_rt_enabled() ? g_rt_on.load() : 0; }
+void psp_rt_set_quality(int q) { g_rt_on.store(std::min(3, std::max(0, q))); }
+void psp_rt_set_enabled(bool on) { psp_rt_set_quality(on ? 2 : 0); }
 static std::atomic<int> g_rt_refl_on{-1};
 bool psp_rt_refl_enabled() {
     int v = g_rt_refl_on.load();
-    if (v < 0) { const char* e = std::getenv("PSPRECOMP_VK_RT_REFL"); v = (e && e[0] && e[0] != '0') ? 1 : 0; g_rt_refl_on.store(v); }
-    return v == 1;
+    if (v < 0) { const char* e = std::getenv("PSPRECOMP_VK_RT_REFL"); v = e && e[0] ? std::min(3, std::max(0, std::atoi(e))) : 0; g_rt_refl_on.store(v); }
+    return v != 0;
 }
-void psp_rt_refl_set_enabled(bool on) { g_rt_refl_on.store(on ? 1 : 0); }
+int psp_rt_refl_quality() { return psp_rt_refl_enabled() ? g_rt_refl_on.load() : 0; }
+void psp_rt_refl_set_quality(int q) { g_rt_refl_on.store(std::min(3, std::max(0, q))); }
+void psp_rt_refl_set_enabled(bool on) { psp_rt_refl_set_quality(on ? 2 : 0); }
 const char* psp_rt_unavailable_reason() {
     if (psp_rt_available()) return "";
     if (g_psp_rt.unavailable_reason) { const char* r = g_psp_rt.unavailable_reason(); if (r && r[0]) return r; }
@@ -325,8 +330,12 @@ uniform int u_use_rt;
 uniform mat4 u_view_inv;    // view space -> PSP world space (where the triangles are)
 uniform vec3 u_light_w;     // world space, towards the light
 uniform float u_rt_len;     // ray length, world units
+uniform int u_rt_rays;      // shadow rays per pixel (quality level: 1, 3, 6), jittered across the light disc for a soft edge
+uniform float u_rt_soft;    // half angle of the light disc, radians-ish
 uniform int u_use_rt_refl;
 uniform int u_rt_dbg;       // debug (PSPRECOMP_RT_REFL_DEBUG=1): colour by what the ray found (red tri colour, green visible on screen, blue miss, yellow sky)
+uniform int u_rt_refl_rays; // reflection rays per pixel (quality: 1, 1, 3), jittered by u_rt_rough for a glossy blur
+uniform float u_rt_rough;
 uniform int u_rt_fx;        // the scene has an effects layer
 uniform float u_rt_hidden;   // brightness / strength of a hit on a surface that is not visible on screen
 uniform float u_rt_sky_amt;  // strength of a reflection of the sky relative to one of geometry
@@ -343,7 +352,15 @@ const char* const k_rt_refl = R"GLSL(
         if (u_use_rt_refl != 0 && !(u_refl_split != 0 && v_uv.x < 0.5)) {
             float upness = dot(n, u_up);
             vec3 V = normalize(P);
-            vec3 R = reflect(V, n);
+            vec3 R0 = reflect(V, n);
+            vec4 racc = vec4(0.0);
+            for (int ri = 0; ri < u_rt_refl_rays; ++ri) {
+            vec3 R = R0;
+            if (u_rt_refl_rays > 1) {
+                float ja = ign(gl_FragCoord.xy + 31.0 * float(ri + 1)) * 6.2831853, jb = ign(gl_FragCoord.yx + 57.0 * float(ri + 1)) * 2.0 - 1.0, jr = sqrt(1.0 - jb * jb);
+                R = normalize(R0 + vec3(cos(ja) * jr, jb, sin(ja) * jr) * u_rt_rough);
+                R = normalize(R + n * max(0.0, 0.05 - dot(R, n)));
+            }
             vec3 O = P + n * (0.01 + 0.004 * lp);
             rayQueryEXT rq;
             rayQueryInitializeEXT(rq, u_tlas, gl_RayFlagsOpaqueEXT, 0x1, (u_view_inv * vec4(O, 1.0)).xyz, 0.0,
@@ -409,15 +426,29 @@ const char* const k_rt_refl = R"GLSL(
                 if (u_rt_dbg != 0) dbg = vec3(1.0, 0.0, 1.0);
             }
             if (u_rt_dbg == 1 || (u_rt_dbg == 2 && v_uv.x > 0.5)) o_refl = vec4(dbg * 0.6, 0.6);
+            racc += o_refl;
+            }
+            o_refl = racc / float(u_rt_refl_rays);
         } else
 )GLSL";
 const char* const k_rt_code = R"GLSL(
             if (u_use_rt != 0) {
                 vec3 Ow = (u_view_inv * vec4(O, 1.0)).xyz;
-                rayQueryEXT rq;
-                rayQueryInitializeEXT(rq, u_tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, 0x1, Ow, 0.0, u_light_w, u_rt_len);
-                while (rayQueryProceedEXT(rq)) {}
-                if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) sh = facing * fd;
+                vec3 lw = u_light_w;
+                vec3 lu = normalize(abs(lw.y) < 0.99 ? cross(lw, vec3(0.0, 1.0, 0.0)) : cross(lw, vec3(1.0, 0.0, 0.0))), lv = cross(lw, lu);
+                float blocked = 0.0;
+                for (int r = 0; r < u_rt_rays; ++r) {
+                    vec3 ld = lw;
+                    if (u_rt_rays > 1) {
+                        float a = (float(r) + jit) / float(u_rt_rays) * 6.2831853 + jit * 6.2831853, rad = sqrt(fract(jit * 7.31 + float(r) * 0.618034)) * u_rt_soft;
+                        ld = normalize(lw + lu * (cos(a) * rad) + lv * (sin(a) * rad));
+                    }
+                    rayQueryEXT rq;
+                    rayQueryInitializeEXT(rq, u_tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, 0x1, Ow, 0.0, ld, u_rt_len);
+                    while (rayQueryProceedEXT(rq)) {}
+                    if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) blocked += 1.0;
+                }
+                if (blocked > 0.0) sh = facing * fd * blocked / float(u_rt_rays);
             } else
 )GLSL";
 static int env_int_dbg() { const char* e = std::getenv("PSPRECOMP_RT_REFL_DEBUG"); return e ? (std::atoi(e) == 2 ? 2 : 1) : 0; }
@@ -792,7 +823,9 @@ void psp_screenfx_run(GLuint fbo, GLuint color_tex, int w, int h, const ScreenFx
         glUniform1i(loc(mp.id, "u_use_rt"), use_rt_sh ? 1 : 0);
         glUniform1i(loc(mp.id, "u_use_rt_refl"), use_rt_refl ? 1 : 0);
         glUniform1i(loc(mp.id, "u_rt_dbg"), env_int_dbg());
-        glUniform1i(loc(mp.id, "u_rt_fx"), !sc.rt_fx || std::getenv("PSPRECOMP_RT_FX_OFF") ? 0 : std::getenv("PSPRECOMP_RT_FX_SPLIT") ? 2 : 1);
+        { const int q = psp_rt_refl_quality(); glUniform1i(loc(mp.id, "u_rt_refl_rays"), q >= 3 ? 3 : 1); }
+        glUniform1f(loc(mp.id, "u_rt_rough"), env_float("PSPRECOMP_RT_ROUGH", 0.03f));
+        glUniform1i(loc(mp.id, "u_rt_fx"), !sc.rt_fx || psp_rt_refl_quality() < 2 || std::getenv("PSPRECOMP_RT_FX_OFF") ? 0 : std::getenv("PSPRECOMP_RT_FX_SPLIT") ? 2 : 1);
         glUniform1f(loc(mp.id, "u_rt_hidden"), env_float("PSPRECOMP_RT_HIDDEN", 0.45f));
         glUniform1f(loc(mp.id, "u_rt_sky_amt"), env_float("PSPRECOMP_RT_SKY_AMT", 0.4f));
         glUniform1f(loc(mp.id, "u_rt_sky_dist"), env_float("PSPRECOMP_FX_SKY_DIST", 150.f));
@@ -805,6 +838,8 @@ void psp_screenfx_run(GLuint fbo, GLuint color_tex, int w, int h, const ScreenFx
         glUniformMatrix4fv(loc(mp.id, "u_view_inv"), 1, GL_FALSE, vinv);
         glUniform3f(loc(mp.id, "u_light_w"), wl_n[0], wl_n[1], wl_n[2]);
         glUniform1f(loc(mp.id, "u_rt_len"), env_float("PSPRECOMP_RT_LEN", 40.f));
+        { const int q = psp_rt_quality(); glUniform1i(loc(mp.id, "u_rt_rays"), q >= 3 ? 6 : q == 2 ? 3 : 1); }
+        glUniform1f(loc(mp.id, "u_rt_soft"), env_float("PSPRECOMP_RT_SOFT", 0.04f));
     }
     glDrawArrays(GL_TRIANGLES, 0, 3);
     ts_mark(2);

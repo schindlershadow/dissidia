@@ -20,7 +20,9 @@ extern PspRtHooks g_psp_rt;
 /// User switch (settings row "Ray-Traced Shadows", env PSPRECOMP_VK_RT=1 / saved `rt_shadows`). Takes effect at once: the layer always
 /// creates the ray-query device when the GPU has it (desktop), this only decides whether scenes are captured and used.
 bool psp_rt_enabled();
-void psp_rt_set_enabled(bool on);
+void psp_rt_set_enabled(bool on);   // on = Medium
+int psp_rt_quality();               // 0 off, 1 low (1 hard ray), 2 medium (3 soft rays), 3 high (6 soft rays)
+void psp_rt_set_quality(int q);
 /// Text for the settings row when ray tracing cannot be used (never empty then).
 const char* psp_rt_unavailable_reason();
 /// Ray tracing is available and switched on: contact shadows are replaced by it.
@@ -28,7 +30,9 @@ inline bool psp_rt_active();
 /// User switch "Ray-Traced Reflections" (env PSPRECOMP_VK_RT_REFL=1 / saved `rt_reflections`): the floor reflection is a ray query along the
 /// reflected view ray instead of the screen-space march, so it also shows what is off screen or hidden. Replaces the Reflections row.
 bool psp_rt_refl_enabled();
-void psp_rt_refl_set_enabled(bool on);
+void psp_rt_refl_set_enabled(bool on);   // on = Medium
+int psp_rt_refl_quality();               // 0 off, 1 low (opaque geometry only), 2 medium (+ effects layer), 3 high (+ 3 jittered rays, a glossy blur)
+void psp_rt_refl_set_quality(int q);
 inline bool psp_rt_available() { return g_psp_rt.available && g_psp_rt.available(); }
 inline bool psp_rt_active() { return psp_rt_available() && psp_rt_enabled(); }
 inline bool psp_rt_refl_active() { return psp_rt_available() && psp_rt_refl_enabled(); }
