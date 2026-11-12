@@ -45,6 +45,16 @@ struct PspTexPackHook {
 };
 void psp_settings_set_texpack_hook(const PspTexPackHook& hook);
 
+/// A game module adds on/off rows to the Debug page (this session only, not saved): `get` says whether it is on, `set` switches it.
+/// Up to 6 rows; the label and help text must stay valid (string literals).
+struct PspDebugToggle {
+    const char* label;
+    const char* help;
+    bool (*get)();
+    void (*set)(bool on);
+};
+void psp_settings_add_debug_toggle(const PspDebugToggle& toggle);
+
 /// First thing in main(): read settings.ini and export the saved values as
 /// the PSPRECOMP_* variables the window, renderer and game module read.
 void psp_settings_load_early();

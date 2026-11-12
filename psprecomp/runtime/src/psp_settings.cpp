@@ -87,6 +87,7 @@ bool g_wait_release = false;           // after closing: game input stays blocke
 bool g_confirm_cross = true;
 PspFrameRateHook g_fps{nullptr, 0, nullptr, nullptr};
 PspVoiceHook g_voice{nullptr};
+std::vector<PspDebugToggle> g_dbg_toggles;   // game-supplied Debug page rows
 PspTexPackHook g_texpack{nullptr};
 
 // Graphics API (OpenGL / Vulkan). Chosen at start-up (the window is created for one or the other), so a change applies at the next start.
@@ -147,6 +148,7 @@ enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_REN
            ROW_CLOUD_PROVIDER, ROW_CLOUD_FOLDER, ROW_CLOUD_URL, ROW_CLOUD_USER, ROW_CLOUD_PASS, ROW_CLOUD_GOOGLE,
            ROW_CLOUD_AUTO, ROW_CLOUD_REPLAYS, ROW_CLOUD_NOW, ROW_CLOUD_STATUS,   // Cloud page
            ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS,   // Debug page
+           ROW_DBG0, ROW_DBG1, ROW_DBG2, ROW_DBG3, ROW_DBG4, ROW_DBG5,   // Debug page rows a game module adds (psp_settings_add_debug_toggle)
            ROW_GPU, ROW_GPU_GET, ROW_GPU_DEL };   // custom GPU drivers (Android, Adreno): System page
 std::vector<Row> g_rows;
 int g_sel = 0;
@@ -768,6 +770,16 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.help = "Ghost test (PSPRECOMP_GE_FEEDBACK)\nOff skips the passes that read the picture they draw into (the glow). If the ghost goes, it comes from there. This session only.";
             break;
         }
+        case ROW_DBG0: case ROW_DBG1: case ROW_DBG2: case ROW_DBG3: case ROW_DBG4: case ROW_DBG5: {
+            const size_t i = size_t(r - ROW_DBG0);
+            if (i >= g_dbg_toggles.size()) break;
+            const bool on = g_dbg_toggles[i].get();
+            m.label = g_dbg_toggles[i].label;
+            m.value = on ? "On" : "Off";
+            m.can_dec = on; m.can_inc = !on;
+            m.help = g_dbg_toggles[i].help;
+            break;
+        }
         case ROW_RING: {
             const int cur = ge_draw_ring_mode(), nx = g_ring_next >= 0 ? g_ring_next : cur;
             m.label = "Vertex Upload";
@@ -1052,6 +1064,11 @@ void change(int d) {   // left / right on the selected row
     }
     case ROW_GLOWSOFT: ge_draw_set_fb_prefilter(d > 0); break;
     case ROW_GLOWPASS: ge_draw_set_fb_snapshot(d > 0); break;
+    case ROW_DBG0: case ROW_DBG1: case ROW_DBG2: case ROW_DBG3: case ROW_DBG4: case ROW_DBG5: {
+        const size_t i = size_t(g_rows[size_t(g_sel)] - ROW_DBG0);
+        if (i < g_dbg_toggles.size() && g_dbg_toggles[i].get() != (d > 0)) g_dbg_toggles[i].set(d > 0);
+        break;
+    }
     case ROW_RING: {
         const int nx = d > 0 ? 1 : 0;
         const int cur = g_ring_next >= 0 ? g_ring_next : ge_draw_ring_mode();
@@ -1091,6 +1108,7 @@ void build_rows() {
         } else g_rows = {ROW_CLOUD_STATUS};     // cloud sync is not running in this session (PSPRECOMP_CLOUD=0)
     } else if (page_id() == PAGE_DEBUG) {
         g_rows = {ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS};
+        for (size_t i = 0; i < g_dbg_toggles.size(); i++) g_rows.push_back(Row(ROW_DBG0 + int(i)));
     } else {
         g_rows = {ROW_DISPLAY, ROW_RES, ROW_SCALE};
         if (g_fps.get && g_fps.count > 1) g_rows.push_back(ROW_FPS);
@@ -1279,6 +1297,11 @@ void confirm() {
     case ROW_UPSCALE: change(psp_post_upscale() >= 2 ? -2 : 1); return;
     case ROW_GLOWSOFT: change(ge_draw_fb_prefilter() ? -1 : 1); return;
     case ROW_GLOWPASS: change(ge_draw_fb_snapshot() ? -1 : 1); return;
+    case ROW_DBG0: case ROW_DBG1: case ROW_DBG2: case ROW_DBG3: case ROW_DBG4: case ROW_DBG5: {
+        const size_t i = size_t(g_rows[size_t(g_sel)] - ROW_DBG0);
+        if (i < g_dbg_toggles.size()) change(g_dbg_toggles[i].get() ? -1 : 1);
+        return;
+    }
     }
     g_dirty = true;
 }
@@ -1320,6 +1343,7 @@ uint32_t dpad_bit(uint8_t b) {
 
 void psp_settings_set_frame_rate_hook(const PspFrameRateHook& hook) { g_fps = hook; }
 void psp_settings_set_voice_hook(const PspVoiceHook& hook) { g_voice = hook; }
+void psp_settings_add_debug_toggle(const PspDebugToggle& t) { if (g_dbg_toggles.size() < 6) g_dbg_toggles.push_back(t); }
 void psp_settings_set_texpack_hook(const PspTexPackHook& hook) { g_texpack = hook; }
 
 void psp_settings_load_early() {
