@@ -402,7 +402,17 @@ static void handle_sdl_event(const SDL_Event& ev) {
             toggle_fullscreen(SDL_GetWindowFromID(ev.key.windowID));
             return;
         }
-        if (down && k == SDLK_F9) { psp_rt_request_dump(); std::fprintf(stderr, "[RTDUMP] requested (F9)\n"); return; }
+        if (down && k == SDLK_F9) {
+            // RT scene debugging: log the next frame's draws and save a full-resolution screenshot of the same moment (rtdump_N.tga)
+            static int seq = 0;
+            ++seq;
+            char path[64]; std::snprintf(path, sizeof path, "rtdump_%d.tga", seq);
+            setenv("PSPRECOMP_SHOT_FULL", "1", 0);
+            psp_rt_request_dump();
+            std::fprintf(stderr, "[RTDUMP] requested #%d (F9), screenshot %s\n", seq, path);
+            std::thread([p = std::string(path)] { ge_draw_capture_screenshot(p.c_str(), 5000); }).detach();   // served by this thread's next loop pass
+            return;
+        }
         uint8_t arrow = k == SDLK_UP ? 1 : k == SDLK_DOWN ? 2 :
                         k == SDLK_LEFT ? 4 : k == SDLK_RIGHT ? 8 : 0;
         if (arrow) {
