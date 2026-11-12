@@ -1276,10 +1276,12 @@ static bool g_debug_env = false;      // any per-draw diagnostic env set -> lega
 struct KeyBuf {
     uint32_t w[512];
     int n = 0;
+    uint32_t id = 0;   // nonzero: assigned when a cached key was (re)built; equal ids mean equal contents (copies keep it)
     inline void u(uint32_t v) { w[n++] = v; }
     inline void f(float v) { uint32_t b; std::memcpy(&b, &v, 4); w[n++] = b; }
     inline void a(const float* p, int c) { std::memcpy(&w[n], p, (size_t)c * 4); n += c; }
     bool operator==(const KeyBuf& o) const {
+        if (id && id == o.id) return true;
         return n == o.n && std::memcmp(w, o.w, (size_t)n * 4) == 0;
     }
 };
@@ -1757,7 +1759,7 @@ static void ensure_batch(const KeyBuf& k, Stream& s, GLuint vao, GLenum mode, si
     if (!g_nobatch && g_batch.active && g_batch.s == &s && g_batch.key == k && s.stage_n + need <= s.cap)
         return;
     flush_batch();
-    g_batch.key = k;
+    g_batch.key.n = k.n; g_batch.key.id = k.id; std::memcpy(g_batch.key.w, k.w, (size_t)k.n * 4);
     g_batch.mode = mode;
     g_batch.s = &s;
     g_batch.vao = vao;
@@ -1815,21 +1817,66 @@ static void fast_prim(uint8_t* rdram, const GeState& state, int prim_type, int c
     else if (prim_type == GE_PRIM_LINES || prim_type == GE_PRIM_RECTANGLES) n -= (n & 1);
     if (n <= 0) return;
 
-    bool gpu = !through && prim_type != GE_PRIM_RECTANGLES && !g_cpu_xform
-               && ge_gpu_transform_ok(state);
-    if (gpu) {
+    // Key cache: draws between which no key-relevant GE command ran (g_ge_state_gen, e.g. just VADDR + PRIM) share the
+    // key, the transform block and the GPU-path decision, so none of it is rebuilt per draw (build_key was the top item
+    // of the render thread's profile: ~100 words per 3D draw).
+    static struct {
+        bool valid = false;
+        uint32_t gen = 0;
+        GLenum mode = 0;
+        int prim_type = 0, w480 = 0, fbw480 = 0;
+        GLuint fbo_tex = 0;
+        bool gpu = false;
+        int path = 0;
+        bool has2d = false;
+        KeyBuf key, key2d;
         Xf3D xf;
-        build_xf(state, xf);
-        if (fbo_tex && g_fbtex_w480 > 480 && state.texture_enable) {   // a wide render target as the texture: the PSP's u (0..1 = 480 px) -> its middle part
-            const float fs = 480.0f / float(g_fbtex_w480), fo = 0.5f * float(g_fbtex_w480 - 480) / float(g_fbtex_w480);
-            xf.uvxf[2] = xf.uvxf[2] * fs + fo;
-            xf.uvxf[0] *= fs;
-            static bool logged = false;
-            if (!logged) { logged = true; std::fprintf(stderr, "[WIDE] 3D draw samples a %d px wide render target: u remapped\n", g_fbtex_w480); }
+    } kc;
+    static uint32_t key_serial = 0;
+    const int w480 = cur_w480();
+    if (!(kc.valid && kc.gen == g_ge_state_gen && kc.mode == mode && kc.prim_type == prim_type && kc.fbo_tex == fbo_tex
+          && kc.w480 == w480 && kc.fbw480 == g_fbtex_w480)) {
+        kc.valid = true; kc.gen = g_ge_state_gen; kc.mode = mode; kc.prim_type = prim_type; kc.fbo_tex = fbo_tex;
+        kc.w480 = w480; kc.fbw480 = g_fbtex_w480;
+        kc.gpu = !through && prim_type != GE_PRIM_RECTANGLES && !g_cpu_xform && ge_gpu_transform_ok(state);
+        kc.key.n = 0;
+        kc.key.id = 0;
+        kc.has2d = false;
+        if (kc.gpu) {
+            Xf3D& xf = kc.xf;
+            build_xf(state, xf);
+            if (fbo_tex && g_fbtex_w480 > 480 && state.texture_enable) {   // a wide render target as the texture: the PSP's u (0..1 = 480 px) -> its middle part
+                const float fs = 480.0f / float(g_fbtex_w480), fo = 0.5f * float(g_fbtex_w480 - 480) / float(g_fbtex_w480);
+                xf.uvxf[2] = xf.uvxf[2] * fs + fo;
+                xf.uvxf[0] *= fs;
+                static bool logged = false;
+                if (!logged) { logged = true; std::fprintf(stderr, "[WIDE] 3D draw samples a %d px wide render target: u remapped\n", g_fbtex_w480); }
+            }
+            kc.path = xf.skin_n > 0 ? 2 : 1;
+            build_key(kc.key, state, mode, kc.path, prim_type, fbo_tex, &xf);
+            kc.key.id = ++key_serial;
         }
-        const int path = xf.skin_n > 0 ? 2 : 1;
-        KeyBuf key;
-        build_key(key, state, mode, path, prim_type, fbo_tex, &xf);
+    }
+    bool gpu = kc.gpu;
+    static const bool kc_verify = std::getenv("PSPRECOMP_KEYCACHE_VERIFY") != nullptr;   // debug: cached key vs a fresh build, per draw
+    if (kc_verify && gpu) {
+        Xf3D xf2; KeyBuf k2;
+        build_xf(state, xf2);
+        if (fbo_tex && g_fbtex_w480 > 480 && state.texture_enable) {
+            const float fs = 480.0f / float(g_fbtex_w480), fo = 0.5f * float(g_fbtex_w480 - 480) / float(g_fbtex_w480);
+            xf2.uvxf[2] = xf2.uvxf[2] * fs + fo; xf2.uvxf[0] *= fs;
+        }
+        build_key(k2, state, mode, kc.path, prim_type, fbo_tex, &xf2);
+        static int bad = 0, total = 0;
+        total++;
+        if (!(k2.n == kc.key.n && !std::memcmp(k2.w, kc.key.w, (size_t)k2.n * 4)) && bad++ < 20)
+            std::fprintf(stderr, "[KEYCACHE] MISMATCH draw %d gen %u\n", total, kc.gen);
+        if (total % 20000 == 0) std::fprintf(stderr, "[KEYCACHE] %d draws checked, %d mismatches\n", total, bad);
+    }
+    if (gpu) {
+        const Xf3D& xf = kc.xf;
+        const int path = kc.path;
+        const KeyBuf& key = kc.key;
         ensure_batch(key, g_s3d, path == 2 ? g_s3d.vao : g_s3d.vao_plain, mode, (size_t)n,
                      rdram, state, prim_type, fbo_tex, &xf);
         // PSPRECOMP_FEP_LOG (psp_fep_log.h): the size / position this draw really has in the world; the batch's
@@ -1933,8 +1980,13 @@ static void fast_prim(uint8_t* rdram, const GeState& state, int prim_type, int c
     }
     if (packed.empty()) return;
     const size_t pn = packed.size();
-    KeyBuf key;
-    build_key(key, state, mode, 0, prim_type, fbo_tex, nullptr);
+    if (!kc.has2d) {
+        kc.key2d.n = 0;
+        build_key(kc.key2d, state, mode, 0, prim_type, fbo_tex, nullptr);
+        kc.key2d.id = ++key_serial;
+        kc.has2d = true;
+    }
+    const KeyBuf& key = kc.key2d;
     ensure_batch(key, g_s2d, g_s2d.vao, mode, pn, rdram, state, prim_type, fbo_tex, nullptr);
     std::memcpy(stage_reserve(g_s2d, pn), packed.data(), pn * sizeof(PackedVertex));
     g_batch.firsts.push_back(static_cast<GLint>(g_s2d.stage_n));

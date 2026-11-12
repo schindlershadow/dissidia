@@ -184,3 +184,7 @@ const GeState& ge_get_state();
 
 /// Mutable access to GE state (for ge.cpp internal + draw wiring).
 GeState& ge_get_state_mut();
+
+/// Bumped by every GE command that can change something a draw's batch key reads (everything except VADDR / IADDR / PRIM / BASE /
+/// OFFSETADDR / ORIGIN / flow control), and wherever the state is swapped by hand. Equal values between two draws mean the same key.
+extern uint32_t g_ge_state_gen;
