@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -49,8 +50,14 @@ static float stage_dark() {
 struct StageLight { float p[3], c[3], radius, intensity; };
 static const int kMaxLights = 16;
 static std::map<int, std::vector<StageLight>> g_light_file;   // from the file (overrides the built-in table of a stage)
-static std::atomic<int> g_light_req{0};                       // 1 drop, 2 undo (set by the event loop)
+static std::atomic<int> g_light_req{0};                       // 1 drop, 2 remove the selected light (set by the event loop)
 static std::atomic<int> g_light_dist10{80};                   // placement distance x10
+static std::atomic<bool> g_light_edit{std::getenv("PSPRECOMP_LIGHT_EDIT") != nullptr};                 // edit mode: markers shown, the movement keys are live
+static std::atomic<unsigned> g_light_keys{0};                 // held keys, bit = PSP_LIGHT_LEFT..INT_UP, FAST
+static std::atomic<int> g_light_nav{0};                       // pending select prev (-1) / next (+1)
+static int g_light_sel = 0;
+static bool g_light_dirty = false;
+static double g_light_last_change = 0;
 static long g_light_mtime = -1;
 static double g_light_check = 0;
 static const char* light_path() { const char* e = std::getenv("PSPRECOMP_STAGE_LIGHTS"); return e && e[0] ? e : "stage_lights.txt"; }
@@ -84,33 +91,71 @@ static const std::vector<StageLight>& stage_lights(int id) {
     if (now - g_light_check > 1.0) {
         g_light_check = now;
         const long m = file_mtime(light_path());
-        if (m != g_light_mtime) { g_light_mtime = m; lights_load_file(); }
+        if (m != g_light_mtime && !g_light_dirty) { g_light_mtime = m; lights_load_file(); }
     }
     auto it = g_light_file.find(id);
     return it == g_light_file.end() ? none : it->second;
 }
-void psp_stage_light_drop() { g_light_req.store(1); }
-void psp_stage_light_undo() { g_light_req.store(2); }
-void psp_stage_light_dist(int d) { int v = g_light_dist10.load() + d * 10; g_light_dist10.store(std::min(400, std::max(20, v))); std::fprintf(stderr, "[LIGHT] placement distance %.1f\n", g_light_dist10.load() / 10.0); }
-// Handles a drop / undo request from the camera (view = 4x3 column-major world -> view).
+bool psp_stage_light_input(int what, bool down) {
+    if (what == PSP_LIGHT_TOGGLE_EDIT) { if (down) { const bool v = !g_light_edit.load(); g_light_edit.store(v); std::fprintf(stderr, "[LIGHT] edit mode %s\n", v ? "ON" : "off"); } return true; }
+    if (what == PSP_LIGHT_DROP) { if (down) { g_light_req.store(1); g_light_edit.store(true); } return true; }
+    if (what == PSP_LIGHT_REMOVE) { if (down) g_light_req.store(2); return true; }
+    if (what == PSP_LIGHT_DIST_UP || what == PSP_LIGHT_DIST_DOWN) {
+        if (down) { const int v = g_light_dist10.load() + (what == PSP_LIGHT_DIST_UP ? 10 : -10); g_light_dist10.store(std::min(400, std::max(20, v))); std::fprintf(stderr, "[LIGHT] placement distance %.1f\n", g_light_dist10.load() / 10.0); }
+        return true;
+    }
+    if (what == PSP_LIGHT_FAST) { if (down) g_light_keys.fetch_or(1u << 31); else g_light_keys.fetch_and(~(1u << 31)); return false; }
+    if (!g_light_edit.load()) return false;                    // the other keys only act in edit mode
+    if (what == PSP_LIGHT_PREV || what == PSP_LIGHT_NEXT) { if (down) g_light_nav.store(what == PSP_LIGHT_NEXT ? 1 : -1); return true; }
+    if (what >= PSP_LIGHT_LEFT && what <= PSP_LIGHT_INT_UP) { if (down) g_light_keys.fetch_or(1u << what); else g_light_keys.fetch_and(~(1u << what)); return true; }
+    return false;
+}
+// Drop / remove / move / edit requests, from the camera (view = 4x3 column-major world -> view). Writes the file shortly after the last change.
 static void lights_service(int id, const float* v) {
-    const int req = g_light_req.exchange(0);
-    if (!req || id < 0) return;
+    if (id < 0) return;
+    const double now = double(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()) / 1000.0;
+    static double last = 0;
+    const float dt = last > 0 ? float(std::min(0.1, now - last)) : 0.f;
+    last = now;
     std::vector<StageLight>& L = g_light_file[id];
+    const int req = g_light_req.exchange(0);
+    const float tx = v[9], ty = v[10], tz = v[11];
+    const float cam[3] = {-(v[0] * tx + v[1] * ty + v[2] * tz), -(v[3] * tx + v[4] * ty + v[5] * tz), -(v[6] * tx + v[7] * ty + v[8] * tz)};
+    const float fwd[3] = {-v[2], -v[5], -v[8]};
     if (req == 1 && (int)L.size() < kMaxLights) {
-        const float tx = v[9], ty = v[10], tz = v[11];
-        const float cam[3] = {-(v[0] * tx + v[1] * ty + v[2] * tz), -(v[3] * tx + v[4] * ty + v[5] * tz), -(v[6] * tx + v[7] * ty + v[8] * tz)};
-        const float fwd[3] = {-v[2], -v[5], -v[8]};
         const float d = g_light_dist10.load() / 10.f;
         StageLight l = {{cam[0] + fwd[0] * d, cam[1] + fwd[1] * d, cam[2] + fwd[2] * d}, {1.0f, 0.9f, 0.8f}, 14.f, 1.5f};
-        L.push_back(l);
-        std::fprintf(stderr, "[LIGHT] stage %d: light %d at %.2f %.2f %.2f\n", id, (int)L.size(), l.p[0], l.p[1], l.p[2]);
+        L.push_back(l); g_light_sel = (int)L.size() - 1; g_light_dirty = true; g_light_last_change = now;
+        std::fprintf(stderr, "[LIGHT] stage %d: light %d at %.2f %.2f %.2f\n", id, g_light_sel + 1, l.p[0], l.p[1], l.p[2]);
     } else if (req == 2 && !L.empty()) {
-        L.pop_back();
+        g_light_sel = std::min(g_light_sel, (int)L.size() - 1);
+        L.erase(L.begin() + g_light_sel); g_light_sel = std::max(0, g_light_sel - 1); g_light_dirty = true; g_light_last_change = now;
         std::fprintf(stderr, "[LIGHT] stage %d: removed, %d left\n", id, (int)L.size());
     }
-    lights_save_file();
-    g_light_mtime = file_mtime(light_path());
+    if (const int nav = g_light_nav.exchange(0); nav && !L.empty()) { g_light_sel = (g_light_sel + nav + (int)L.size()) % (int)L.size(); std::fprintf(stderr, "[LIGHT] selected light %d of %d\n", g_light_sel + 1, (int)L.size()); }
+    if (g_light_edit.load() && !L.empty() && dt > 0.f) {
+        g_light_sel = std::min(g_light_sel, (int)L.size() - 1);
+        StageLight& l = L[g_light_sel];
+        const unsigned k = g_light_keys.load();
+        const float sp = ((k >> 31) & 1u ? 12.f : 3.f) * dt;
+        float fh[3] = {fwd[0], 0.f, fwd[2]}; const float fl = std::sqrt(fh[0] * fh[0] + fh[2] * fh[2]); if (fl > 1e-4f) { fh[0] /= fl; fh[2] /= fl; }
+        const float rt[3] = {v[0], 0.f, v[6]};   // the view x axis in the world (row 0 of the rotation), kept level
+        float mv[3] = {0, 0, 0};
+        auto held = [&](int b) { return (k >> b) & 1u; };
+        const float ax = float(held(PSP_LIGHT_RIGHT)) - float(held(PSP_LIGHT_LEFT)), af = float(held(PSP_LIGHT_FWD)) - float(held(PSP_LIGHT_BACK)), au = float(held(PSP_LIGHT_UP)) - float(held(PSP_LIGHT_DOWN));
+        for (int c = 0; c < 3; ++c) mv[c] = (rt[c] * ax + fh[c] * af) * sp;
+        mv[1] += au * sp;
+        const float dr = (float(held(PSP_LIGHT_RAD_UP)) - float(held(PSP_LIGHT_RAD_DOWN))) * 6.f * dt, di = (float(held(PSP_LIGHT_INT_UP)) - float(held(PSP_LIGHT_INT_DOWN))) * 1.5f * dt;
+        if (mv[0] != 0.f || mv[1] != 0.f || mv[2] != 0.f || dr != 0.f || di != 0.f) {
+            for (int c = 0; c < 3; ++c) l.p[c] += mv[c];
+            l.radius = std::min(80.f, std::max(1.f, l.radius + dr)); l.intensity = std::min(20.f, std::max(0.f, l.intensity + di));
+            g_light_dirty = true; g_light_last_change = now;
+        }
+    }
+    if (g_light_dirty && now - g_light_last_change > 0.4) {
+        g_light_dirty = false; lights_save_file(); g_light_mtime = file_mtime(light_path());
+        if (g_light_sel < (int)L.size()) { const StageLight& l = L[g_light_sel]; std::fprintf(stderr, "[LIGHT] light %d: %.2f %.2f %.2f radius %.1f intensity %.2f\n", g_light_sel + 1, l.p[0], l.p[1], l.p[2], l.radius, l.intensity); }
+    }
 }
 static std::atomic<int> g_rt_on{-1};
 bool psp_rt_enabled() {
@@ -249,11 +294,13 @@ void main() {
         vec4 fc = texture(u_fxc, v_uv);
         if (fc.a > 0.03 || max(fc.r, max(fc.g, fc.b)) > 0.06) { o_refl = vec4(fc.rgb * 0.5 + vec3(0.5, 0.0, 0.5), 1.0); return; }
     }
-    if (is_far(wd)) return;
+    vec3 mk = vec3(0.0);
+//@RT_MARK
+    if (is_far(wd)) { o_refl.rgb = mk * u_lscale; return; }
     vec3 P = vpos(v_uv, wd);
     float lp = length(P);
     float fd = dist_fade(lp);
-    if (fd <= 0.0) return;
+    if (fd <= 0.0) { o_refl.rgb = mk * u_lscale; return; }
     vec3 n = normal_at(v_uv, P);
     float noise = ign(gl_FragCoord.xy);
     float ao = 1.0;
@@ -505,6 +552,10 @@ uniform vec3 u_rt_sky;      // what a reflection ray that hits nothing shows whe
 uniform int u_n_lights;     // stage point lights (world space xyz + radius; colour x intensity)
 uniform vec4 u_lp[16];
 uniform vec4 u_lc[16];
+uniform vec4 u_lvp[16];     // the same lights in view space (markers)
+uniform float u_lscale;      // 1 / stage darkening: the reflection layer is darkened with the stage, lights and markers must not be
+uniform int u_edit;         // light edit mode: draw a marker at each light
+uniform int u_sel;          // the selected light
 )GLSL";
 // Ray-traced reflection: the closest hit along the reflected view ray. Shading the hit: the geometry has positions only, so a
 // hit shows the triangle's colour captured at draw time (texture average x vertex colour / lit material, rt_tri_col[]); where
@@ -593,6 +644,23 @@ const char* const k_rt_refl = R"GLSL(
             o_refl = racc / float(u_rt_refl_rays);
         } else
 )GLSL";
+const char* const k_rt_mark = R"GLSL(
+    if (u_edit != 0 && u_n_lights > 0) {
+        vec4 q = u_inv * vec4(v_uv * 2.0 - 1.0, 1.0, 1.0);
+        vec3 dir = normalize(q.xyz / q.w);
+        float surf = is_far(wd) ? 1e9 : length(vpos(v_uv, wd));
+        for (int li = 0; li < u_n_lights; ++li) {
+            vec3 Lv = u_lvp[li].xyz;
+            float t = dot(Lv, dir);
+            if (t <= 0.0) continue;
+            float d = length(Lv - dir * t);
+            float core = smoothstep(0.3, 0.12, d), halo = 0.35 * smoothstep(1.4, 0.0, d), ring = (li == u_sel) ? smoothstep(0.06, 0.0, abs(d - 0.5)) : 0.0;
+            vec3 col = (li == u_sel) ? vec3(1.0) : normalize(u_lc[li].rgb + 1e-4) ;
+            float vis = t > surf + 0.3 ? 0.25 : 1.0;                 // behind a wall: dimmed, so it can still be found
+            mk += (col * (core + halo) + vec3(1.0, 0.9, 0.2) * ring) * vis;
+        }
+    }
+)GLSL";
 const char* const k_rt_lights = R"GLSL(
     if (u_n_lights > 0 && u_use_rt != 0) {
         vec3 Pw = (u_view_inv * vec4(P, 1.0)).xyz;
@@ -612,8 +680,9 @@ const char* const k_rt_lights = R"GLSL(
             if (rayQueryGetIntersectionTypeEXT(rl, true) != gl_RayQueryCommittedIntersectionNoneEXT) continue;
             acc += u_lc[li].rgb * (ndl * att);
         }
-        o_refl.rgb += texture(u_color, v_uv).rgb * acc * fd;
+        o_refl.rgb += texture(u_color, v_uv).rgb * acc * fd * u_lscale;
     }
+    o_refl.rgb += mk * u_lscale;
 )GLSL";
 const char* const k_rt_code = R"GLSL(
             if (u_use_rt != 0) {
@@ -643,6 +712,7 @@ std::string rt_main_source() {
     rep("//@RT_CODE", k_rt_code);
     rep("//@RT_REFL", k_rt_refl);
     rep("//@RT_LIGHTS", k_rt_lights);
+    rep("//@RT_MARK", k_rt_mark);
     return s;
 }
 GLuint g_vao = 0, g_smp_nn = 0, g_smp_lin = 0;
@@ -923,8 +993,9 @@ void psp_screenfx_run(GLuint fbo, GLuint color_tex, int w, int h, const ScreenFx
             sky_t = ndc * 0.5f + 0.5f;
         }
     }
+    const float dark = psp_rt_active() ? stage_dark() : 1.f;   // stage looks ride on the ray-traced lighting
     int n_lights = 0;
-    float lp4[kMaxLights * 4], lc4[kMaxLights * 4];
+    float lp4[kMaxLights * 4], lc4[kMaxLights * 4], lv4[kMaxLights * 4];
     if (sc.rt_ready && cs > 0 && psp_rt_enabled()) {   // stage lights need the ray-traced scene for their shadows
         const int sid = psp_stage_id();
         lights_service(sid, sc.view);
@@ -932,6 +1003,8 @@ void psp_screenfx_run(GLuint fbo, GLuint color_tex, int w, int h, const ScreenFx
             if (n_lights >= kMaxLights) break;
             for (int k = 0; k < 3; ++k) { lp4[n_lights * 4 + k] = l.p[k]; lc4[n_lights * 4 + k] = l.c[k] * l.intensity; }
             lp4[n_lights * 4 + 3] = l.radius; lc4[n_lights * 4 + 3] = 0.f;
+            for (int k = 0; k < 3; ++k) lv4[n_lights * 4 + k] = sc.view[k] * l.p[0] + sc.view[3 + k] * l.p[1] + sc.view[6 + k] * l.p[2] + sc.view[9 + k];
+            lv4[n_lights * 4 + 3] = 1.f;
             ++n_lights;
         }
     }
@@ -1050,7 +1123,10 @@ void psp_screenfx_run(GLuint fbo, GLuint color_tex, int w, int h, const ScreenFx
         { const int q = psp_rt_quality(); glUniform1i(loc(mp.id, "u_rt_rays"), q >= 3 ? 6 : q == 2 ? 3 : 1); }
         glUniform1f(loc(mp.id, "u_rt_soft"), env_float("PSPRECOMP_RT_SOFT", 0.04f));
         glUniform1i(loc(mp.id, "u_n_lights"), n_lights);
-        if (n_lights) { glUniform4fv(loc(mp.id, "u_lp"), n_lights, lp4); glUniform4fv(loc(mp.id, "u_lc"), n_lights, lc4); }
+        if (n_lights) { glUniform4fv(loc(mp.id, "u_lp"), n_lights, lp4); glUniform4fv(loc(mp.id, "u_lc"), n_lights, lc4); glUniform4fv(loc(mp.id, "u_lvp"), n_lights, lv4); }
+        glUniform1f(loc(mp.id, "u_lscale"), 1.f / std::max(0.05f, dark));
+        glUniform1i(loc(mp.id, "u_edit"), g_light_edit.load() ? 1 : 0);
+        glUniform1i(loc(mp.id, "u_sel"), g_light_sel);
     }
     glDrawArrays(GL_TRIANGLES, 0, 3);
     ts_mark(2);
@@ -1072,7 +1148,6 @@ void psp_screenfx_run(GLuint fbo, GLuint color_tex, int w, int h, const ScreenFx
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glViewport(0, 0, w, h);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_FALSE);
-    const float dark = psp_rt_active() ? stage_dark() : 1.f;   // stage looks ride on the ray-traced lighting
     if (ao || cs || dark < 0.999f) {
         glEnable(GL_BLEND);
         glBlendFunc(GL_ZERO, GL_SRC_COLOR);              // dst * (AO * (1 - shadow))
