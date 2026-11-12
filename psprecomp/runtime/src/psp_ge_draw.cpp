@@ -19,6 +19,7 @@
 #include "psp_gl.h"
 #include "psp_touch.h"
 #include <atomic>
+#include <unordered_map>
 #include <cstdarg>
 #include <chrono>
 #include <condition_variable>
@@ -2356,6 +2357,57 @@ static FxVote g_fx_vote[GE_MAX_TARGETS];
 // (skinning included, then the world matrix) only while the Vulkan ray-query path is on.
 static std::vector<float> g_rt_tris[GE_MAX_TARGETS];
 static std::vector<uint32_t> g_rt_cols[GE_MAX_TARGETS];   // one RGBA8 per captured triangle
+
+// The game skips draws it culls (objects outside the camera), so a shadow caster just off screen would drop out of the ray-traced
+// scene and its shadow would pop away as the camera moves. Keep settled geometry (the same draw, byte for byte, in 3 frames in a
+// row) while it is outside the view frustum; it is dropped as soon as it is inside the view and no longer drawn (destroyed).
+struct RtPersist { std::vector<float> tris; std::vector<uint32_t> cols; uint32_t last_frame = 0; int streak = 0; float bmin[3], bmax[3]; };
+static std::unordered_map<uint64_t, RtPersist> g_rt_persist[GE_MAX_TARGETS];
+static uint32_t g_rt_frame[GE_MAX_TARGETS];
+static void rt_persist_note(int target, size_t t0, size_t c0) {
+    const std::vector<float>& tr = g_rt_tris[target]; const std::vector<uint32_t>& co = g_rt_cols[target];
+    if (tr.size() <= t0 || co.size() <= c0) return;
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = t0; i < tr.size(); ++i) { uint32_t b; std::memcpy(&b, &tr[i], 4); h = (h ^ b) * 1099511628211ull; }
+    h ^= (uint64_t)(tr.size() - t0) * 0x9E3779B97F4A7C15ull;
+    RtPersist& e = g_rt_persist[target][h];
+    if (e.last_frame == g_rt_frame[target]) return;                       // the same draw twice in a frame
+    e.streak = e.last_frame + 1 == g_rt_frame[target] ? e.streak + 1 : 1;
+    e.last_frame = g_rt_frame[target];
+    if (e.tris.empty()) {
+        e.tris.assign(tr.begin() + t0, tr.end()); e.cols.assign(co.begin() + c0, co.end());
+        for (int k = 0; k < 3; ++k) { e.bmin[k] = 1e30f; e.bmax[k] = -1e30f; }
+        for (size_t i = 0; i + 2 < e.tris.size(); i += 3) for (int k = 0; k < 3; ++k) { e.bmin[k] = std::min(e.bmin[k], e.tris[i + k]); e.bmax[k] = std::max(e.bmax[k], e.tris[i + k]); }
+    }
+}
+// Adds the settled draws that were not drawn this frame and are outside the frustum (proj 4x4, view 4x3 as in the GE state).
+static void rt_persist_merge(int target, const float* proj, const float* view) {
+    auto& map = g_rt_persist[target];
+    const uint32_t now = g_rt_frame[target];
+    for (auto it = map.begin(); it != map.end();) {
+        RtPersist& e = it->second;
+        if (e.last_frame == now) { ++it; continue; }
+        bool keep = false;
+        if (e.streak >= 3 && now - e.last_frame < 100000) {
+            int lo[2] = {0, 0}, hi[2] = {0, 0}, behind = 0;
+            for (int c = 0; c < 8; ++c) {
+                const float x = (c & 1) ? e.bmax[0] : e.bmin[0], y = (c & 2) ? e.bmax[1] : e.bmin[1], z = (c & 4) ? e.bmax[2] : e.bmin[2];
+                const float vx = view[0] * x + view[3] * y + view[6] * z + view[9], vy = view[1] * x + view[4] * y + view[7] * z + view[10], vz = view[2] * x + view[5] * y + view[8] * z + view[11];
+                float cl[4];
+                for (int r = 0; r < 4; ++r) cl[r] = proj[r] * vx + proj[4 + r] * vy + proj[8 + r] * vz + proj[12 + r];
+                if (cl[3] <= 0.f) { ++behind; continue; }
+                for (int a = 0; a < 2; ++a) { if (cl[a] < -cl[3] * 1.05f) ++lo[a]; if (cl[a] > cl[3] * 1.05f) ++hi[a]; }
+            }
+            const int vis = 8 - behind;   // corners in front of the camera
+            keep = behind == 8 || lo[0] == vis || hi[0] == vis || lo[1] == vis || hi[1] == vis;   // wholly off one side of the view
+            if (behind > 0 && behind < 8) keep = false;   // straddles the camera plane: could be on screen
+        }
+        if (!keep) { it = map.erase(it); continue; }
+        g_rt_tris[target].insert(g_rt_tris[target].end(), e.tris.begin(), e.tris.end());
+        g_rt_cols[target].insert(g_rt_cols[target].end(), e.cols.begin(), e.cols.end());
+        ++it;
+    }
+}
 // Effects (blended, depth-tested, not depth-writing: orbs, auras, glass): a second set for the reflection's effects layer; alpha = coverage.
 static std::vector<float> g_rt_fx_tris[GE_MAX_TARGETS];
 static std::vector<uint32_t> g_rt_fx_cols[GE_MAX_TARGETS];
@@ -2443,7 +2495,7 @@ static void fx_track(const GeState& st, uint8_t* rdram, int prim_type, int count
     if (g_current_target < 0 || g_ab_shadow) return;
     const int cur = g_current_target;
     if (st.clear_mode) {
-        if (st.clear_flags == 0 || (st.clear_flags & 4)) { g_fx_n[cur] = 0; g_fx_done[cur] = false; g_fx_vote[cur].n = 0; g_rt_tris[cur].clear(); g_rt_cols[cur].clear(); g_rt_fx_tris[cur].clear(); g_rt_fx_cols[cur].clear(); }
+        if (st.clear_flags == 0 || (st.clear_flags & 4)) { g_fx_n[cur] = 0; g_fx_done[cur] = false; g_fx_vote[cur].n = 0; g_rt_tris[cur].clear(); g_rt_cols[cur].clear(); g_rt_fx_tris[cur].clear(); g_rt_fx_cols[cur].clear(); ++g_rt_frame[cur]; }
         { static const int every = std::getenv("PSPRECOMP_RT_DUMP_EVERY") ? std::atoi(std::getenv("PSPRECOMP_RT_DUMP_EVERY")) : 0; static int fr = 0;
           if (every > 0 && g_rtdump.load() == 0 && (st.clear_flags == 0 || (st.clear_flags & 4)) && ++fr % every == 0) g_rtdump.store(1); }   // automated runs: one dump every N frames
         if (g_rtdump.load() == 1) { g_rtdump.store(2); rtdump_printf("[RTDUMP] begin target %d\n", cur); }
@@ -2458,7 +2510,7 @@ static void fx_track(const GeState& st, uint8_t* rdram, int prim_type, int count
         }
         if (st.depth_test_enable && !st.depth_write_disable) {
             g_fx_n[cur]++;
-            if (psp_rt_scene_wanted()) rt_capture(st, rdram, prim_type, count, cur);
+            if (psp_rt_scene_wanted()) { const size_t t0 = g_rt_tris[cur].size(), c0 = g_rt_cols[cur].size(); rt_capture(st, rdram, prim_type, count, cur); rt_persist_note(cur, t0, c0); }
             if (g_rtdump.load() == 2) rtdump_printf("[RTDUMP] draw prim %d n %d  %s: blend %d atest %d tex %d texalpha %u rgba %d lit %d  pos %.1f %.1f %.1f  vt %08x\n", prim_type, count, g_rt_why, st.alpha_blend_enable, st.alpha_test_enable, st.texture_enable, (unsigned)(st.texture_enable ? ge_texture_bound_avg_color() >> 24 : 255u), st.tex_func_rgba, st.lighting_enable, st.world_matrix[9], st.world_matrix[10], st.world_matrix[11], (unsigned)st.vertex_type);
             FxVote& v = g_fx_vote[cur];
             // widescreen: the x of the clip position is scaled outside the matrix (build_xf), so the effects get the same
@@ -2491,6 +2543,7 @@ static void fx_track(const GeState& st, uint8_t* rdram, int prim_type, int count
         s.near_z = g_fx_vote[i].near_z; s.far_z = g_fx_vote[i].far_z;
         s.clear_z = g_fx_clearz[i];
         { static int dbg = 0; if (psp_rt_available() && dbg++ % 600 == 0) std::fprintf(stderr, "[RT] scene complete: %zu captured triangles, rt %d\n", g_rt_tris[i].size() / 9, (int)psp_rt_available()); }
+        if (psp_rt_scene_wanted() && !g_rt_tris[i].empty()) rt_persist_merge(i, s.proj, s.view);
         if (g_rtdump.load() == 2) { g_rtdump.store(0); rtdump_printf("[RTDUMP] end: %zu scene triangles, %zu effects triangles\n", g_rt_tris[i].size() / 9, g_rt_fx_tris[i].size() / 9); }
         s.rt_ready = !g_rt_tris[i].empty() && psp_rt_scene_wanted() && g_psp_rt.set_scene(g_rt_tris[i].data(), (uint32_t)(g_rt_tris[i].size() / 9), g_rt_cols[i].size() == g_rt_tris[i].size() / 9 ? g_rt_cols[i].data() : nullptr, g_rt_fx_tris[i].data(), g_rt_fx_cols[i].size() == g_rt_fx_tris[i].size() / 9 ? (uint32_t)g_rt_fx_cols[i].size() : 0u, g_rt_fx_cols[i].data());
         s.rt_fx = s.rt_ready && !g_rt_fx_cols[i].empty();
