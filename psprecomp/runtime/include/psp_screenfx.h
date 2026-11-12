@@ -13,6 +13,9 @@ void psp_fx_set_ssr(int level);
 
 /// True when any of the effects is on.
 bool psp_screenfx_active();
+/// The game module reports the stage being fought (-1 = unknown / no battle); used for per-stage lighting looks.
+void psp_set_stage_id_provider(int (*fn)());
+int psp_stage_id();
 
 /// What the scene was drawn with (the last 3D draw of the buffer).
 struct ScreenFxScene {

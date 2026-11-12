@@ -14,8 +14,28 @@
 #include "psp_rt.h"
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 PspRtHooks g_psp_rt;
+// Per-stage lighting: the game module reports which stage is being fought (-1 = unknown / not in a battle).
+static int (*g_stage_id_fn)() = nullptr;
+void psp_set_stage_id_provider(int (*fn)()) { g_stage_id_fn = fn; }
+int psp_stage_id() { return g_stage_id_fn ? g_stage_id_fn() : -1; }
+// How much of the scene's light a stage has. Enclosed stages have no sun: ray-traced shadows darken the whole picture by `dark` there
+// (1 = unchanged). PSPRECOMP_STAGE_DARK=<f> overrides it for every stage (tuning), PSPRECOMP_STAGE_LOG=1 logs the id.
+struct StageLook { int id; float dark; };
+static const StageLook k_stage_looks[] = {
+    {1, 0.55f},   // Pandaemonium: enclosed, no light source (issue #4)
+};
+static float stage_dark() {
+    static const bool has_env = std::getenv("PSPRECOMP_STAGE_DARK") != nullptr;
+    const int id = psp_stage_id();
+    static int last = -2;
+    if (id != last) { last = id; if (std::getenv("PSPRECOMP_STAGE_LOG")) std::fprintf(stderr, "[STAGE] id %d\n", id); }
+    if (has_env) return std::getenv("PSPRECOMP_STAGE_DARK") ? float(std::atof(std::getenv("PSPRECOMP_STAGE_DARK"))) : 1.f;
+    for (const StageLook& s : k_stage_looks) if (s.id == id) return s.dark;
+    return 1.f;
+}
 static std::atomic<int> g_rt_on{-1};
 bool psp_rt_enabled() {
     int v = g_rt_on.load();
@@ -339,6 +359,7 @@ uniform sampler2D u_fx;
 uniform vec2 u_half;        // half-resolution size
 uniform float u_ao_amt;
 uniform float u_cs_amt;
+uniform float u_dark;       // stage darkening (enclosed stages), 1 = none
 void main() {
     float wd = wd_at(v_uv);
     if (is_far(wd)) { o_color = vec4(1.0); return; }
@@ -358,7 +379,7 @@ void main() {
         wsum += w;
     }
     vec2 fx = sum / wsum;
-    o_color = vec4(vec3(mix(1.0, fx.r, u_ao_amt) * (1.0 - fx.g * u_cs_amt)), 1.0);
+    o_color = vec4(vec3(mix(1.0, fx.r, u_ao_amt) * (1.0 - fx.g * u_cs_amt) * u_dark), 1.0);
 }
 )GLSL";
 
@@ -932,7 +953,8 @@ void psp_screenfx_run(GLuint fbo, GLuint color_tex, int w, int h, const ScreenFx
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glViewport(0, 0, w, h);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_FALSE);
-    if (ao || cs) {
+    const float dark = psp_rt_active() ? stage_dark() : 1.f;   // stage looks ride on the ray-traced lighting
+    if (ao || cs || dark < 0.999f) {
         glEnable(GL_BLEND);
         glBlendFunc(GL_ZERO, GL_SRC_COLOR);              // dst * (AO * (1 - shadow))
         set_common(g_mul_p.id, w, h);
@@ -940,6 +962,7 @@ void psp_screenfx_run(GLuint fbo, GLuint color_tex, int w, int h, const ScreenFx
         glUniform1i(loc(g_mul_p.id, "u_fx"), 1);
         glUniform2f(loc(g_mul_p.id, "u_half"), float(g_hw), float(g_hh));
         glUniform1f(loc(g_mul_p.id, "u_ao_amt"), k_ao_amt[ao]);
+        glUniform1f(loc(g_mul_p.id, "u_dark"), dark);
         glUniform1f(loc(g_mul_p.id, "u_cs_amt"), (std::getenv("PSPRECOMP_CONTACT_AMT") ? env_float("PSPRECOMP_CONTACT_AMT", 0.6f) : k_cs_amt[cs]));
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }

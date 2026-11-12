@@ -1,3 +1,4 @@
+#include "psp_screenfx.h"
 #include "psp_app_icon_dissidia.h"
 #include "psp_event_loop.h"
 #include <cmath>
@@ -279,7 +280,16 @@ void dissidia_menu_flag_cb(uint8_t* rdram, recomp_context* ctx) {
 }
 
 extern "C" void psp_savedata_set_shared_ids(const char* const* ids, int n);
+static uint8_t* g_stage_ram = nullptr;
+// The battle overlay is loaded (OVL_BASE word == 1) and the stage id word of the battle setup is valid; found by diffing RAM across stages.
+static int dissidia_stage_id() {
+    if (!g_stage_ram) return -1;
+    if (psp_mem_read<uint32_t>(g_stage_ram, 0x089DD4C0u) != 1u) return -1;
+    return int(psp_mem_read<uint32_t>(g_stage_ram, 0x08B98854u));
+}
 void dissidia_register_hooks(uint8_t* rdram) {
+    g_stage_ram = rdram;
+    psp_set_stage_id_provider(dissidia_stage_id);
     // One save set for every region: US, EU, JP.
     static const char* const kIds[] = {"ULUS10566", "ULES01505", "ULJM05681"};
     psp_savedata_set_shared_ids(kIds, 3);
