@@ -37,4 +37,5 @@ inline bool psp_rt_available() { return g_psp_rt.available && g_psp_rt.available
 inline bool psp_rt_active() { return psp_rt_available() && psp_rt_enabled(); }
 inline bool psp_rt_refl_active() { return psp_rt_available() && psp_rt_refl_enabled(); }
 /// Either ray-traced effect is on: the draw path captures this frame's triangles.
+void psp_rt_request_dump();   // F9: log every 3D draw of the next frame ([RTDUMP] lines on stderr)
 inline bool psp_rt_scene_wanted() { return psp_rt_available() && (psp_rt_enabled() || psp_rt_refl_enabled()); }
