@@ -2384,6 +2384,9 @@ static void rt_persist_note(int target, size_t t0, size_t c0) {
 static void rt_persist_merge(int target, const float* proj, const float* view) {
     auto& map = g_rt_persist[target];
     const uint32_t now = g_rt_frame[target];
+    static const bool off = std::getenv("PSPRECOMP_RT_NO_PERSIST") != nullptr;
+    if (off) return;
+    int n_keep = 0, n_drop = 0, n_unsettled = 0;
     for (auto it = map.begin(); it != map.end();) {
         RtPersist& e = it->second;
         if (e.last_frame == now) { ++it; continue; }
@@ -2402,11 +2405,15 @@ static void rt_persist_merge(int target, const float* proj, const float* view) {
             keep = behind == 8 || lo[0] == vis || hi[0] == vis || lo[1] == vis || hi[1] == vis;   // wholly off one side of the view
             if (behind > 0 && behind < 8) keep = false;   // straddles the camera plane: could be on screen
         }
-        if (!keep) { it = map.erase(it); continue; }
+        if (e.streak < 3) ++n_unsettled;
+        if (!keep) { if (e.streak >= 3) ++n_drop; it = map.erase(it); continue; }
+        ++n_keep;
         g_rt_tris[target].insert(g_rt_tris[target].end(), e.tris.begin(), e.tris.end());
         g_rt_cols[target].insert(g_rt_cols[target].end(), e.cols.begin(), e.cols.end());
         ++it;
     }
+    static int lg = 0;
+    if ((n_keep || n_drop) && lg++ % 240 == 0) std::fprintf(stderr, "[RTP] persisted %d, dropped %d (inside the view, not drawn), unsettled %d, map %zu\n", n_keep, n_drop, n_unsettled, map.size());
 }
 // Effects (blended, depth-tested, not depth-writing: orbs, auras, glass): a second set for the reflection's effects layer; alpha = coverage.
 static std::vector<float> g_rt_fx_tris[GE_MAX_TARGETS];
@@ -2425,6 +2432,16 @@ static void rtdump_printf(const char* fmt, ...) {
 }
 void psp_rt_request_dump() { g_rtdump.store(1); }
 static std::atomic<bool> g_rt_keep_masked{std::getenv("PSPRECOMP_RT_KEEP_MASKED") != nullptr};   // debug: also capture draws whose colour writes are all masked off (invisible: depth-only occluders)
+static std::atomic<int> g_rt_skip{0};   // F5..F8 debug bisect: bit set = leave that group of draws out of the RT scene
+static int rt_group(const GeState& st) {
+    const uint32_t vt = st.vertex_type;
+    if (vt == 0x99u) return 0;                                   // F5: small unskinned pieces (the dark balls)
+    if (vt != 0x11au && (vt & 0x31a) == 0x31a) return 1;          // F6: weighted (skinned) models
+    if (vt == 0x11au && (st.world_matrix[9] != 0.f || st.world_matrix[10] != 0.f || st.world_matrix[11] != 0.f)) return 2;   // F7: props with their own matrix (blocks, pillars)
+    if (vt == 0x11au) return 3;                                  // F8: baked-world stage geometry (floor, sky)
+    return 4;
+}
+void psp_rt_toggle_skip(int bit) { const int v = g_rt_skip.fetch_xor(1 << bit) ^ (1 << bit); std::fprintf(stderr, "[RTDUMP] skip mask now %x (F5 balls %d, F6 models %d, F7 props %d, F8 stage %d)\n", v, v & 1, (v >> 1) & 1, (v >> 2) & 1, (v >> 3) & 1); }
 static std::atomic<bool> g_rt_ignore_far{false};   // F10: leave out draws whose world matrix puts them far below / above the stage (parked objects)
 bool psp_rt_toggle_ignore_far() { bool v = !g_rt_ignore_far.load(); g_rt_ignore_far.store(v); return v; }
 static void rt_capture(const GeState& st, uint8_t* rdram, int prim_type, int count, int target, bool fx = false) {
@@ -2514,7 +2531,7 @@ static void fx_track(const GeState& st, uint8_t* rdram, int prim_type, int count
         if (st.depth_test_enable && !st.depth_write_disable) {
             g_fx_n[cur]++;
             const size_t dump_t0 = g_rt_tris[cur].size();
-            if (psp_rt_scene_wanted() && !((st.mask_rgb & 0xFFFFFFu) == 0xFFFFFFu && !g_rt_keep_masked.load()) && !(g_rt_ignore_far.load() && std::fabs(st.world_matrix[10]) > 50.f)) { const size_t t0 = g_rt_tris[cur].size(), c0 = g_rt_cols[cur].size(); rt_capture(st, rdram, prim_type, count, cur); rt_persist_note(cur, t0, c0); }
+            if (psp_rt_scene_wanted() && !((g_rt_skip.load() >> rt_group(st)) & 1) && !((st.mask_rgb & 0xFFFFFFu) == 0xFFFFFFu && !g_rt_keep_masked.load()) && !(g_rt_ignore_far.load() && std::fabs(st.world_matrix[10]) > 50.f)) { const size_t t0 = g_rt_tris[cur].size(), c0 = g_rt_cols[cur].size(); rt_capture(st, rdram, prim_type, count, cur); rt_persist_note(cur, t0, c0); }
             if (g_rtdump.load() == 2) rtdump_printf("[RTDUMP] draw prim %d n %d  %s: blend %d atest %d tex %d texalpha %u rgba %d lit %d mask %06x/%02x  pos %.1f %.1f %.1f  vt %08x\n", prim_type, count, g_rt_why, st.alpha_blend_enable, st.alpha_test_enable, st.texture_enable, (unsigned)(st.texture_enable ? ge_texture_bound_avg_color() >> 24 : 255u), st.tex_func_rgba, st.lighting_enable, (unsigned)st.mask_rgb, (unsigned)(st.mask_alpha & 0xFF), st.world_matrix[9], st.world_matrix[10], st.world_matrix[11], (unsigned)st.vertex_type);
             if (g_rtdump.load() == 2 && g_rt_tris[cur].size() > dump_t0) { float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f}; const std::vector<float>& tv = g_rt_tris[cur];
                 for (size_t q = dump_t0; q + 2 < tv.size(); q += 3) for (int k = 0; k < 3; ++k) { lo[k] = std::min(lo[k], tv[q + k]); hi[k] = std::max(hi[k], tv[q + k]); }
