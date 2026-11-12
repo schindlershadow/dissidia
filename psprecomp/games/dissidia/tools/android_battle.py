@@ -37,7 +37,14 @@ class AndroidGame(bt.Game):
         if not os.path.exists(env_old):
             self.adb('pull', DEV + '/env.txt', env_old)
         ini = os.path.join(self.out, 'bt_settings.ini')
-        with open(ini, 'w') as f:
+        if a.use_settings:          # the player's own settings.ini (render scale, SSAO, RT rows ...): what they see is what is tested
+            self.adb('pull', DEV + '/settings.ini', ini)
+            with open(ini) as f: kept = f.read()
+            drop = tuple(k + '=' for k in a.drop)
+            kept = ''.join(l + '\n' for l in kept.splitlines() if not l.startswith(drop or ('\0',)) and not l.startswith(('touch=', 'check_updates=', 'display=', 'fps=') if a.fps_override else ('touch=', 'check_updates=', 'display=')))
+            with open(ini, 'w') as f: f.write(kept + 'touch=off\ncheck_updates=0\ndisplay=fullscreen\n' + ('fps=%d\n' % a.fps if a.fps_override else ''))
+        else:
+          with open(ini, 'w') as f:
             f.write('display=fullscreen\nfps=%d\nrender_scale=%d\nvoice=en\ncheck_updates=0\nhd_textures=0\nrenderer=%s\ngpu_driver=%s\nrt_shadows=%s\n'
                     'contact_shadows=%d\ntouch=off\n' % (a.fps, a.render_scale, a.renderer, a.driver, a.rt, 1 if a.rt == '1' else a.contact))
         env = {'PSPRECOMP_SETTINGS': DEV + '/bt_settings.ini', 'PSPRECOMP_FIGHTER_LOG': '1', 'PSPRECOMP_SAVEDATA_AUTO': '0',
@@ -102,6 +109,9 @@ class AndroidGame(bt.Game):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--serial', required=True)
+    ap.add_argument('--fps-override', action='store_true', help='with --use-settings: still apply --fps instead of the saved one')
+    ap.add_argument('--drop', action='append', default=[], metavar='KEY', help='with --use-settings: leave this saved setting out (bisecting)')
+    ap.add_argument('--use-settings', action='store_true', help="test with the device's own settings.ini (render scale, SSAO, RT rows, driver ...) instead of the private minimal one")
     ap.add_argument('--renderer', default='vulkan', choices=['gl', 'vulkan'])
     ap.add_argument('--driver', default='', help='installed GPU driver id ("" = the phone\'s own)')
     ap.add_argument('--rt', default='0', choices=['0', '1'], help='Ray-Traced Shadows')

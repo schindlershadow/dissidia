@@ -162,3 +162,17 @@ calls GL directly, so introducing Vulkan means first isolating the GL calls.
 
 
 * RT scene fixes for broken-object shadows (issue #4): (a) the game culls draws outside the camera, so a caster just off screen dropped out of the RT scene and its shadow popped away; settled geometry (the same draw, byte for byte, in 3 frames) is now kept while its box is wholly outside the view and dropped once it is inside the view and no longer drawn (`PSPRECOMP_RT_NO_PERSIST=1` turns this off). (b) The broken-block debris (vertex type 0x99) is drawn with its own view matrix, so its world matrix alone put the shadows in the middle of the floor; such draws are re-expressed in the main view's world (`inv(view_main) * view_draw * p`, `PSPRECOMP_RT_NO_VIEWFIX=1` turns it off). Debugging aid: F9 in the window logs every 3D draw of the next frame with its state, bounding box and camera (`rtdump.log`) and saves `rtdump_N.tga`; `PSPRECOMP_RT_DUMP_EVERY=N` does it every N frames for automated runs.
+
+## Screen-space reflections: effects layer (issue #7)
+
+The screen-space reflection (`psp_screenfx.cpp`, pass 1) marches against the scene depth, which blended effects (orbs, beams, auras, glass: depth tested,
+not depth writing) never touch. Every such draw (the same test as the RT effects layer) is issued a second time into a per-target layer (`fxl_*` in
+`psp_ge_draw.cpp`): RGBA8 colour (the game's own blend over black = premultiplied; alpha = coverage, additive draws leave it alone) plus its own
+DEPTH24_STENCIL8 depth texture (writes on = the nearest effect fragment per pixel; the Vulkan layer supports no other depth texture format). The march
+hit-tests it beside the scene depth and blends the effect over the opaque reflection with a stronger base reflectivity than solid geometry
+(`PSPRECOMP_SSR_FX_GAIN`). An effect only counts when it floats clearly in front of the scene at that pixel (the floor's own water sheet would
+otherwise cover everything). The layer is cleared after the pass used it, so effects the game draws after its 3D run show up one frame late.
+A ray that leaves into the sky samples the picture where its direction projects (the stage's sky beams). Not used with ray-traced reflections.
+Cost: one extra full-size target per displayed buffer and a second submit of the blended draws. The Vulkan layer allows 4 samplers per program, which
+this uses up. Also fixed: ray-traced reflections lost ray query when Ray-Traced Shadows was saved Off (`PSPRECOMP_VK_RT=0`), and RT descriptors are
+rewritten after every acceleration-structure re-allocation (a reused handle value left them stale). Tested on RP6 (Turnip) and a GTX 1660 (GL).

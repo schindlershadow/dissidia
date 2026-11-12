@@ -21,6 +21,8 @@ struct ScreenFxScene {
     float near_z, far_z;   // glDepthRange of the scene's draws
     float clear_z;         // what the buffer's depth was cleared to (the sky / background)
     bool rt_fx = false;    // psp_rt.h: the scene also has an effects layer (blended draws), traced by the reflection
+    GLuint fx_color = 0;   // screen-space effects layer (psp_ge_draw.cpp fxl_*): blended draws, RGBA8 (alpha = coverage) + depth texture; 0 = none
+    GLuint fx_depth = 0;
     bool rt_ready = false; // psp_rt.h: this frame's world-space triangles are built; the contact shadow uses ray queries
 };
 
