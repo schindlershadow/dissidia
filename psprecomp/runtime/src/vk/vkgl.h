@@ -11,8 +11,10 @@ struct SDL_Window;
 
 namespace vkgl {
 
-/// PSPRECOMP_RENDERER=vulkan (or "vk").
+/// PSPRECOMP_RENDERER=vulkan (or "vk") and Vulkan is usable here; asking for it on a machine without Vulkan falls back to OpenGL.
 bool requested();
+/// Whether a Vulkan 1.1 device can be used on this machine (probed once, needs SDL video initialised). *why says why not.
+bool available(std::string* why);
 /// Creates the Vulkan context for `window` (which must have been created with SDL_WINDOW_VULKAN) and installs the GL
 /// entry points into glad's pointers. Returns false (with *err) if Vulkan cannot be used; nothing is installed then.
 bool init(SDL_Window* window, bool vsync, std::string* err);

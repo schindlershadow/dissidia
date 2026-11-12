@@ -386,9 +386,25 @@ static void install() {
     SET(GetQueryObjectuiv); SET(BeginTransformFeedback); SET(EndTransformFeedback);
 }
 
+bool available(std::string* why) {
+    static int state = 0;   // 0 = not probed, 1 = usable, -1 = not
+    static std::string reason;
+    if (g_active) return true;
+    if (state == 0) {
+        state = pspvk::vulkan_available(&reason) ? 1 : -1;
+        if (state < 0) std::fprintf(stderr, "[VKGL] Vulkan is not available: %s\n", reason.c_str());
+    }
+    if (state < 0 && why) *why = reason;
+    return state > 0;
+}
+
 bool requested() {
     const char* r = std::getenv("PSPRECOMP_RENDERER");
-    return r && (!std::strcmp(r, "vulkan") || !std::strcmp(r, "vk"));
+    if (!(r && (!std::strcmp(r, "vulkan") || !std::strcmp(r, "vk")))) return false;
+    std::string why;
+    if (available(&why)) return true;
+    std::fprintf(stderr, "[VKGL] Vulkan requested but unavailable (%s); using OpenGL\n", why.c_str());
+    return false;
 }
 bool active() { return g_active; }
 
