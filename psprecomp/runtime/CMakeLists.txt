@@ -1,6 +1,33 @@
 cmake_minimum_required(VERSION 3.20)
 project(psprecomp_runtime CXX C)
 
+set(PSP_VFPU_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/psp_vfpu_core.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/psp_vfpu_ops.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/vfpu_ppsspp/psp_vfpu_support.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/vfpu_ppsspp/Core/MIPS/InterpreterVFPU.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/vfpu_ppsspp/Core/MIPS/MIPSVFPUUtils.cpp
+)
+set_source_files_properties(${PSP_VFPU_SOURCES} PROPERTIES
+    COMPILE_OPTIONS "-fno-strict-aliasing;-w"
+    INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/src/vfpu_ppsspp")
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Find SDL2 via pkg-config (Homebrew installs pkg-config file)
+# A release builds with the portable toolchain bundle (toolchain/build_bundle.py): its toolchain file sets PSPRECOMP_DEPS_CMAKE,
+# whose deps.cmake defines the same PkgConfig::SDL2 / FREETYPE / AVCODEC and ZLIB::ZLIB targets from static libraries built
+# with the bundled compiler (no pkg-config, no system libraries). Otherwise the system's are found with pkg-config.
+if(PSPRECOMP_DEPS_CMAKE)
+    include("${PSPRECOMP_DEPS_CMAKE}")
+else()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
+    # FreeType renders the sceLibFont (sceFont*) HLE glyphs
+    pkg_check_modules(FREETYPE REQUIRED IMPORTED_TARGET freetype2)
+endif()
+
 # GL-on-Vulkan backend (PSPRECOMP_RENDERER=vulkan at run time; docs/VULKAN_PORT.md). Desktop only for now.
 option(PSPRECOMP_VULKAN "Build the Vulkan backend" ON)
 set(PSP_VKGL_SOURCES "")
@@ -45,33 +72,6 @@ if(PSPRECOMP_VULKAN AND NOT APPLE)
     else()
         message(STATUS "psprecomp: Vulkan backend disabled (needs the Vulkan headers and glslang)")
     endif()
-endif()
-
-set(PSP_VFPU_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/psp_vfpu_core.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/psp_vfpu_ops.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/vfpu_ppsspp/psp_vfpu_support.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/vfpu_ppsspp/Core/MIPS/InterpreterVFPU.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/vfpu_ppsspp/Core/MIPS/MIPSVFPUUtils.cpp
-)
-set_source_files_properties(${PSP_VFPU_SOURCES} PROPERTIES
-    COMPILE_OPTIONS "-fno-strict-aliasing;-w"
-    INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/src/vfpu_ppsspp")
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-# Find SDL2 via pkg-config (Homebrew installs pkg-config file)
-# A release builds with the portable toolchain bundle (toolchain/build_bundle.py): its toolchain file sets PSPRECOMP_DEPS_CMAKE,
-# whose deps.cmake defines the same PkgConfig::SDL2 / FREETYPE / AVCODEC and ZLIB::ZLIB targets from static libraries built
-# with the bundled compiler (no pkg-config, no system libraries). Otherwise the system's are found with pkg-config.
-if(PSPRECOMP_DEPS_CMAKE)
-    include("${PSPRECOMP_DEPS_CMAKE}")
-else()
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
-    # FreeType renders the sceLibFont (sceFont*) HLE glyphs
-    pkg_check_modules(FREETYPE REQUIRED IMPORTED_TARGET freetype2)
 endif()
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/psp_mbedtls.cmake")
