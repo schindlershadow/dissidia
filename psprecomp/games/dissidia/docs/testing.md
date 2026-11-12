@@ -103,3 +103,10 @@ Same menu walk, run on a phone over adb (the runtime's debug socket through `adb
 The game's `env.txt` is replaced for the run and put back afterwards; a private settings file is used. Saves are the device's own (Quick Battle must be
 unlocked; autosave is off). The runtime's test driver only runs with a script, so an idle one is pushed when `--script` is not given.
 
+
+## Debug menu: Enemy AI
+
+Settings > Debug > **Enemy AI** (On / Off, this session only). Off skips the CPU brain tick (`FUN_08A64400`, brains in CPU mode), so the CPU fighter never chooses an
+action: it stands and takes hits. It starts to apply about 7 s into a fight (skipping the tick during the intro leaves the fight stuck waiting for the brains).
+`PSPRECOMP_DBG_NOAI=1` starts with it off; `PSPRECOMP_TEST_NO_AI=1` is the test harnesses' version (applies once the test clock runs).
+The row comes from a generic hook, `psp_settings_add_debug_toggle` (runtime/include/psp_settings.h): a game module adds up to 6 on/off rows to the Debug page.

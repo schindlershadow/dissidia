@@ -182,6 +182,8 @@ size_t g_test_next = 0;
 double g_gt_ms = 0;                     // game time in the battle, ms
 bool g_gt_started = false, g_test_on = false;
 uint32_t g_test_buttons = 0, g_test_analog = 0x8080;
+bool g_dbg_no_ai = false;      // debug menu: Enemy AI off (the CPU brain tick is skipped once the fight has been running a while)
+float g_battle_age = 0.f;      // ticks (1/60 s) the battle has been running (the menu option waits for the intro)
 bool g_test_freeze_cpu = false;   // PSPRECOMP_TEST_FREEZE_CPU=1: every fighter but the first one seen gets time step 0 while a test runs (a standing dummy)
 int g_player_char = -1;   // PSPRECOMP_TEST_PLAYER_CHAR=<charId>: the fighter under test (default: the first one seen)
 uint32_t g_human_vt = 0;   // vtable of the human's controller object (found at the first battle: the one a scripted press reaches)
@@ -521,6 +523,7 @@ void frame_end_hook(uint8_t* rdram, recomp_context* ctx) {
     g_play_ms += g_ticks * (1000.0 / 60.0);
     input_debug_frame();
     testdrive_frame(rdram, ctx);
+    if (battle_running()) g_battle_age += g_ticks; else g_battle_age = 0.f;
     fighter_log_frame();
     if (g_rate > 60 && ok(timer)) wrf(timer + 0x18u, g_ticks);   // the frame waited for one (short) vblank: dt = 60 / rate
     if (g_log && ok(timer)) {
@@ -1426,10 +1429,14 @@ float dissidia_own_clock_scale() { return g_ticks * 0.5f; }
 
 // PSPRECOMP_TEST_NO_AI=1 (the test harnesses): the CPU brain tick (FUN_08A64400, a0 = brain = actor +0x5C4) returns at once for brains in CPU
 // mode (brain +0x54 == 0) once the test clock runs (g_gt_started: skipping it earlier leaves the fight stuck in its intro), so the CPU fighter never chooses an action. The player's brain (human) still ticks.
+// The debug menu's Enemy AI option (Settings > Debug) does the same live: Off skips the CPU brains once the fight has been running 7 s (the intro waits for them).
+// PSPRECOMP_DBG_NOAI=1 starts with it off.
 FuncPtr g_orig_cpu_tick = nullptr;
+bool g_env_no_ai = false;
 void cpu_tick_noai_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t brain = static_cast<uint32_t>(ctx->r[4]);
-    if (g_gt_started && ok(brain) && static_cast<int32_t>(r32(brain + 0x54u)) == 0) return;   // only once the fight runs: the intro waits for the brains
+    const bool off = (g_env_no_ai && g_gt_started) || (g_dbg_no_ai && g_battle_age > 420.f);
+    if (off && ok(brain) && static_cast<int32_t>(r32(brain + 0x54u)) == 0) return;   // only once the fight runs: the intro waits for the brains
     g_orig_cpu_tick(rdram, ctx);
 }
 
@@ -1483,10 +1490,13 @@ void dissidia_framerate_install(uint8_t* rdram) {
     if (const char* x = std::getenv("PSPRECOMP_GAUGE30"); x && x[0] == '0') g_gauge30 = false;
     if ((g_orig_gauge_sm = ovl_battle_lookup(GAUGE_SM))) psp_dispatch_register(GAUGE_SM, gauge_sm_hook);
     if (g_orig_pressed) psp_dispatch_register(PRESSED, pressed_hook);
-    if (const char* na = std::getenv("PSPRECOMP_TEST_NO_AI"); na && na[0] && na[0] != '0') {
-        if ((g_orig_cpu_tick = ovl_battle_lookup(CPU_TICK))) { psp_dispatch_register(CPU_TICK, cpu_tick_noai_hook); std::fprintf(stderr, "[TEST] NO_AI: the CPU brain does not act\n"); }
-        else std::fprintf(stderr, "[TEST] NO_AI: brain tick not found\n");
-    }
+    if (const char* na = std::getenv("PSPRECOMP_TEST_NO_AI"); na && na[0] && na[0] != '0') g_env_no_ai = true;
+    if (const char* d = std::getenv("PSPRECOMP_DBG_NOAI"); d && d[0] && d[0] != '0') g_dbg_no_ai = true;
+    if ((g_orig_cpu_tick = ovl_battle_lookup(CPU_TICK))) {   // always: the debug menu switches it live (a pass-through while on)
+        psp_dispatch_register(CPU_TICK, cpu_tick_noai_hook);
+        psp_settings_add_debug_toggle({"Enemy AI", "Enemy AI (debug)\nOff: the CPU fighter never chooses an action; it stands and takes hits. Starts to apply about 7 s into a fight. This session only.",
+                                       +[]() { return !g_dbg_no_ai; }, +[](bool on) { g_dbg_no_ai = !on; }});
+    } else std::fprintf(stderr, "[FPS] CPU brain tick not found: no Enemy AI option\n");
     std::fprintf(stderr, "[FPS] press latch %s (pressed-test hook %s)\n", g_press_latch ? "on" : "off", g_orig_pressed ? "installed" : "NOT FOUND");
     if ((g_orig_rootmotion = psp_dispatch_probe_lookup(ROOT_MOTION))) psp_dispatch_register(ROOT_MOTION, root_motion_hook);
     else std::fprintf(stderr, "[FPS] root motion hook NOT installed (no function at %08X)\n", ROOT_MOTION);
