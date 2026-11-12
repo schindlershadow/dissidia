@@ -9,6 +9,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>
+#define PSP_MKDIR(p) _mkdir(p)
+#else
+#define PSP_MKDIR(p) mkdir((p), 0755)
+#endif
 #include <map>
 #include <mutex>
 #include <regex>
@@ -227,6 +233,9 @@ static std::string cache_dir() {
     const char* h = std::getenv("HOME");
     if (x && *x) return std::string(x) + "/dissidia-vk";
     if (h && *h) return std::string(h) + "/.cache/dissidia-vk";
+#ifdef _WIN32
+    if (const char* l = std::getenv("LOCALAPPDATA")) if (*l) return std::string(l) + "/dissidia-vk";
+#endif
     return "";
 }
 
@@ -254,13 +263,13 @@ bool compile_cached(Stage stage, const std::string& glsl, std::vector<uint32_t>*
         {
             *err = "no precompiled SPIR-V for " + std::string(name + 1) + " in " + dir + " (run the game once on a desktop build with Vulkan and copy the folder)";
             // Keep the exact text so tools/vk_spirv_tool can compile it on a machine that has glslang.
-            mkdir((dir + "/miss").c_str(), 0755);
+            PSP_MKDIR((dir + "/miss").c_str());
             if (FILE* f = std::fopen((dir + "/miss" + std::string(name, std::strlen(name) - 4) + ".glsl").c_str(), "wb")) { std::fwrite(glsl.data(), 1, glsl.size(), f); std::fclose(f); }
         }
         return false;
     }
     if (!dir.empty()) {
-        mkdir(dir.c_str(), 0755);
+        PSP_MKDIR(dir.c_str());
         if (FILE* f = std::fopen((dir + name).c_str(), "wb")) { std::fwrite(spirv->data(), 4, spirv->size(), f); std::fclose(f); }
     }
     return true;
