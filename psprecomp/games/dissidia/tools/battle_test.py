@@ -69,6 +69,8 @@ class Game:
         env = dict(os.environ, DISPLAY=self.display, PSPRECOMP_SETTINGS=ini, PSPRECOMP_MS0=ms0, PSPRECOMP_FIGHTER_LOG='1',
                    PSPRECOMP_DEBUG_PORT=str(self.port), PSPRECOMP_SAVEDATA_AUTO='0', PSPRECOMP_TEST_FREEZE_CPU='1')
         env.pop('PSPRECOMP_FPS', None)
+        if os.environ.get('BT_NO_FREEZE'):      # let the CPU fighter act (the dummy is the default)
+            env['PSPRECOMP_TEST_FREEZE_CPU'] = '0'
         if os.path.exists(self.go_file):
             os.remove(self.go_file)
         env['PSPRECOMP_TEST_GO'] = self.go_file
@@ -159,7 +161,14 @@ def free_display():
     raise RuntimeError('no free X display')
 
 
+class _NoProc:
+    def terminate(self):
+        pass
+
+
 def start_xvfb():
+    if os.environ.get('BT_DISPLAY'):           # no Xvfb on this machine: use an existing X display (the 480x272 test windows show on it)
+        return _NoProc(), os.environ['BT_DISPLAY']
     n = free_display()
     p = subprocess.Popen(['Xvfb', ':%d' % n, '-screen', '0', '1280x720x24', '-nolisten', 'tcp', '-ac', '+extension', 'GLX'],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
@@ -208,6 +217,8 @@ def walk_menus(g, char, tries=14, stage=12):
     g.step('cross')                                    # YES
     time.sleep(2.0)
     g.settle(10)
+    if os.environ.get('BT_SHOT_SETUP'):
+        g.shot().save(os.path.join(g.out, 'setup.png'))      # the battle setup page (rules, stage)
     if stage:                                          # battle setup: STAGE row, entry `stage` of 20 (1 = Random), back to Enter Battle
         g.step('down', wait=0.4)
         for _ in range(stage - 1):
@@ -478,6 +489,136 @@ def compare(a):
     return 1 if worst > a.tolerance else 0
 
 
+# ---- memory scan: find a value that changes per update instead of per game second --------------------------------------
+
+def read_ram(g, lo, hi):
+    """RAW reads (64 KB each) of guest memory lo..hi through the debug socket"""
+    out = bytearray()
+    for a in range(lo, hi, 0x10000):
+        with socket.create_connection(('127.0.0.1', g.port), timeout=30) as s:
+            s.sendall(('RAW %X %d\n' % (a, min(0x10000, hi - a))).encode())
+            buf = b''
+            n = min(0x10000, hi - a)
+            while len(buf) < n:
+                c = s.recv(n - len(buf))
+                if not c:
+                    break
+                buf += c
+            out += buf
+    return bytes(out)
+
+
+def game_ms(g):
+    """the game clock (ms) of the last [FIGHTER] gt= line of the log"""
+    try:
+        with open(g.log, 'rb') as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 60000))
+            m = re.findall(rb'\[FIGHTER\] gt=(\d+)', f.read())
+        return int(m[-1]) if m else -1
+    except OSError:
+        return -1
+
+
+def scan_run(a, fps):
+    """one battle at `fps`; RAM snapshots at the game times of --at (ms); returns {gt: bytes}"""
+    os.makedirs(a.out, exist_ok=True)
+    lo, hi = (int(x, 16) for x in a.range.split('-'))
+    xp, disp = start_xvfb()
+    g = Game(os.path.abspath(a.work), fps, a.out, disp, free_port(), script=os.path.abspath(a.script) if a.script else None,
+             extra_env={'PSPRECOMP_TEST_PLAYER_CHAR': str(CHAR_ID[a.char.lower()])})
+    snaps = {}
+    try:
+        g.start()
+        walk_menus(g, a.char, stage=a.stage)
+        for t in [int(x) for x in a.at.split(',')]:
+            end = time.time() + a.timeout
+            while g.alive() and game_ms(g) < t and time.time() < end:
+                time.sleep(0.02)
+            snaps[t] = (game_ms(g), read_ram(g, lo, hi))
+            print('[scan] %d fps: snapshot at gt=%d' % (fps, snaps[t][0]), file=sys.stderr)
+        return snaps, lo
+    finally:
+        g.stop()
+        xp.terminate()
+
+
+def scan(a):
+    import struct, math
+    res = {}
+    for fps in [int(x) for x in a.rates.split(',')]:
+        snaps, lo = scan_run(argparse.Namespace(**dict(vars(a), out=os.path.join(a.out, 'scan_%d' % fps))), fps)
+        ts = sorted(snaps)
+        (g0, b0), (g1, b1) = snaps[ts[0]], snaps[ts[-1]]
+        n = min(len(b0), len(b1)) // 4
+        w0, w1 = struct.unpack('<%dI' % n, b0[:n * 4]), struct.unpack('<%dI' % n, b1[:n * 4])
+        found = {}
+        for i in range(n):
+            if w0[i] == w1[i]:
+                continue
+            f0, f1 = struct.unpack('<ff', struct.pack('<II', w0[i], w1[i]))
+            if not (math.isfinite(f0) and math.isfinite(f1)) or abs(f0) > 1e5 or abs(f1) > 1e5 or abs(f0) < 1e-6 and abs(f1) < 1e-6:
+                continue
+            found[lo + i * 4] = (f0, f1, (f1 - f0) / max(1, g1 - g0) * 1000.0)     # per game second
+        res[fps] = found
+        print('[scan] %d fps: %d float words changed over %d ms' % (fps, len(found), g1 - g0), file=sys.stderr)
+    rates = sorted(res)
+    lo_r, hi_r = rates[0], rates[-1]
+    print('addr       %s -> %s   per-second change at %d fps | at %d fps | ratio' % ('A', 'B', lo_r, hi_r))
+    for ad in sorted(set(res[lo_r]) & set(res[hi_r])):
+        d0, d1 = res[lo_r][ad][2], res[hi_r][ad][2]
+        if d0 == 0 or d1 == 0:
+            continue
+        r = d1 / d0
+        if abs(d0) > a.min_rate and (r > a.ratio or r < 1 / a.ratio) and r > 0:
+            print('%08X  %12.5g -> %-12.5g  %10.4g | %10.4g | x%.2f' % (ad, res[hi_r][ad][0], res[hi_r][ad][1], d0, d1, r))
+    return 0
+
+
+def gauge_drain(a):
+    """the assist gauge's idle drain at each rate (runs in parallel): time for the draining bar word (+0x1C of the gauge struct) to
+    go from `--from` to 0 must be the same at every rate. PSPRECOMP_GAUGE30=0 in the environment shows the unfixed behaviour."""
+    out = a.out
+    os.makedirs(out, exist_ok=True)
+    script = os.path.join(out, 'noinput.txt')
+    with open(script, 'w') as f:
+        f.write('%d quit\n' % a.length)
+    rates = [int(x) for x in a.rates.split(',')]
+    procs = []
+    for r in rates:
+        env = dict(os.environ, PSPRECOMP_ASSIST_GAUGE='1')
+        procs.append(subprocess.Popen([sys.executable, os.path.abspath(__file__), 'run', '--work', a.work, '--script', script, '--fps', str(r),
+                                       '--out', os.path.join(out, 'r%d' % r), '--timeout', str(a.timeout)], env=env,
+                                      stdout=subprocess.DEVNULL, stderr=open(os.path.join(out, 'r%d.err' % r), 'w')))
+    for p in procs:
+        p.wait()
+    res = {}
+    for r in rates:
+        vals = []
+        try:
+            for l in open(os.path.join(out, 'r%d' % r, 'run_%d.log' % r), errors='replace'):
+                m = re.match(r'\[GSTRUCT\] gt=(\d+) side=0 step=\S+ (.*)', l)
+                if m:
+                    w = dict(x.split('=') for x in m.group(2).split())
+                    vals.append((int(m.group(1)), float(w['+1C'])))
+        except OSError:
+            pass
+        hi = [t for t, v in vals if v >= a.start]
+        z = [t for t, v in vals if hi and t >= max(hi) and v <= 0]
+        res[r] = (z[0] - max(hi)) if z else None
+        lg = os.path.join(out, 'r%d' % r, 'run_%d.log' % r)
+        if not a.keep and os.path.exists(lg):     # the logs of a 120 fps run are huge; keep only the gauge lines
+            with open(lg, errors='replace') as fi, open(lg + '.gauge', 'w') as fo:
+                for l in fi:
+                    if l.startswith(('[GSTRUCT]', '[GAUGE', '[ASSIST]', '[TEST]')):
+                        fo.write(l)
+            os.remove(lg)
+        print('%4d fps: bar word %d -> 0 in %s ms' % (r, a.start, res[r]))
+    ok = all(v is not None for v in res.values()) and max(res.values()) <= min(res.values()) * a.tol
+    print('PASS' if ok else 'FAIL: the drain takes a different time at different frame rates')
+    return 0 if ok else 1
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     sub = ap.add_subparsers(dest='what', required=True)
@@ -517,7 +658,32 @@ def main(argv):
     p = sub.add_parser('analyze')
     p.add_argument('logs', nargs='+')
     p.add_argument('--tolerance', type=float, default=0.5)
+    p = sub.add_parser('scan', help='RAM snapshots at game times, at each rate: words whose change per game second differs between rates')
+    p.add_argument('--work', required=True)
+    p.add_argument('--script')
+    p.add_argument('--out', default=tempfile.mkdtemp(prefix='battle_test_'))
+    p.add_argument('--char', default='squall')
+    p.add_argument('--stage', type=int, default=12)
+    p.add_argument('--rates', default='30,120')
+    p.add_argument('--at', default='3000,13000')
+    p.add_argument('--range', default='08800000-0A000000')
+    p.add_argument('--timeout', type=int, default=120)
+    p.add_argument('--ratio', type=float, default=1.5)
+    p.add_argument('--min-rate', dest='min_rate', type=float, default=0.001)
+    p = sub.add_parser('gauge-drain', help='assist gauge idle drain takes the same time at every frame rate (parallel runs)')
+    p.add_argument('--work', required=True)
+    p.add_argument('--out', default=tempfile.mkdtemp(prefix='battle_test_'))
+    p.add_argument('--rates', default='30,60,120')
+    p.add_argument('--length', type=int, default=16000, help='ms of game time per run')
+    p.add_argument('--start', type=float, default=1500.0)
+    p.add_argument('--tol', type=float, default=1.15)
+    p.add_argument('--keep', action='store_true', help='keep the full run logs')
+    p.add_argument('--timeout', type=int, default=500)
     a = ap.parse_args(argv)
+    if a.what == 'gauge-drain':
+        return gauge_drain(a)
+    if a.what == 'scan':
+        return scan(a)
     if a.what == 'run':
         print(run(a))
         return 0
