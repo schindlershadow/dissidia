@@ -209,7 +209,7 @@ int fps_index() {
     for (int i = 0; i < g_fps.count; ++i) if (g_fps.rates[i] == f) return i;
     return 0;
 }
-constexpr int k_max_rs = 4;
+constexpr int k_max_rs = 16;   // 16x = 7680x4352 (8K); the draw layer clamps to the GPU's max texture size
 
 // ---- Network page --------------------------------------------------------------------------------------
 constexpr const char* NET_DEFAULT_SERVER = "party.schindlershadow.com:27500";

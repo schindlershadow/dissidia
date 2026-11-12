@@ -53,7 +53,7 @@ struct GeTarget {
     bool mip_dirty = true;     // drawn into since its mipmaps were last built (see ge_draw_find_target_texture)
 };
 
-// Render scale (PSPRECOMP_RENDER_SCALE, 1..8 or auto): targets are 480*g_rs x 272*g_rs.
+// Render scale (PSPRECOMP_RENDER_SCALE, 1..16 or auto): targets are 480*g_rs x 272*g_rs.
 static int g_rs = 1;
 static GeTarget g_targets[GE_MAX_TARGETS];
 // Only the buffers that reach the screen are rendered at the render scale. Every other target the game draws into
@@ -721,7 +721,7 @@ static GLenum map_prim_type(int prim_type) {
 }
 
 // PSP-native render-target dimensions. Targets are allocated at
-// (480*g_rs) x (272*g_rs), g_rs = PSPRECOMP_RENDER_SCALE (1..8, default 1;
+// (480*g_rs) x (272*g_rs), g_rs = PSPRECOMP_RENDER_SCALE (1..16, default 1;
 // PPSSPP-style "render resolution"). All geometry is expressed in PSP pixels
 // (3D via the PSP viewport registers, 2D "through" vertices via the
 // 240/136 NDC mapping in ge_transform_vertices), so only the GL viewport has
@@ -2113,7 +2113,7 @@ void ge_draw_init() {
             v = v < 1 ? 1 : v > 3 ? 3 : v;
             std::fprintf(stderr, "[DRAW] render scale auto: drawable %dx%d -> %d\n", dw, dh, v);
         }
-        g_rs = v < 1 ? 1 : v > 8 ? 8 : v;
+        g_rs = v < 1 ? 1 : v > 16 ? 16 : v;
         GLint maxtex = 0;
         glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxtex);
         while (g_rs > 1 && (480 * g_rs > maxtex || 272 * g_rs > maxtex)) g_rs--;
@@ -3826,7 +3826,7 @@ void ge_draw_present_if_stale(uint8_t* rdram) {
 bool ge_draw_set_render_scale(int n) {
     GLint maxtex = 0;
     glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxtex);
-    n = n < 1 ? 1 : n > 8 ? 8 : n;
+    n = n < 1 ? 1 : n > 16 ? 16 : n;
     while (n > 1 && (480 * n > maxtex || 272 * n > maxtex)) n--;
     if (n == g_rs) return true;
     if (g_ab) return false;
