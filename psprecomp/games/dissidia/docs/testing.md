@@ -20,6 +20,7 @@ Needs: Xvfb, python3 + Pillow, a save in `<work>/ms0` (Quick Battle unlocked) an
   `who`: `player` / `cpu` or a slot number (0 = the first fighter seen = the player, 1 = the CPU).
   Moves that end when a button is released (Revolver Drive: Square held, stick back) need the button held in the script too.
 - **`PSPRECOMP_INPUT_RECORD=<file>`**: writes the pad state the game was handed as a script (play a move by hand once, replay at any rate).
+- **`PSPRECOMP_TEST_NO_AI=1`** (set by the harnesses): CPU brains (brain +0x54 mode 0) never run their tick (roster.cpp), so the CPU fighter does not act once the test clock runs (earlier the intro needs the brains).
 - **`PSPRECOMP_TEST_FREEZE_CPU=1`** (set by the harness): every fighter but the first gets time step 0 while a test runs (a dummy).
 - **Logs**: `[FIGHTER] gt=<game ms> ... cur=<script now> pos=<x,z of the body root, +0x110/+0x118>` for every fighter every update in test runs;
   `[MOTION]` lines for spawned objects carry `gt=` and position.
@@ -92,3 +93,13 @@ Revolver Drive is a ground HP attack (hold the HP attack button, Triangle by def
   (PASS: 2767 / 2767 / 2766 ms; with PSPRECOMP_GAUGE30=0 at 120: 758 ms). The time before the drain starts differs between runs because
   game time 0 is when the harness sees the HUD (a few hundred ms of jitter); compare durations, not start times.
 - Gains from attacks still work at 120 with the fix (checked: gauge 2000 -> 2930 over the attack script).
+
+## On an Android device (`tools/android_battle.py`)
+
+Same menu walk, run on a phone over adb (the runtime's debug socket through `adb forward`, the game's `last_run.log`, screenshots pulled back):
+
+    android_battle.py --serial <ip:port> --renderer vulkan [--driver ID] [--rt 1] [--fps 30] [--shots 4,8] [--env PSPRECOMP_SSAO=0] --out DIR
+
+The game's `env.txt` is replaced for the run and put back afterwards; a private settings file is used. Saves are the device's own (Quick Battle must be
+unlocked; autosave is off). The runtime's test driver only runs with a script, so an idle one is pushed when `--script` is not given.
+

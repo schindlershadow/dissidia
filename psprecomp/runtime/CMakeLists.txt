@@ -44,6 +44,10 @@ set(PSP_VKGL_ENABLED OFF)
 if(PSPRECOMP_VULKAN AND NOT APPLE)
     if(ANDROID)
         set(PSP_VKGL_ENABLED ON)   # NDK headers
+        if(TARGET PkgConfig::GLSLANG)   # android/build_deps.py built glslang: shaders missing from the SPIR-V cache are compiled on the device
+            set(PSP_VKGL_LIBS PkgConfig::GLSLANG)
+            set(PSP_ANDROID_GLSLANG ON)
+        endif()
     elseif(PSPRECOMP_BUNDLED_DEPS)
         if(TARGET PkgConfig::GLSLANG AND VULKAN_HEADERS_FOUND)
             set(PSP_VKGL_LIBS PkgConfig::GLSLANG)
@@ -60,12 +64,11 @@ if(PSPRECOMP_VULKAN AND NOT APPLE)
         endif()
     endif()
     if(PSP_VKGL_ENABLED)
-        set(PSP_VKGL_SOURCES src/vk/psp_vk_loader.cpp src/vk/psp_vk_context.cpp src/vk/psp_vk_glsl.cpp src/vk/vkgl_core.cpp src/vk/vkgl_api.cpp)
+        set(PSP_VKGL_SOURCES src/vk/psp_vk_loader.cpp src/vk/psp_vk_context.cpp src/vk/psp_vk_glsl.cpp src/vk/vkgl_core.cpp src/vk/vkgl_api.cpp src/vk/psp_vk_warmup.cpp)
         if(ANDROID)
             list(APPEND PSP_VKGL_SOURCES src/psp_gl_table.cpp)
-        else()
-            list(APPEND PSP_VKGL_SOURCES src/vk/psp_vk_rt.cpp)   # ray-queried shadows (desktop only: no ray query on phone GPUs)
         endif()
+        list(APPEND PSP_VKGL_SOURCES src/vk/psp_vk_rt.cpp)   # ray-queried shadows (desktop; Android with a custom driver that has ray query)
         message(STATUS "psprecomp: Vulkan backend enabled")
     elseif(PSPRECOMP_REQUIRE_VULKAN)
         message(FATAL_ERROR "psprecomp: the Vulkan backend was required but the Vulkan headers or glslang were not found")
@@ -253,6 +256,7 @@ set(RUNTIME_SOURCES
     src/psp_screenfx.cpp
     src/psp_debug_socket.cpp
     src/psp_gl_stats.cpp
+    src/psp_gpu_driver.cpp   # custom Vulkan drivers (Android/Adreno); the list + zip parts build everywhere
     ${PSP_VKGL_SOURCES}
 )
 
@@ -355,6 +359,14 @@ else()
     message(STATUS "psprecomp: mbedTLS 3.6+ NOT found -> no HTTPS (cloud sync limited to folder sync)")
 endif()
 
+# Custom GPU drivers on Android: libadrenotools (android/build_deps.py builds it; deps.cmake defines the target). The four hook
+# libraries it needs at run time are packed into the APK next to libmain.so (games/dissidia/tools/android_build.py).
+if(ANDROID AND TARGET PkgConfig::ADRENOTOOLS)
+    message(STATUS "psprecomp: libadrenotools found -> custom GPU drivers enabled")
+    target_compile_definitions(psprecomp_core PRIVATE PSPRECOMP_HAVE_ADRENOTOOLS)
+    target_link_libraries(psprecomp_core PUBLIC PkgConfig::ADRENOTOOLS)
+endif()
+
 target_link_libraries(psprecomp_core PUBLIC
     PkgConfig::SDL2
     PkgConfig::FREETYPE
@@ -374,8 +386,8 @@ target_link_libraries(psprecomp_runtime PRIVATE
 if(PSP_VKGL_SOURCES)
     target_compile_definitions(psprecomp_core PUBLIC PSPRECOMP_HAVE_VKGL)
     target_include_directories(psprecomp_core PRIVATE ${PSP_VKGL_INCLUDES})
-    if(ANDROID)
-        target_compile_definitions(psprecomp_core PRIVATE PSPVK_NO_GLSLANG)
+    if(ANDROID AND NOT PSP_ANDROID_GLSLANG)
+        target_compile_definitions(psprecomp_core PRIVATE PSPVK_NO_GLSLANG)   # no compiler: only the SPIR-V cache
     endif()
     target_compile_definitions(psprecomp_core PRIVATE VK_NO_PROTOTYPES)
     if(PSP_VKGL_LIBS)
@@ -658,6 +670,13 @@ if(PSP_VULKAN_INCLUDE_DIR AND NOT ANDROID AND NOT PSPRECOMP_BUNDLED_DEPS)
     target_compile_options(test_vk_context PRIVATE -O2 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
     add_test(NAME vk_context_tests COMMAND test_vk_context)
 endif()
+
+# Custom GPU driver module: release-list parsing, meta.json, zip unpacking (no network, no Android).
+add_executable(test_gpu_driver tests/test_gpu_driver.cpp src/psp_gpu_driver.cpp src/hle/psp_http.cpp)
+target_include_directories(test_gpu_driver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/hle)
+target_link_libraries(test_gpu_driver PRIVATE ZLIB::ZLIB $<$<NOT:$<PLATFORM_ID:Windows>>:pthread>)
+target_compile_options(test_gpu_driver PRIVATE -O1 -Wall -Wextra -Wno-unused-parameter)
+add_test(NAME gpu_driver_tests COMMAND test_gpu_driver)
 
 if(PSP_VULKAN_INCLUDE_DIR AND NOT ANDROID AND NOT PSPRECOMP_BUNDLED_DEPS)
     find_library(GLSLANG_LIB glslang)

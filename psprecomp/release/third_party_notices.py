@@ -16,6 +16,7 @@ import json
 LICENSES = {
     "zlib": "zlib license", "freetype": "FreeType License (FTL) or GPL-2.0", "sdl2": "zlib license",
     "mbedtls": "Apache-2.0 or GPL-2.0-or-later", "openssl": "Apache-2.0", "pspdecrypt": "GPL-3.0", "ffmpeg": "LGPL-2.1-or-later",
+    "libadrenotools": "BSD-2-Clause", "liblinkernsbypass": "BSD-2-Clause",
 }
 USES = {
     "zlib": "linked into the game; used by the toolchain's pspdecrypt",
@@ -25,6 +26,8 @@ USES = {
     "openssl": "libcrypto statically linked into pspdecrypt only (SHA-256, DES-CBC)",
     "pspdecrypt": "separate executable the installer runs to decrypt the game's EBOOT.BIN (not linked into anything)",
     "ffmpeg": "libavcodec/libavutil, ATRAC3, ATRAC3+ and H.264 decoders only, linked statically into the game",
+    "libadrenotools": "Android only: loads a community Vulkan driver chosen in Settings (custom GPU drivers) instead of the phone's own; linked into the game, plus four small hook libraries in the APK",
+    "liblinkernsbypass": "Android only: linker-namespace helper of libadrenotools, linked into the game",
 }
 FFMPEG_FLAGS = ("--disable-everything --disable-autodetect --disable-programs --disable-doc --disable-debug --disable-network "
                 "--disable-avformat --disable-avdevice --disable-avfilter --disable-swscale --disable-swresample --disable-x86asm "

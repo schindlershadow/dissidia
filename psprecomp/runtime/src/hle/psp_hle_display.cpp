@@ -152,7 +152,18 @@ static void hle_sceDisplayWaitVblankStart(
         if (!g_vclock_on && rest > rest.zero())
             g_clock_skew_us.fetch_add(std::chrono::ceil<std::chrono::microseconds>(rest).count());
     } else {
-        std::this_thread::sleep_until(next - skew);
+        // Above 60 Hz a frame that finishes only slightly after its vblank would otherwise sleep a whole extra period (22 ms at 90 Hz): one
+        // frame in 16 on the RP6, so 90 / 120 fps measured 84 / 112. Within `tol` of the boundary it is let through at once; the next frame
+        // is back on the grid by itself (its work is shorter than a period). PSPRECOMP_VBLANK_LATE=<fraction of a period>, 0 = off.
+        static const double tol = [] { const char* e = std::getenv("PSPRECOMP_VBLANK_LATE"); return e && e[0] ? std::atof(e) : 0.5; }();
+        bool late_ok = false;
+        if (tol > 0) {
+            std::lock_guard<std::mutex> lk(g_vb_mutex);
+            const auto prev = next - g_vb_period;   // the boundary just passed: only a frame that was running while it passed is late
+            late_ok = g_vb_hz > 60 && prev > t_last_game &&
+                      (now + skew) - prev <= std::chrono::duration_cast<std::chrono::nanoseconds>(g_vb_period * tol);
+        }
+        if (!late_ok) std::this_thread::sleep_until(next - skew);
     }
     psp_prof::seq("vblank-end");
     if (g_vclock_on) g_vclock_us.fetch_add(16667);

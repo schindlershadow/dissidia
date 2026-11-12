@@ -13,6 +13,7 @@
 #include "hle/psp_savedata_dialog.h"
 #include "hle/psp_hle_adhoc.h"
 #include "hle/psp_cloud_service.h"
+#include "psp_gpu_driver.h"
 
 #include <SDL.h>
 #if defined(PSPRECOMP_HAVE_VKGL)
@@ -68,6 +69,10 @@ void unsave(const char* key) { g_saved.erase(key); }   // dropped at the next sa
 void write_file(const char* key, const std::string& value) {
     const std::string path = settings_path();
     std::ofstream f(path, std::ios::trunc);
+    if (!f) {   // e.g. a file that `adb push` made read-only for the app (owner shell, mode 644): replace it with one the app owns
+        f.clear();
+        if (std::remove(path.c_str()) == 0) f.open(path, std::ios::trunc);
+    }
     if (!f) { std::fprintf(stderr, "[SETTINGS] cannot write %s\n", path.c_str()); return; }
     f << "# Written by the in-game settings menu. Delete a line (or the file) to go back to the launch options.\n";
     for (const auto& kv : g_saved) f << kv.first << '=' << kv.second << '\n';
@@ -106,6 +111,30 @@ bool renderer_vulkan_choice() {
     auto it = g_saved.find("renderer");
     return it != g_saved.end() ? it->second == "vulkan" : renderer_vulkan_at_start();
 }
+
+// Custom GPU drivers (psp_gpu_driver.h): the driver in use, a live list to download more from, and delete. Applied at the next start.
+std::string gpu_choice() {
+    auto it = g_saved.find("gpu_driver");
+    return it != g_saved.end() ? it->second : psp_gpu::selected();
+}
+int g_gpu_get_idx = 0;                 // the entry of the downloadable list shown by the Download row
+std::string g_gpu_installing;          // id being downloaded: selected for the user when it lands
+unsigned g_gpu_rev = 0;
+bool g_gpu_list_asked = false;
+// The choices of the GPU Driver row: the system driver, each installed one, and the saved one when it is no longer installed.
+std::vector<psp_gpu::Installed> g_gpu_inst;
+std::vector<std::string> gpu_ids(const std::string& cur) {
+    g_gpu_inst = psp_gpu::installed();
+    std::vector<std::string> ids{""};
+    for (auto& in : g_gpu_inst) ids.push_back(in.id);
+    if (!cur.empty() && std::find(ids.begin(), ids.end(), cur) == ids.end()) ids.push_back(cur);
+    return ids;
+}
+std::string gpu_trim(const std::string& s, size_t n) { return s.size() <= n ? s : s.substr(0, n - 1) + "~"; }
+void gpu_choose(const std::string& id) {
+    save("gpu_driver", id);
+    psp_gpu::clear_crash(id);          // picking a driver again retries one that crashed
+}
 bool renderer_row_wanted() { return true; }   // always listed; greyed out with a reason when Vulkan is unavailable
 bool voice_jp_choice();
 bool voice_at_start();
@@ -117,13 +146,25 @@ enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_REN
            ROW_NET_MODE, ROW_NET_SERVER, ROW_NET_ROOM, ROW_NET_PEERS, ROW_NET_STATUS,   // Network page
            ROW_CLOUD_PROVIDER, ROW_CLOUD_FOLDER, ROW_CLOUD_URL, ROW_CLOUD_USER, ROW_CLOUD_PASS, ROW_CLOUD_GOOGLE,
            ROW_CLOUD_AUTO, ROW_CLOUD_REPLAYS, ROW_CLOUD_NOW, ROW_CLOUD_STATUS,   // Cloud page
-           ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS };   // the last six: Debug page
+           ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS,   // Debug page
+           ROW_GPU, ROW_GPU_GET, ROW_GPU_DEL };   // custom GPU drivers (Android, Adreno): System page
 std::vector<Row> g_rows;
 int g_sel = 0;
-constexpr int PAGE_SYSTEM = 0, PAGE_NETWORK = 1, PAGE_CLOUD = 2, PAGE_DEBUG = 3, PAGES = 4;
-const char* const k_page_names[PAGES] = {"System", "Network", "Cloud", "Debug"};
-int g_page = 0;                        // L / R shoulder, Q / E or Tab: next page
-int g_sel_page[PAGES] = {0, 0, 0, 0};
+constexpr int PAGE_SYSTEM = 0, PAGE_NETWORK = 1, PAGE_CLOUD = 2, PAGE_DEBUG = 3, PAGE_GPU = 4, PAGES = 5;   // page ids
+const char* const k_page_names[PAGES] = {"System", "Network", "Cloud", "Debug", "Drivers"};
+int g_page = 0;                        // L / R shoulder, Q / E or Tab: next page (an index into page_list())
+int g_sel_page[PAGES] = {0, 0, 0, 0, 0};
+// The tabs this device shows: Drivers (custom GPU drivers) only where they can be used (an Adreno phone with the Android build).
+const std::vector<int>& page_list() {
+    static const std::vector<int> v = [] {
+        std::vector<int> l{PAGE_SYSTEM};
+        if (psp_gpu::supported(nullptr)) l.push_back(PAGE_GPU);
+        l.push_back(PAGE_NETWORK); l.push_back(PAGE_CLOUD); l.push_back(PAGE_DEBUG);
+        return l;
+    }();
+    return v;
+}
+int page_id() { return page_list()[size_t(g_page)]; }
 int g_ring_next = -1;                  // vertex upload mode saved for the next launch (-1 = unchanged)
 bool g_quit_armed = false;
 bool g_dirty = true;
@@ -552,6 +593,56 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.help = "Cloud sync status\n" + st.text + (st.conflicts ? "\nChoose which save to keep on the save list: Triangle > Cloud sync." : "");
             break;
         }
+        case ROW_GPU: {
+            const std::string cur = gpu_choice();
+            const std::vector<std::string> ids = gpu_ids(cur);
+            std::string nm = "System default";
+            int idx = 0;
+            for (size_t i = 0; i < ids.size(); i++) if (ids[i] == cur) idx = int(i);
+            if (idx > 0) {   // the package id with spaces: the same short name the download list shows
+                nm = cur;
+                for (auto& c : nm) if (c == '_') c = ' ';
+                bool have = false;
+                for (auto& in : g_gpu_inst) if (in.id == cur) have = true;
+                if (!have) nm += " (missing)";
+            }
+            m.label = "GPU Driver";
+            m.value = gpu_trim(nm, 30) + (cur != psp_gpu::selected() ? "  (next start)" : "");
+            m.can_dec = idx > 0;
+            m.can_inc = idx + 1 < int(ids.size());
+            m.help = "GPU driver (PSPRECOMP_GPU_DRIVER)\nThe Vulkan driver the game uses. System default is the phone's own; the drivers below are newer community builds (Mesa Turnip) that can add features the phone's driver lacks, such as ray tracing on Adreno 740 and newer. Needs Graphics API: Vulkan. Takes effect the next time the game starts; if a driver crashes, the game starts with the system one again. Saved."
+                   + (psp_gpu::crashed(cur) ? std::string("\nThis driver crashed the last time it was tried: choose it again to retry.") : std::string());
+            break;
+        }
+        case ROW_GPU_GET: {
+            const psp_gpu::Status st = psp_gpu::status();
+            const std::vector<psp_gpu::Remote> cat = psp_gpu::catalog();
+            m.label = "Download Driver";
+            const bool busy = st.state == psp_gpu::Status::Busy;
+            if (busy) m.value = "working...";
+            else if (!psp_gpu::catalog_loaded()) m.value = st.state == psp_gpu::Status::Error ? "Press to retry" : "Press to load the list";
+            else if (cat.empty()) m.value = "none found";
+            else {
+                const int i = std::min(std::max(g_gpu_get_idx, 0), int(cat.size()) - 1);
+                bool have = false;
+                for (auto& in : psp_gpu::installed()) if (in.id == cat[size_t(i)].id) have = true;
+                std::snprintf(buf, sizeof buf, " %.1f MB", double(cat[size_t(i)].size) / 1e6);
+                m.value = gpu_trim(cat[size_t(i)].name, 30) + buf + (have ? "  [installed]" : "");
+                m.can_dec = i > 0;
+                m.can_inc = i + 1 < int(cat.size());
+            }
+            m.help = "Download a GPU driver\nLeft / right browse the live list of driver packages; Cross downloads and installs the one shown, and selects it for the next start. Turnip builds for Adreno 6xx / 7xx are the usual choice; try the newest first. Needs an internet connection."
+                   + (st.text.empty() ? std::string() : "\n" + st.text);
+            break;
+        }
+        case ROW_GPU_DEL: {
+            const std::string cur = gpu_choice();
+            m.label = "Delete Driver";
+            m.value = cur.empty() ? "" : gpu_trim(cur, 30);
+            m.disabled = cur.empty();
+            m.help = "Delete the selected driver\nRemoves it from this phone and goes back to the system driver. Press Cross.";
+            break;
+        }
         case ROW_QUIT:
             m.label = "Quit Game";
             m.value = g_quit_armed ? "Press again to quit" : "";
@@ -825,6 +916,21 @@ void change(int d) {   // left / right on the selected row
         break;
     }
     case ROW_RENDERER: if (renderer_vulkan_available(nullptr)) save("renderer", d > 0 ? "vulkan" : "gl"); break;   // left: OpenGL, right: Vulkan
+    case ROW_GPU: {
+        const std::string cur = gpu_choice();
+        const std::vector<std::string> ids = gpu_ids(cur);
+        int idx = 0;
+        for (size_t i = 0; i < ids.size(); i++) if (ids[i] == cur) idx = int(i);
+        const int n = idx + d;
+        if (n >= 0 && n < int(ids.size())) gpu_choose(ids[size_t(n)]);
+        break;
+    }
+    case ROW_GPU_GET: {
+        const int n = int(psp_gpu::catalog().size());
+        g_gpu_get_idx = std::min(std::max(g_gpu_get_idx + d, 0), std::max(n - 1, 0));
+        break;
+    }
+    case ROW_GPU_DEL: break;
     case ROW_VOICE: apply_voice(d > 0); break;   // left: English, right: Japanese
     case ROW_TEXPACK: apply_texpack(d > 0); break;
     case ROW_UPDATES: apply_updates(d > 0); break;
@@ -954,13 +1060,15 @@ void change(int d) {   // left / right on the selected row
 }
 
 void build_rows() {
-    if (g_page == PAGE_NETWORK) {
+    if (page_id() == PAGE_GPU) {
+        g_rows = {ROW_GPU, ROW_GPU_GET, ROW_GPU_DEL};
+    } else if (page_id() == PAGE_NETWORK) {
         net_load();
         g_rows = {ROW_NET_MODE};
         if (g_net_internet) { g_rows.push_back(ROW_NET_SERVER); g_rows.push_back(ROW_NET_ROOM); }
         else g_rows.push_back(ROW_NET_PEERS);
         g_rows.push_back(ROW_NET_STATUS);
-    } else if (g_page == PAGE_CLOUD) {
+    } else if (page_id() == PAGE_CLOUD) {
         cloud_load();
         if (psp_cloud_svc::initialised()) {
             g_rows = {ROW_CLOUD_PROVIDER};
@@ -975,7 +1083,7 @@ void build_rows() {
             }
             g_rows.push_back(ROW_CLOUD_STATUS);
         } else g_rows = {ROW_CLOUD_STATUS};     // cloud sync is not running in this session (PSPRECOMP_CLOUD=0)
-    } else if (g_page == PAGE_DEBUG) {
+    } else if (page_id() == PAGE_DEBUG) {
         g_rows = {ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS};
     } else {
         g_rows = {ROW_DISPLAY, ROW_RES, ROW_SCALE};
@@ -1015,7 +1123,8 @@ int64_t g_anim_t0 = 0;
 void switch_page(int dir = 1) {   // dir +1 = the next tab (R), -1 = the previous one (L); wraps around
     g_sel_page[g_page] = g_sel;
     g_anim_from = g_page; g_anim_dir = dir; g_anim_t0 = now_ms();
-    g_page = (g_page + dir + PAGES) % PAGES;
+    const int n = int(page_list().size());
+    g_page = (g_page + dir + n) % n;
     build_rows();
     g_quit_armed = false;
     g_dirty = true;
@@ -1097,6 +1206,31 @@ void confirm() {
         apply_fps((fps_index() + 1) % g_fps.count);
         break;
     case ROW_RENDERER: if (renderer_vulkan_available(nullptr)) save("renderer", renderer_vulkan_choice() ? "gl" : "vulkan"); break;
+    case ROW_GPU: {   // cycles round: system, each installed driver
+        const std::string cur = gpu_choice();
+        const std::vector<std::string> ids = gpu_ids(cur);
+        size_t idx = 0;
+        for (size_t i = 0; i < ids.size(); i++) if (ids[i] == cur) idx = i;
+        gpu_choose(ids[(idx + 1) % ids.size()]);
+        break;
+    }
+    case ROW_GPU_GET: {
+        if (psp_gpu::status().state == psp_gpu::Status::Busy) break;
+        const std::vector<psp_gpu::Remote> cat = psp_gpu::catalog();
+        if (!psp_gpu::catalog_loaded()) { psp_gpu::refresh(); break; }
+        if (cat.empty()) break;
+        const psp_gpu::Remote& r = cat[size_t(std::min(std::max(g_gpu_get_idx, 0), int(cat.size()) - 1))];
+        g_gpu_installing = r.id;
+        psp_gpu::install(r);
+        break;
+    }
+    case ROW_GPU_DEL: {
+        const std::string cur = gpu_choice();
+        if (cur.empty()) break;
+        psp_gpu::remove(cur);
+        gpu_choose("");
+        break;
+    }
     case ROW_VOICE: apply_voice(!voice_jp_choice()); break;
     case ROW_TEXPACK: apply_texpack(!texpack_choice()); break;
     case ROW_UPDATES: apply_updates(!updates_choice()); break;
@@ -1221,6 +1355,10 @@ void psp_settings_load_early() {
     if ((it = g_saved.find("hd_textures")) != g_saved.end() && (it->second == "0" || it->second == "1"))
         put("PSPRECOMP_TEX_REPLACE", it->second);
     if ((it = g_saved.find("renderer")) != g_saved.end() && (it->second == "gl" || it->second == "vulkan")) put("PSPRECOMP_RENDERER", it->second);
+    if ((it = g_saved.find("gpu_driver")) != g_saved.end()) {
+        if (it->second.empty()) psp_plat::unsetenv_("PSPRECOMP_GPU_DRIVER");
+        else put("PSPRECOMP_GPU_DRIVER", it->second);
+    }
     if ((it = g_saved.find("touch")) != g_saved.end() && (it->second == "auto" || it->second == "on" || it->second == "off"))
         put("PSPRECOMP_TOUCH", it->second);
     if ((it = g_saved.find("window_size")) != g_saved.end() && g_saved.count("display") && g_saved["display"] == "window"
@@ -1355,13 +1493,25 @@ void psp_settings_tick() {
     }
     const int scale = psp_sddialog::output_scale();
     const int64_t t = now_ms();
-    if (g_page == PAGE_NETWORK && !g_edit.active && t >= g_status_next) {   // keep the status line live
+    if (page_id() == PAGE_NETWORK && !g_edit.active && t >= g_status_next) {   // keep the status line live
         g_status_next = t + 500;
         char st[128];
         psp_adhoc_status(st, sizeof st);
         if (g_net_status != st) { g_net_status = st; g_dirty = true; }
     }
-    if (g_page == PAGE_CLOUD && !g_edit.active) {   // the sync runs on its own thread: redraw when its status changes
+    if (page_id() == PAGE_GPU && !g_edit.active) {   // the list / download run on a worker thread
+        if (!g_gpu_list_asked) { g_gpu_list_asked = true; psp_gpu::refresh(); }   // load the live list the first time the page is seen
+        const psp_gpu::Status st = psp_gpu::status();
+        if (st.revision != g_gpu_rev) {
+            g_gpu_rev = st.revision;
+            if (!g_gpu_installing.empty() && st.state != psp_gpu::Status::Busy) {
+                if (st.state == psp_gpu::Status::Done) gpu_choose(g_gpu_installing);   // a driver that was just installed is the one the user wants
+                g_gpu_installing.clear();
+            }
+            g_dirty = true;
+        }
+    }
+    if (page_id() == PAGE_CLOUD && !g_edit.active) {   // the sync runs on its own thread: redraw when its status changes
         const unsigned rev = psp_cloud_svc::status().revision;
         if (rev != g_cloud_rev) {
             g_cloud_rev = rev;
@@ -1374,7 +1524,8 @@ void psp_settings_tick() {
         g_dirty = false;
         g_drawn_scale = scale;
         psp_sddialog::Canvas c(scale);
-        static const std::vector<std::string> page_tabs(k_page_names, k_page_names + PAGES);
+        std::vector<std::string> page_tabs;
+        for (int id : page_list()) page_tabs.push_back(k_page_names[id]);
         psp_sddialog::MenuAnim anim;
         if (g_anim_from >= 0) {
             const float u = tab_anim_ms() > 0 ? float(t - g_anim_t0) / float(tab_anim_ms()) : 1.f;
@@ -1385,7 +1536,7 @@ void psp_settings_tick() {
                 g_dirty = true;                                       // keep drawing until it has settled
             }
         }
-        psp_sddialog::render_menu(c, "Settings", k_page_names[g_page], make_rows(), g_edit.active ? g_edit.sel : g_sel, g_confirm_cross,
+        psp_sddialog::render_menu(c, "Settings", k_page_names[page_id()], make_rows(), g_edit.active ? g_edit.sel : g_sel, g_confirm_cross,
                                   &page_tabs, g_page, g_anim_from >= 0 ? &anim : nullptr);
         psp_sddialog::menu_overlay_publish(c);
         ge_draw_present_overlay_now();

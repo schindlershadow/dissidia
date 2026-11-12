@@ -7,6 +7,9 @@ A=${ANDROID_DIR:-$HOME/dissidia/android}; W=${1:-$HOME/Games/Dissidia012}
 EXTRA=${CMAKE_EXTRA:-}   # extra cmake options for both configures (e.g. -DPSPRECOMP_ALLOW_STALE=ON when building from a tree without crates/)
 RT=${RUNTIME_SRC:-$HOME/code/dissidia/psprecomp/runtime}   # the runtime sources to build (env RUNTIME_SRC overrides the default checkout)
 cd $A
+# the shader list (android/shaders/) first catches up with what the phone recorded; then it is packed for the APK (assets/shaders.pack)
+python3 "$RT/../android/sync_shader_list.py" --quiet || true
+python3 "$RT/../android/pack_shaders.py" -o "$A/shaders.pack" || true
 TC=$A/and_deps29/toolchain.cmake
 # NOT -ftls-model=initial-exec: bionic refuses it in a dlopen()ed library ("dlopen failed: TLS symbol (null)"). The dynamic TLS
 # descriptor resolver costs ~8% of a battle: cut by touching thread_local variables less in hot paths instead.

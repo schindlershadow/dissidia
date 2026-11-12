@@ -6,6 +6,9 @@
 #ifndef VK_NO_PROTOTYPES
 #define VK_NO_PROTOTYPES
 #endif
+#ifdef __ANDROID__
+#define VK_USE_PLATFORM_ANDROID_KHR   // vkCreateAndroidSurfaceKHR: a custom driver cannot create its surface through SDL's own loader
+#endif
 #include <vulkan/vulkan.h>
 #include <string>
 
@@ -126,8 +129,14 @@ PSP_VK_DECLARE(vkCreateInstance)
 PSP_VK_DECLARE(vkEnumerateInstanceExtensionProperties)
 PSP_VK_DECLARE(vkEnumerateInstanceLayerProperties)
 PSP_VK_FUNCS(PSP_VK_DECLARE)
+#ifdef __ANDROID__
+extern PFN_vkCreateAndroidSurfaceKHR vkCreateAndroidSurfaceKHR;   // resolved by load_instance (Android only)
+#endif
 
 namespace pspvk {
+/// True when Vulkan was opened through a custom driver (psp_gpu_driver.h) instead of the phone's own: SDL's surface helper cannot be
+/// used then (it talks to the system loader), so Context creates the surface with vkCreateAndroidSurfaceKHR itself.
+bool using_custom_driver();
 /// Opens the Vulkan loader and resolves the global entry points. False (with *err) when there is no Vulkan on this machine.
 bool load_global(std::string* err);
 /// Resolves everything else through the instance (null for functions of extensions the driver lacks).

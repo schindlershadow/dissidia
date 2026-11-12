@@ -1,8 +1,13 @@
 #include "psp_vk_context.h"
 #include <SDL.h>
 #include <SDL_vulkan.h>
+#include <SDL_syswm.h>
+#ifdef __ANDROID__
+#include "../psp_gpu_driver.h"
+#endif
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
@@ -30,7 +35,13 @@ bool Context::init(const ContextOptions& opt, std::string* err) {
         std::string lerr;
         if (!load_global(&lerr)) return fail(lerr.c_str());
     }
+#ifdef __ANDROID__
+    // A custom driver (psp_gpu_driver.h) that kills the process during start-up leaves its crash marker behind and is skipped next time;
+    // however init ends (device up, or a clean error that falls back to OpenGL), the driver did not crash.
+    struct StartedGuard { ~StartedGuard() { psp_gpu::note_started(); } } started_guard;
+#endif
 
+    const bool want_rq = opt.want_ray_query;   // Android too: some phone drivers (Adreno 740 and newer) have ray query; a custom driver can add it
     std::vector<const char*> iext;
     if (window_) {
         unsigned n = 0;
@@ -51,7 +62,7 @@ bool Context::init(const ContextOptions& opt, std::string* err) {
     }
 
     VkApplicationInfo ai{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-    ai.pApplicationName = "Dissidia Trededecim"; ai.apiVersion = opt.want_ray_query ? VK_API_VERSION_1_2 : VK_API_VERSION_1_1;   // 1.2: buffer device address for the ray-query path
+    ai.pApplicationName = "Dissidia Trededecim"; ai.apiVersion = want_rq ? VK_API_VERSION_1_2 : VK_API_VERSION_1_1;   // 1.2: buffer device address for the ray-query path
     VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ici.pApplicationInfo = &ai;
     ici.enabledLayerCount = (uint32_t)layers.size(); ici.ppEnabledLayerNames = layers.data();
@@ -67,7 +78,20 @@ bool Context::init(const ContextOptions& opt, std::string* err) {
         mi.pfnUserCallback = dbg_cb;
         if (fn) fn(instance_, &mi, nullptr, &messenger_);
     }
-    if (window_ && !SDL_Vulkan_CreateSurface(window_, instance_, &surface_)) return fail("SDL_Vulkan_CreateSurface failed");
+    if (window_) {
+#ifdef __ANDROID__
+        if (using_custom_driver()) {   // SDL's helper uses the system loader's entry points, which do not know this instance
+            SDL_SysWMinfo wm;
+            SDL_VERSION(&wm.version);
+            if (!SDL_GetWindowWMInfo(window_, &wm) || !wm.info.android.window || !vkCreateAndroidSurfaceKHR) return fail("no Android window for the custom driver's surface");
+            VkAndroidSurfaceCreateInfoKHR sci{VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR};
+            sci.window = wm.info.android.window;
+            r = vkCreateAndroidSurfaceKHR(instance_, &sci, nullptr, &surface_);
+            if (r != VK_SUCCESS) return fail("vkCreateAndroidSurfaceKHR failed", r);
+        } else
+#endif
+        if (!SDL_Vulkan_CreateSurface(window_, instance_, &surface_)) return fail("SDL_Vulkan_CreateSurface failed");
+    }
 
     // Pick a device: has a graphics queue (+ present support when windowed), then name/index, then discrete > integrated > other.
     uint32_t nd = 0; vkEnumeratePhysicalDevices(instance_, &nd, nullptr);
@@ -99,13 +123,14 @@ bool Context::init(const ContextOptions& opt, std::string* err) {
     uint32_t nde = 0; vkEnumerateDeviceExtensionProperties(phys_, nullptr, &nde, nullptr);
     std::vector<VkExtensionProperties> dep(nde); vkEnumerateDeviceExtensionProperties(phys_, nullptr, &nde, dep.data());
     std::vector<const char*> dext;
+    std::fprintf(stderr, "[VK] device extensions: ray_query=%d acceleration_structure=%d\n", has_ext(dep, "VK_KHR_ray_query") ? 1 : 0, has_ext(dep, "VK_KHR_acceleration_structure") ? 1 : 0);
     if (surface_) dext.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
     // Ray queries (docs/VULKAN_PORT.md, ray-queried shadows): needs Vulkan 1.2 (buffer device address, SPIR-V 1.4) and the
     // four features below; any missing piece leaves ray_query_ false and the raster path in charge.
     VkPhysicalDeviceVulkan12Features f12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     VkPhysicalDeviceAccelerationStructureFeaturesKHR asf{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
     VkPhysicalDeviceRayQueryFeaturesKHR rqf{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
-    if (opt.want_ray_query && props_.apiVersion >= VK_API_VERSION_1_2 && has_ext(dep, "VK_KHR_ray_query")
+    if (want_rq && props_.apiVersion >= VK_API_VERSION_1_2 && has_ext(dep, "VK_KHR_ray_query")
         && has_ext(dep, "VK_KHR_acceleration_structure") && has_ext(dep, "VK_KHR_deferred_host_operations") && vkGetPhysicalDeviceFeatures2) {
         VkPhysicalDeviceVulkan12Features q12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
         VkPhysicalDeviceAccelerationStructureFeaturesKHR qas{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
@@ -162,8 +187,9 @@ bool Context::init(const ContextOptions& opt, std::string* err) {
     r = vmaCreateAllocator(&vi, &a);
     if (r != VK_SUCCESS) return fail("vmaCreateAllocator failed", r);
     vma_ = a;
-    std::fprintf(stderr, "[VK] device: %s (Vulkan %u.%u.%u)\n", name_.c_str(), VK_VERSION_MAJOR(props_.apiVersion),
-                 VK_VERSION_MINOR(props_.apiVersion), VK_VERSION_PATCH(props_.apiVersion));
+    std::fprintf(stderr, "[VK] device: %s (Vulkan %u.%u.%u)%s%s\n", name_.c_str(), VK_VERSION_MAJOR(props_.apiVersion),
+                 VK_VERSION_MINOR(props_.apiVersion), VK_VERSION_PATCH(props_.apiVersion),
+                 using_custom_driver() ? " [custom driver]" : "", ray_query_ ? " [ray query]" : "");
     return true;
 }
 
@@ -188,6 +214,11 @@ bool Context::create_swapchain(int w, int h, bool vsync, std::string* err) {
     std::vector<VkPresentModeKHR> pm(np); vkGetPhysicalDeviceSurfacePresentModesKHR(phys_, surface_, &np, pm.data());
     VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
     if (!vsync) for (auto m : pm) { if (m == VK_PRESENT_MODE_IMMEDIATE_KHR) { mode = m; break; } if (m == VK_PRESENT_MODE_MAILBOX_KHR) mode = m; }
+    if (const char* pe = std::getenv("PSPRECOMP_VK_PRESENT")) {   // fifo | mailbox | immediate: pick the present mode by hand (pacing tests)
+        const VkPresentModeKHR want = !std::strcmp(pe, "mailbox") ? VK_PRESENT_MODE_MAILBOX_KHR : !std::strcmp(pe, "immediate") ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
+        for (auto m : pm) if (m == want) mode = m;
+    }
+    std::fprintf(stderr, "[VK] present mode %s (of %u)\n", mode == VK_PRESENT_MODE_FIFO_KHR ? "FIFO" : mode == VK_PRESENT_MODE_MAILBOX_KHR ? "MAILBOX" : mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "IMMEDIATE" : "other", np);
     uint32_t cnt = std::max(caps.minImageCount + 1, 3u);
     if (caps.maxImageCount && cnt > caps.maxImageCount) cnt = caps.maxImageCount;
     VkSwapchainCreateInfoKHR si{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};

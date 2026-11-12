@@ -120,9 +120,7 @@ struct Globals {
     bool validation = false;
     // ray-queried shadows (PSPRECOMP_VK_RT=1): one acceleration structure + descriptor set 2 per frame in flight
     bool rt_on = false;
-#ifndef __ANDROID__
     RtAccel rt[kFrames];
-#endif
     VkDescriptorSetLayout set2_layout = VK_NULL_HANDLE;
     VkDescriptorPool set2_pool = VK_NULL_HANDLE;
     VkDescriptorSet rt_set[kFrames] = {};
@@ -1418,9 +1416,8 @@ bool core_init(SDL_Window* w, bool vsync, std::string* err) {
     ContextOptions o;
     o.window = w;
     o.validation = std::getenv("PSPRECOMP_VK_VALIDATION") != nullptr;
-#ifndef __ANDROID__   // desktop: always ask for ray query when the GPU has it (the settings row decides whether it is used); needs a 1.2 instance
+    // Always ask for ray query when the GPU has it (the settings row decides whether it is used); needs a 1.2 instance.
     o.want_ray_query = !(std::getenv("PSPRECOMP_VK_RT") && !std::strcmp(std::getenv("PSPRECOMP_VK_RT"), "0")) && !std::getenv("PSPRECOMP_VK_NO_RT");
-#endif
     gl.validation = o.validation;
     if (const char* d = std::getenv("PSPRECOMP_VK_DEVICE")) { if (*d >= '0' && *d <= '9') o.device_index = std::atoi(d); else o.device_name = d; }
     if (!gl.ctx.init(o, err)) { delete G; G = nullptr; return false; }
@@ -1470,11 +1467,7 @@ bool core_init(SDL_Window* w, bool vsync, std::string* err) {
         for (int i = 0; i < kFrames; i++) {
             VkDescriptorSetAllocateInfo a2{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO}; a2.descriptorPool = gl.set2_pool; a2.descriptorSetCount = 1; a2.pSetLayouts = &gl.set2_layout;
             vkAllocateDescriptorSets(gl.dev, &a2, &gl.rt_set[i]);
-#ifndef __ANDROID__
             if (!gl.rt[i].init(gl.ctx)) gl.rt_on = false;
-#else
-            gl.rt_on = false;
-#endif
         }
         std::fprintf(stderr, "[VKGL] ray query: %s\n", gl.rt_on ? "available (settings: Ray-Traced Shadows)" : "init failed");
     } else if (o.want_ray_query) std::fprintf(stderr, "[VKGL] ray query requested but not available on this device\n");
@@ -1547,9 +1540,6 @@ bool rt_set_scene(const float* xyz, uint32_t tri_count, const uint32_t* tri_cols
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, 0, 1, &mb, 0, nullptr, 0, nullptr);
     std::string err;
     if (dbg) std::fprintf(stderr, "[RT] record_build\n");
-#ifdef __ANDROID__
-    (void)cb; (void)xyz; (void)tri_cols; (void)fx_xyz; (void)fx_tri_count; (void)fx_cols; return false;
-#else
     if (!gl.rt[i].record_build(cb, xyz, tri_count, tri_cols, fx_xyz, fx_tri_count, fx_cols, &err)) { std::fprintf(stderr, "[VKGL] RT scene build failed: %s\n", err.c_str()); return false; }
     if (gl.rt_set_tlas[i] != gl.rt[i].tlas()) {   // only after a (re)allocation: the structure is rebuilt in place otherwise
         VkWriteDescriptorSetAccelerationStructureKHR wa{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
@@ -1577,7 +1567,6 @@ bool rt_set_scene(const float* xyz, uint32_t tri_count, const uint32_t* tri_cols
     if (dbg) std::fprintf(stderr, "[RT] scene ready\n");
     gl.rt_ready[i] = true;
     return true;
-#endif
 }
 bool rt_available() { return G && G->rt_on; }
 const char* rt_unavailable_reason() {
@@ -1587,8 +1576,12 @@ const char* rt_unavailable_reason() {
     char name[256]; std::snprintf(name, sizeof name, "%s", G->ctx.device_name().c_str());
     if (std::getenv("PSPRECOMP_VK_NO_RT") || (std::getenv("PSPRECOMP_VK_RT") && !std::strcmp(std::getenv("PSPRECOMP_VK_RT"), "0")))
         why = "Turned off by PSPRECOMP_VK_NO_RT / PSPRECOMP_VK_RT=0 for this run.";
+#ifdef __ANDROID__
+    else if (!pspvk::using_custom_driver())
+        why = std::string("This phone's driver (") + name + ") has no ray query (VK_KHR_ray_query). On an Adreno 740 or newer, a Turnip driver under GPU Driver may add it (restart after choosing one).";
+#endif
     else
-        why = std::string("This GPU (") + name + ") has no hardware ray query support (VK_KHR_ray_query). It needs a GeForce RTX or Radeon RX 6000 series or newer.";
+        why = std::string("This GPU (") + name + ") has no hardware ray query support (VK_KHR_ray_query). It needs a GeForce RTX or Radeon RX 6000 series or newer, or an Adreno 740 or newer with a Turnip driver on Android.";
     return why.c_str();
 }
 
@@ -1596,9 +1589,7 @@ void core_shutdown() {
     if (!G) return;
     Globals& gl = *G;
     if (gl.dev) vkDeviceWaitIdle(gl.dev);
-#ifndef __ANDROID__
     for (auto& r : gl.rt) r.destroy();
-#endif
     if (gl.set2_pool) vkDestroyDescriptorPool(gl.dev, gl.set2_pool, nullptr);
     if (gl.set2_layout) vkDestroyDescriptorSetLayout(gl.dev, gl.set2_layout, nullptr);
     for (auto& f : gl.frames) {
@@ -1702,7 +1693,13 @@ void core_swap() {
         return;
     }
     uint32_t idx = 0;
+    static double acq_ms = 0, pres_ms = 0, wait_ms = 0; static int swaps = 0; static double swap_t0 = 0;   // pacing diagnostics (PSPRECOMP_VK_SWAP_LOG=1)
+    static const bool swap_log = std::getenv("PSPRECOMP_VK_SWAP_LOG") != nullptr;
+    auto nowms = [] { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
+    const double t_acq0 = swap_log ? nowms() : 0;
+    swap_t0 = t_acq0;
     VkResult r = vkAcquireNextImageKHR(gl.dev, c.swapchain().handle, UINT64_MAX, f.acquire_sem, VK_NULL_HANDLE, &idx);
+    if (swap_log) acq_ms += nowms() - t_acq0;
     if (r == VK_ERROR_OUT_OF_DATE_KHR || (dw > 0 && dh > 0 && ((uint32_t)dw != c.swapchain().extent.width || (uint32_t)dh != c.swapchain().extent.height))) {
         // acquire semaphore may be signalled if r == SUBOPTIMAL; recreate everything and skip this present
         vkDeviceWaitIdle(gl.dev);
@@ -1751,7 +1748,24 @@ void core_swap() {
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &render_sem;
     VkSwapchainKHR sc = c.swapchain().handle; pi.swapchainCount = 1; pi.pSwapchains = &sc; pi.pImageIndices = &idx;
+    const double t_pr0 = swap_log ? nowms() : 0;
     VkResult pr = vkQueuePresentKHR(c.queue(), &pi);
+    if (swap_log) {
+        pres_ms += nowms() - t_pr0;
+        static double prev_t = 0; static double ivl[64], dur[64]; static int ivn = 0;
+        const double tn = nowms();
+        if (swaps >= 500 && ivn < 64) { ivl[ivn] = tn - prev_t; dur[ivn++] = tn - swap_t0; }
+        prev_t = tn;
+        if (swaps == 599) {
+            std::fprintf(stderr, "[VKGL] swap intervals ms (swap call ms):");
+            for (int k = 0; k < ivn; k++) std::fprintf(stderr, " %.1f(%.1f)", ivl[k], dur[k]);
+            std::fprintf(stderr, "\n"); ivn = 0;
+        }
+        if (++swaps == 600) {
+            std::fprintf(stderr, "[VKGL] swap: acquire %.2f ms, present call %.2f ms per frame (600 frames)\n", acq_ms / swaps, pres_ms / swaps);
+            acq_ms = pres_ms = wait_ms = 0; swaps = 0;
+        }
+    }
     if (pr != VK_SUCCESS && pr != VK_SUBOPTIMAL_KHR && pr != VK_ERROR_OUT_OF_DATE_KHR) std::fprintf(stderr, "[VKGL] present failed (%d)\n", (int)pr);
     log_stats();
     gl.cur = (gl.cur + 1) % kFrames;

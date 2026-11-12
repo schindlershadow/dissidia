@@ -78,6 +78,7 @@ constexpr uint32_t ACTOR_DT = 0x08838300u;      // EBOOT: an actor's time step
 constexpr uint32_t SLOWMO_FRAME = 0x08864DD8u;  // EBOOT: per-frame update of the slow-motion object, writes the global step
 constexpr uint32_t SLOWMO_PTR = 0x089D5EA8u;    // EBOOT: pointer to that object (+0 step value, +4 time left, +8 flags)
 constexpr uint32_t ROOT_MOTION = 0x0882F784u;   // EBOOT: adds (bone pose now - pose last tick) to the motion player's accumulator
+constexpr uint32_t CPU_TICK = 0x08A64400u;      // battle overlay: brain tick (a0 = brain = actor +0x5C4); NO_AI skips it for CPU brains
 constexpr uint32_t CPU_AI = 0x08A75D38u;        // battle overlay: CPU AI action chooser (returns -1 / -4: no action)
 constexpr uint32_t STEER_MOVE = 0x08A2C960u;   // battle overlay: ground steered move controller (Squall's Revolver Drive rush): a0 = out vector (metres to move this update)
 constexpr uint32_t UI_PARAM_STEP = 0x088DA520u; // EBOOT: UI animation parameter stepper (value += rate x UI step toward a target)
@@ -1193,6 +1194,15 @@ float dissidia_frame_ticks() { return g_ticks; }
 // Factor for a value the game keeps as "ticks per 30 Hz frame" (the actor own clock): 1 at 30 Hz, 0.5 at 60 Hz.
 float dissidia_own_clock_scale() { return g_ticks * 0.5f; }
 
+// PSPRECOMP_TEST_NO_AI=1 (the test harnesses): the CPU brain tick (FUN_08A64400, a0 = brain = actor +0x5C4) returns at once for brains in CPU
+// mode (brain +0x54 == 0) once the test clock runs (g_gt_started: skipping it earlier leaves the fight stuck in its intro), so the CPU fighter never chooses an action. The player's brain (human) still ticks.
+FuncPtr g_orig_cpu_tick = nullptr;
+void cpu_tick_noai_hook(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t brain = static_cast<uint32_t>(ctx->r[4]);
+    if (g_gt_started && ok(brain) && static_cast<int32_t>(r32(brain + 0x54u)) == 0) return;   // only once the fight runs: the intro waits for the brains
+    g_orig_cpu_tick(rdram, ctx);
+}
+
 void dissidia_framerate_install(uint8_t* rdram) {
     g_ram = rdram;
     const char* e = std::getenv("PSPRECOMP_FPS");
@@ -1232,6 +1242,10 @@ void dissidia_framerate_install(uint8_t* rdram) {
     if (const char* x = std::getenv("PSPRECOMP_GAUGE30"); x && x[0] == '0') g_gauge30 = false;
     if ((g_orig_gauge_sm = ovl_battle_lookup(GAUGE_SM))) psp_dispatch_register(GAUGE_SM, gauge_sm_hook);
     if (g_orig_pressed) psp_dispatch_register(PRESSED, pressed_hook);
+    if (const char* na = std::getenv("PSPRECOMP_TEST_NO_AI"); na && na[0] && na[0] != '0') {
+        if ((g_orig_cpu_tick = ovl_battle_lookup(CPU_TICK))) { psp_dispatch_register(CPU_TICK, cpu_tick_noai_hook); std::fprintf(stderr, "[TEST] NO_AI: the CPU brain does not act\n"); }
+        else std::fprintf(stderr, "[TEST] NO_AI: brain tick not found\n");
+    }
     std::fprintf(stderr, "[FPS] press latch %s (pressed-test hook %s)\n", g_press_latch ? "on" : "off", g_orig_pressed ? "installed" : "NOT FOUND");
     if ((g_orig_rootmotion = psp_dispatch_probe_lookup(ROOT_MOTION))) psp_dispatch_register(ROOT_MOTION, root_motion_hook);
     else std::fprintf(stderr, "[FPS] root motion hook NOT installed (no function at %08X)\n", ROOT_MOTION);

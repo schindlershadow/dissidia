@@ -64,6 +64,8 @@ def main():
          "--package", ver["package"], "--api", str(ver["api"]), "-o", os.path.join(out, "apk", "skeleton.apk")], env=env)
     for f in ("apk_pack.py", "debug_key.json"):
         shutil.copy2(os.path.join(REPO, "android", f), os.path.join(out, "apk", f))
+    # the shader list (android/shaders/: what phones recorded) as the pack the game compiles at start; the player's APK carries it as assets/shaders.pack
+    run([sys.executable, "-I", os.path.join(REPO, "android", "pack_shaders.py"), "-o", os.path.join(out, "shaders.pack")], env=env)
     # 5. libc++ for the app, identity of what was built
     stl = glob.glob(os.path.join(ndk, "toolchains", "llvm", "prebuilt", "*", "sysroot", "usr", "lib", "aarch64-linux-android", "libc++_shared.so"))[0]
     shutil.copy2(stl, os.path.join(out, "libc++_shared.so"))
