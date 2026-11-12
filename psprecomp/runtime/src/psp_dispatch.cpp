@@ -1,4 +1,5 @@
 #include "psp_scheduler.h"
+#include "psp_tls.h"
 #include <cstring>
 #include "recomp.h"
 #include "hle/psp_hle.h"
@@ -20,18 +21,40 @@ static bool g_strict_checked = false;
 /// Logs each unique address on first hit only to reduce noise.
 static std::unordered_map<uint32_t, int> g_miss_counts;
 
-/// Last function address from psp_trace_checkpoint (defined below, always recorded).
-thread_local uint32_t g_last_func_addr = 0;
+// Function-entry tracing gate. psp_trace_checkpoint runs at EVERY generated function entry on the game
+// thread, so by default it returns after one load of this plain global (no thread_local, no atomics, no
+// getenv). Everything below it (last/prev function address, the 32-entry ring, the cross-thread debug-socket
+// ring, MEM_WATCH, ARG_WATCH, FIRSTCALL, LKP_LOG, PC_TRACE) is diagnostics and only runs when this is set:
+// PSPRECOMP_FUNC_TRACE=1, any of the env flags listed in func_trace_env_wanted(), or a run-time
+// psp_mem_watch_set() from the debug socket. With it off, g_last_func_addr/g_func_ring stay 0.
+bool g_func_trace_on = false;
+
+static bool func_trace_env_wanted() {
+    static const char* const kVars[] = {
+        "PSPRECOMP_FUNC_TRACE", "PSPRECOMP_MEM_WATCH", "PSPRECOMP_ARG_WATCH", "PSPRECOMP_FIRSTCALL",
+        "PSPRECOMP_LKP_LOG", "PSPRECOMP_PC_TRACE", "PSPRECOMP_VFPU_NANTRAP", "PSPRECOMP_FN_WATCH_RING",
+        "PSPRECOMP_PKG_TRACE",
+    };
+    for (const char* v : kVars)
+        if (std::getenv(v)) return true;
+    return false;
+}
+[[maybe_unused]] static const bool g_func_trace_init = (g_func_trace_on = func_trace_env_wanted(), true);
+
+// PSP_TLS_FAST (psp_tls.h): initial-exec TLS on desktop.
+
+/// Last function address from psp_trace_checkpoint (only recorded while g_func_trace_on).
+thread_local PSP_TLS_FAST uint32_t g_last_func_addr = 0;
 
 /// No-op stub returned when a lookup miss occurs in non-STRICT mode.
 /// Sets v0 (ctx->r[2]) to 0 for deterministic return value behavior.
-static thread_local uint32_t g_last_miss_addr = 0;
+static thread_local PSP_TLS_FAST uint32_t g_last_miss_addr = 0;
 
 // [V438] ring buffer of recent function entries (poor-man's backtrace).
 // Declared here so noop_stub (below) can read it; written by
 // psp_trace_checkpoint. Cheap: one array write per checkpoint.
-thread_local uint32_t g_func_ring[32] = {0};
-thread_local uint32_t g_func_ring_pos = 0;
+thread_local PSP_TLS_FAST uint32_t g_func_ring[32] = {0};
+thread_local PSP_TLS_FAST uint32_t g_func_ring_pos = 0;
 
 // [#35] Cross-thread copy of the dispatched-function ring for the debug
 // socket's I command. The per-thread g_func_ring above is thread_local and
@@ -228,7 +251,7 @@ static int g_total_entries = 0;
 
 // Previous dispatched-function address, kept per thread so game-module
 // diagnostics (games/<name>/hooks_dispatch.cpp) can report caller chains.
-thread_local uint32_t g_prev_func_addr = 0;
+thread_local PSP_TLS_FAST uint32_t g_prev_func_addr = 0;
 
 // PSPRECOMP_MEM_WATCH=<hex addr>: at every function entry, check that guest
 // word and, when it changes, log the old/new value with the last function
@@ -243,6 +266,7 @@ static int g_mem_watch_n = 0;
 // Debug socket `M <hex addr>`: (re)arm the MEM_WATCH at run time. Heap addresses differ from run to run, so
 // the watch address usually has to be located in the running game first.
 void psp_mem_watch_set(uint32_t addr) {
+    g_func_trace_on = true;
     g_mem_watch_checked = true;
     g_mem_watch_addr = addr;
     g_mem_watch_n = 0;
@@ -257,6 +281,7 @@ void psp_dump_func_ring(const char* tag) {
 }
 
 void psp_trace_checkpoint(uint32_t addr) {
+    if (__builtin_expect(!g_func_trace_on, 1)) return;
     if (!g_mem_watch_checked) {
         g_mem_watch_checked = true;
         if (const char* e = std::getenv("PSPRECOMP_MEM_WATCH"))

@@ -11,12 +11,33 @@
 //      over the result (so a shadow darkens the floor but not the reflection in it).
 // RGB only: the buffer's alpha is the GE stencil.
 #include "psp_screenfx.h"
+#include "psp_rt.h"
+#include <atomic>
+#include <cstdlib>
+PspRtHooks g_psp_rt;
+static std::atomic<int> g_rt_on{-1};
+bool psp_rt_enabled() {
+    int v = g_rt_on.load();
+    if (v < 0) { const char* e = std::getenv("PSPRECOMP_VK_RT"); v = (e && e[0] && e[0] != '0') ? 1 : 0; g_rt_on.store(v); }
+    return v != 0;
+}
+void psp_rt_set_enabled(bool on) { g_rt_on.store(on ? 1 : 0); }
+const char* psp_rt_unavailable_reason() {
+    if (psp_rt_available()) return "";
+    if (g_psp_rt.unavailable_reason) { const char* r = g_psp_rt.unavailable_reason(); if (r && r[0]) return r; }
+#ifdef __ANDROID__
+    return "Not supported on Android: phone GPUs have no ray query hardware.";
+#else
+    return "Needs the Vulkan renderer: set Graphics API to Vulkan and restart.";
+#endif
+}
 
 #include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 namespace {
 
@@ -99,6 +120,7 @@ uniform float u_cs_len;     // contact shadow ray length, view units
 uniform float u_cs_thick;   // how far behind a visible surface a ray point still counts as occluded, view units
 uniform float u_ssr_len;    // reflection ray length as a fraction of the distance to the camera
 uniform float u_ssr_amt;
+//@RT_DECL
 
 void main() {
     o_fx = vec4(1.0, 0.0, 0.0, 1.0);
@@ -141,6 +163,7 @@ void main() {
         if (facing > 0.0) {
             float jit = ign(gl_FragCoord.xy + 17.0);
             vec3 O = P + n * (0.01 + 0.004 * lp);
+//@RT_CODE
             for (int j = 0; j < u_n_cs; ++j) {
                 float t = (float(j) + jit) / float(u_n_cs);
                 vec3 S = O + u_light * (t * t * u_cs_len);      // denser near the surface
@@ -279,7 +302,34 @@ struct Prog {
     GLuint id = 0;
     bool failed = false;
 };
-Prog g_main_p, g_blur_p, g_mul_p, g_refl_p;
+Prog g_main_p, g_blur_p, g_mul_p, g_refl_p, g_main_rt_p;
+
+// Ray-queried contact shadow (PSPRECOMP_VK_RT, Vulkan only; docs/VULKAN_PORT.md): the pass-1 shader with the screen-space march
+// replaced by a ray query from the surface toward the light against the frame's world-space triangles (psp_rt.h). The GL
+// shaders never see these lines: the markers are comments there.
+const char* const k_rt_decl = R"GLSL(
+uniform accelerationStructureEXT u_tlas;
+uniform int u_use_rt;
+uniform mat4 u_view_inv;    // view space -> PSP world space (where the triangles are)
+uniform vec3 u_light_w;     // world space, towards the light
+uniform float u_rt_len;     // ray length, world units
+)GLSL";
+const char* const k_rt_code = R"GLSL(
+            if (u_use_rt != 0) {
+                vec3 Ow = (u_view_inv * vec4(O, 1.0)).xyz;
+                rayQueryEXT rq;
+                rayQueryInitializeEXT(rq, u_tlas, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT, 0xFF, Ow, 0.0, u_light_w, u_rt_len);
+                while (rayQueryProceedEXT(rq)) {}
+                if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) sh = facing * fd;
+            } else
+)GLSL";
+std::string rt_main_source() {
+    std::string s = k_fs_main;
+    auto rep = [&](const char* marker, const char* with) { size_t i = s.find(marker); if (i != std::string::npos) s.replace(i, std::strlen(marker), with); };
+    rep("//@RT_DECL", k_rt_decl);
+    rep("//@RT_CODE", k_rt_code);
+    return s;
+}
 GLuint g_vao = 0, g_smp_nn = 0, g_smp_lin = 0;
 
 // Render targets, sized to the scene buffer (depth) and half of it (everything else).
@@ -508,7 +558,7 @@ int psp_fx_ssr() {
 }
 void psp_fx_set_ssr(int level) { g_sr.store(level < 0 ? 0 : level > 3 ? 3 : level); }
 
-bool psp_screenfx_active() { return psp_fx_ssao() || psp_fx_contact() || psp_fx_ssr(); }
+bool psp_screenfx_active() { return psp_fx_ssao() || psp_fx_contact() || psp_fx_ssr() || psp_rt_active(); }
 
 void psp_screenfx_run(GLuint fbo, GLuint color_tex, int w, int h, const ScreenFxScene& sc) {
     (void)color_tex;
@@ -533,7 +583,8 @@ void psp_screenfx_run(GLuint fbo, GLuint color_tex, int w, int h, const ScreenFx
     static const bool dbg_print = std::getenv("PSPRECOMP_FX_DEBUG") != nullptr;
     float inv[16];
     if (!invert4(sc.proj, inv)) return;
-    const int ao = psp_fx_ssao(), cs = psp_fx_contact(), sr = psp_fx_ssr();
+    const int ao = psp_fx_ssao(), sr = psp_fx_ssr();
+    const int cs = psp_rt_active() ? 3 : psp_fx_contact();   // ray-traced shadows replace the contact shadows (full contact-shadow strength; a ray query has no sample count)
     static const float k_ao_amt[4] = {0.f, 0.55f, 0.8f, 1.0f};
     static const float k_cs_amt[4] = {0.f, 0.3f, 0.45f, 0.6f};
     static const float k_sr_amt[4] = {0.f, 0.45f, 0.7f, 1.0f};
@@ -561,6 +612,13 @@ void psp_screenfx_run(GLuint fbo, GLuint color_tex, int w, int h, const ScreenFx
     float wl[3] = {env_float("PSPRECOMP_LIGHT_X", 0.4f), env_float("PSPRECOMP_LIGHT_Y", 1.0f), env_float("PSPRECOMP_LIGHT_Z", 0.3f)};
     float lv[3], up[3], wup[3] = {0.f, 1.f, 0.f};
     view_dir(sc.view, wl, lv);
+    float wl_n[3] = {wl[0], wl[1], wl[2]};
+    { const float l = std::sqrt(wl[0] * wl[0] + wl[1] * wl[1] + wl[2] * wl[2]); if (l > 1e-6f) for (float& c : wl_n) c /= l; }
+    bool use_rt = false;
+    if (sc.rt_ready && cs > 0 && psp_rt_enabled()) {
+        if (!g_main_rt_p.id && !g_main_rt_p.failed) { static const std::string src = rt_main_source(); build(g_main_rt_p, src.c_str()); }
+        use_rt = g_main_rt_p.id != 0;
+    }
     view_dir(sc.view, wup, up);
     if (dbg_print) {
         static int n = 0;
@@ -613,21 +671,31 @@ void psp_screenfx_run(GLuint fbo, GLuint color_tex, int w, int h, const ScreenFx
     auto loc = [](GLuint p, const char* n) { return glGetUniformLocation(p, n); };
 
     // 1: AO + contact shadow + reflection (half resolution)
+    Prog& mp = use_rt ? g_main_rt_p : g_main_p;
     glBindFramebuffer(GL_FRAMEBUFFER, g_main_fbo);
     glViewport(0, 0, g_hw, g_hh);
-    set_common(g_main_p.id, g_hw, g_hh);
+    set_common(mp.id, g_hw, g_hh);
     bind_tex(1, g_color_tex, g_smp_lin);
-    glUniform1i(loc(g_main_p.id, "u_color"), 1);
-    glUniform1f(loc(g_main_p.id, "u_radius"), radius);
-    glUniform1i(loc(g_main_p.id, "u_n_ao"), k_n_ao[ao]);
-    glUniform1i(loc(g_main_p.id, "u_n_cs"), k_n_cs[cs]);
-    glUniform1i(loc(g_main_p.id, "u_n_ssr"), k_n_ssr[sr]);
-    glUniform3f(loc(g_main_p.id, "u_light"), lv[0], lv[1], lv[2]);
-    glUniform3f(loc(g_main_p.id, "u_up"), up[0], up[1], up[2]);
-    glUniform1f(loc(g_main_p.id, "u_cs_len"), cs_len);
-    glUniform1f(loc(g_main_p.id, "u_cs_thick"), cs_thick);
-    glUniform1f(loc(g_main_p.id, "u_ssr_len"), ssr_len);
-    glUniform1f(loc(g_main_p.id, "u_ssr_amt"), k_sr_amt[sr]);
+    glUniform1i(loc(mp.id, "u_color"), 1);
+    glUniform1f(loc(mp.id, "u_radius"), radius);
+    glUniform1i(loc(mp.id, "u_n_ao"), k_n_ao[ao]);
+    glUniform1i(loc(mp.id, "u_n_cs"), k_n_cs[cs]);
+    glUniform1i(loc(mp.id, "u_n_ssr"), k_n_ssr[sr]);
+    glUniform3f(loc(mp.id, "u_light"), lv[0], lv[1], lv[2]);
+    glUniform3f(loc(mp.id, "u_up"), up[0], up[1], up[2]);
+    glUniform1f(loc(mp.id, "u_cs_len"), cs_len);
+    glUniform1f(loc(mp.id, "u_cs_thick"), cs_thick);
+    glUniform1f(loc(mp.id, "u_ssr_len"), ssr_len);
+    glUniform1f(loc(mp.id, "u_ssr_amt"), k_sr_amt[sr]);
+    if (use_rt) {
+        glUniform1i(loc(mp.id, "u_use_rt"), 1);
+        float vm[16] = {sc.view[0], sc.view[1], sc.view[2], 0.f, sc.view[3], sc.view[4], sc.view[5], 0.f,
+                        sc.view[6], sc.view[7], sc.view[8], 0.f, sc.view[9], sc.view[10], sc.view[11], 1.f}, vinv[16];
+        if (!invert4(vm, vinv)) std::memset(vinv, 0, sizeof vinv);
+        glUniformMatrix4fv(loc(mp.id, "u_view_inv"), 1, GL_FALSE, vinv);
+        glUniform3f(loc(mp.id, "u_light_w"), wl_n[0], wl_n[1], wl_n[2]);
+        glUniform1f(loc(mp.id, "u_rt_len"), env_float("PSPRECOMP_RT_LEN", 40.f));
+    }
     glDrawArrays(GL_TRIANGLES, 0, 3);
     ts_mark(2);
 
@@ -656,7 +724,7 @@ void psp_screenfx_run(GLuint fbo, GLuint color_tex, int w, int h, const ScreenFx
         glUniform1i(loc(g_mul_p.id, "u_fx"), 1);
         glUniform2f(loc(g_mul_p.id, "u_half"), float(g_hw), float(g_hh));
         glUniform1f(loc(g_mul_p.id, "u_ao_amt"), k_ao_amt[ao]);
-        glUniform1f(loc(g_mul_p.id, "u_cs_amt"), k_cs_amt[cs]);
+        glUniform1f(loc(g_mul_p.id, "u_cs_amt"), (std::getenv("PSPRECOMP_CONTACT_AMT") ? env_float("PSPRECOMP_CONTACT_AMT", 0.6f) : k_cs_amt[cs]));
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
     ts_mark(4);

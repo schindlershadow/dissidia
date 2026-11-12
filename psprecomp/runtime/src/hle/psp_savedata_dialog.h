@@ -179,6 +179,7 @@ struct MenuRow {
     std::string value;          // shown right-aligned; empty for an action row
     std::string help;           // information panel text while selected
     bool can_dec = false, can_inc = false;   // draws the left / right arrows
+    bool disabled = false;      // drawn greyed out (the help text says why); the row still scrolls and shows its help
 };
 // `tabs` (optional, with more than one name): the pages of a multi-page menu drawn as tabs, `tab_active` the shown one, the others
 // dimmed; the hint bar then also shows the L / R page keys. Without it `tab` is drawn as the single header tab.

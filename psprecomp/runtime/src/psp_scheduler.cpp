@@ -1,4 +1,5 @@
 #include "psp_scheduler.h"
+#include "psp_tls.h"
 #include "psp_debug_socket.h"  // PspDebugThreadInfo ([#35] I command)
 #include "psp_vfpu.h"  // vfpu_init_context — VFPU prefix reset default
 #include "hle/psp_hle.h"  // SCE_KERNEL_ERROR_WAIT_TIMEOUT
@@ -14,7 +15,7 @@ static PspThread g_threads[MAX_THREADS];
 
 /// Thread-local pointer to this OS thread's PspThread.
 /// Each OS thread knows its own PspThread without shared state lookup.
-static thread_local PspThread* g_current = nullptr;
+static thread_local PSP_TLS_FAST PspThread* g_current = nullptr;
 PspThread* sched_current_thread() { return g_current; }
 
 // ---------------------------------------------------------------------------

@@ -2,6 +2,8 @@
 // See vkgl.h for the conventions (GL-orientation images, inverted front face, clip depth fix in the shader).
 #include "vkgl.h"
 #include "vkgl_internal.h"
+#include "psp_vk_rt.h"
+#include "../../include/psp_rt.h"
 #include <SDL.h>
 #include <SDL_vulkan.h>
 #include <algorithm>
@@ -23,6 +25,8 @@ using namespace pspvk;
 struct Frame {
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer main = VK_NULL_HANDLE, upload = VK_NULL_HANDLE;
+    std::vector<VkCommandBuffer> cbs;    // every command buffer allocated from `pool`; handed out again after each pool reset (never allocate per submission: they are not freed by a reset)
+    size_t cb_next = 0;
     bool main_open = false, upload_open = false;
     VkFence fence = VK_NULL_HANDLE;
     bool fence_pending = false;
@@ -114,6 +118,16 @@ struct Globals {
     PipeKey last_key; VkPipeline last_pipe = VK_NULL_HANDLE; bool last_key_valid = false;
     bool warned_feedback = false, warned_mask = false;
     bool validation = false;
+    // ray-queried shadows (PSPRECOMP_VK_RT=1): one acceleration structure + descriptor set 2 per frame in flight
+    bool rt_on = false;
+#ifndef __ANDROID__
+    RtAccel rt[kFrames];
+#endif
+    VkDescriptorSetLayout set2_layout = VK_NULL_HANDLE;
+    VkDescriptorPool set2_pool = VK_NULL_HANDLE;
+    VkDescriptorSet rt_set[kFrames] = {};
+    VkAccelerationStructureKHR rt_set_tlas[kFrames] = {};
+    bool rt_ready[kFrames] = {};
 };
 static constexpr int kTsPairs = 64;
 static bool g_narrow_sync = false;   // PSPRECOMP_VK_SYNC=narrow: barriers/dependencies limited to the stages the renderer really uses
@@ -163,9 +177,14 @@ struct Tmr {
 static void defer(std::function<void()> f) { fr().deferred.push_back(std::move(f)); }
 
 static VkCommandBuffer new_cb(Frame& f) {
-    VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    ai.commandPool = f.pool; ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; ai.commandBufferCount = 1;
-    VkCommandBuffer cb; vkAllocateCommandBuffers(g().dev, &ai, &cb);
+    VkCommandBuffer cb;
+    if (f.cb_next < f.cbs.size()) cb = f.cbs[f.cb_next++];
+    else {
+        VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        ai.commandPool = f.pool; ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; ai.commandBufferCount = 1;
+        vkAllocateCommandBuffers(g().dev, &ai, &cb);
+        f.cbs.push_back(cb); f.cb_next = f.cbs.size();
+    }
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cb, &bi);
@@ -240,6 +259,7 @@ static void frame_begin(int i) {
     f.pp_labels.clear();
     f.ts_pairs = 0; f.ts_open = false;
     vkResetCommandPool(g().dev, f.pool, 0);
+    f.cb_next = 0;
     f.main_open = f.upload_open = false;
     for (auto& d : f.deferred) d();
     f.deferred.clear();
@@ -1224,6 +1244,12 @@ void draw_multi(GLenum mode, const GLint* firsts, const GLsizei* counts, GLsizei
         g().cache_set1 = set1;
     }
 
+    if (p->conv.uses_rt) {
+        // ray-query programs need this frame's acceleration structure; without one the draw is skipped (the scene was not built)
+        if (!g().rt_on || !g().rt_ready[g().cur]) return;
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g().pipe_layout, 2, 1, &g().rt_set[g().cur], 0, nullptr);
+    }
+
     // 6. vertex buffers + draw
     {
         GLint lo = firsts[0], hi = firsts[0] + counts[0];
@@ -1391,6 +1417,9 @@ bool core_init(SDL_Window* w, bool vsync, std::string* err) {
     ContextOptions o;
     o.window = w;
     o.validation = std::getenv("PSPRECOMP_VK_VALIDATION") != nullptr;
+#ifndef __ANDROID__   // desktop: always ask for ray query when the GPU has it (the settings row decides whether it is used); needs a 1.2 instance
+    o.want_ray_query = !(std::getenv("PSPRECOMP_VK_RT") && !std::strcmp(std::getenv("PSPRECOMP_VK_RT"), "0")) && !std::getenv("PSPRECOMP_VK_NO_RT");
+#endif
     gl.validation = o.validation;
     if (const char* d = std::getenv("PSPRECOMP_VK_DEVICE")) { if (*d >= '0' && *d <= '9') o.device_index = std::atoi(d); else o.device_name = d; }
     if (!gl.ctx.init(o, err)) { delete G; G = nullptr; return false; }
@@ -1425,8 +1454,28 @@ bool core_init(SDL_Window* w, bool vsync, std::string* err) {
     for (int i = 0; i < kMaxSamplerBindings; i++) b1[i] = {(uint32_t)i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo l1{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; l1.bindingCount = kMaxSamplerBindings; l1.pBindings = b1;
     vkcheck(vkCreateDescriptorSetLayout(gl.dev, &l1, nullptr, &gl.set1_layout), "set1 layout");
-    VkDescriptorSetLayout sl[2] = {gl.set0_layout, gl.set1_layout};
-    VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO}; pl.setLayoutCount = 2; pl.pSetLayouts = sl;
+    VkDescriptorSetLayout sl[3] = {gl.set0_layout, gl.set1_layout, VK_NULL_HANDLE};
+    gl.rt_on = gl.ctx.has_ray_query();
+    if (gl.rt_on) {
+        VkDescriptorSetLayoutBinding b2{0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+        VkDescriptorSetLayoutCreateInfo l2{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; l2.bindingCount = 1; l2.pBindings = &b2;
+        vkcheck(vkCreateDescriptorSetLayout(gl.dev, &l2, nullptr, &gl.set2_layout), "set2 layout");
+        sl[2] = gl.set2_layout;
+        VkDescriptorPoolSize ps2{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, kFrames};
+        VkDescriptorPoolCreateInfo dp2{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO}; dp2.maxSets = kFrames; dp2.poolSizeCount = 1; dp2.pPoolSizes = &ps2;
+        vkcheck(vkCreateDescriptorPool(gl.dev, &dp2, nullptr, &gl.set2_pool), "set2 pool");
+        for (int i = 0; i < kFrames; i++) {
+            VkDescriptorSetAllocateInfo a2{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO}; a2.descriptorPool = gl.set2_pool; a2.descriptorSetCount = 1; a2.pSetLayouts = &gl.set2_layout;
+            vkAllocateDescriptorSets(gl.dev, &a2, &gl.rt_set[i]);
+#ifndef __ANDROID__
+            if (!gl.rt[i].init(gl.ctx)) gl.rt_on = false;
+#else
+            gl.rt_on = false;
+#endif
+        }
+        std::fprintf(stderr, "[VKGL] ray query: %s\n", gl.rt_on ? "available (settings: Ray-Traced Shadows)" : "init failed");
+    } else if (o.want_ray_query) std::fprintf(stderr, "[VKGL] ray query requested but not available on this device\n");
+    VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO}; pl.setLayoutCount = gl.set2_layout ? 3 : 2; pl.pSetLayouts = sl;
     vkcheck(vkCreatePipelineLayout(gl.dev, &pl, nullptr, &gl.pipe_layout), "pipeline layout");
     VkDescriptorPoolSize ps0{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, kFrames};
     VkDescriptorPoolCreateInfo dp{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO}; dp.maxSets = kFrames; dp.poolSizeCount = 1; dp.pPoolSizes = &ps0;
@@ -1480,10 +1529,61 @@ bool core_init(SDL_Window* w, bool vsync, std::string* err) {
     return true;
 }
 
+bool rt_set_scene(const float* xyz, uint32_t tri_count) {
+    Globals& gl = g();
+    const int i = gl.cur;
+    gl.rt_ready[i] = false;
+    if (!gl.rt_on || !tri_count) return false;
+    static const bool dbg = std::getenv("PSPRECOMP_RT_DEBUG") != nullptr;
+    if (dbg) std::fprintf(stderr, "[RT] set_scene %u tris\n", tri_count);
+    end_pass();
+    VkCommandBuffer cb = main_cb();
+    // earlier draws of this frame may still read the structure being rebuilt (a second scene in one frame)
+    VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    mb.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR; mb.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, 0, 1, &mb, 0, nullptr, 0, nullptr);
+    std::string err;
+    if (dbg) std::fprintf(stderr, "[RT] record_build\n");
+#ifdef __ANDROID__
+    (void)cb; (void)xyz; return false;
+#else
+    if (!gl.rt[i].record_build(cb, xyz, tri_count, &err)) { std::fprintf(stderr, "[VKGL] RT scene build failed: %s\n", err.c_str()); return false; }
+    if (gl.rt_set_tlas[i] != gl.rt[i].tlas()) {   // only after a (re)allocation: the structure is rebuilt in place otherwise
+        VkWriteDescriptorSetAccelerationStructureKHR wa{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
+        VkAccelerationStructureKHR t = gl.rt[i].tlas();
+        wa.accelerationStructureCount = 1; wa.pAccelerationStructures = &t;
+        VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; w.pNext = &wa; w.dstSet = gl.rt_set[i]; w.dstBinding = 0; w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+        vkUpdateDescriptorSets(gl.dev, 1, &w, 0, nullptr);
+        gl.rt_set_tlas[i] = t;
+    }
+    if (dbg) std::fprintf(stderr, "[RT] scene ready\n");
+    gl.rt_ready[i] = true;
+    return true;
+#endif
+}
+bool rt_available() { return G && G->rt_on; }
+const char* rt_unavailable_reason() {
+    static std::string why;
+    if (!G) return "";
+    if (G->rt_on) return "";
+    char name[256]; std::snprintf(name, sizeof name, "%s", G->ctx.device_name().c_str());
+    if (std::getenv("PSPRECOMP_VK_NO_RT") || (std::getenv("PSPRECOMP_VK_RT") && !std::strcmp(std::getenv("PSPRECOMP_VK_RT"), "0")))
+        why = "Turned off by PSPRECOMP_VK_NO_RT / PSPRECOMP_VK_RT=0 for this run.";
+    else
+        why = std::string("This GPU (") + name + ") has no hardware ray query support (VK_KHR_ray_query). It needs a GeForce RTX or Radeon RX 6000 series or newer.";
+    return why.c_str();
+}
+
 void core_shutdown() {
     if (!G) return;
     Globals& gl = *G;
     if (gl.dev) vkDeviceWaitIdle(gl.dev);
+#ifndef __ANDROID__
+    for (auto& r : gl.rt) r.destroy();
+#endif
+    if (gl.set2_pool) vkDestroyDescriptorPool(gl.dev, gl.set2_pool, nullptr);
+    if (gl.set2_layout) vkDestroyDescriptorSetLayout(gl.dev, gl.set2_layout, nullptr);
     for (auto& f : gl.frames) {
         for (auto& d : f.deferred) d();
         f.deferred.clear();
@@ -1540,6 +1640,18 @@ static void log_stats() {
                      (unsigned long long)((gl.draws - last_draws) / 600), (unsigned long long)((gl.feedback_draws - last_fb) / 600), gl.pipelines.size(),
                      gl.gpu_ms_n ? gl.gpu_ms_sum / (double)gl.gpu_ms_n : 0.0, gl.t_draw * 1e3 / 600, gl.t_submit * 1e3 / 600, (double)gl.n_submit / 600, gl.t_upload * 1e3 / 600, gl.t_wait * 1e3 / 600, (double)gl.conflict_copies / 600, (double)gl.conflict_bytes / 600 / 1048576.0, (double)gl.passes / 600, (double)gl.clears_folded / 600);
         gl.conflict_copies = gl.conflict_bytes = 0; gl.passes = gl.clears_folded = 0;
+        {   // GPU memory this layer holds (VMA), and what objects it is made of: a steady climb here is a leak
+            VmaTotalStatistics vs; vmaCalculateStatistics(gl.vma, &vs);
+            size_t ntex = 0, nbuf = 0, nrbo = 0, nfbo = 0; uint64_t texpx = 0;
+            for (auto& t : gl.tex) if (t) { ntex++; texpx += (uint64_t)t->img.w * (uint64_t)t->img.h; }
+            for (auto& b : gl.buf) if (b) nbuf++;
+            for (auto& r : gl.rbo) if (r) nrbo++;
+            for (auto& f : gl.fbo) if (f) nfbo++;
+            size_t ndef = 0; for (auto& f : gl.frames) ndef += f.deferred.size();
+            std::fprintf(stderr, "[VKMEM] VMA %.0f MB in %u allocations (%u blocks, %.0f MB reserved) | textures %zu (%.1f Mpx), buffers %zu, renderbuffers %zu, fbos %zu, deferred frees %zu, image table %zu, command buffers %zu\n",
+                         (double)vs.total.statistics.allocationBytes / 1048576.0, vs.total.statistics.allocationCount, vs.total.statistics.blockCount,
+                         (double)vs.total.statistics.blockBytes / 1048576.0, ntex, (double)texpx / 1e6, nbuf, nrbo, nfbo, ndef, gl.tex.size(), gl.frames[0].cbs.size() + gl.frames[1].cbs.size());
+        }
         if (gl.passprof) {
             std::vector<std::pair<std::string, std::pair<double, uint64_t>>> v(gl.pp_acc.begin(), gl.pp_acc.end());
             std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.second.first > b.second.first; });

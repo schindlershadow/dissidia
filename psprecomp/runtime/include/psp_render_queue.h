@@ -48,6 +48,13 @@ struct GePendingList {
 /// g_should_exit (checked in the wait predicate), not a timeout.
 void render_queue_post(RenderRequest& req);
 
+/// Frame pipelining (prototype, PSPRECOMP_ASYNC_PRESENT=1): same as render_queue_post, but returns as soon as the request is
+/// queued instead of when the render thread has done it, so the next frame's game logic runs while the present (blit, post,
+/// screen-space effects, swap) executes. Order is kept: the render thread takes the single request slot before any GE list
+/// queued after it, and a second request waits here until the slot is free.
+void render_queue_post_async(RenderRequest& req);
+bool render_queue_async_present_enabled();
+
 /// Non-blocking GE list enqueue. Returns a list UID immediately.
 /// The game thread can continue CPU work after this call.
 /// The main thread will process the list via render_queue_process().

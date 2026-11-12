@@ -20,6 +20,7 @@ struct ScreenFxScene {
     float view[12];        // PSP view matrix, 4x3 column-major (3 floats per column, the last column the translation)
     float near_z, far_z;   // glDepthRange of the scene's draws
     float clear_z;         // what the buffer's depth was cleared to (the sky / background)
+    bool rt_ready = false; // psp_rt.h: this frame's world-space triangles are built; the contact shadow uses ray queries
 };
 
 /// Apply the effects to the colour of `fbo` (w x h texels, colour texture `color_tex`, depth renderbuffer attached).

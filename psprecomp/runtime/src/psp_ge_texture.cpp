@@ -106,6 +106,19 @@ static inline void bind_tex2d(GLuint t) {
     }
 }
 static struct { GLuint tex; uint32_t key; } applied[8] = {};
+// ---- content-hash memo (see ge_texture_invalidate_hash_memo) ----
+namespace {
+struct HashMemoEntry { uint64_t key; uint32_t hash; uint32_t gen; };
+constexpr size_t kMemoSize = 1024;   // direct mapped; a collision just rehashes
+HashMemoEntry g_hash_memo[kMemoSize];
+uint32_t g_hash_memo_gen = 1;
+}
+void ge_texture_invalidate_hash_memo() { g_hash_memo_gen++; }
+static bool hash_memo_enabled() {
+    static const bool on = [] { const char* e = std::getenv("PSPRECOMP_TEX_HASH_MEMO"); return !(e && e[0] == '0'); }();
+    return on;
+}
+
 void ge_texture_invalidate_bind_cache() {
     g_bound_tex = ~0u;
     for (auto& a : applied) a = {0, 0};
@@ -672,6 +685,20 @@ GLuint ge_texture_bind(
     if (movie) {
         content_hash = 0x4D56'4946u;
     } else {
+        psp_prof::Scope hs(psp_prof::S_TEXHASH);
+        if (psp_prof::enabled) {
+            static uint64_t ring[254]; static unsigned pos = 0;
+            const uint64_t k = ((uint64_t)masked_addr << 20) ^ (uint64_t)data_bytes;
+            for (uint64_t r : ring) if (r == k) { psp_prof::tex_hash_dup++; break; }
+            ring[pos++ % 254] = k;
+            psp_prof::tex_hash_bytes += hash_bytes;
+        }
+        const uint64_t mkey = ((uint64_t)masked_addr << 32) ^ ((uint64_t)(uint32_t)data_bytes << 3) ^ (uint64_t)(hash_bytes + 1) * 0x9E3779B97F4A7C15ull;
+        HashMemoEntry& me = g_hash_memo[(mkey ^ (mkey >> 21)) % kMemoSize];
+        if (hash_memo_enabled() && me.gen == g_hash_memo_gen && me.key == mkey) {
+            content_hash = me.hash;
+            psp_prof::tex_hash_memo++;
+        } else {
         content_hash = fnv1a_hash(rdram + masked_addr, hash_bytes);
         if (hash_mode == 1 && data_bytes > hash_bytes && (uint64_t)masked_addr + data_bytes <= PSP_MEM_SIZE) {
             // 48 strided 64-byte windows over the remainder of the texture.
@@ -679,6 +706,8 @@ GLuint ge_texture_bind(
             const int step = std::max(64, rest / 48);
             for (int off = hash_bytes; off + 64 <= data_bytes; off += step)
                 content_hash = content_hash * 0x9E3779B1u ^ fnv1a_hash(rdram + masked_addr + off, 64);
+        }
+        me = {mkey, content_hash, g_hash_memo_gen};
         }
     }
 

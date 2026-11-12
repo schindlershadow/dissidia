@@ -1194,10 +1194,12 @@ void render_menu_themed(const SdTheme& T, Canvas& c, const std::string& title, c
         else if (T.row_normal.valid()) draw_sprite(c, T.row_normal, BAR_X - 4 + rdx, y - 3, BAR_W + 8, BAR_H + 6, ga);
         Col tc = is_sel ? c_sel : c_text, dc = is_sel ? c_seld : c_dim;
         tc.a *= ga;
+        const float gd = r.disabled ? 0.4f : 1.f;   // greyed out row
+        tc.a *= gd;
         const float base = y + BAR_H / 2 + 4.2f;
         P.text(bodyb, 11.f * fs, BAR_X + 22 + rdx, base, r.label, tc, 200);
         (void)dc;
-        menu_value_themed(c, P, T, bodyb, 10.5f * fs, BAR_X + BAR_W - 20 + rdx, y + BAR_H / 2, base, r, is_sel, tc, ga);
+        menu_value_themed(c, P, T, bodyb, 10.5f * fs, BAR_X + BAR_W - 20 + rdx, y + BAR_H / 2, base, r, is_sel, tc, ga * gd);
         if (is_sel && T.cursor.valid())
             draw_sprite(c, T.cursor, 10.f, y + (BAR_H - float(T.cursor.h)) / 2 + 1.f, float(T.cursor.w), float(T.cursor.h));
     }
@@ -1354,7 +1356,8 @@ void render_menu_plain(Canvas& c, const std::string& title, const std::string& t
         } else if (i + 1 < n && first + i + 1 != sel) {
             P.hline(ROW_X + 10, ROW_X + ROW_W - 10, y + h + 2.f, 1.f, rgb(206, 208, 232, 0.9f));
         }
-        const Col tc = is_sel ? rgb(255, 255, 255) : INK, dc = is_sel ? rgb(214, 220, 255) : INK_DIM;
+        Col tc = is_sel ? rgb(255, 255, 255) : INK, dc = is_sel ? rgb(214, 220, 255) : INK_DIM;
+        if (r.disabled) { tc.a *= 0.4f; dc.a *= 0.4f; }
         const float base = y + h / 2 + 5.f;
         P.text(F.bodyb, 14.f, ROW_X + 22, base, r.label, tc, 200);
         menu_value(P, F.bodyb, 13.f, ROW_X + ROW_W - 16, base, r, tc, {dc.r, dc.g, dc.b, 0.35f});

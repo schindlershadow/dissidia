@@ -47,7 +47,7 @@ bool Context::init(const ContextOptions& opt, std::string* err) {
     }
 
     VkApplicationInfo ai{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-    ai.pApplicationName = "Dissidia Trededecim"; ai.apiVersion = VK_API_VERSION_1_1;
+    ai.pApplicationName = "Dissidia Trededecim"; ai.apiVersion = opt.want_ray_query ? VK_API_VERSION_1_2 : VK_API_VERSION_1_1;   // 1.2: buffer device address for the ray-query path
     VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ici.pApplicationInfo = &ai;
     ici.enabledLayerCount = (uint32_t)layers.size(); ici.ppEnabledLayerNames = layers.data();
@@ -95,10 +95,24 @@ bool Context::init(const ContextOptions& opt, std::string* err) {
     std::vector<VkExtensionProperties> dep(nde); vkEnumerateDeviceExtensionProperties(phys_, nullptr, &nde, dep.data());
     std::vector<const char*> dext;
     if (surface_) dext.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-    if (opt.want_ray_query && has_ext(dep, "VK_KHR_ray_query") && has_ext(dep, "VK_KHR_acceleration_structure")
-        && has_ext(dep, "VK_KHR_deferred_host_operations") && has_ext(dep, "VK_KHR_buffer_device_address")) {
-        // Feature chain is filled in when the RT milestone lands; recorded here so callers can query the capability.
-        ray_query_ = false;
+    // Ray queries (docs/VULKAN_PORT.md, ray-queried shadows): needs Vulkan 1.2 (buffer device address, SPIR-V 1.4) and the
+    // four features below; any missing piece leaves ray_query_ false and the raster path in charge.
+    VkPhysicalDeviceVulkan12Features f12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR asf{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+    VkPhysicalDeviceRayQueryFeaturesKHR rqf{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+    if (opt.want_ray_query && props_.apiVersion >= VK_API_VERSION_1_2 && has_ext(dep, "VK_KHR_ray_query")
+        && has_ext(dep, "VK_KHR_acceleration_structure") && has_ext(dep, "VK_KHR_deferred_host_operations") && vkGetPhysicalDeviceFeatures2) {
+        VkPhysicalDeviceVulkan12Features q12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR qas{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+        VkPhysicalDeviceRayQueryFeaturesKHR qrq{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+        q12.pNext = &qas; qas.pNext = &qrq;
+        VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2}; f2.pNext = &q12;
+        vkGetPhysicalDeviceFeatures2(phys_, &f2);
+        if (q12.bufferDeviceAddress && qas.accelerationStructure && qrq.rayQuery) {
+            f12.bufferDeviceAddress = VK_TRUE; asf.accelerationStructure = VK_TRUE; rqf.rayQuery = VK_TRUE;
+            dext.push_back("VK_KHR_acceleration_structure"); dext.push_back("VK_KHR_ray_query"); dext.push_back("VK_KHR_deferred_host_operations");
+            ray_query_ = true;
+        }
     }
     VkPhysicalDeviceMultiDrawFeaturesEXT mdf{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTI_DRAW_FEATURES_EXT};
     if (has_ext(dep, VK_EXT_MULTI_DRAW_EXTENSION_NAME) && vkGetPhysicalDeviceFeatures2) {
@@ -118,7 +132,12 @@ bool Context::init(const ContextOptions& opt, std::string* err) {
     di.queueCreateInfoCount = 1; di.pQueueCreateInfos = &qi;
     di.enabledExtensionCount = (uint32_t)dext.size(); di.ppEnabledExtensionNames = dext.data();
     di.pEnabledFeatures = &feat;
-    if (multi_draw_) { mdf.pNext = nullptr; di.pNext = &mdf; }
+    // Feature chain: [multi draw] -> [Vulkan 1.2 BDA] -> [acceleration structure] -> [ray query]
+    const void** tail = &di.pNext;
+    if (multi_draw_) { mdf.pNext = nullptr; *tail = &mdf; tail = (const void**)&mdf.pNext; }
+    if (ray_query_) {
+        *tail = &f12; f12.pNext = &asf; asf.pNext = &rqf; rqf.pNext = nullptr;
+    }
     r = vkCreateDevice(phys_, &di, nullptr, &dev_);
     if (r != VK_SUCCESS) return fail("vkCreateDevice failed", r);
     vkGetDeviceQueue(dev_, qfam_, 0, &queue_);

@@ -64,6 +64,12 @@ void ge_texture_set_aniso(int level);
 /// bound a GL_TEXTURE_2D behind this module's back, e.g. render-target setup).
 void ge_texture_invalidate_bind_cache();
 
+/// The texture content hash of a bind is remembered per (address, size) until the GE can no longer assume the guest left that
+/// memory alone: a new list-processing session, SIGNAL / FINISH (guest callbacks run), a TRXKICK copy. Hashing every bind was
+/// ~9 MB per battle frame (24% of the render thread on desktop; 246 of 272 binds hashed an area hashed just before).
+/// PSPRECOMP_TEX_HASH_MEMO=0 turns the memo off.
+void ge_texture_invalidate_hash_memo();
+
 /// Texture-pack id (psp_tex_pack.h) of the texture the last ge_texture_bind /
 /// ge_texture_bind_external bound; 0 when none, a render target, a movie, or
 /// when neither the texture pack nor the FX shaders (psp_fx_shader.h) are on.

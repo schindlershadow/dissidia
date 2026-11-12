@@ -27,6 +27,7 @@ struct ConvertedProgram {
     std::vector<UniformMember> uniforms;
     uint32_t ubo_size = 0;                        // rounded to 16
     std::vector<std::string> samplers;            // binding n = index, descriptor set 1
+    bool uses_rt = false;                         // declares `uniform accelerationStructureEXT x;` -> set 2, binding 0 (ray query)
     uint32_t vertex_inputs = 0;                   // bit n: the vertex shader declares `layout(location = n) in`
     const UniformMember* find(const std::string& name) const;
 };
@@ -38,7 +39,8 @@ bool convert_glsl_to_vulkan(const std::string& defines, const std::string& vs, c
 /// Drops "#version" and "precision" lines (the GL front matter) from a GL shader source.
 std::string strip_glsl_version(const std::string& src);
 
-enum class Stage { Vertex, Fragment };
+// Compute is for the ray-query passes (psp_vk_rt.h): compiled for Vulkan 1.2 / SPIR-V 1.4, which GL_EXT_ray_query needs.
+enum class Stage { Vertex, Fragment, Compute };
 /// glslang (not available when built with PSPVK_NO_GLSLANG, e.g. Android: those builds only load cached SPIR-V).
 /// Thread-safe after the first call.
 bool compile_to_spirv(Stage stage, const std::string& glsl450, std::vector<uint32_t>* spirv, std::string* err);

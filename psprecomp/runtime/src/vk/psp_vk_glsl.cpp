@@ -43,6 +43,7 @@ struct Shared {
     std::vector<std::string> samplers;
     std::map<std::string, int> varying_loc, attr_loc;
     std::map<std::string, int> frag_out;
+    bool rt = false;
 };
 
 const std::regex& re_uniform() {
@@ -65,6 +66,11 @@ bool convert_stage(Stage st, const std::string& src, Shared& sh, std::string* bo
         if (std::regex_search(line, m, re_uniform())) {
             const std::string type = m[1], name = m[2];
             const int arr = m[3].matched ? std::stoi(m[3]) : 0;
+            if (type == "accelerationStructureEXT") {
+                sh.rt = true;
+                out += "layout(set = 2, binding = 0) uniform accelerationStructureEXT " + name + ";\n";
+                continue;
+            }
             if (type.rfind("sampler", 0) == 0) {
                 auto it = std::find(sh.samplers.begin(), sh.samplers.end(), name);
                 size_t b = it - sh.samplers.begin();
@@ -159,7 +165,7 @@ bool convert_glsl_to_vulkan(const std::string& defines, const std::string& vs, c
     uint32_t total = 0;
     layout_block(sh.uniforms, &total);
     const std::string blk = block_text(sh.uniforms);
-    const std::string head = "#version 450\n" + defines + blk;
+    const std::string head = std::string(sh.rt ? "#version 460\n#extension GL_EXT_ray_query : require\n" : "#version 450\n") + defines + blk;
 
     // The vertex main(): GL clip z in [-w, w] -> Vulkan [0, w] (y is handled by the viewport's negative height).
     size_t p = vb.find("void main()");
@@ -178,6 +184,7 @@ bool convert_glsl_to_vulkan(const std::string& defines, const std::string& vs, c
     out->uniforms = sh.uniforms;
     out->ubo_size = total;
     out->samplers = sh.samplers;
+    out->uses_rt = sh.rt;
     return true;
 }
 
@@ -190,13 +197,14 @@ bool compile_to_spirv(Stage, const std::string&, std::vector<uint32_t>*, std::st
 bool compile_to_spirv(Stage stage, const std::string& glsl, std::vector<uint32_t>* spirv, std::string* err) {
     static std::once_flag once;
     std::call_once(once, [] { glslang::InitializeProcess(); });
-    const EShLanguage lang = stage == Stage::Vertex ? EShLangVertex : EShLangFragment;
+    const EShLanguage lang = stage == Stage::Vertex ? EShLangVertex : stage == Stage::Fragment ? EShLangFragment : EShLangCompute;
+    const bool v12 = stage == Stage::Compute || glsl.find("GL_EXT_ray_query") != std::string::npos;
     glslang::TShader shader(lang);
     const char* s = glsl.c_str();
     shader.setStrings(&s, 1);
     shader.setEnvInput(glslang::EShSourceGlsl, lang, glslang::EShClientVulkan, 100);
-    shader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_1);
-    shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_3);
+    shader.setEnvClient(glslang::EShClientVulkan, v12 ? glslang::EShTargetVulkan_1_2 : glslang::EShTargetVulkan_1_1);
+    shader.setEnvTarget(glslang::EShTargetSpv, v12 ? glslang::EShTargetSpv_1_4 : glslang::EShTargetSpv_1_3);
     const EShMessages msgs = (EShMessages)(EShMsgSpvRules | EShMsgVulkanRules);
     if (!shader.parse(GetDefaultResources(), 450, false, msgs)) {
         if (err) *err = std::string(shader.getInfoLog()) + shader.getInfoDebugLog();
@@ -228,8 +236,8 @@ bool compile_cached(Stage stage, const std::string& glsl, std::vector<uint32_t>*
     if (!dir.empty()) {
         uint64_t h = 0xcbf29ce484222325ull ^ 0x5053ull;   // salt: bump when the converter's output semantics change
         for (unsigned char c : glsl) { h ^= c; h *= 0x100000001b3ull; }
-        h ^= stage == Stage::Vertex ? 1 : 2; h *= 0x100000001b3ull;
-        std::snprintf(name, sizeof name, "/%016llx.%s.spv", (unsigned long long)h, stage == Stage::Vertex ? "vert" : "frag");
+        h ^= stage == Stage::Vertex ? 1 : stage == Stage::Fragment ? 2 : 3; h *= 0x100000001b3ull;
+        std::snprintf(name, sizeof name, "/%016llx.%s.spv", (unsigned long long)h, stage == Stage::Vertex ? "vert" : stage == Stage::Fragment ? "frag" : "comp");
         if (FILE* f = std::fopen((dir + name).c_str(), "rb")) {
             std::fseek(f, 0, SEEK_END);
             const long n = std::ftell(f);

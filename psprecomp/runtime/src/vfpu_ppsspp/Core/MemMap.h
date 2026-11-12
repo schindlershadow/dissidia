@@ -1,10 +1,11 @@
 // Guest memory access for the vendored VFPU interpreter: the runtime's flat rdram, addressed with
 // the same 0x07FFFFFF mask as psp_mem_read/psp_mem_write. The wrapper sets g_rdram per op.
 #pragma once
+#include "psp_tls.h"
 #include <cstring>
 #include "Common/CommonTypes.h"
 namespace Memory {
-extern thread_local unsigned char *g_rdram;
+extern thread_local PSP_TLS_FAST unsigned char *g_rdram;
 inline bool IsValid4AlignedAddress(u32 a) { return (a & 3) == 0; }
 inline unsigned char *Ptr(u32 a) { return g_rdram + (a & 0x07FFFFFFu); }
 inline const unsigned char *GetPointerUnchecked(u32 a) { return Ptr(a); }

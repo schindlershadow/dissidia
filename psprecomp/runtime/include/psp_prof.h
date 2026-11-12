@@ -47,11 +47,12 @@ enum Slot {
     S_MPEG_CSC,     // sceMpeg YUV->RGBA
     S_MPEG_WR,      // sceMpeg frame write into guest memory
     S_MPEG_AUD,     // sceMpeg ATRAC3+ decode
+    S_TEXHASH,      // texture content hash at bind (inside tex)
     S_N
 };
 static const char* const k_names[S_N] = {
     "prim", "decode", "xform", "pack", "upload", "uniform", "tex", "glstate",
-    "draw", "clear", "list", "present", "mpegavc", "mpegcsc", "mpegwr", "mpegaud"};
+    "draw", "clear", "list", "present", "mpegavc", "mpegcsc", "mpegwr", "mpegaud", "texhash"};
 
 inline const bool enabled = std::getenv("PSPRECOMP_PROF") != nullptr;
 inline uint64_t ns[S_N] = {};
@@ -62,6 +63,7 @@ inline uint64_t movie_binds = 0, movie_uploads = 0, movie_ns = 0;   // movie tex
 // draw categories: 0 through, 1 3D plain, 2 3D skinned, 3 3D lit (any), 4 lit+skinned
 inline uint64_t cat_draws[5] = {}, cat_verts[5] = {};
 inline uint64_t same_tex_draws = 0;
+inline uint64_t tex_hash_bytes = 0, tex_hash_dup = 0, tex_hash_memo = 0;   // bytes hashed at texture binds; binds whose (addr, size) was already hashed this frame
 enum { G_WORLD, G_VIEW, G_PROJ, G_BONES, G_TEX, G_TEXFN, G_BLEND, G_DEPTH, G_LIGHT, G_VTYPE, G_VP, G_UVX, G_N };
 inline uint64_t grp_changes[G_N] = {};
 inline const char* const k_grp[G_N] = {"world","view","proj","bones","tex","texfn","blend","depth/cull/mask/atest","light/material","vtype","viewport","uvxf"};
@@ -135,6 +137,9 @@ inline void report(double dt, uint32_t frames) {
     std::fprintf(stderr, "[PROF] cat(draws/verts per frame): through=%.0f/%.0f 3d=%.0f/%.0f skinned=%.0f/%.0f lit=%.0f/%.0f lit+skin=%.0f/%.0f sametex=%.0f\n",
         cat_draws[0] / f, cat_verts[0] / f, cat_draws[1] / f, cat_verts[1] / f, cat_draws[2] / f, cat_verts[2] / f,
         cat_draws[3] / f, cat_verts[3] / f, cat_draws[4] / f, cat_verts[4] / f, same_tex_draws / f);
+    std::fprintf(stderr, "[PROF] texture hash/frame: %.0f KB hashed, %.1f of the binds repeat an (addr,size) seen in the last 254 binds\n", tex_hash_bytes / f / 1024.0, tex_hash_dup / f);
+    std::fprintf(stderr, "[PROF] texture hash memo hits/frame: %.1f\n", tex_hash_memo / f);
+    tex_hash_bytes = tex_hash_dup = tex_hash_memo = 0;
     std::fprintf(stderr, "[PROF] feedback snapshots/frame=%.1f (%.1f Mpx copied/frame)\n", fb_snaps / f, fb_snap_px / f / 1e6);
     fb_snaps = fb_snap_px = 0;
     std::fprintf(stderr, "[PROF] state-group changes/frame:");

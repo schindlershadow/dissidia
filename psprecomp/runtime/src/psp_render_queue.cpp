@@ -12,6 +12,7 @@
 #include <condition_variable>
 #include <vector>
 #include <cstdio>
+#include <cstdlib>
 #include <chrono>
 
 // ---------------------------------------------------------------------------
@@ -39,9 +40,36 @@ static int g_ge_uid_counter = 1;
 // ---------------------------------------------------------------------------
 // render_queue_post -- blocking single-slot path for FramePresent
 // ---------------------------------------------------------------------------
+bool render_queue_async_present_enabled() {
+    static const bool on = [] { const char* e = std::getenv("PSPRECOMP_ASYNC_PRESENT"); return e && e[0] && e[0] != '0'; }();
+    return on;
+}
+
+void render_queue_post_async(RenderRequest& req) {
+    psp_prof::seq("post-async-begin");
+    std::unique_lock<std::mutex> lock(g_render_mutex);
+    // The previous request (if the render thread has not got to it yet) owns the slot.
+    g_render_cv.wait(lock, [] { return !g_render_req.pending || g_should_exit.load(); });
+    g_render_req.type = req.type;
+    g_render_req.rdram = req.rdram;
+    g_render_req.list_idx = req.list_idx;
+    g_render_req.list_addr = req.list_addr;
+    g_render_req.stall_addr = req.stall_addr;
+    g_render_req.fb_addr = req.fb_addr;
+    g_render_req.fb_stride = req.fb_stride;
+    g_render_req.fb_format = req.fb_format;
+    g_render_req.pending = true;
+    g_render_req.done = false;
+    g_render_cv.notify_all();
+    g_work_cv.notify_one();
+    psp_prof::seq("post-async-end");
+}
+
 void render_queue_post(RenderRequest& req) {
     psp_prof::seq("post-begin");
     std::unique_lock<std::mutex> lock(g_render_mutex);
+    // A pipelined present may still own the slot.
+    g_render_cv.wait(lock, [] { return !g_render_req.pending || g_should_exit.load(); });
 
     g_render_req.type = req.type;
     g_render_req.rdram = req.rdram;

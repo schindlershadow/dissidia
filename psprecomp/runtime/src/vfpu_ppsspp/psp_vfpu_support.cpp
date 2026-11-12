@@ -1,6 +1,7 @@
 // Definitions the vendored PPSSPP VFPU code expects from the rest of PPSSPP (Core/MIPS/MIPS.cpp etc.).
 // Constants and the register permutation are copied from there.
 #include <cmath>
+#include "psp_tls.h"
 #include <cstdarg>
 #include <cstdio>
 #include <limits>
@@ -14,10 +15,10 @@
 VfpuConfig g_Config;
 
 namespace Memory {
-thread_local unsigned char *g_rdram = nullptr;
+thread_local PSP_TLS_FAST unsigned char *g_rdram = nullptr;
 }
 
-thread_local MIPSState *currentMIPS = nullptr;
+thread_local PSP_TLS_FAST MIPSState *currentMIPS = nullptr;
 
 u8 voffset[128];
 u8 fromvoffset[128];

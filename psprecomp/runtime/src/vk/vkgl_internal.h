@@ -154,6 +154,9 @@ bool fmt_for_internal(GLenum ifmt, FmtInfo* out);
 // object tables (names are indices; 0 is "none")
 bool core_init(SDL_Window* w, bool vsync, std::string* err);
 void core_shutdown();
+bool rt_set_scene(const float* xyz, uint32_t tri_count);   // PSPRECOMP_VK_RT ray-query scene (psp_rt.h)
+bool rt_available();
+const char* rt_unavailable_reason();
 void core_swap();
 void core_set_vsync(bool v);
 void core_drawable(int* w, int* h);

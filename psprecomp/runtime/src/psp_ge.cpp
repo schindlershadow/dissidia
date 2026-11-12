@@ -1,4 +1,5 @@
 #include "psp_ge.h"
+#include "psp_ge_texture.h"
 #include "psp_prof.h"
 #include "psp_ge_constants.h"
 #include "psp_ge_draw.h"
@@ -307,6 +308,7 @@ GeListResult ge_process_display_list(
     int stack_ptr = 0;
 
     // Begin list: bind FBO, set viewport
+    ge_texture_invalidate_hash_memo();   // the guest may have rewritten texture memory since the last session
     ge_draw_begin_list();
 
     // Clear log-once flags for this list (allow re-warn per list)
@@ -431,6 +433,7 @@ GeListResult ge_process_display_list(
             return GeListResult{pc + 4, true, prim_count};
 
         case GE_CMD_FINISH: {
+            ge_texture_invalidate_hash_memo();
             ge_draw_list_end();  // flush (the finish callback runs guest code); GE_SYNC=2 waits for the GPU here
             // FINISH signals that the display list is complete.
             // On real PSP the GE FINISH interrupt fires the registered
@@ -470,6 +473,7 @@ GeListResult ge_process_display_list(
         }
 
         case GE_CMD_SIGNAL: {
+            ge_texture_invalidate_hash_memo();
             ge_draw_flush();  // the signal callback runs guest code
             // SIGNAL behaviors 0x10/0x11/0x12 are GE flow control
             // (PPSSPP GPUCommon::ProcessSignal): JUMP/CALL/RET. They
@@ -1110,6 +1114,7 @@ GeListResult ge_process_display_list(
                     std::fprintf(stderr, "[GE_XFER_NONVRAM] 0x%08X(%u,%u,stride %u) -> 0x%08X(%u,%u,stride %u) %ux%u bpp=%u\n",
                                  sbase, sx, sy, sstride, dbase, dx, dy, dstride, w, h, bpp);
             }
+            ge_texture_invalidate_hash_memo();
             for (uint32_t row = 0; row < h; row++) {
                 const uint32_t s = sbase + ((sy + row) * sstride + sx) * bpp;
                 const uint32_t d = dbase + ((dy + row) * dstride + dx) * bpp;

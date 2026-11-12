@@ -6,6 +6,7 @@
 //
 // Copyright (C) 2012 PPSSPP Project (GPL v2 or later); adapted for psprecomp.
 #pragma once
+#include "psp_tls.h"
 
 #include <cstddef>
 #include <cstring>
@@ -98,7 +99,7 @@ public:
 	u32 pc = 0;
 	u32 lo = 0, hi = 0;
 
-	MIPSState() : v(nullptr) {}
+	constexpr MIPSState() : v(nullptr) {}   // constexpr: thread_local MIPSState needs no init guard
 
 	u8 VfpuWriteMask() const {
 		return VFPUPrefixWriteMask(vfpuCtrl[VFPU_CTRL_DPREFIX]);
@@ -109,4 +110,4 @@ public:
 };
 
 // Set by the wrapper for the duration of one op (thread-local: game threads run on OS threads).
-extern thread_local MIPSState *currentMIPS;
+extern thread_local PSP_TLS_FAST MIPSState *currentMIPS;

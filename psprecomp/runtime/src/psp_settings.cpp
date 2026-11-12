@@ -8,6 +8,7 @@
 #include "psp_ge_draw.h"
 #include "psp_post.h"
 #include "psp_screenfx.h"
+#include "psp_rt.h"
 #include "psp_ge_texture.h"
 #include "hle/psp_savedata_dialog.h"
 #include "hle/psp_hle_adhoc.h"
@@ -108,7 +109,7 @@ bool updates_choice();
 bool texpack_choice();
 bool texpack_at_start();
 
-enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_RENDERER, ROW_AA, ROW_SHARP, ROW_SSAO, ROW_CONTACT, ROW_SSR, ROW_ANISO, ROW_UPSCALE, ROW_VOICE, ROW_TEXPACK, ROW_TOUCH, ROW_TOUCH_EDIT, ROW_UPDATES, ROW_QUIT,
+enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_RENDERER, ROW_AA, ROW_SHARP, ROW_SSAO, ROW_CONTACT, ROW_RT, ROW_SSR, ROW_ANISO, ROW_UPSCALE, ROW_VOICE, ROW_TEXPACK, ROW_TOUCH, ROW_TOUCH_EDIT, ROW_UPDATES, ROW_QUIT,
            ROW_NET_MODE, ROW_NET_SERVER, ROW_NET_ROOM, ROW_NET_PEERS, ROW_NET_STATUS,   // Network page
            ROW_CLOUD_PROVIDER, ROW_CLOUD_FOLDER, ROW_CLOUD_URL, ROW_CLOUD_USER, ROW_CLOUD_PASS, ROW_CLOUD_GOOGLE,
            ROW_CLOUD_AUTO, ROW_CLOUD_REPLAYS, ROW_CLOUD_NOW, ROW_CLOUD_STATUS,   // Cloud page
@@ -611,6 +612,17 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
                      : "Screen-space reflections (PSPRECOMP_SSR)\nFloors mirror the characters, ruins and sky that are on screen. Low, Medium or High (more samples, more GPU time). Only what is visible in the picture can be reflected. Saved.";
             break;
         }
+        case ROW_RT: {
+            const bool avail = psp_rt_available();
+            const bool on = avail && psp_rt_enabled();
+            m.label = "Ray-Traced Shadows";
+            m.value = on ? "On" : "Off";
+            m.disabled = !avail;
+            m.can_dec = on; m.can_inc = avail && !on;
+            m.help = avail ? "Ray-traced shadows (PSPRECOMP_VK_RT)\nShadows traced against the scene's real geometry with the GPU's ray tracing hardware, instead of marched through the depth buffer: objects shadow each other and the stage. Replaces Contact Shadows while on (that row is hidden). Costs GPU time. Takes effect at once. Saved."
+                           : std::string("Ray-traced shadows: unavailable\n") + psp_rt_unavailable_reason();
+            break;
+        }
         case ROW_ANISO: {
             const int v = ge_texture_aniso();
             m.label = "Anisotropic Filtering";
@@ -862,6 +874,24 @@ void change(int d) {   // left / right on the selected row
         if (v != psp_fx_contact()) { psp_fx_set_contact(v); save("contact_shadows", std::to_string(v)); }
         break;
     }
+    case ROW_RT: {
+        const bool on = d > 0;
+        if (!psp_rt_available() || on == psp_rt_enabled()) break;
+        psp_rt_set_enabled(on);
+        save("rt_shadows", on ? "1" : "0");
+        // The ray-traced shadows replace the contact shadows: switch those off (remembering the level) and hide their row.
+        if (on) {
+            if (psp_fx_contact() > 0) save("contact_before_rt", std::to_string(psp_fx_contact()));
+            psp_fx_set_contact(0); save("contact_shadows", "0");
+        } else {
+            auto it = g_saved.find("contact_before_rt");
+            const int back = it != g_saved.end() ? std::atoi(it->second.c_str()) : 0;
+            psp_fx_set_contact(back); save("contact_shadows", std::to_string(std::min(3, std::max(0, back))));
+        }
+        g_sel_page[g_page] = std::max(0, g_sel + (on ? -1 : 1));   // the contact row above disappears / appears
+        build_rows();
+        break;
+    }
     case ROW_SSR: {
         const int v = std::min(3, std::max(0, psp_fx_ssr() + d));
         if (v != psp_fx_ssr()) { psp_fx_set_ssr(v); save("ssr", std::to_string(v)); }
@@ -929,7 +959,8 @@ void build_rows() {
         g_rows.push_back(ROW_AA);
         g_rows.push_back(ROW_SHARP);
         g_rows.push_back(ROW_SSAO);
-        g_rows.push_back(ROW_CONTACT);
+        if (!psp_rt_active()) g_rows.push_back(ROW_CONTACT);   // ray-traced shadows replace them
+        g_rows.push_back(ROW_RT);
         g_rows.push_back(ROW_SSR);
         g_rows.push_back(ROW_ANISO);
         g_rows.push_back(ROW_UPSCALE);
@@ -1073,6 +1104,7 @@ void confirm() {
     case ROW_SHARP: change(psp_post_sharpen() >= 4 ? -4 : 1); return;
     case ROW_SSAO: change(psp_fx_ssao() >= 3 ? -3 : 1); return;
     case ROW_CONTACT: change(psp_fx_contact() >= 3 ? -3 : 1); return;
+    case ROW_RT: if (psp_rt_available()) change(psp_rt_enabled() ? -1 : 1); return;
     case ROW_SSR: change(psp_fx_ssr() >= 3 ? -3 : 1); return;
     case ROW_ANISO: change(ge_texture_aniso() >= 16 ? -4 : 1); return;
     case ROW_UPSCALE: change(psp_post_upscale() >= 2 ? -2 : 1); return;
@@ -1149,6 +1181,7 @@ void psp_settings_load_early() {
     if ((it = g_saved.find("sharpen")) != g_saved.end()) put("PSPRECOMP_SHARPEN", it->second);
     if ((it = g_saved.find("ssao")) != g_saved.end()) put("PSPRECOMP_SSAO", it->second);
     if ((it = g_saved.find("contact_shadows")) != g_saved.end()) put("PSPRECOMP_CONTACT_SHADOWS", it->second);
+    if ((it = g_saved.find("rt_shadows")) != g_saved.end()) put("PSPRECOMP_VK_RT", it->second == "1" ? "1" : "0");
     if ((it = g_saved.find("ssr")) != g_saved.end()) put("PSPRECOMP_SSR", it->second);
     if ((it = g_saved.find("upscale")) != g_saved.end() && (it->second == "bilinear" || it->second == "sharp" || it->second == "bicubic"))
         put("PSPRECOMP_UPSCALE", it->second);

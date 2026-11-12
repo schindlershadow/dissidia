@@ -9,6 +9,7 @@
 // tests/run_vfpu_semantics.sh checks these entry points against the interpreter, bit for bit.
 #define PSP_VFPU_CTRL_FROM_PPSSPP 1  // MIPS.h below declares VFPU_CTRL_*
 #include "psp_vfpu.h"
+#include "psp_tls.h"
 #include "recomp.h"
 
 #include "Core/MIPS/MIPS.h"
@@ -18,7 +19,7 @@
 namespace {
 
 inline MIPSState& bind(recomp_context* ctx, uint8_t* rdram) {
-    static thread_local MIPSState st;
+    static thread_local PSP_TLS_FAST MIPSState st;
     st.r = reinterpret_cast<u32*>(ctx->r);
     st.v = ctx->vfpu;
     st.vfpuCtrl = ctx->vfpu_ctrl;

@@ -48,7 +48,8 @@ static void hle_sceDisplaySetFrameBuf(
     req.fb_addr = fb_addr;
     req.fb_stride = stride;
     req.fb_format = format;
-    render_queue_post(req);
+    if (render_queue_async_present_enabled()) render_queue_post_async(req);
+    else render_queue_post(req);
 
     ctx->r[2] = SCE_OK;
 }
