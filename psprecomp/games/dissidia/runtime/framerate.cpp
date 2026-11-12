@@ -675,12 +675,22 @@ void assist_gauge_log() {
         if (!pc || !ok(pc)) continue;
         const uint32_t gp = r32(pc + 0x52Cu);
         if (!gp || !ok(gp)) continue;
+        if (e[0] == '2' && !armed && g_test_on && i == 0 && g_gt_ms > 100) { armed = 1; psp_mem_watch_set(gp + 0x1Cu); }   // =2: watch side 0's +0x1C
+        { // whole gauge struct (0x40 bytes before / after the value), logged when any word changes
+            static uint32_t prev[2][24] = {};
+            bool diff = false;
+            for (int k = 0; k < 24; k++) { const uint32_t w = r32(gp + 4u * k); if (w != prev[i][k]) diff = true; }
+            if (diff) {
+                std::fprintf(stderr, "[GSTRUCT] gt=%.0f side=%d step=%.3f", g_gt_ms, i, rdf(FRAME_STEP));
+                for (int k = 0; k < 24; k++) { const uint32_t w = r32(gp + 4u * k); prev[i][k] = w; float f; std::memcpy(&f, &w, 4); std::fprintf(stderr, " +%02X=%g", 4 * k, std::fabs(f) > 1e-6f && std::fabs(f) < 1e7f ? f : (float)(int32_t)w); }
+                std::fprintf(stderr, "\n");
+            }
+        }
         const float v = rdf(gp + 0x18u);
         if (v == last[i]) continue;
         const bool changed = last[i] >= 0;
         last[i] = v;
         std::fprintf(stderr, "[ASSIST] gt=%.0f side=%d ctrl=%08X gauge=%.2f addr=%08X step=%.3f\n", g_gt_ms, i, pc, v, gp + 0x18u, rdf(FRAME_STEP));
-        if (e[0] == '2' && !armed && g_test_on && changed && g_gt_ms > 500) { armed = 1; psp_mem_watch_set(gp + 0x18u); }
     }
 }
 void fighter_log_frame() {
@@ -975,6 +985,31 @@ void gauge_tick_hook(uint8_t* rdram, recomp_context* ctx) {
     }
 }
 
+// ovl FUN_08AED330(machine, owner): the assist gauge's state machine, one call per update per side. Its drain of the second gauge word
+// (+0x1C, the bar that starts at the battle's initial gauge and runs down while nothing is done) is partly per update, not per step
+// (FUN_08AEE124: delta = table x 0.01 x ... with no step factor; only some terms use the global step 0x089D5EAC), so the bar emptied
+// ~2.5-3x sooner at 120 fps. Above 30 fps it runs every rate/30-th update with the step of the skipped updates added, i.e. exactly
+// what the PSP's 30 Hz frame does. PSPRECOMP_GAUGE30=0 turns it off for A/B checks.
+constexpr uint32_t GAUGE_SM = 0x08AED330u;
+FuncPtr g_orig_gauge_sm = nullptr;
+bool g_gauge30 = true;
+void gauge_sm_hook(uint8_t* rdram, recomp_context* ctx) {
+    if (!g_gauge30 || g_ticks >= 2.0f || overlay_id() != 1) { g_orig_gauge_sm(rdram, ctx); return; }
+    static uint32_t key[4] = {}; static float acc[4] = {};
+    const uint32_t self = static_cast<uint32_t>(ctx->r[4]);
+    int slot = -1;
+    for (int i = 0; i < 4; i++) if (key[i] == self) slot = i;
+    if (slot < 0) { for (int i = 0; i < 4 && slot < 0; i++) if (!key[i]) slot = i; if (slot < 0) slot = 0; key[slot] = self; acc[slot] = 0; }
+    const float step = rdf(FRAME_STEP);
+    acc[slot] += step;
+    if (acc[slot] < 2.0f - 1e-3f) return;                 // not this update: the PSP frame has not "elapsed" yet
+    const float run_step = acc[slot];
+    acc[slot] = 0;
+    wrf(FRAME_STEP, run_step);
+    g_orig_gauge_sm(rdram, ctx);
+    wrf(FRAME_STEP, step);
+}
+
 // ---- Effect components ------------------------------------------------------------------------------------------
 // The effect runtime advances its components by dt = instance+352 (the global step x the handle's scale, written by
 // FUN_0894B48C): 2.0 per update on the PSP, 1.0 per update at 60 Hz. Most components scale by it. These step once
@@ -1190,6 +1225,8 @@ void dissidia_framerate_install(uint8_t* rdram) {
     if ((g_orig_gauge_drain = ovl_battle_lookup(GAUGE_DRAIN))) psp_dispatch_register(GAUGE_DRAIN, gauge_drain_hook);
     if ((g_orig_gauge_hud = ovl_battle_lookup(GAUGE_HUD))) psp_dispatch_register(GAUGE_HUD, gauge_hud_hook);
     if ((g_orig_gauge_tick = ovl_battle_lookup(GAUGE_TICK))) psp_dispatch_register(GAUGE_TICK, gauge_tick_hook);
+    if (const char* x = std::getenv("PSPRECOMP_GAUGE30"); x && x[0] == '0') g_gauge30 = false;
+    if ((g_orig_gauge_sm = ovl_battle_lookup(GAUGE_SM))) psp_dispatch_register(GAUGE_SM, gauge_sm_hook);
     if (g_orig_pressed) psp_dispatch_register(PRESSED, pressed_hook);
     std::fprintf(stderr, "[FPS] press latch %s (pressed-test hook %s)\n", g_press_latch ? "on" : "off", g_orig_pressed ? "installed" : "NOT FOUND");
     if ((g_orig_rootmotion = psp_dispatch_probe_lookup(ROOT_MOTION))) psp_dispatch_register(ROOT_MOTION, root_motion_hook);

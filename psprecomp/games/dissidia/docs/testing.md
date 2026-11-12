@@ -80,3 +80,15 @@ Revolver Drive is a ground HP attack (hold the HP attack button, Triangle by def
   restart: the game clock and the script restart with the next battle.
 - A run sometimes fails with "the battle never started" or "Connection refused" when the machine is busy: just rerun it.
 - Never `pkill -f` patterns; use exact pids; check `ps` for another session's psprecomp_runtime before touching anything.
+
+## Assist gauge idle drain (fixed 11 Nov, branch assist-gauge)
+
+- Gauge struct (`[ctrl+0x52C]`): `+0x18` the gauge, `+0x1C` the bar that starts at the battle's initial gauge (2000 for side 0) and
+  runs down after a few seconds with nothing done, with an accelerating curve; `[GSTRUCT]` logs the struct (PSPRECOMP_ASSIST_GAUGE=1).
+- Bug: the state machine FUN_08AED330 (-> 08AED83C -> 08AEE124) has drain terms per update instead of per step, so at 120 fps the bar
+  emptied 3.7x faster (1500 -> 0 in 758 ms against 2767 ms at 30 fps; 60 fps 2x). Fix in `runtime/framerate.cpp` (`gauge_sm_hook`): above 30 fps
+  the machine runs every rate/30-th update with the accumulated step (PSP 30 Hz behaviour); `PSPRECOMP_GAUGE30=0` turns it off.
+- Test: `battle_test.py gauge-drain --work W` runs 30 / 60 / 120 in parallel with no input and checks the 1500 -> 0 time is equal
+  (PASS: 2767 / 2767 / 2766 ms; with PSPRECOMP_GAUGE30=0 at 120: 758 ms). The time before the drain starts differs between runs because
+  game time 0 is when the harness sees the HUD (a few hundred ms of jitter); compare durations, not start times.
+- Gains from attacks still work at 120 with the fix (checked: gauge 2000 -> 2930 over the attack script).

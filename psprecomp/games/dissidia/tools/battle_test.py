@@ -210,6 +210,8 @@ def walk_menus(g, char, tries=14, stage=12):
     g.step('cross')                                    # YES
     time.sleep(2.0)
     g.settle(10)
+    if os.environ.get('BT_SHOT_SETUP'):
+        g.shot().save(os.path.join(g.out, 'setup.png'))      # the battle setup page (rules, stage)
     if stage:                                          # battle setup: STAGE row, entry `stage` of 20 (1 = Random), back to Enter Battle
         g.step('down', wait=0.4)
         for _ in range(stage - 1):
@@ -566,6 +568,43 @@ def scan(a):
     return 0
 
 
+def gauge_drain(a):
+    """the assist gauge's idle drain at each rate (runs in parallel): time for the draining bar word (+0x1C of the gauge struct) to
+    go from `--from` to 0 must be the same at every rate. PSPRECOMP_GAUGE30=0 in the environment shows the unfixed behaviour."""
+    out = a.out
+    os.makedirs(out, exist_ok=True)
+    script = os.path.join(out, 'noinput.txt')
+    with open(script, 'w') as f:
+        f.write('%d quit\n' % a.length)
+    rates = [int(x) for x in a.rates.split(',')]
+    procs = []
+    for r in rates:
+        env = dict(os.environ, PSPRECOMP_ASSIST_GAUGE='1')
+        procs.append(subprocess.Popen([sys.executable, os.path.abspath(__file__), 'run', '--work', a.work, '--script', script, '--fps', str(r),
+                                       '--out', os.path.join(out, 'r%d' % r), '--timeout', str(a.timeout)], env=env,
+                                      stdout=subprocess.DEVNULL, stderr=open(os.path.join(out, 'r%d.err' % r), 'w')))
+    for p in procs:
+        p.wait()
+    res = {}
+    for r in rates:
+        vals = []
+        try:
+            for l in open(os.path.join(out, 'r%d' % r, 'run_%d.log' % r), errors='replace'):
+                m = re.match(r'\[GSTRUCT\] gt=(\d+) side=0 step=\S+ (.*)', l)
+                if m:
+                    w = dict(x.split('=') for x in m.group(2).split())
+                    vals.append((int(m.group(1)), float(w['+1C'])))
+        except OSError:
+            pass
+        hi = [t for t, v in vals if v >= a.start]
+        z = [t for t, v in vals if hi and t >= max(hi) and v <= 0]
+        res[r] = (z[0] - max(hi)) if z else None
+        print('%4d fps: bar word %d -> 0 in %s ms' % (r, a.start, res[r]))
+    ok = all(v is not None for v in res.values()) and max(res.values()) <= min(res.values()) * a.tol
+    print('PASS' if ok else 'FAIL: the drain takes a different time at different frame rates')
+    return 0 if ok else 1
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     sub = ap.add_subparsers(dest='what', required=True)
@@ -617,7 +656,17 @@ def main(argv):
     p.add_argument('--timeout', type=int, default=120)
     p.add_argument('--ratio', type=float, default=1.5)
     p.add_argument('--min-rate', dest='min_rate', type=float, default=0.001)
+    p = sub.add_parser('gauge-drain', help='assist gauge idle drain takes the same time at every frame rate (parallel runs)')
+    p.add_argument('--work', required=True)
+    p.add_argument('--out', default=tempfile.mkdtemp(prefix='battle_test_'))
+    p.add_argument('--rates', default='30,60,120')
+    p.add_argument('--length', type=int, default=16000, help='ms of game time per run')
+    p.add_argument('--start', type=float, default=1500.0)
+    p.add_argument('--tol', type=float, default=1.15)
+    p.add_argument('--timeout', type=int, default=500)
     a = ap.parse_args(argv)
+    if a.what == 'gauge-drain':
+        return gauge_drain(a)
     if a.what == 'scan':
         return scan(a)
     if a.what == 'run':
