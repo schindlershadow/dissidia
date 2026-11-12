@@ -606,6 +606,13 @@ def gauge_drain(a):
         hi = [t for t, v in vals if v >= a.start]
         z = [t for t, v in vals if hi and t >= max(hi) and v <= 0]
         res[r] = (z[0] - max(hi)) if z else None
+        lg = os.path.join(out, 'r%d' % r, 'run_%d.log' % r)
+        if not a.keep and os.path.exists(lg):     # the logs of a 120 fps run are huge; keep only the gauge lines
+            with open(lg, errors='replace') as fi, open(lg + '.gauge', 'w') as fo:
+                for l in fi:
+                    if l.startswith(('[GSTRUCT]', '[GAUGE', '[ASSIST]', '[TEST]')):
+                        fo.write(l)
+            os.remove(lg)
         print('%4d fps: bar word %d -> 0 in %s ms' % (r, a.start, res[r]))
     ok = all(v is not None for v in res.values()) and max(res.values()) <= min(res.values()) * a.tol
     print('PASS' if ok else 'FAIL: the drain takes a different time at different frame rates')
@@ -670,6 +677,7 @@ def main(argv):
     p.add_argument('--length', type=int, default=16000, help='ms of game time per run')
     p.add_argument('--start', type=float, default=1500.0)
     p.add_argument('--tol', type=float, default=1.15)
+    p.add_argument('--keep', action='store_true', help='keep the full run logs')
     p.add_argument('--timeout', type=int, default=500)
     a = ap.parse_args(argv)
     if a.what == 'gauge-drain':
