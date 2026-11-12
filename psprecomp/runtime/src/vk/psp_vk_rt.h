@@ -55,7 +55,10 @@ public:
     bool init(Context& ctx);
     void destroy();
     /// Record "upload vertices, build BLAS, build TLAS, barrier to fragment/compute shader reads" into cb (outside a render pass).
-    bool record_build(VkCommandBuffer cb, const float* xyz, uint32_t tri_count, std::string* err);
+    /// `tri_cols` (optional): one RGBA8 per triangle, read back by the shader as `rt_tri_col[]` (cols_buffer()); grey when null.
+    bool record_build(VkCommandBuffer cb, const float* xyz, uint32_t tri_count, const uint32_t* tri_cols, std::string* err);
+    VkBuffer cols_buffer() const { return cols_.buf; }
+    VkDeviceSize cols_size() const { return cols_.size; }
     VkAccelerationStructureKHR tlas() const { return tlas_; }
     uint32_t tris() const { return tris_; }
 private:
@@ -66,7 +69,7 @@ private:
     void free_all();
     Context* ctx_ = nullptr;
     VkAccelerationStructureKHR blas_ = VK_NULL_HANDLE, tlas_ = VK_NULL_HANDLE;
-    Buf verts_, blas_buf_, tlas_buf_, inst_buf_, scratch_;
+    Buf verts_, blas_buf_, tlas_buf_, inst_buf_, scratch_, cols_;
     VkDeviceSize scratch_align_ = 128;
     uint32_t cap_ = 0, tris_ = 0;
 };

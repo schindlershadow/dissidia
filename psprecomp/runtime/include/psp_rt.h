@@ -8,7 +8,9 @@ struct PspRtHooks {
     bool (*available)() = nullptr;
     /// Build this frame's acceleration structure from world-space triangles (3 floats per vertex, 9 per triangle) into the
     /// layer's current command stream. The next draw of a program that declares `uniform accelerationStructureEXT` sees it.
-    bool (*set_scene)(const float* xyz, uint32_t tri_count) = nullptr;
+    /// `tri_cols` (optional, one RGBA8 per triangle, R in the low byte) is what a ray-traced reflection shows where it hits that
+    /// triangle: the shader reads it as `rt_tri_col[gl_PrimitiveID]` (storage buffer, set 2 binding 1).
+    bool (*set_scene)(const float* xyz, uint32_t tri_count, const uint32_t* tri_cols) = nullptr;
     /// Set by the Vulkan layer whenever it is active: why ray tracing is not available on this GPU (null / empty = available).
     const char* (*unavailable_reason)() = nullptr;
 };
@@ -21,5 +23,12 @@ void psp_rt_set_enabled(bool on);
 const char* psp_rt_unavailable_reason();
 /// Ray tracing is available and switched on: contact shadows are replaced by it.
 inline bool psp_rt_active();
+/// User switch "Ray-Traced Reflections" (env PSPRECOMP_VK_RT_REFL=1 / saved `rt_reflections`): the floor reflection is a ray query along the
+/// reflected view ray instead of the screen-space march, so it also shows what is off screen or hidden. Replaces the Reflections row.
+bool psp_rt_refl_enabled();
+void psp_rt_refl_set_enabled(bool on);
 inline bool psp_rt_available() { return g_psp_rt.available && g_psp_rt.available(); }
 inline bool psp_rt_active() { return psp_rt_available() && psp_rt_enabled(); }
+inline bool psp_rt_refl_active() { return psp_rt_available() && psp_rt_refl_enabled(); }
+/// Either ray-traced effect is on: the draw path captures this frame's triangles.
+inline bool psp_rt_scene_wanted() { return psp_rt_available() && (psp_rt_enabled() || psp_rt_refl_enabled()); }

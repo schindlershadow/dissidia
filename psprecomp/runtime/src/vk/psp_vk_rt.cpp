@@ -290,7 +290,7 @@ void RtAccel::free_all() {
     if (!ctx_) return;
     if (tlas_) { p_destroy(ctx_->device(), tlas_, nullptr); tlas_ = VK_NULL_HANDLE; }
     if (blas_) { p_destroy(ctx_->device(), blas_, nullptr); blas_ = VK_NULL_HANDLE; }
-    free_buffer(&verts_); free_buffer(&blas_buf_); free_buffer(&tlas_buf_); free_buffer(&inst_buf_); free_buffer(&scratch_);
+    free_buffer(&verts_); free_buffer(&blas_buf_); free_buffer(&tlas_buf_); free_buffer(&inst_buf_); free_buffer(&scratch_); free_buffer(&cols_);
     cap_ = 0; tris_ = 0;
 }
 
@@ -342,6 +342,7 @@ bool RtAccel::allocate(uint32_t cap, std::string* err) {
     if (!make_buffer(&verts_, (VkDeviceSize)cap * 36, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR, true, err)
         || !make_buffer(&blas_buf_, bsz.accelerationStructureSize, asu, false, err) || !make_buffer(&tlas_buf_, tsz.accelerationStructureSize, asu, false, err)
         || !make_buffer(&scratch_, scratch_sz, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false, err)
+        || !make_buffer(&cols_, (VkDeviceSize)cap * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, err)
         || !make_buffer(&inst_buf_, sizeof(VkAccelerationStructureInstanceKHR), VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR, true, err)) { free_all(); return false; }
     VkAccelerationStructureCreateInfoKHR ci{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
     ci.buffer = blas_buf_.buf; ci.size = bsz.accelerationStructureSize; ci.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
@@ -359,12 +360,14 @@ bool RtAccel::allocate(uint32_t cap, std::string* err) {
     return true;
 }
 
-bool RtAccel::record_build(VkCommandBuffer cb, const float* xyz, uint32_t n, std::string* err) {
+bool RtAccel::record_build(VkCommandBuffer cb, const float* xyz, uint32_t n, const uint32_t* tri_cols, std::string* err) {
     std::string e; if (!err) err = &e;
     if (!ctx_ || !n) return false;
     if (std::getenv("PSPRECOMP_RT_DEBUG")) std::fprintf(stderr, "[RT] record_build n=%u cap=%u\n", n, cap_);
     if (n > cap_ && !allocate(std::max<uint32_t>(n + n / 2, 30000u), err)) return false;
     std::memcpy(verts_.map, xyz, (size_t)n * 36);
+    if (tri_cols) std::memcpy(cols_.map, tri_cols, (size_t)n * 4);
+    else for (uint32_t i = 0; i < n; i++) static_cast<uint32_t*>(cols_.map)[i] = 0xFF808080u;
     VkAccelerationStructureGeometryKHR g{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
     g.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR; g.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
     g.geometry.triangles = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR};

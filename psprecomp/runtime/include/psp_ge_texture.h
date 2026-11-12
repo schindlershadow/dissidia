@@ -25,6 +25,7 @@ struct TexCacheEntry {
     bool valid = false;
     bool mips = false;      // texture-pack replacement uploaded with generated mip levels
     bool replaced = false;  // texture-pack replacement / upscaled image (not the game's own texels)
+    uint32_t avg_rgba = 0xFFFFFFFFu;   // average colour of the game's texels (RGBA8, R low byte); ray-traced reflections shade hits with it
     uint64_t pack_id = 0;   // texture-pack id (psp_tex_pack.h); 0 = not computed / not a game texture
 };
 
@@ -74,3 +75,7 @@ void ge_texture_invalidate_hash_memo();
 /// ge_texture_bind_external bound; 0 when none, a render target, a movie, or
 /// when neither the texture pack nor the FX shaders (psp_fx_shader.h) are on.
 uint64_t ge_texture_bound_pack_id();
+
+/// Average colour (RGBA8, R in the low byte) of the texture the last ge_texture_bind / ge_texture_bind_external bound;
+/// 0xFFFFFFFF (white) when texturing is off, and 0xFF808080 (grey) for a render target / movie. Used by the ray-traced reflections.
+uint32_t ge_texture_bound_avg_color();
