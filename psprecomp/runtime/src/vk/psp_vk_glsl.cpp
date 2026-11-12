@@ -75,6 +75,8 @@ bool convert_stage(Stage st, const std::string& src, Shared& sh, std::string* bo
             if (type == "accelerationStructureEXT") {
                 sh.rt = true;
                 out += "layout(set = 2, binding = 0) uniform accelerationStructureEXT " + name + ";\n";
+                out += "layout(set = 2, binding = 1, std430) readonly buffer RtTriColBlock { uint rt_tri_col[]; };\n";   // per-triangle RGBA8 (psp_rt.h)
+                out += "layout(set = 2, binding = 2, std430) readonly buffer RtFxColBlock { uint rt_fx_col[]; };\n";   // the effects layer's
                 continue;
             }
             if (type.rfind("sampler", 0) == 0) {

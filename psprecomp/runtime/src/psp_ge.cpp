@@ -21,6 +21,7 @@ uint32_t g_ge_skin_prim_seq = 1;
 
 // -- Module state --
 static GeState g_ge_state;
+uint32_t g_ge_state_gen = 1;
 static bool g_ge_trace = false;
 static int g_total_lists = 0;
 static int g_total_prims = 0;
@@ -146,9 +147,11 @@ static void ge_draw_spline(uint8_t* rdram, uint32_t data) {
     const uint32_t keep_type = g_ge_state.vertex_type, keep_addr = g_ge_state.vertex_addr;
     g_ge_state.vertex_type = vtype;
     g_ge_state.vertex_addr = at;
+    g_ge_state_gen += 2;
     ge_draw_prim(rdram, prim, count);
     g_ge_state.vertex_type = keep_type;
     g_ge_state.vertex_addr = keep_addr;
+    g_ge_state_gen += 2;
 }
 
 // -- Call stack entry for CALL/RET --
@@ -219,6 +222,7 @@ GeState& ge_get_state_mut() {
 }
 
 void ge_init() {
+    g_ge_state_gen += 2;
     g_ge_state.reset();
 
     // Set reasonable defaults
@@ -412,6 +416,13 @@ GeListResult ge_process_display_list(
                 pc, cmd, data);
         }
 
+        switch (cmd) {   // commands whose effect never reaches a draw's batch key leave g_ge_state_gen alone
+        case GE_CMD_NOP: case GE_CMD_VADDR: case GE_CMD_IADDR: case GE_CMD_PRIM: case GE_CMD_JUMP: case GE_CMD_BJUMP:
+        case GE_CMD_CALL: case GE_CMD_RET: case GE_CMD_BASE: case GE_CMD_OFFSETADDR: case GE_CMD_ORIGIN:
+            break;
+        default:
+            g_ge_state_gen++;
+        }
         switch (cmd) {
         // ---- Control flow ----
         case GE_CMD_NOP:

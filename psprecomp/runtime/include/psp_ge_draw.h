@@ -22,7 +22,7 @@ GeViewportDepth ge_compute_viewport_depth(
     uint32_t off_x_raw, uint32_t off_y_raw,
     int fb_height);
 
-/// Internal render scale n (PSPRECOMP_RENDER_SCALE, 1..8): every target is
+/// Internal render scale n (PSPRECOMP_RENDER_SCALE, 1..16): every target is
 /// 480n x 272n; viewports are multiplied by n. Valid after ge_draw_init().
 int ge_draw_render_scale();
 

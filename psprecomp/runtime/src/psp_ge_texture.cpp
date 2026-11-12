@@ -530,11 +530,27 @@ void ge_texture_invalidate_all() {
 
 static uint64_t g_bound_pack_id = 0;
 uint64_t ge_texture_bound_pack_id() { return g_bound_pack_id; }
+static uint32_t g_bound_avg = 0xFFFFFFFFu;
+uint32_t ge_texture_bound_avg_color() { return g_bound_avg; }
+// Average colour over up to ~1024 evenly spaced texels (alpha-weighted so cut-out edges do not darken it).
+static uint32_t average_rgba(const uint8_t* px, long n) {
+    if (n <= 0) return 0xFF808080u;
+    const long step = n > 1024 ? n / 1024 : 1;
+    uint64_t r = 0, g = 0, b = 0, w = 0, a = 0, cnt = 0;
+    for (long i = 0; i < n; i += step) {
+        const uint32_t al = px[i * 4 + 3];
+        r += px[i * 4] * al; g += px[i * 4 + 1] * al; b += px[i * 4 + 2] * al; w += al; a += al; cnt++;
+    }
+    if (!w) return 0x00808080u;   // fully transparent
+    const uint32_t ma = (uint32_t)(a / cnt);   // mean alpha in the top byte: cut-out / glow cards are told apart from solid surfaces by it
+    return (uint32_t)(r / w) | (uint32_t)(g / w) << 8 | (uint32_t)(b / w) << 16 | ma << 24;
+}
 
 extern bool ge_draw_prefilter(GLuint tex, float* bias);   // psp_ge_draw.cpp
 
 GLuint ge_texture_bind_external(GLuint gl_tex, const GeState& state) {
     g_bound_pack_id = 0;
+    g_bound_avg = 0xFF808080u;
     bind_tex2d(gl_tex);
     // Render targets are always clamped (REPEAT would bleed the 480x272
     // image edge into the unused part of the declared 512x512 texture).
@@ -603,6 +619,7 @@ GLuint ge_texture_bind(
     const GeState& state = ge_get_state();
 
     g_bound_pack_id = 0;
+    g_bound_avg = 0xFFFFFFFFu;
     if (g_aniso_seen_epoch != g_aniso_epoch.load()) {   // anisotropic setting changed: reload every texture
         g_aniso_seen_epoch = g_aniso_epoch.load();
         ge_texture_invalidate_all();
@@ -733,6 +750,7 @@ GLuint ge_texture_bind(
         // Cache hit
         entry.last_frame = frame_num;
         g_bound_pack_id = entry.pack_id;
+        g_bound_avg = entry.avg_rgba;
         bind_tex2d(entry.gl_tex);
         if (movie && entry.movie_serial != mv_serial) {
             upload_movie_rows(entry, rdram, masked_addr, width, height, bufw, mv_rows, mv_serial);
@@ -759,6 +777,8 @@ GLuint ge_texture_bind(
         entry.mips = false;
         entry.replaced = false;
         entry.pack_id = 0;
+        entry.avg_rgba = 0xFF808080u;
+        g_bound_avg = entry.avg_rgba;
         entry.format = fmt;
         entry.last_frame = frame_num;
         entry.valid = true;
@@ -1002,6 +1022,8 @@ GLuint ge_texture_bind(
     entry.replaced = pack_px_used;
     entry.pack_id = tid;
     g_bound_pack_id = tid;
+    entry.avg_rgba = rgba.empty() ? 0xFF808080u : average_rgba(rgba.data(), (long)width * height);
+    g_bound_avg = entry.avg_rgba;
 
     // Store entry
     entry.psp_addr = psp_addr;
