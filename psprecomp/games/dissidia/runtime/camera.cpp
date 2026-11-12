@@ -70,13 +70,15 @@ double g_cine_t0 = 0, g_cine_len = 0;
 float g_cine_side = 0.f;
 int g_cine_logs = 0;
 // Not locked on (issue #20): the game's camera follows the fighter and re-centres by itself; the left stick must not move
-// the camera then, only the right stick does. While the player has no lock-on target the camera is held where it was
-// (world-fixed eye and look-at, the right stick orbits the held look-at point, no auto re-centre). PSPRECOMP_CAM_UNLOCK_HOLD=0 turns it off.
+// the camera then, only the right stick does. While the player has no lock-on target the camera keeps its direction and follows the fighter
+// (fixed orientation and distance, following the fighter, the right stick orbits the held look-at point, no auto re-centre). PSPRECOMP_CAM_UNLOCK_HOLD=0 turns it off.
 constexpr uint32_t LOCK_TARGET = 0x08B3B280u, ACT_LOCK = 0x5ACu;   // FUN_08B3B280(*(actor + 0x5AC)) = the lock-on target, 0 = none
 FuncPtr g_lock_fn = nullptr;
 double g_first_lock_t = 0, g_force_unlock_s = -1;   // PSPRECOMP_CAM_FORCE_UNLOCK=<s>: test aid, report 'not locked' that long after the first lock
 bool g_ever_locked = false;
 bool g_hold_on = true, g_locked = true, g_lock_known = false, g_holding = false, g_held_valid = false;
+float g_held_p[3] = {0, 0, 0}, g_off[3] = {0, 0, 0};
+bool g_held_p_set = false;
 float g_held_e[3], g_held_t[3], g_game_e[3], g_game_t[3];
 bool g_game_valid = false;
 float g_turn = 0.f, g_relock_w = 0.f;
@@ -158,6 +160,11 @@ float dissidia_camera_turn() {
 
 namespace {
 
+bool pl_pos(float* P) {
+    const uint32_t a = dissidia_player_actor();
+    return a && rdvec(a + ACT_POS, P);
+}
+
 // CAM_UPDATE is a battle-overlay address; the menu/extra overlays map other code there.
 void dissidia_cam_update(uint8_t* rdram, recomp_context* ctx) {
     uint32_t id = overlay_id();
@@ -206,12 +213,12 @@ void dissidia_cam_update(uint8_t* rdram, recomp_context* ctx) {
         if (!g_ever_locked) { locked = true; known = false; }   // intro / before the first lock: the game's camera runs
         if (g_locked && !locked && g_game_valid) {
             g_relock_w = 0.f;   // just lost the lock: freeze the camera where the game had it
-            std::memcpy(g_held_e, g_game_e, sizeof g_held_e); std::memcpy(g_held_t, g_game_t, sizeof g_held_t); g_held_valid = true;
+            std::memcpy(g_held_e, g_game_e, sizeof g_held_e); std::memcpy(g_held_t, g_game_t, sizeof g_held_t); g_held_valid = true; g_held_p_set = false;
         }
         if (!locked && !g_locked && !g_held_valid && g_game_valid) {   // (first update already unlocked)
-            std::memcpy(g_held_e, g_game_e, sizeof g_held_e); std::memcpy(g_held_t, g_game_t, sizeof g_held_t); g_held_valid = true;
+            std::memcpy(g_held_e, g_game_e, sizeof g_held_e); std::memcpy(g_held_t, g_game_t, sizeof g_held_t); g_held_valid = true; g_held_p_set = false;
         }
-        if (!g_locked && locked) g_relock_w = 1.f;   // lock regained: ease from the held camera back to the game's
+        if (!g_locked && locked) g_relock_w = 1.f;   // (the held rig keeps following the fighter meanwhile)   // lock regained: ease from the held camera back to the game's
         g_locked = locked; g_lock_known = known;
         g_holding = known && !locked && g_held_valid;
         if (known && locked && g_relock_w <= 0.f) g_held_valid = false;
@@ -257,13 +264,22 @@ void dissidia_cam_seteye(uint8_t* rdram, recomp_context* ctx) {
         const float ge[3] = {rdf(eye), rdf(eye + 4), rdf(eye + 8)}, gt[3] = {rdf(eye + 0x10), rdf(eye + 0x14), rdf(eye + 0x18)};
         std::memcpy(g_game_e, ge, sizeof ge); std::memcpy(g_game_t, gt, sizeof gt); g_game_valid = true;
         game_az = std::atan2(ge[0] - gt[0], ge[2] - gt[2]);
+        {   // the held rig keeps its orientation and distance but moves with the player's fighter
+            float P[3];
+            if (g_held_valid && pl_pos(P)) {
+                if (!g_held_p_set) { std::memcpy(g_held_p, P, sizeof P); g_held_p_set = true; }
+                for (int i = 0; i < 3; i++) g_off[i] = P[i] - g_held_p[i];
+            } else g_off[0] = g_off[1] = g_off[2] = 0.f;
+        }
+        float he[3], ht[3];
+        for (int i = 0; i < 3; i++) { he[i] = g_held_e[i] + g_off[i]; ht[i] = g_held_t[i] + g_off[i]; }
         if (g_relock_w > 0.f && !g_holding && g_held_valid) {   // easing back to the game's camera after a lock
             g_relock_w -= 0.05f;
             const float k = smooth01(g_relock_w < 0.f ? 0.f : g_relock_w);
             if (g_relock_w <= 0.f) g_held_valid = false;
-            for (int i = 0; i < 3; i++) { wrf(eye + 4 * i, ge[i] + (g_held_e[i] - ge[i]) * k); wrf(eye + 0x10 + 4 * i, gt[i] + (g_held_t[i] - gt[i]) * k); }
+            for (int i = 0; i < 3; i++) { wrf(eye + 4 * i, ge[i] + (he[i] - ge[i]) * k); wrf(eye + 0x10 + 4 * i, gt[i] + (ht[i] - gt[i]) * k); }
         } else if (g_holding) {
-            for (int i = 0; i < 3; i++) { wrf(eye + 4 * i, g_held_e[i]); wrf(eye + 0x10 + 4 * i, g_held_t[i]); }
+            for (int i = 0; i < 3; i++) { wrf(eye + 4 * i, he[i]); wrf(eye + 0x10 + 4 * i, ht[i]); }
             held_now = true;
         }
     }
