@@ -56,7 +56,7 @@ class Game:
         self.go_file = os.path.join(out, 'go_%d' % fps)
         self.pos = 0
         self.n = 0
-        self.window, self.render_scale, self.widescreen = '480x272', 1, 0     # a visual test can ask for a bigger window / render scale
+        self.window, self.render_scale, self.widescreen = os.environ.get('BT_WINDOW', '480x272'), 1, int(os.environ.get('BT_WIDESCREEN', '0'))   # a visual test can ask for a bigger window / widescreen (BT_WINDOW=1088x272 BT_WIDESCREEN=1)
 
     def start(self):
         ms0 = os.path.join(self.out, 'ms0_%d' % self.fps)
