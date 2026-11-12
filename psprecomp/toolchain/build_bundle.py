@@ -14,7 +14,7 @@ libc++ do not link together). The bundle is that one compiler: zig 0.15.2 (clang
 glibc/mingw target), plus the libraries the runtime links, built with it.  Layout:
 
   zig/               the zig distribution                 bin/zig-cc zig-c++ zig-ar zig-ranlib   launchers (zigwrap.c)
-  cmake/  bin/ninja  pinned cmake and ninja               deps/{include,lib}   SDL2, FreeType, zlib, libavcodec (static)
+  cmake/  bin/ninja  pinned cmake and ninja               deps/{include,lib}   SDL2, FreeType, zlib, libavcodec, glslang (static), Vulkan headers
   toolchain.cmake    CMake toolchain file: compilers, deps, ABI-relevant flags (pass -DCMAKE_TOOLCHAIN_FILE=...)
   deps.cmake         defines the PkgConfig::SDL2 / FREETYPE / AVCODEC and ZLIB::ZLIB targets the runtime CMake uses
   bin/pspdecrypt[.exe]  EBOOT.BIN decryptor for the installer (John-K/pspdecrypt, GPL-3.0; license copy: bin/pspdecrypt-LICENSE.txt),
@@ -288,6 +288,16 @@ def main():
         "-DSDL_SHARED=OFF", "-DSDL_STATIC=ON", "-DSDL_TEST=OFF", "-DSDL_TESTS=OFF", "-DSDL_INSTALL_TESTS=OFF",
         "-DSDL_ASSERTIONS=disabled", "-DSDL_LIBSAMPLERATE=OFF"])
 
+    # Vulkan backend: the Vulkan headers (the loader is opened at run time through SDL, so there is nothing to link) and glslang,
+    # which compiles the GLSL to SPIR-V inside the runtime. No optimizer (the code sets disableOptimizer; the driver optimises),
+    # so SPIRV-Tools is not needed.
+    log("installing the Vulkan headers")
+    cmake_build("vulkan_headers", src("vulkan_headers"), [])
+    log("building glslang")
+    cmake_build("glslang", src("glslang"), [
+        "-DBUILD_SHARED_LIBS=OFF", "-DBUILD_EXTERNAL=OFF", "-DENABLE_OPT=OFF", "-DENABLE_HLSL=OFF", "-DENABLE_GLSLANG_BINARIES=OFF",
+        "-DENABLE_CTEST=OFF", "-DGLSLANG_TESTS=OFF", "-DENABLE_PCH=OFF", "-DGLSLANG_ENABLE_INSTALL=ON"])
+
     log("building mbedTLS (HTTPS for cloud sync)")
     cmake_build("mbedtls", src("mbedtls"), [
         "-DENABLE_TESTING=OFF", "-DENABLE_PROGRAMS=OFF", "-DUSE_SHARED_MBEDTLS_LIBRARY=OFF", "-DUSE_STATIC_MBEDTLS_LIBRARY=ON",
@@ -387,6 +397,9 @@ def main():
                 return n
         die("none of %s found in %s (have: %s)" % (names, libdir, sorted(os.listdir(libdir))))
 
+    glslang_libs = [lib("libglslang.a"), lib("libSPIRV.a"), lib("libMachineIndependent.a"), lib("libGenericCodeGen.a"),
+                    lib("libglslang-default-resource-limits.a")] + \
+        ([lib("libOSDependent.a")] if os.path.isfile(os.path.join(libdir, "libOSDependent.a")) else [])
     sdl_lib = lib("libSDL2.a")
     ft_lib = lib("libfreetype.a")
     z_lib = lib("libz.a", "libzlibstatic.a", "libzlib.a")
@@ -419,6 +432,10 @@ endfunction()
         f.write('_psp_dep(MBEDTLS "${_psp_deps}/include" "%s;%s")\n' %
                 (";".join("${_psp_deps}/lib/" + n for n in mbed_libs), cm_list(mbed_sys)))
         f.write('set(MBEDTLS_FOUND TRUE)\nset(MBEDTLS_VERSION "%s")\n' % ver["sources"]["mbedtls"]["version"])
+        # Vulkan backend (runtime/CMakeLists.txt): headers + glslang. libvulkan is never linked (psp_vk_loader.cpp).
+        f.write('_psp_dep(GLSLANG "${_psp_deps}/include;${_psp_deps}/include/glslang" "%s;%s")\n' %
+                (";".join("${_psp_deps}/lib/" + n for n in glslang_libs), "pthread" if plat.startswith("linux") else ""))
+        f.write('set(GLSLANG_FOUND TRUE)\nset(VULKAN_HEADERS_FOUND TRUE)\n')
         if ffver:
             f.write('_psp_dep(AVCODEC "${_psp_deps}/include" "${_psp_deps}/lib/%s;${_psp_deps}/lib/%s;%s")\n' %
                     (lib("libavcodec.a"), lib("libavutil.a"), cm_list(av_sys)))

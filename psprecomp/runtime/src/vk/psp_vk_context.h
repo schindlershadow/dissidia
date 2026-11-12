@@ -1,12 +1,12 @@
 // Vulkan backend foundation: instance, device, queue, allocator, optional SDL swapchain.
-// Design: docs/VULKAN_PORT.md. Desktop links libvulkan directly; Android will dlopen it (same entry points).
+// Design: docs/VULKAN_PORT.md. The Vulkan loader is opened at run time (psp_vk_loader.h), never linked.
 #pragma once
 // VMA targets Vulkan 1.1 here: the 1.3 entry points it would otherwise call (vkGetDeviceBufferMemoryRequirements...) are not
 // exported by libvulkan.so at Android API 29.
 #ifndef VMA_VULKAN_VERSION
 #define VMA_VULKAN_VERSION 1001000
 #endif
-#include <vulkan/vulkan.h>
+#include "psp_vk_loader.h"   // <vulkan/vulkan.h> with function pointers resolved at run time
 #include <cstdint>
 #include <string>
 #include <vector>
