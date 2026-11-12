@@ -101,8 +101,7 @@ Soft Focus (generic runtime option): settings menu > System > Soft Focus (saved 
 The PSP's 480x272 is already about 16:9, so this matters for windows and screens wider than that (21:9, 32:9). The displayed
 buffers become as wide as the window's shape needs (`272 x aspect` PSP pixels, even, 480..960; never narrower than 480).
 3D draws whose viewport spans the whole screen get their clip x scaled by `480 / width`, so the vertical field of view stays and the
-horizontal one grows: the scene shows more to the sides (objects the game never submits outside its own view pop in at the edges
-of the extra width). Every through-mode (2D) draw is scaled the same way, so the HUD and menus stay centred at their original size.
+horizontal one grows: the scene shows more to the sides (the battle camera is given the wide aspect, `camera.cpp`, so the game's own culling of objects and shadow casters matches the wider picture and nothing pops in at the edges; `PSPRECOMP_WIDE_CULL=0` goes back to the PSP's aspect for A/B tests). Every through-mode (2D) draw is scaled the same way, so the HUD and menus stay centred at their original size.
 A through-mode draw that covers the whole 480x272 screen without a render-target texture (a menu background, a fade) is stretched
 over the whole width instead, so menus show their background on the side parts. One that does read a render target (the glow
 chain's add-back) covers the full width too but keeps its scale (its u is scaled about its centre; the texture's clamped edge fills
