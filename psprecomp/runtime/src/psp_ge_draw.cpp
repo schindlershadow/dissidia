@@ -2496,6 +2496,10 @@ static void rt_persist_note(int target, size_t t0, size_t c0) {
 static void rt_persist_merge(int target, const float* proj, const float* view) {
     auto& map = g_rt_persist[target];
     const uint32_t now = g_rt_frame[target];
+    static int last_stage[GE_MAX_TARGETS] = {};
+    const int stage = psp_stage_id();
+    if (stage != last_stage[target]) { last_stage[target] = stage; map.clear(); }   // a new stage: forget the old geometry
+    const bool keep_all = psp_stage_keeps_geometry();
     static const bool off = std::getenv("PSPRECOMP_RT_NO_PERSIST") != nullptr;
     if (off) return;
     int n_keep = 0, n_drop = 0, n_unsettled = 0;
@@ -2503,7 +2507,8 @@ static void rt_persist_merge(int target, const float* proj, const float* view) {
         RtPersist& e = it->second;
         if (e.last_frame == now) { ++it; continue; }
         bool keep = false;
-        if (e.streak >= 3 && now - e.last_frame < 100000) {
+        if (keep_all && e.streak >= 3) keep = true;
+        else if (e.streak >= 3 && now - e.last_frame < 100000) {
             int lo[2] = {0, 0}, hi[2] = {0, 0}, behind = 0;
             for (int c = 0; c < 8; ++c) {
                 const float x = (c & 1) ? e.bmax[0] : e.bmin[0], y = (c & 2) ? e.bmax[1] : e.bmin[1], z = (c & 4) ? e.bmax[2] : e.bmin[2];

@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -28,6 +29,18 @@ void psp_set_stage_id_provider(int (*fn)()) { g_stage_id_fn = fn; }
 int psp_stage_id() { return g_stage_id_fn ? g_stage_id_fn() : -1; }
 // How much of the scene's light a stage has. Enclosed stages have no sun: ray-traced shadows darken the whole picture by `dark` there
 // (1 = unchanged). PSPRECOMP_STAGE_DARK=<f> overrides it for every stage (tuning), PSPRECOMP_STAGE_LOG=1 logs the id.
+// The game hides walls that stand between the camera and the fighters (about 200 maze walls on Pandaemonium, even 1-14 units from the
+// camera), and that is not a reason for the ray-traced scene to lose them: every stage keeps all its settled draws for the whole battle,
+// except the stages on this blacklist, which have destructible objects that must disappear when they break (the scene then drops draws
+// that are inside the view but no longer drawn). Add a stage id here when its broken objects leave ghost shadows.
+static const int k_drop_unseen_stages[] = {
+    3,   // World of Darkness: crystal pillars / blocks break
+};
+bool psp_stage_keeps_geometry() {
+    const int id = psp_stage_id();
+    for (int s : k_drop_unseen_stages) if (s == id) return false;
+    return true;
+}
 struct StageLook { int id; float dark; };
 static const StageLook k_stage_looks[] = {
     {1, 0.3f},   // Pandaemonium: enclosed, no light source (issue #4)
@@ -61,22 +74,40 @@ static double g_light_last_change = 0;
 static long g_light_mtime = -1;
 static double g_light_check = 0;
 static const char* light_path() { const char* e = std::getenv("PSPRECOMP_STAGE_LIGHTS"); return e && e[0] ? e : "stage_lights.txt"; }
+static void lights_save_file();
+static long file_mtime(const char* p);
 static void lights_load_file() {
     g_light_file.clear();
     FILE* f = std::fopen(light_path(), "r");
     if (!f) return;
-    char line[256]; int stage = -1;
+    char line[256]; int stage = -1; bool has_help = false;
     while (std::fgets(line, sizeof line, f)) {
+        if (std::strstr(line, "# Controls")) has_help = true;
         int id; StageLight l;
         if (std::sscanf(line, "stage %d", &id) == 1) { stage = id; g_light_file[stage]; }
         else if (stage >= 0 && std::sscanf(line, "light %f %f %f %f %f %f %f %f", &l.p[0], &l.p[1], &l.p[2], &l.c[0], &l.c[1], &l.c[2], &l.radius, &l.intensity) == 8)
             g_light_file[stage].push_back(l);
     }
     std::fclose(f);
+    if (!has_help) { lights_save_file(); g_light_mtime = file_mtime(light_path()); }   // add the controls note
 }
 static void lights_save_file() {
     FILE* f = std::fopen(light_path(), "w");
     if (!f) return;
+    std::fputs(
+        "# Stage lights (read while the game runs; edits here apply within a second, in-game edits are written here).\n"
+        "# stage <id>                                         the stage the lights below belong to (Pandaemonium = 1)\n"
+        "# light <x> <y> <z> <r> <g> <b> <radius> <intensity> world position, colour 0..1, reach (the light fades to 0 there), brightness\n"
+        "# Lights are omnidirectional points with ray-traced shadows; they need Ray-Traced Shadows on.\n"
+        "#\n"
+        "# Controls (in the game window):\n"
+        "#   F6  drop a light at the camera + forward * distance, and turn edit mode on     PageUp / PageDown  placement distance\n"
+        "#   F8  edit mode on / off (a glowing marker at every light; the selected one is white with a yellow ring)\n"
+        "#   F7  remove the selected light\n"
+        "#   In edit mode (hold Shift for 4x speed):\n"
+        "#     J / L  left / right     I / K  forward / back     U / O  down / up      (camera relative, kept level)\n"
+        "#     , / .  radius - / +     - / =  intensity - / +     [ / ]  select previous / next light\n"
+        "#\n", f);
     for (const auto& kv : g_light_file) {
         std::fprintf(f, "stage %d\n", kv.first);
         for (const StageLight& l : kv.second) std::fprintf(f, "light %.2f %.2f %.2f %.2f %.2f %.2f %.1f %.2f\n", l.p[0], l.p[1], l.p[2], l.c[0], l.c[1], l.c[2], l.radius, l.intensity);

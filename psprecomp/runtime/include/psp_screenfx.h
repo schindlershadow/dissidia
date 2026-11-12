@@ -16,6 +16,8 @@ bool psp_screenfx_active();
 /// The game module reports the stage being fought (-1 = unknown / no battle); used for per-stage lighting looks.
 void psp_set_stage_id_provider(int (*fn)());
 int psp_stage_id();
+/// Keep the stage's settled geometry in the ray-traced scene for the whole battle (true unless the stage is on the destructible-objects blacklist).
+bool psp_stage_keeps_geometry();
 /// Stage light editing (see psp_screenfx.cpp "Stage lights"). Returns true when the key was consumed.
 enum {
     PSP_LIGHT_LEFT = 0, PSP_LIGHT_RIGHT, PSP_LIGHT_FWD, PSP_LIGHT_BACK, PSP_LIGHT_DOWN, PSP_LIGHT_UP,   // held: move the selected light (camera relative)
