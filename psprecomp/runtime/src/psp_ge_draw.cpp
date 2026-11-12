@@ -2432,7 +2432,10 @@ static void rtdump_printf(const char* fmt, ...) {
 }
 void psp_rt_request_dump() { g_rtdump.store(1); }
 static std::atomic<bool> g_rt_keep_masked{std::getenv("PSPRECOMP_RT_KEEP_MASKED") != nullptr};   // debug: also capture draws whose colour writes are all masked off (invisible: depth-only occluders)
-static std::atomic<int> g_rt_skip{0};   // F5..F8 debug bisect: bit set = leave that group of draws out of the RT scene
+// F5..F8 debug bisect: bit set = leave that group of draws out of the RT scene. Group 0 (vertex type 0x99: octagonal prisms ~2.5 units
+// high and spheres, one per fighter / breakable object) is on by default: they are invisible proxy volumes in the picture, and as occluders they
+// printed dark octagons in the middle of the floor while the real broken blocks lay elsewhere. PSPRECOMP_RT_KEEP_PROXIES=1 keeps them.
+static std::atomic<int> g_rt_skip{std::getenv("PSPRECOMP_RT_KEEP_PROXIES") ? 0 : 1};
 static int rt_group(const GeState& st) {
     const uint32_t vt = st.vertex_type;
     if (vt == 0x99u) return 0;                                   // F5: small unskinned pieces (the dark balls)
