@@ -56,7 +56,10 @@ public:
     void destroy();
     /// Record "upload vertices, build BLAS, build TLAS, barrier to fragment/compute shader reads" into cb (outside a render pass).
     /// `tri_cols` (optional): one RGBA8 per triangle, read back by the shader as `rt_tri_col[]` (cols_buffer()); grey when null.
-    bool record_build(VkCommandBuffer cb, const float* xyz, uint32_t tri_count, const uint32_t* tri_cols, std::string* err);
+    bool record_build(VkCommandBuffer cb, const float* xyz, uint32_t tri_count, const uint32_t* tri_cols, const float* fx_xyz, uint32_t fx_tri_count, const uint32_t* fx_cols, std::string* err);
+    /// The effects layer (second instance, mask 2: blended, depth-tested draws): its per-triangle RGBA8 (alpha = coverage).
+    VkBuffer fx_cols_buffer() const { return cols2_.buf; }
+    VkDeviceSize fx_cols_size() const { return cols2_.size; }
     VkBuffer cols_buffer() const { return cols_.buf; }
     VkDeviceSize cols_size() const { return cols_.size; }
     VkAccelerationStructureKHR tlas() const { return tlas_; }
@@ -65,13 +68,13 @@ private:
     struct Buf { VkBuffer buf = VK_NULL_HANDLE; VkDeviceMemory mem = VK_NULL_HANDLE; VkDeviceAddress addr = 0; void* map = nullptr; VkDeviceSize size = 0; };
     bool make_buffer(Buf* b, VkDeviceSize size, VkBufferUsageFlags usage, bool host, std::string* err);
     void free_buffer(Buf* b);
-    bool allocate(uint32_t cap, std::string* err);
+    bool allocate(uint32_t cap, uint32_t cap2, std::string* err);
     void free_all();
     Context* ctx_ = nullptr;
-    VkAccelerationStructureKHR blas_ = VK_NULL_HANDLE, tlas_ = VK_NULL_HANDLE;
-    Buf verts_, blas_buf_, tlas_buf_, inst_buf_, scratch_, cols_;
+    VkAccelerationStructureKHR blas_ = VK_NULL_HANDLE, blas2_ = VK_NULL_HANDLE, tlas_ = VK_NULL_HANDLE;
+    Buf verts_, blas_buf_, tlas_buf_, inst_buf_, scratch_, cols_, verts2_, blas2_buf_, cols2_;
     VkDeviceSize scratch_align_ = 128;
-    uint32_t cap_ = 0, tris_ = 0;
+    uint32_t cap_ = 0, cap2_ = 0, tris_ = 0, fx_tris_ = 0;
 };
 
 }  // namespace pspvk

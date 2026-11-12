@@ -127,7 +127,7 @@ struct Globals {
     VkDescriptorPool set2_pool = VK_NULL_HANDLE;
     VkDescriptorSet rt_set[kFrames] = {};
     VkAccelerationStructureKHR rt_set_tlas[kFrames] = {};
-    VkBuffer rt_set_cols[kFrames] = {};
+    VkBuffer rt_set_cols[kFrames] = {}, rt_set_fx_cols[kFrames] = {};
     bool rt_ready[kFrames] = {};
 };
 static constexpr int kTsPairs = 64;
@@ -1458,12 +1458,13 @@ bool core_init(SDL_Window* w, bool vsync, std::string* err) {
     VkDescriptorSetLayout sl[3] = {gl.set0_layout, gl.set1_layout, VK_NULL_HANDLE};
     gl.rt_on = gl.ctx.has_ray_query();
     if (gl.rt_on) {
-        VkDescriptorSetLayoutBinding b2[2] = {{0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-                                              {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};   // per-triangle colours (reflections)
-        VkDescriptorSetLayoutCreateInfo l2{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; l2.bindingCount = 2; l2.pBindings = b2;
+        VkDescriptorSetLayoutBinding b2[3] = {{0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+                                              {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},    // per-triangle colours (reflections)
+                                              {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};   // the same for the effects layer
+        VkDescriptorSetLayoutCreateInfo l2{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; l2.bindingCount = 3; l2.pBindings = b2;
         vkcheck(vkCreateDescriptorSetLayout(gl.dev, &l2, nullptr, &gl.set2_layout), "set2 layout");
         sl[2] = gl.set2_layout;
-        VkDescriptorPoolSize ps2[2] = {{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, kFrames}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kFrames}};
+        VkDescriptorPoolSize ps2[2] = {{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, kFrames}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2 * kFrames}};
         VkDescriptorPoolCreateInfo dp2{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO}; dp2.maxSets = kFrames; dp2.poolSizeCount = 2; dp2.pPoolSizes = ps2;
         vkcheck(vkCreateDescriptorPool(gl.dev, &dp2, nullptr, &gl.set2_pool), "set2 pool");
         for (int i = 0; i < kFrames; i++) {
@@ -1531,7 +1532,7 @@ bool core_init(SDL_Window* w, bool vsync, std::string* err) {
     return true;
 }
 
-bool rt_set_scene(const float* xyz, uint32_t tri_count, const uint32_t* tri_cols) {
+bool rt_set_scene(const float* xyz, uint32_t tri_count, const uint32_t* tri_cols, const float* fx_xyz, uint32_t fx_tri_count, const uint32_t* fx_cols) {
     Globals& gl = g();
     const int i = gl.cur;
     gl.rt_ready[i] = false;
@@ -1547,9 +1548,9 @@ bool rt_set_scene(const float* xyz, uint32_t tri_count, const uint32_t* tri_cols
     std::string err;
     if (dbg) std::fprintf(stderr, "[RT] record_build\n");
 #ifdef __ANDROID__
-    (void)cb; (void)xyz; (void)tri_cols; return false;
+    (void)cb; (void)xyz; (void)tri_cols; (void)fx_xyz; (void)fx_tri_count; (void)fx_cols; return false;
 #else
-    if (!gl.rt[i].record_build(cb, xyz, tri_count, tri_cols, &err)) { std::fprintf(stderr, "[VKGL] RT scene build failed: %s\n", err.c_str()); return false; }
+    if (!gl.rt[i].record_build(cb, xyz, tri_count, tri_cols, fx_xyz, fx_tri_count, fx_cols, &err)) { std::fprintf(stderr, "[VKGL] RT scene build failed: %s\n", err.c_str()); return false; }
     if (gl.rt_set_tlas[i] != gl.rt[i].tlas()) {   // only after a (re)allocation: the structure is rebuilt in place otherwise
         VkWriteDescriptorSetAccelerationStructureKHR wa{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
         VkAccelerationStructureKHR t = gl.rt[i].tlas();
@@ -1565,6 +1566,13 @@ bool rt_set_scene(const float* xyz, uint32_t tri_count, const uint32_t* tri_cols
         w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w.pBufferInfo = &bi;
         vkUpdateDescriptorSets(gl.dev, 1, &w, 0, nullptr);
         gl.rt_set_cols[i] = gl.rt[i].cols_buffer();
+    }
+    if (gl.rt_set_fx_cols[i] != gl.rt[i].fx_cols_buffer()) {
+        VkDescriptorBufferInfo bi{gl.rt[i].fx_cols_buffer(), 0, gl.rt[i].fx_cols_size()};
+        VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; w.dstSet = gl.rt_set[i]; w.dstBinding = 2; w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w.pBufferInfo = &bi;
+        vkUpdateDescriptorSets(gl.dev, 1, &w, 0, nullptr);
+        gl.rt_set_fx_cols[i] = gl.rt[i].fx_cols_buffer();
     }
     if (dbg) std::fprintf(stderr, "[RT] scene ready\n");
     gl.rt_ready[i] = true;

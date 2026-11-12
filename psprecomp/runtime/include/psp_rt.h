@@ -10,7 +10,9 @@ struct PspRtHooks {
     /// layer's current command stream. The next draw of a program that declares `uniform accelerationStructureEXT` sees it.
     /// `tri_cols` (optional, one RGBA8 per triangle, R in the low byte) is what a ray-traced reflection shows where it hits that
     /// triangle: the shader reads it as `rt_tri_col[gl_PrimitiveID]` (storage buffer, set 2 binding 1).
-    bool (*set_scene)(const float* xyz, uint32_t tri_count, const uint32_t* tri_cols) = nullptr;
+    /// The optional effects layer (fx_*: blended, depth-tested, non-depth-writing draws, alpha byte = coverage) is a second instance the
+    /// reflection traces separately (`rt_fx_col[]`, binding 2) and blends over the opaque hit; it casts no shadows.
+    bool (*set_scene)(const float* xyz, uint32_t tri_count, const uint32_t* tri_cols, const float* fx_xyz, uint32_t fx_tri_count, const uint32_t* fx_cols) = nullptr;
     /// Set by the Vulkan layer whenever it is active: why ray tracing is not available on this GPU (null / empty = available).
     const char* (*unavailable_reason)() = nullptr;
 };
