@@ -161,7 +161,14 @@ def free_display():
     raise RuntimeError('no free X display')
 
 
+class _NoProc:
+    def terminate(self):
+        pass
+
+
 def start_xvfb():
+    if os.environ.get('BT_DISPLAY'):           # no Xvfb on this machine: use an existing X display (the 480x272 test windows show on it)
+        return _NoProc(), os.environ['BT_DISPLAY']
     n = free_display()
     p = subprocess.Popen(['Xvfb', ':%d' % n, '-screen', '0', '1280x720x24', '-nolisten', 'tcp', '-ac', '+extension', 'GLX'],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
