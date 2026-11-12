@@ -20,7 +20,9 @@ extern PspRtHooks g_psp_rt;
 /// User switch (settings row "Ray-Traced Shadows", env PSPRECOMP_VK_RT=1 / saved `rt_shadows`). Takes effect at once: the layer always
 /// creates the ray-query device when the GPU has it (desktop), this only decides whether scenes are captured and used.
 bool psp_rt_enabled();
-void psp_rt_set_enabled(bool on);
+void psp_rt_set_enabled(bool on);   // on = Medium
+int psp_rt_quality();               // 0 off, 1 low (1 hard ray), 2 medium (3 soft rays), 3 high (6 soft rays)
+void psp_rt_set_quality(int q);
 /// Text for the settings row when ray tracing cannot be used (never empty then).
 const char* psp_rt_unavailable_reason();
 /// Ray tracing is available and switched on: contact shadows are replaced by it.
