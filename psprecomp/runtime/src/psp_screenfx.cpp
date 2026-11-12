@@ -25,7 +25,7 @@ int psp_stage_id() { return g_stage_id_fn ? g_stage_id_fn() : -1; }
 // (1 = unchanged). PSPRECOMP_STAGE_DARK=<f> overrides it for every stage (tuning), PSPRECOMP_STAGE_LOG=1 logs the id.
 struct StageLook { int id; float dark; };
 static const StageLook k_stage_looks[] = {
-    {1, 0.55f},   // Pandaemonium: enclosed, no light source (issue #4)
+    {1, 0.3f},   // Pandaemonium: enclosed, no light source (issue #4)
 };
 static float stage_dark() {
     static const bool has_env = std::getenv("PSPRECOMP_STAGE_DARK") != nullptr;
@@ -388,9 +388,11 @@ const char* const k_fs_refl = R"GLSL(
 out vec4 o_color;
 uniform sampler2D u_refl;
 uniform float u_dbg;        // debug (PSPRECOMP_REFL_ONLY=1): show the reflection layer alone
+uniform float u_dark;       // stage darkening: the reflection is light too
 void main() {
     if (is_far(wd_at(v_uv))) { o_color = vec4(0.0); return; }
     o_color = texture(u_refl, v_uv);
+    o_color.rgb *= u_dark;
     if (u_dbg > 0.0) o_color = vec4(o_color.rgb * 2.0, 1.0);
 }
 )GLSL";
@@ -975,6 +977,7 @@ void psp_screenfx_run(GLuint fbo, GLuint color_tex, int w, int h, const ScreenFx
         bind_tex(1, g_refl_tex, g_smp_lin);
         glUniform1i(loc(g_refl_p.id, "u_refl"), 1);
         glUniform1f(loc(g_refl_p.id, "u_dbg"), refl_only ? 1.f : 0.f);
+        glUniform1f(loc(g_refl_p.id, "u_dark"), dark);
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
 
