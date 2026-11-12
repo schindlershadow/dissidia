@@ -952,6 +952,29 @@ void gauge_hud_hook(uint8_t* rdram, recomp_context* ctx) {
     }
 }
 
+// ovl FUN_08AEC000(this, ...): the gauge's per-update tick (passive gain via FUN_08AEC338, idle drain scaled by the global step).
+constexpr uint32_t GAUGE_TICK = 0x08AEC000u;
+FuncPtr g_orig_gauge_tick = nullptr;
+void gauge_tick_hook(uint8_t* rdram, recomp_context* ctx) {
+    static const char* e = std::getenv("PSPRECOMP_ASSIST_GAUGE");
+    const bool log = e && e[0] && e[0] != '0';
+    const uint32_t self = static_cast<uint32_t>(ctx->r[4]);
+    const uint32_t ga = log ? gauge_of_this(self) : 0;
+    const float before = ga ? rdf(ga) : 0.f;
+    g_orig_gauge_tick(rdram, ctx);
+    if (ga) {
+        static int n = 0, left = 6000;
+        const float after = rdf(ga);
+        n++;
+        if ((after != before || n % 60 == 0) && left > 0) {
+            left--;
+            const uint32_t pc = r32(self + 8u);
+            std::fprintf(stderr, "[GAUGE_TICK] gt=%.0f this=%08X %.2f -> %.2f (%+.3f) step=%.3f flags=%02X %02X %02X\n", g_gt_ms, self, before, after, after - before,
+                         rdf(FRAME_STEP), (unsigned)(g_ram[(pc + 1456u + 2u) & 0x07FFFFFFu]), (unsigned)(g_ram[(pc + 1456u + 5u) & 0x07FFFFFFu]), (unsigned)(g_ram[(pc + 1456u + 4u) & 0x07FFFFFFu]));
+        }
+    }
+}
+
 // ---- Effect components ------------------------------------------------------------------------------------------
 // The effect runtime advances its components by dt = instance+352 (the global step x the handle's scale, written by
 // FUN_0894B48C): 2.0 per update on the PSP, 1.0 per update at 60 Hz. Most components scale by it. These step once
@@ -1166,6 +1189,7 @@ void dissidia_framerate_install(uint8_t* rdram) {
     if ((g_orig_gauge_add = ovl_battle_lookup(GAUGE_ADD))) psp_dispatch_register(GAUGE_ADD, gauge_add_hook);
     if ((g_orig_gauge_drain = ovl_battle_lookup(GAUGE_DRAIN))) psp_dispatch_register(GAUGE_DRAIN, gauge_drain_hook);
     if ((g_orig_gauge_hud = ovl_battle_lookup(GAUGE_HUD))) psp_dispatch_register(GAUGE_HUD, gauge_hud_hook);
+    if ((g_orig_gauge_tick = ovl_battle_lookup(GAUGE_TICK))) psp_dispatch_register(GAUGE_TICK, gauge_tick_hook);
     if (g_orig_pressed) psp_dispatch_register(PRESSED, pressed_hook);
     std::fprintf(stderr, "[FPS] press latch %s (pressed-test hook %s)\n", g_press_latch ? "on" : "off", g_orig_pressed ? "installed" : "NOT FOUND");
     if ((g_orig_rootmotion = psp_dispatch_probe_lookup(ROOT_MOTION))) psp_dispatch_register(ROOT_MOTION, root_motion_hook);

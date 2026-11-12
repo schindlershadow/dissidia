@@ -69,6 +69,8 @@ class Game:
         env = dict(os.environ, DISPLAY=self.display, PSPRECOMP_SETTINGS=ini, PSPRECOMP_MS0=ms0, PSPRECOMP_FIGHTER_LOG='1',
                    PSPRECOMP_DEBUG_PORT=str(self.port), PSPRECOMP_SAVEDATA_AUTO='0', PSPRECOMP_TEST_FREEZE_CPU='1')
         env.pop('PSPRECOMP_FPS', None)
+        if os.environ.get('BT_NO_FREEZE'):      # let the CPU fighter act (the dummy is the default)
+            env['PSPRECOMP_TEST_FREEZE_CPU'] = '0'
         if os.path.exists(self.go_file):
             os.remove(self.go_file)
         env['PSPRECOMP_TEST_GO'] = self.go_file

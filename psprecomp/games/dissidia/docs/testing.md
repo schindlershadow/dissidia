@@ -54,3 +54,29 @@ Revolver Drive is a ground HP attack (hold the HP attack button, Triangle by def
   value x 100 / 10000 (FUN_089E97FC). Writers: FUN_08AEC1EC (add, clamped), FUN_08AEC628 / 08AEC6FC (int add), FUN_08AEC000 (per
   update tick: passive gain via FUN_08AEC338 and a drain that multiplies by the global step 0x089D5EAC), FUN_08AEC7D8 / 08AECA90
   (event handlers that subtract).
+
+### Findings so far (assist gauge, 2026-11-11)
+
+- Side order in the gauge tables is NOT fighter order: Squall (the harness player) was side 1 and gained gauge from hits (+30 per
+  hit step, +46 per update in some bursts); side 0 (Lightning, the CPU) starts at 2000 (20 %), side 1 at 0.
+- Idle runs (gauge set to 8000, no input, or one tap then idle; CPU frozen or active; 30 / 60 / 120 fps): **no decay at all** for
+  25-30 s. The per-update add FUN_08AEC1EC is called every update with amount 0 while idle. So a drain that is dt-wrong is not
+  visible in these setups; the HUD's other moving bars (static word 0x08B937FC, red pixels in a screenshot) are NOT the assist
+  gauge: judge only by `[GAUGE_HUD]` / `[ASSIST]`, never by pixels.
+- Gauge changes come from event handlers (dispatcher FUN_08AEC558, jump table at 0x08AEC558-relative 0x08AF0000-13384, events 2..22);
+  gains are per hit / action from tables, not per update.
+
+## Making automated runs faster (notes for other sessions)
+
+- Build only `cmake --build <dir> --target psprecomp_runtime` (the `test_debug_socket` target fails to link and aborts `all`).
+  A fresh build dir recompiles ~100 generated files (~8 min at -j8); keep one per worktree and rebuild incrementally
+  (a framerate.cpp edit relinks in well under a minute). Use `nice` so other sessions' runs are not disturbed.
+- The menu walk dominates a run (3 min when other tests share the GPU/CPU; the fight itself is 10-40 s). Run the 30 and 120 fps
+  runs in parallel (each `battle_test.py run` takes its own Xvfb display and debug port) instead of one after the other.
+- Do not take a screenshot loop (`S` command) while measuring timing: it slows the game; and screenshots do not identify the
+  gauge. Use the runtime logs.
+- Set state directly instead of playing for it: script command `gauge <side> <value>`; `scan` + `RAW` for finding words.
+- The CPU dummy (time step 0) is the default; `BT_NO_FREEZE=1` lets the CPU fight. Rounds can end early ("[TEST] battle ended") and
+  restart: the game clock and the script restart with the next battle.
+- A run sometimes fails with "the battle never started" or "Connection refused" when the machine is busy: just rerun it.
+- Never `pkill -f` patterns; use exact pids; check `ps` for another session's psprecomp_runtime before touching anything.
