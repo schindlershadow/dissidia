@@ -158,13 +158,13 @@ void dissidia_cam_update(uint8_t* rdram, recomp_context* ctx) {
     if (dt > 0.1) dt = 0.1;
     g_mgr = static_cast<uint32_t>(ctx->r[4]);
     // Widescreen: the camera object keeps its aspect ratio at +0xCC (+0xC0 = {fov, near, far, aspect}, 480/272 on the PSP). The game
-    // builds the projection AND culls its objects / shadow casters with it, so the wider aspect makes it draw everything the wider
-    // picture shows (no pop-in at the edges). The runtime's draw_wide_x sees the already-wide projection and leaves it alone.
+    // culls its objects / shadow casters with it, so a wider aspect makes it draw everything the wider picture shows (no pop-in at the
+    // edges). It is wide only AFTER the camera update (the update itself, and the logic that projects world positions to the HUD, e.g.
+    // the lock-on ring, see the PSP aspect); the runtime's draw_wide_x widens the drawing as before.
     static const bool wide_cull = !(std::getenv("PSPRECOMP_WIDE_CULL") && std::getenv("PSPRECOMP_WIDE_CULL")[0] == '0');   // =0: the PSP's own aspect (A/B tests)
-    if (wide_cull && ge_draw_widescreen()) {
-        const float asp = static_cast<float>(ge_draw_widescreen_width()) / 272.0f;
-        std::memcpy(rdram + ((g_mgr + 0xCCu) & 0x07FFFFFFu), &asp, sizeof asp);
-    }
+    const bool set_wide = wide_cull && ge_draw_widescreen();
+    auto set_aspect = [&](float asp) { std::memcpy(rdram + ((g_mgr + 0xCCu) & 0x07FFFFFFu), &asp, sizeof asp); };
+    if (set_wide) set_aspect(480.0f / 272.0f);
     float sx = 0, sy = 0;
     bool active = psp_ctrl_right_stick(&sx, &sy);
     if (psp_ctrl_take_camera_recenter()) { g_yaw = g_pitch = 0.f; g_idle = 0.f; }   // R3 / C: back to the game's camera now
@@ -195,6 +195,7 @@ void dissidia_cam_update(uint8_t* rdram, recomp_context* ctx) {
     g_in_update = true; g_eye_calls = 0;
     g_orig_update(rdram, ctx);
     g_in_update = false;
+    if (set_wide) set_aspect(static_cast<float>(ge_draw_widescreen_width()) / 272.0f);
 }
 
 // SetEye(cam, vec): rotate vec about the target stored 0x10 after it, once per update.
