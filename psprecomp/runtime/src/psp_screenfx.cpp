@@ -132,12 +132,27 @@ uniform float u_cs_len;     // contact shadow ray length, view units
 uniform float u_cs_thick;   // how far behind a visible surface a ray point still counts as occluded, view units
 uniform float u_ssr_len;    // reflection ray length as a fraction of the distance to the camera
 uniform float u_ssr_amt;
+uniform int u_have_fx;      // 1: the scene has an effects layer (blended draws, ge_draw: fxl_*)
+uniform sampler2D u_fxc;    // effects colour (premultiplied by the game's own blend) + coverage in alpha; additive draws leave alpha alone
+uniform sampler2D u_fxd;    // effects depth: the nearest effect fragment per pixel
+uniform int u_fx_dbg;       // PSPRECOMP_SSR_FX_DEBUG=1: a reflection that hit an effect is magenta
+uniform float u_fx_gain;    // base reflectivity of an effect (opaque reflections use Fresnel alone)
+uniform float u_fx_thick;   // how far behind an effect's front surface a ray still counts as inside it, view units
 //@RT_DECL
+// The effect at uv floats in front of the scene there: its depth is clearly nearer than the scene's. A blended sheet lying on a
+// surface (the water layer of the floor, decals, shadows) is at the scene's own depth and is not an effect to reflect.
+bool fx_floats(vec2 uv, float wd_scene, float efd) {
+    return length(vpos(uv, wd_scene)) - length(vpos(uv, efd)) > 0.2 + 0.01 * length(vpos(uv, wd_scene));
+}
 
 void main() {
     o_fx = vec4(1.0, 0.0, 0.0, 1.0);
     o_refl = vec4(0.0);
     float wd = wd_at(v_uv);
+    if (u_fx_dbg == 3 && u_have_fx != 0) {   // debug: where the effects layer holds anything (sky included), no floor test
+        vec4 fc = texture(u_fxc, v_uv);
+        if (fc.a > 0.03 || max(fc.r, max(fc.g, fc.b)) > 0.06) { o_refl = vec4(fc.rgb * 0.5 + vec3(0.5, 0.0, 0.5), 1.0); return; }
+    }
     if (is_far(wd)) return;
     vec3 P = vpos(v_uv, wd);
     float lp = length(P);
@@ -191,6 +206,10 @@ void main() {
         }
     }
     o_fx = vec4(ao, sh, 0.0, 1.0);
+    if (u_fx_dbg == 2 && u_have_fx != 0) {   // debug: the effects layer itself, wherever the layer holds something
+        vec4 fc = texture(u_fxc, v_uv);
+        if ((fc.a > 0.03 || max(fc.r, max(fc.g, fc.b)) > 0.06) && fx_floats(v_uv, wd, texture(u_fxd, v_uv).r)) { o_refl = vec4(fc.rgb + vec3(0.4, 0.0, 0.4), 1.0); return; }
+    }
 
     if (u_n_ssr > 0 && dot(n, u_up) > 0.7) {
 //@RT_REFL
@@ -205,6 +224,10 @@ void main() {
         vec2 hit = vec2(-1.0);
         float hit_t = 0.0, prev_t = 0.0;
         vec2 last_in = vec2(-1.0);
+        bool fx_hit = false;
+        float fx_t = 0.0;
+        vec4 fx_c = vec4(0.0);
+        vec2 fx_uv = vec2(0.5);
         for (int i = 0; i < u_n_ssr; ++i) {
             float t = (float(i) + jit) * stepl;
             vec3 S = O + R * t;
@@ -214,6 +237,18 @@ void main() {
             if (uv2.x < 0.0 || uv2.x > 1.0 || uv2.y < 0.0 || uv2.y > 1.0) break;
             last_in = uv2;
             float wd2 = wd_at(uv2);
+            if (u_have_fx != 0 && !fx_hit) {
+                // effects layer: orbs, beams, auras, glass. They write no scene depth, so the ray is tested against the nearest effect
+                // fragment's own depth; an effect later covered by opaque geometry (its depth behind the scene's) is not there.
+                vec4 fc = texture(u_fxc, uv2);
+                if (fc.a > 0.03 || max(fc.r, max(fc.g, fc.b)) > 0.06) {
+                    float efd = texture(u_fxd, uv2).r;
+                    if ((is_far(wd2) || fx_floats(uv2, wd2, efd))) {
+                        float de = length(vpos(uv2, efd)), ds = length(S);
+                        if (ds > de - 0.02 * lp && ds < de + stepl * 2.5 + u_fx_thick) { fx_hit = true; fx_t = t; fx_c = fc; fx_uv = uv2; }
+                    }
+                }
+            }
             if (!is_far(wd2)) {
                 float diff = length(S) - length(vpos(uv2, wd2));
                 if (diff > 0.0 && diff < stepl * 2.5 + 0.01 * lp) {
@@ -235,13 +270,37 @@ void main() {
             }
             prev_t = t;
         }
-        if (hit.x < 0.0 && last_in.x >= 0.0 && is_far(wd_at(last_in))) { hit = last_in; hit_t = maxd; }   // the ray left the scene into the sky
-        if (hit.x >= 0.0) {
-            vec2 e = min(hit, 1.0 - hit);
+        if (hit.x < 0.0 && last_in.x >= 0.0 && is_far(wd_at(last_in))) {   // the ray left the scene into the sky
+            hit = last_in; hit_t = maxd;
+            // The sky (and the beams / clouds painted on it) lies in the ray's direction, at infinity: take the picture where that
+            // direction projects, not where the short march happened to end (that showed the sky straight above the floor point).
+            vec4 cs = u_proj * vec4(R, 0.0);
+            if (cs.w > 1e-5) {
+                vec2 us = cs.xy / cs.w * 0.5 + 0.5;
+                if (us.x > 0.0 && us.x < 1.0 && us.y > 0.0 && us.y < 1.0 && is_far(wd_at(us))) hit = us;
+            }
+        }
+        if (hit.x >= 0.0 || fx_hit) {
+            vec3 col = vec3(0.0);
+            vec2 euv = fx_uv;
+            float ht = hit_t;
+            if (hit.x >= 0.0) { col = texture(u_color, hit).rgb; euv = hit; }
+            vec2 e = min(euv, 1.0 - euv);
             float edge = smoothstep(0.0, 0.12, min(e.x, e.y));
             float fres = 0.04 + 0.96 * pow(1.0 - clamp(dot(n, -V), 0.0, 1.0), 5.0);
-            float k = clamp(fres * 1.6 + 0.08, 0.0, 1.0) * edge * (1.0 - hit_t / maxd * 0.6) * smoothstep(0.7, 0.95, upness) * fd * u_ssr_amt;
-            o_refl = vec4(texture(u_color, hit).rgb * k, k);
+            float refl_k = smoothstep(0.7, 0.95, upness) * fd * u_ssr_amt;
+            float k = hit.x >= 0.0 ? clamp(fres * 1.6 + 0.08, 0.0, 1.0) * edge * (1.0 - ht / maxd * 0.6) * refl_k : 0.0;
+            o_refl = vec4(col * k, k);
+            if (fx_hit) {
+                // Effects are glowing / see-through things that read as bright reflections even at a steep angle on a wet floor, so they
+                // get a stronger base than the Fresnel-only opaque reflection (an orb or beam at 14% was invisible).
+                float efe = min(min(fx_uv.x, 1.0 - fx_uv.x), min(fx_uv.y, 1.0 - fx_uv.y));
+                float kf = clamp(fres * 1.6 + u_fx_gain, 0.0, 1.0) * smoothstep(0.0, 0.12, efe) * (1.0 - fx_t / maxd * 0.5) * refl_k;
+                float cov = clamp(max(fx_c.a, max(fx_c.r, max(fx_c.g, fx_c.b))), 0.0, 1.0);
+                float af = cov * kf;
+                o_refl = vec4(fx_c.rgb * kf + o_refl.rgb * (1.0 - fx_c.a * kf), af + o_refl.a * (1.0 - af));
+            }
+            if (u_fx_dbg == 1 && fx_hit) o_refl = vec4(0.8, 0.0, 0.8, 0.8);
         }
         }
     }
@@ -819,6 +878,18 @@ void psp_screenfx_run(GLuint fbo, GLuint color_tex, int w, int h, const ScreenFx
     glUniform1f(loc(mp.id, "u_cs_thick"), cs_thick);
     glUniform1f(loc(mp.id, "u_ssr_len"), ssr_len);
     glUniform1f(loc(mp.id, "u_ssr_amt"), k_sr_amt[sr]);
+    static const bool fxl_off = std::getenv("PSPRECOMP_SSR_FX_OFF") != nullptr;
+    const bool have_fx = sr && sc.fx_color && sc.fx_depth && !use_rt_refl && !fxl_off;
+    glUniform1i(loc(mp.id, "u_have_fx"), have_fx ? 1 : 0);
+    glUniform1i(loc(mp.id, "u_fx_dbg"), std::getenv("PSPRECOMP_SSR_FX_DEBUG") ? std::atoi(std::getenv("PSPRECOMP_SSR_FX_DEBUG")) : 0);
+    if (have_fx) {
+        bind_tex(2, sc.fx_color, g_smp_lin);
+        bind_tex(3, sc.fx_depth, g_smp_nn);
+        glUniform1i(loc(mp.id, "u_fxc"), 2);
+        glUniform1i(loc(mp.id, "u_fxd"), 3);
+        glUniform1f(loc(mp.id, "u_fx_gain"), env_float("PSPRECOMP_SSR_FX_GAIN", 0.4f));
+        glUniform1f(loc(mp.id, "u_fx_thick"), env_float("PSPRECOMP_SSR_FX_THICK", 0.6f));
+    }
     if (use_rt) {
         glUniform1i(loc(mp.id, "u_use_rt"), use_rt_sh ? 1 : 0);
         glUniform1i(loc(mp.id, "u_use_rt_refl"), use_rt_refl ? 1 : 0);
@@ -888,7 +959,7 @@ void psp_screenfx_run(GLuint fbo, GLuint color_tex, int w, int h, const ScreenFx
     glDisable(GL_BLEND);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glBindVertexArray(0);
-    for (int u = 2; u >= 0; --u) {
+    for (int u = 3; u >= 0; --u) {
         glActiveTexture(GL_TEXTURE0 + u);
         glBindSampler(u, 0);
         glBindTexture(GL_TEXTURE_2D, 0);

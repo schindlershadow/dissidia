@@ -126,6 +126,7 @@ struct Globals {
     VkDescriptorSet rt_set[kFrames] = {};
     VkAccelerationStructureKHR rt_set_tlas[kFrames] = {};
     VkBuffer rt_set_cols[kFrames] = {}, rt_set_fx_cols[kFrames] = {};
+    uint32_t rt_set_gen[kFrames] = {};   // RtAccel::generation() the descriptors were written for (a freed handle can come back with the same value)
     bool rt_ready[kFrames] = {};
 };
 static constexpr int kTsPairs = 64;
@@ -1417,7 +1418,10 @@ bool core_init(SDL_Window* w, bool vsync, std::string* err) {
     o.window = w;
     o.validation = std::getenv("PSPRECOMP_VK_VALIDATION") != nullptr;
     // Always ask for ray query when the GPU has it (the settings row decides whether it is used); needs a 1.2 instance.
-    o.want_ray_query = !(std::getenv("PSPRECOMP_VK_RT") && !std::strcmp(std::getenv("PSPRECOMP_VK_RT"), "0")) && !std::getenv("PSPRECOMP_VK_NO_RT");
+    // PSPRECOMP_VK_RT=0 (the settings menu saves it while Ray-Traced Shadows is off) only turns the shadows off: ray-traced reflections
+    // (PSPRECOMP_VK_RT_REFL=1) still need the device's ray query, which used to be left out of the device then (the row said unavailable).
+    const char* rt_env = std::getenv("PSPRECOMP_VK_RT"); const char* rr_env = std::getenv("PSPRECOMP_VK_RT_REFL");
+    o.want_ray_query = !(rt_env && !std::strcmp(rt_env, "0") && !(rr_env && rr_env[0] && std::strcmp(rr_env, "0"))) && !std::getenv("PSPRECOMP_VK_NO_RT");
     gl.validation = o.validation;
     if (const char* d = std::getenv("PSPRECOMP_VK_DEVICE")) { if (*d >= '0' && *d <= '9') o.device_index = std::atoi(d); else o.device_name = d; }
     if (!gl.ctx.init(o, err)) { delete G; G = nullptr; return false; }
@@ -1541,7 +1545,9 @@ bool rt_set_scene(const float* xyz, uint32_t tri_count, const uint32_t* tri_cols
     std::string err;
     if (dbg) std::fprintf(stderr, "[RT] record_build\n");
     if (!gl.rt[i].record_build(cb, xyz, tri_count, tri_cols, fx_xyz, fx_tri_count, fx_cols, &err)) { std::fprintf(stderr, "[VKGL] RT scene build failed: %s\n", err.c_str()); return false; }
-    if (gl.rt_set_tlas[i] != gl.rt[i].tlas()) {   // only after a (re)allocation: the structure is rebuilt in place otherwise
+    const bool realloc = gl.rt_set_gen[i] != gl.rt[i].generation();
+    gl.rt_set_gen[i] = gl.rt[i].generation();
+    if (realloc || gl.rt_set_tlas[i] != gl.rt[i].tlas()) {   // only after a (re)allocation: the structure is rebuilt in place otherwise
         VkWriteDescriptorSetAccelerationStructureKHR wa{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
         VkAccelerationStructureKHR t = gl.rt[i].tlas();
         wa.accelerationStructureCount = 1; wa.pAccelerationStructures = &t;
@@ -1550,14 +1556,14 @@ bool rt_set_scene(const float* xyz, uint32_t tri_count, const uint32_t* tri_cols
         vkUpdateDescriptorSets(gl.dev, 1, &w, 0, nullptr);
         gl.rt_set_tlas[i] = t;
     }
-    if (gl.rt_set_cols[i] != gl.rt[i].cols_buffer()) {
+    if (realloc || gl.rt_set_cols[i] != gl.rt[i].cols_buffer()) {
         VkDescriptorBufferInfo bi{gl.rt[i].cols_buffer(), 0, gl.rt[i].cols_size()};
         VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; w.dstSet = gl.rt_set[i]; w.dstBinding = 1; w.descriptorCount = 1;
         w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w.pBufferInfo = &bi;
         vkUpdateDescriptorSets(gl.dev, 1, &w, 0, nullptr);
         gl.rt_set_cols[i] = gl.rt[i].cols_buffer();
     }
-    if (gl.rt_set_fx_cols[i] != gl.rt[i].fx_cols_buffer()) {
+    if (realloc || gl.rt_set_fx_cols[i] != gl.rt[i].fx_cols_buffer()) {
         VkDescriptorBufferInfo bi{gl.rt[i].fx_cols_buffer(), 0, gl.rt[i].fx_cols_size()};
         VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; w.dstSet = gl.rt_set[i]; w.dstBinding = 2; w.descriptorCount = 1;
         w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w.pBufferInfo = &bi;

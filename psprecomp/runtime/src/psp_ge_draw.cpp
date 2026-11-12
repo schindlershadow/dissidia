@@ -27,6 +27,8 @@
 #include <string>
 #include <algorithm>
 #include <vector>
+#include <map>
+#include <string>
 #include <cmath>
 #include <random>
 #include "psp_platform.h"
@@ -1427,6 +1429,7 @@ struct Batch {
     std::vector<GLint> firsts;
     std::vector<GLsizei> counts;
     bool fx_timed = false;   // FX shader override batch, GPU-timed (PSPRECOMP_FX_SHADER_LOG=2)
+    bool fxl = false;        // an effects draw: also drawn into the screen-space effects layer (fxl_*)
 };
 static Batch g_batch;
 static GLuint g_copy_buf_bound = 0;
@@ -1502,12 +1505,89 @@ static void verify_compare(size_t n) {
     if (g_vstat.draws % 2000 == 0) verify_report("progress");
 }
 
+
+// ---- Screen-space effects layer (for the SSR in psp_screenfx.cpp) ----
+// The screen-space reflection marches against the scene depth, which blended effects (orbs, beams, auras, glass: depth tested,
+// not depth writing) never touch. Every such draw is issued a second time into a per-target layer: RGBA8 colour (the game's own
+// blend over black, so premultiplied; alpha = coverage, additive draws leave it alone) and its own depth (writes on: the nearest
+// effect fragment per pixel). The pass-1 march hit-tests it next to the scene depth. Same size as the target.
+struct FxLayer {
+    GLuint fbo = 0, color = 0, depth = 0;
+    int w = 0, h = 0;
+    bool dirty = true;     // cleared before its next use (a new scene)
+    bool used = false;     // holds effects of the scene being drawn
+    bool failed = false;
+};
+// Lifetime: cleared when the screen-space pass has consumed it (lazily, by the next effects draw), NOT at a new scene: the game draws
+// part of its effects (orbs, particles) after the 3D run, i.e. after the pass; those stay in the layer and are used by the next
+// frame's pass (one frame late). The pass samples a single colour + depth pair (the Vulkan layer allows few samplers per program).
+static FxLayer g_fxl[GE_MAX_TARGETS];
+static float g_fx_clearz[GE_MAX_TARGETS];
+static int g_fxl_draws = 0;
+static bool g_fxl_flag = false;   // the draws being queued are effects draws (set by fx_track)
+static void fxl_free(FxLayer& L) {
+    if (L.fbo) glDeleteFramebuffers(1, &L.fbo);
+    if (L.color) glDeleteTextures(1, &L.color);
+    if (L.depth) glDeleteTextures(1, &L.depth);
+    L = FxLayer{};
+}
+// Binds the layer of target `ti` as the draw framebuffer (created / resized / cleared as needed); false = unavailable.
+static bool fxl_bind(int ti) {
+    const GeTarget& t = g_targets[ti];
+    FxLayer& L = g_fxl[ti];
+    const int w = t.w480 * t.rs, h = 272 * t.rs;
+    if (L.fbo && (L.w != w || L.h != h)) { const bool f = L.failed; fxl_free(L); L.failed = f; }
+    if (!L.fbo) {
+        if (L.failed) return false;
+        L.w = w; L.h = h;
+        glGenTextures(1, &L.color);
+        glBindTexture(GL_TEXTURE_2D, L.color);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glGenTextures(1, &L.depth);
+        glBindTexture(GL_TEXTURE_2D, L.depth);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, w, h, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, nullptr);   // the format the screen-space pass's own depth copy uses (the Vulkan layer has no plain DEPTH_COMPONENT24 textures)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glGenFramebuffers(1, &L.fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, L.fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, L.color, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, L.depth, 0);
+        ge_texture_invalidate_bind_cache();   // glBindTexture above
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            std::fprintf(stderr, "[SSR] effects layer framebuffer incomplete (%dx%d), off\n", w, h);
+            fxl_free(L); L.failed = true;
+            glBindFramebuffer(GL_FRAMEBUFFER, t.fbo);
+            return false;
+        }
+        L.dirty = true;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, L.fbo);
+    if (L.dirty) {
+        const GLboolean sc = glIsEnabled(GL_SCISSOR_TEST);
+        if (sc) glDisable(GL_SCISSOR_TEST);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glDepthMask(GL_TRUE);
+        glClearColor(0.f, 0.f, 0.f, 0.f);
+        glClearDepth(g_fx_clearz[ti]);   // what the scene's own depth was cleared to: the game's depth range may be reversed
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        if (sc) glEnable(GL_SCISSOR_TEST);
+        glc::invalidate();   // masks changed behind the cache
+        L.dirty = false;
+    }
+    L.used = true;
+    return true;
+}
+
 static void flush_batch() {
     if (!g_batch.active) return;
     Stream& s = *g_batch.s;
     g_batch.active = false;
     const bool fx_timed = g_batch.fx_timed;
     g_batch.fx_timed = false;
+    const bool fxl_draw = g_batch.fxl;
+    g_batch.fxl = false;
     const size_t n = s.stage_n;
     if (n == 0) { g_batch.firsts.clear(); g_batch.counts.clear(); return; }
 
@@ -1572,12 +1652,33 @@ static void flush_batch() {
                 glEndTransformFeedback();
                 if (g_no_raster != 1) glDisable(GL_RASTERIZER_DISCARD);
                 verify_compare(g_expect.size());
-            } else if (nseg == 1 || m == GL_TRIANGLES || m == GL_LINES || m == GL_POINTS) {
-                glDrawArrays(m, first, static_cast<GLsizei>(n));
             } else {
-                for (size_t i = 0; i < nseg; i++) g_batch.firsts[i] += first;
-                glMultiDrawArrays(m, g_batch.firsts.data(), g_batch.counts.data(),
-                                  static_cast<GLsizei>(nseg));
+                const bool single = nseg == 1 || m == GL_TRIANGLES || m == GL_LINES || m == GL_POINTS;
+                if (!single) for (size_t i = 0; i < nseg; i++) g_batch.firsts[i] += first;
+                auto issue = [&]() {
+                    if (single) glDrawArrays(m, first, static_cast<GLsizei>(n));
+                    else glMultiDrawArrays(m, g_batch.firsts.data(), g_batch.counts.data(), static_cast<GLsizei>(nseg));
+                };
+                issue();
+                if (fxl_draw && g_current_target >= 0 && glc::bsrc && glc::bdst) {
+                    // The same draw again into the effects layer: the game's blend for colour; alpha = coverage (additive: unchanged).
+                    const GLenum s = glc::bsrc, d = glc::bdst;
+                    const bool add = d == GL_ONE;
+                    const bool sep = glc::bsep == 1;
+                    const bool blend_was_on = glc::blend_en == 1;
+                    const int ti = g_current_target;
+                    if (fxl_bind(ti)) {
+                        g_fxl_draws++;
+                        glDepthMask(GL_TRUE);
+                        if (!blend_was_on) glEnable(GL_BLEND);
+                        glBlendFuncSeparate(s, d, add ? GL_ZERO : GL_ONE, add ? GL_ONE : GL_ONE_MINUS_SRC_ALPHA);
+                        issue();
+                        glDepthMask(GL_FALSE);
+                        if (sep) glBlendFuncSeparate(s, d, GL_ONE, GL_ZERO); else glBlendFunc(s, d);
+                        if (!blend_was_on) glDisable(GL_BLEND);
+                    }
+                    glBindFramebuffer(GL_FRAMEBUFFER, g_targets[ti].fbo);
+                }
             }
         }
         if (fx_timed) psp_fx_timer_end();
@@ -1769,6 +1870,7 @@ static void ensure_batch(const KeyBuf& k, Stream& s, GLuint vao, GLenum mode, si
     g_batch.s = &s;
     g_batch.vao = vao;
     g_batch.active = true;
+    g_batch.fxl = g_fxl_flag;
     psp_prof::batches++;
     apply_gl_pipeline(rdram, state, prim_type, fbo_tex, xf != nullptr);
     GeXform3D g{};
@@ -2291,6 +2393,7 @@ void ge_draw_shutdown() {
         if (t.depth_rb) glDeleteRenderbuffers(1, &t.depth_rb);
         if (t.color_tex) glDeleteTextures(1, &t.color_tex);
         if (t.fbo) glDeleteFramebuffers(1, &t.fbo);
+        fxl_free(g_fxl[i]);
         t = GeTarget{};
     }
     g_current_target = -1;
@@ -2347,7 +2450,6 @@ void ge_draw_prim(uint8_t* rdram, int prim_type, int count) {
 // then copies the picture into its glow chain and draws the HUD. The effects run right there, on the scene alone.
 static int g_fx_n[GE_MAX_TARGETS];
 static bool g_fx_done[GE_MAX_TARGETS];
-static float g_fx_clearz[GE_MAX_TARGETS];
 // The projection / view pair the scene was drawn with: the one most depth-writing draws used (a Boyer-Moore majority
 // vote), not the last draw's, which can belong to a character or an effect with a matrix of its own. The light direction
 // and "up" come from the view matrix, so a per-object one made shadows follow the player.
@@ -2510,6 +2612,12 @@ static void rt_capture(const GeState& st, uint8_t* rdram, int prim_type, int cou
 }
 
 static void fx_track(const GeState& st, uint8_t* rdram, int prim_type, int count) {
+    {   // effects draws (blended, depth tested, not depth writing) are also drawn into the SSR effects layer (fxl_*)
+        const bool want = g_current_target >= 0 && !g_ab_shadow && !st.clear_mode && psp_fx_ssr() > 0 && !psp_rt_refl_active()
+                          && !ge_vtype_through(st.vertex_type) && st.depth_test_enable && st.depth_write_disable && st.alpha_blend_enable
+                          && is_main_key(g_targets[g_current_target].key);
+        if (want != g_fxl_flag) { flush_batch(); g_fxl_flag = want; }
+    }
     if (g_current_target < 0 || g_ab_shadow) return;
     const int cur = g_current_target;
     if (st.clear_mode) {
@@ -2575,6 +2683,9 @@ static void fx_track(const GeState& st, uint8_t* rdram, int prim_type, int count
             rtdump_printf("[RTDUMP] view"); for (int k = 0; k < 12; ++k) rtdump_printf(" %g", s.view[k]); rtdump_printf("\n"); }
         s.rt_ready = !g_rt_tris[i].empty() && psp_rt_scene_wanted() && g_psp_rt.set_scene(g_rt_tris[i].data(), (uint32_t)(g_rt_tris[i].size() / 9), g_rt_cols[i].size() == g_rt_tris[i].size() / 9 ? g_rt_cols[i].data() : nullptr, g_rt_fx_tris[i].data(), g_rt_fx_cols[i].size() == g_rt_fx_tris[i].size() / 9 ? (uint32_t)g_rt_fx_cols[i].size() : 0u, g_rt_fx_cols[i].data());
         s.rt_fx = s.rt_ready && !g_rt_fx_cols[i].empty();
+        { static int n = 0; if (std::getenv("PSPRECOMP_SSR_FX_LOG") && n++ % 120 == 0) std::fprintf(stderr, "[SSR] effects layer used=%d fbo=%u draws=%d\n", (int)g_fxl[i].used, g_fxl[i].fbo, g_fxl_draws); }
+        if (g_fxl[i].used && g_fxl[i].fbo) { s.fx_color = g_fxl[i].color; s.fx_depth = g_fxl[i].depth; }
+        g_fxl[i].dirty = true; g_fxl[i].used = false; g_fxl_draws = 0;
         if (s.rt_ready) {
             static int logged = 0;
             if (logged++ % 600 == 0) std::fprintf(stderr, "[RT] scene %zu triangles (frame %d)\n", g_rt_tris[i].size() / 9, logged);
@@ -2827,6 +2938,7 @@ static void ge_draw_prim_one(
             fvp.x, fvp.y, fvp.w, fvp.h, draw_wide_x(state));
     }
     if (psp_screenfx_active()) fx_track(state, rdram, prim_type, count);
+    else if (g_fxl_flag) { flush_batch(); g_fxl_flag = false; }
     static const bool draw_trace_mat_env = std::getenv("PSPRECOMP_DRAW_TRACE_MAT") != nullptr;
     if (!state.clear_mode && prim_type == 3 && count > 30 && draw_trace_mat_env) {
         static int mat_n = 0;

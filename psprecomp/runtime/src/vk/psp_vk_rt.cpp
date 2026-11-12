@@ -370,7 +370,7 @@ bool RtAccel::allocate(uint32_t cap, uint32_t cap2, std::string* err) {
     if (p_create(d, &ci, nullptr, &blas2_) != VK_SUCCESS) { *err = "create effects BLAS"; free_all(); return false; }
     ci.buffer = tlas_buf_.buf; ci.size = tsz.accelerationStructureSize; ci.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
     if (p_create(d, &ci, nullptr, &tlas_) != VK_SUCCESS) { *err = "create TLAS"; free_all(); return false; }
-    cap_ = cap; cap2_ = cap2;
+    cap_ = cap; cap2_ = cap2; gen_++;
     if (std::getenv("PSPRECOMP_RT_DEBUG")) std::fprintf(stderr, "[RT] allocated cap %u + effects %u\n", cap, cap2);
     return true;
 }
@@ -379,7 +379,8 @@ bool RtAccel::record_build(VkCommandBuffer cb, const float* xyz, uint32_t n, con
     std::string e; if (!err) err = &e;
     if (!ctx_ || !n) return false;
     if (std::getenv("PSPRECOMP_RT_DEBUG")) std::fprintf(stderr, "[RT] record_build n=%u cap=%u fx=%u\n", n, cap_, fx_n);
-    if ((n > cap_ || fx_n > cap2_) && !allocate(n > cap_ ? std::max<uint32_t>(n + n / 2, 30000u) : cap_, fx_n > cap2_ ? std::max<uint32_t>(fx_n + fx_n / 2, 8192u) : (cap2_ ? cap2_ : 8192u), err)) return false;
+    static const uint32_t fx_min = std::getenv("PSPRECOMP_RT_FX_CAP") ? (uint32_t)std::atoi(std::getenv("PSPRECOMP_RT_FX_CAP")) : 8192u;   // test knob: a small start forces re-allocations when an effect spawns
+    if ((n > cap_ || fx_n > cap2_) && !allocate(n > cap_ ? std::max<uint32_t>(n + n / 2, 30000u) : cap_, fx_n > cap2_ ? std::max<uint32_t>(fx_n + fx_n / 2, fx_min) : (cap2_ ? cap2_ : fx_min), err)) return false;
     std::memcpy(verts_.map, xyz, (size_t)n * 36);
     if (tri_cols) std::memcpy(cols_.map, tri_cols, (size_t)n * 4);
     else for (uint32_t i = 0; i < n; i++) static_cast<uint32_t*>(cols_.map)[i] = 0xFF808080u;

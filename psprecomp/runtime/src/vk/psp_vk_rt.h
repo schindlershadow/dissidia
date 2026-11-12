@@ -63,6 +63,7 @@ public:
     VkBuffer cols_buffer() const { return cols_.buf; }
     VkDeviceSize cols_size() const { return cols_.size; }
     VkAccelerationStructureKHR tlas() const { return tlas_; }
+    uint32_t generation() const { return gen_; }   // +1 per (re)allocation: handles can be reused by the driver, so compare this, not the handles
     uint32_t tris() const { return tris_; }
 private:
     struct Buf { VkBuffer buf = VK_NULL_HANDLE; VkDeviceMemory mem = VK_NULL_HANDLE; VkDeviceAddress addr = 0; void* map = nullptr; VkDeviceSize size = 0; };
@@ -74,7 +75,7 @@ private:
     VkAccelerationStructureKHR blas_ = VK_NULL_HANDLE, blas2_ = VK_NULL_HANDLE, tlas_ = VK_NULL_HANDLE;
     Buf verts_, blas_buf_, tlas_buf_, inst_buf_, scratch_, cols_, verts2_, blas2_buf_, cols2_;
     VkDeviceSize scratch_align_ = 128;
-    uint32_t cap_ = 0, cap2_ = 0, tris_ = 0, fx_tris_ = 0;
+    uint32_t cap_ = 0, cap2_ = 0, tris_ = 0, fx_tris_ = 0, gen_ = 0;
 };
 
 }  // namespace pspvk
