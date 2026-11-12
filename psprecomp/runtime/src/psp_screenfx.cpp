@@ -279,6 +279,7 @@ uniform sampler2D u_fxd;    // effects depth: the nearest effect fragment per pi
 uniform int u_fx_dbg;       // PSPRECOMP_SSR_FX_DEBUG=1: a reflection that hit an effect is magenta
 uniform float u_fx_gain;    // base reflectivity of an effect (opaque reflections use Fresnel alone)
 uniform float u_fx_thick;   // how far behind an effect's front surface a ray still counts as inside it, view units
+uniform float u_lscale;     // 1 / stage darkening: the reflection layer is darkened with the stage, lights and markers must not be
 //@RT_DECL
 // The effect at uv floats in front of the scene there: its depth is clearly nearer than the scene's. A blended sheet lying on a
 // surface (the water layer of the floor, decals, shadows) is at the scene's own depth and is not an effect to reflect.
@@ -553,7 +554,6 @@ uniform int u_n_lights;     // stage point lights (world space xyz + radius; col
 uniform vec4 u_lp[16];
 uniform vec4 u_lc[16];
 uniform vec4 u_lvp[16];     // the same lights in view space (markers)
-uniform float u_lscale;      // 1 / stage darkening: the reflection layer is darkened with the stage, lights and markers must not be
 uniform int u_edit;         // light edit mode: draw a marker at each light
 uniform int u_sel;          // the selected light
 )GLSL";
