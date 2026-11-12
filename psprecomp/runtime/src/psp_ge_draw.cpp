@@ -2351,15 +2351,19 @@ static FxVote g_fx_vote[GE_MAX_TARGETS];
 // Ray-queried shadows: the opaque 3D draws of a scene as world-space triangles (psp_rt.h). Decoded a second time on the CPU
 // (skinning included, then the world matrix) only while the Vulkan ray-query path is on.
 static std::vector<float> g_rt_tris[GE_MAX_TARGETS];
-static void rt_capture(const GeState& st, uint8_t* rdram, int prim_type, int count, int target) {
+static std::vector<uint32_t> g_rt_cols[GE_MAX_TARGETS];   // one RGBA8 per captured triangle
+// Effects (blended, depth-tested, not depth-writing: orbs, auras, glass): a second set for the reflection's effects layer; alpha = coverage.
+static std::vector<float> g_rt_fx_tris[GE_MAX_TARGETS];
+static std::vector<uint32_t> g_rt_fx_cols[GE_MAX_TARGETS];
+static void rt_capture(const GeState& st, uint8_t* rdram, int prim_type, int count, int target, bool fx = false) {
     static const bool dbg = std::getenv("PSPRECOMP_RT_DEBUG") != nullptr;
     static int why[4] = {}, seen = 0;
     if (dbg && (++seen % 20000) == 0) std::fprintf(stderr, "[RT] capture: seen %d, rejected prim/count %d, blend %d, atest %d (blend_en=%d atest_en=%d)\n", seen, why[0], why[1], why[2], st.alpha_blend_enable, st.alpha_test_enable);
     if (count < 3 || prim_type < GE_PRIM_TRIANGLES || prim_type > GE_PRIM_TRIANGLE_FAN) { why[0]++; return; }
     // The caller only passes depth-testing, depth-writing 3D draws, which leaves out particles / glass. The game keeps
     // GE_BLEND on for nearly every draw (opaque blend function), so blending cannot be used as a filter.
-    std::vector<float>& out = g_rt_tris[target];
-    if (out.size() > 9u * 400000u) return;
+    std::vector<float>& out = fx ? g_rt_fx_tris[target] : g_rt_tris[target];
+    if (out.size() > 9u * (fx ? 100000u : 400000u)) return;
     static thread_local std::vector<DecodedVertex> dv;
     ge_decode_vertices(rdram, st, prim_type, count, dv);
     const size_t n = dv.size();
@@ -2370,12 +2374,50 @@ static void rt_capture(const GeState& st, uint8_t* rdram, int prim_type, int cou
         out.push_back(m[1] * v.pos[0] + m[4] * v.pos[1] + m[7] * v.pos[2] + m[10]);
         out.push_back(m[2] * v.pos[0] + m[5] * v.pos[1] + m[8] * v.pos[2] + m[11]);
     };
+    // What a reflection shows where it hits one of these triangles (cheap hit shade, docs/VULKAN_PORT.md): the average of the
+    // texture bound for the draw times the vertex colour (or the lit material), one RGBA8 per triangle.
+    const uint32_t tex = st.texture_enable ? ge_texture_bound_avg_color() : 0xFFFFFFFFu;
+    // A texture that is mostly transparent is a cut-out / glow / haze card: the game draws it alpha-tested or blended, and as an opaque
+    // reflector it showed up as a bright flat quad behind far ruins. Leave such draws out of the scene.
+    if (!fx && st.texture_enable && (tex >> 24) < 200 && (st.tex_func_rgba || st.alpha_test_enable)) return;
+    const float tr = float(tex & 255) / 255.f, tg = float((tex >> 8) & 255) / 255.f, tb = float((tex >> 16) & 255) / 255.f;
+    const bool lit = st.lighting_enable != 0;
+    const bool replace = st.texture_enable && st.tex_func == 3;
+    auto rgb = [](uint32_t c, int k) { return float((c >> (8 * k)) & 255) / 255.f; };
+    std::vector<uint32_t>& cols = fx ? g_rt_fx_cols[target] : g_rt_cols[target];
+    auto tri_color = [&](const DecodedVertex& a, const DecodedVertex& b, const DecodedVertex& c) {
+        float col[3] = {1.f, 1.f, 1.f};
+        if (!replace) {
+            const DecodedVertex* vs[3] = {&a, &b, &c};
+            if (lit) {
+                for (int k = 0; k < 3; k++) {
+                    float d = rgb(st.material_diffuse, k);
+                    if ((st.material_update & 2u) && a.has_color) { d = 0; for (const DecodedVertex* v : vs) d += float(v->color[k]) / 255.f; d /= 3.f; }
+                    col[k] = d * 0.85f + 0.1f;
+                }
+            } else if (a.has_color) {
+                for (int k = 0; k < 3; k++) { float d = 0; for (const DecodedVertex* v : vs) d += float(v->color[k]) / 255.f; col[k] = d / 3.f; }
+            } else if (!st.texture_enable) { col[0] = col[1] = col[2] = 0.5f; }
+        }
+        const float t3[3] = {tr, tg, tb};
+        uint32_t alpha = 255;
+        if (fx) {   // coverage: the texture's mean alpha x the vertex alpha (the material alpha when lit)
+            float al = st.texture_enable ? float(tex >> 24) / 255.f : 1.f;
+            if (lit) al *= float(st.material_alpha & 0xFFu) / 255.f;
+            else if (a.has_color) al *= (float(a.color[3]) + float(b.color[3]) + float(c.color[3])) / (3.f * 255.f);
+            alpha = uint32_t(std::min(255.f, std::max(24.f, al * 255.f)));
+        }
+        uint32_t o = alpha << 24;
+        for (int k = 0; k < 3; k++) o |= uint32_t(std::min(255.f, std::max(0.f, col[k] * t3[k] * 255.f + 0.5f))) << (8 * k);
+        cols.push_back(o);
+    };
+    auto tri = [&](const DecodedVertex& a, const DecodedVertex& b, const DecodedVertex& c) { push(a); push(b); push(c); tri_color(a, b, c); };
     if (prim_type == GE_PRIM_TRIANGLES) {
-        for (size_t i = 0; i + 2 < n; i += 3) { push(dv[i]); push(dv[i + 1]); push(dv[i + 2]); }
+        for (size_t i = 0; i + 2 < n; i += 3) tri(dv[i], dv[i + 1], dv[i + 2]);
     } else if (prim_type == GE_PRIM_TRIANGLE_STRIP) {
-        for (size_t i = 0; i + 2 < n; i++) { const bool odd = i & 1; push(dv[odd ? i + 1 : i]); push(dv[odd ? i : i + 1]); push(dv[i + 2]); }
+        for (size_t i = 0; i + 2 < n; i++) { const bool odd = i & 1; tri(dv[odd ? i + 1 : i], dv[odd ? i : i + 1], dv[i + 2]); }
     } else {
-        for (size_t i = 1; i + 1 < n; i++) { push(dv[0]); push(dv[i]); push(dv[i + 1]); }
+        for (size_t i = 1; i + 1 < n; i++) tri(dv[0], dv[i], dv[i + 1]);
     }
 }
 
@@ -2383,13 +2425,13 @@ static void fx_track(const GeState& st, uint8_t* rdram, int prim_type, int count
     if (g_current_target < 0 || g_ab_shadow) return;
     const int cur = g_current_target;
     if (st.clear_mode) {
-        if (st.clear_flags == 0 || (st.clear_flags & 4)) { g_fx_n[cur] = 0; g_fx_done[cur] = false; g_fx_vote[cur].n = 0; g_rt_tris[cur].clear(); }
+        if (st.clear_flags == 0 || (st.clear_flags & 4)) { g_fx_n[cur] = 0; g_fx_done[cur] = false; g_fx_vote[cur].n = 0; g_rt_tris[cur].clear(); g_rt_cols[cur].clear(); g_rt_fx_tris[cur].clear(); g_rt_fx_cols[cur].clear(); }
         return;
     }
     if (!ge_vtype_through(st.vertex_type)) {
         if (st.depth_test_enable && !st.depth_write_disable) {
             g_fx_n[cur]++;
-            if (psp_rt_available() && psp_rt_enabled()) rt_capture(st, rdram, prim_type, count, cur);
+            if (psp_rt_scene_wanted()) rt_capture(st, rdram, prim_type, count, cur);
             FxVote& v = g_fx_vote[cur];
             // widescreen: the x of the clip position is scaled outside the matrix (build_xf), so the effects get the same
             float proj[16];
@@ -2406,6 +2448,7 @@ static void fx_track(const GeState& st, uint8_t* rdram, int prim_type, int count
                 v.n = 1;
             }
         }
+        else if (st.depth_test_enable && st.alpha_blend_enable && psp_rt_refl_active()) rt_capture(st, rdram, prim_type, count, cur, true);
         return;
     }
     for (int i = 0; i < GE_MAX_TARGETS; ++i) {
@@ -2420,12 +2463,14 @@ static void fx_track(const GeState& st, uint8_t* rdram, int prim_type, int count
         s.near_z = g_fx_vote[i].near_z; s.far_z = g_fx_vote[i].far_z;
         s.clear_z = g_fx_clearz[i];
         { static int dbg = 0; if (psp_rt_available() && dbg++ % 600 == 0) std::fprintf(stderr, "[RT] scene complete: %zu captured triangles, rt %d\n", g_rt_tris[i].size() / 9, (int)psp_rt_available()); }
-        s.rt_ready = !g_rt_tris[i].empty() && psp_rt_available() && psp_rt_enabled() && g_psp_rt.set_scene(g_rt_tris[i].data(), (uint32_t)(g_rt_tris[i].size() / 9));
+        s.rt_ready = !g_rt_tris[i].empty() && psp_rt_scene_wanted() && g_psp_rt.set_scene(g_rt_tris[i].data(), (uint32_t)(g_rt_tris[i].size() / 9), g_rt_cols[i].size() == g_rt_tris[i].size() / 9 ? g_rt_cols[i].data() : nullptr, g_rt_fx_tris[i].data(), g_rt_fx_cols[i].size() == g_rt_fx_tris[i].size() / 9 ? (uint32_t)g_rt_fx_cols[i].size() : 0u, g_rt_fx_cols[i].data());
+        s.rt_fx = s.rt_ready && !g_rt_fx_cols[i].empty();
         if (s.rt_ready) {
             static int logged = 0;
             if (logged++ % 600 == 0) std::fprintf(stderr, "[RT] scene %zu triangles (frame %d)\n", g_rt_tris[i].size() / 9, logged);
         }
-        g_rt_tris[i].clear();
+        { static int fl = 0; if (psp_rt_refl_active() && fl++ % 600 == 0) std::fprintf(stderr, "[RT] effects layer: %zu triangles\n", g_rt_fx_tris[i].size() / 9); }
+        g_rt_tris[i].clear(); g_rt_cols[i].clear(); g_rt_fx_tris[i].clear(); g_rt_fx_cols[i].clear();
         g_fx_vote[i].n = 0;
         psp_screenfx_run(t.fbo, t.color_tex, t.w480 * t.rs, 272 * t.rs, s);
         glBindFramebuffer(GL_FRAMEBUFFER, g_targets[g_current_target].fbo);
