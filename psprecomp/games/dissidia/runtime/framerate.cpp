@@ -85,17 +85,24 @@ constexpr uint32_t UI_PARAM_STEP = 0x088DA520u; // EBOOT: UI animation parameter
 constexpr uint32_t UI_MGR_PTR = 0x089D7830u;    // EBOOT: pointer to the UI manager (+33: use the frame dt as the UI step, +34: paused)
 constexpr uint32_t UI_STEP = 0x089D7834u;       // EBOOT: the UI step FUN_088CF550 sets every update (0 paused, 1.0 fixed, or the frame dt)
 constexpr uint32_t OWN_MASK0 = 0x089C7FD8u, OWN_MASK1 = 0x089C7FDCu;
-constexpr uint32_t EXB_PRESSED = 0x08B326C4u;   // battle overlay: 'virtual button pressed this update' test of an actor (r4), used by the EX Burst code
+constexpr uint32_t EXB_PRESSED = 0x08B326C4u;
+constexpr uint32_t EXB_PRESSED2 = 0x08B324CCu;  // the same test for another virtual button (5; 08B326C4 asks for 1): the button prompt (08A3D1C4) counts presses of both   // battle overlay: 'virtual button pressed this update' test of an actor (r4), used by the EX Burst code
 constexpr uint32_t EXB_PROMPT = 0x08A3D1C4u;    // battle overlay: EX Burst button prompt update (state machine with a timer at +28; log only)
 constexpr uint32_t EXB_UI = 0x08A40E60u;        // battle overlay: EX Burst quicktime UI update (calls the 08A41558 / 08A41774 states)
 constexpr uint32_t EXB_CTRL = 0x08A3FE10u;      // battle overlay: EX Burst controller update (prompt, release gauge, slow motion)
 constexpr uint32_t CAM_DT = 0x08B3B4FCu;        // battle overlay: a camera's time step
 
 uint8_t* g_ram = nullptr;
-FuncPtr g_orig_ui_param = nullptr, g_orig_steer_move = nullptr, g_orig_pressed = nullptr, g_orig_rootmotion = nullptr, g_orig_slowmo = nullptr, g_orig_frame_end = nullptr, g_orig_pad = nullptr, g_orig_actor_dt = nullptr, g_orig_cam_dt = nullptr, g_orig_exb_ctrl = nullptr, g_orig_exb_pressed = nullptr, g_orig_exb_prompt = nullptr, g_orig_exb_ui = nullptr;
+bool g_exb_in = false;   // inside a gated EX Burst call (see exb_ctrl_hook)
+double g_exb_t0 = 0;   // play time the current burst began (log only)
+const bool g_exb_log_on = std::getenv("PSPRECOMP_EXB_LOG") != nullptr;
+bool g_exb_poll = false;   // polling the burst's button tests on a held update (exb_poll_held)
+FuncPtr g_orig_ui_param = nullptr, g_orig_steer_move = nullptr, g_orig_pressed = nullptr, g_orig_rootmotion = nullptr, g_orig_slowmo = nullptr, g_orig_frame_end = nullptr, g_orig_pad = nullptr, g_orig_actor_dt = nullptr, g_orig_cam_dt = nullptr, g_orig_exb_ctrl = nullptr, g_orig_exb_pressed = nullptr, g_orig_exb_pressed2 = nullptr, g_orig_exb_prompt = nullptr, g_orig_exb_ui = nullptr;
 std::atomic<int> g_target{30};     // requested rate (settings / env)
 int g_interval = 2;                // interval written on the last frame end (2 = 30 Hz, 1 = 60 Hz and above)
 int g_rate = 30;                   // logic rate in effect (30, 60, 90, ... one frame per vblank above 30)
+double g_play_ms = 0;              // wall-independent play time: advances by the frame's ticks (every frame, menus and battle)
+bool g_input_dbg = false;          // PSPRECOMP_INPUT_DEBUG=1: pressed buttons on screen and in the log
 float g_ticks = 2.0f;              // 1/60 s ticks one frame advances: 60 / g_rate
 int g_fx_period = 1;               // updates per effect-component step at 30 Hz pacing: g_rate / 30
 bool g_scope_all = false, g_log = false;
@@ -237,6 +244,12 @@ void testdrive_load(const char* path) {
         } else if (cmd == "gauge") {   // gauge <side> <0..10000>: set a side's assist gauge (side 0 / 1 = the controller table order of the HUD)
             unsigned side = 1; double v = 0; ss >> side >> v;
             g_test_events.push_back({t, 5, side, 0, std::to_string(v)});
+        } else if (cmd == "exburst") {   // exburst [who]: start the EX Burst (controller FUN_08A3EB70) of a fighter without the EX gauge / trigger
+            std::string who = "player"; ss >> who;
+            g_test_events.push_back({t, 7, 0, who == "cpu" ? 1u : (who == "player" ? 0u : 2u + static_cast<uint32_t>(std::atoi(who.c_str()))), ""});
+        } else if (cmd == "exstate") {   // exstate <n> [who]: write the EX Mode state (actor +1924 +4); logs the state table
+            unsigned n = 0; std::string who = "player"; ss >> n >> who;
+            g_test_events.push_back({t, 8, n, who == "cpu" ? 1u : (who == "player" ? 0u : 2u + static_cast<uint32_t>(std::atoi(who.c_str()))), ""});
         } else if (cmd == "quit") g_test_events.push_back({t, 3, 0, 0, ""});
         else std::fprintf(stderr, "[TEST] unknown command '%s'\n", cmd.c_str());
     }
@@ -304,6 +317,39 @@ void test_describe_fighters() {
 }
 
 // once per logic update, after the frame end
+
+// ---- Input debug (PSPRECOMP_INPUT_DEBUG=1) ---------------------------------------------------------------------------
+// What the game is handed each frame: pressed buttons and the stick, drawn at the top centre and logged ("[INPUT] t=<play ms>
+// down=CROSS+L stick=x,y" on every button change, plus "up" when released). Same text in any frame rate, so 30 and 120 fps logs
+// can be compared press by press.
+std::string button_names(uint32_t b) {
+    static const struct { uint32_t m; const char* n; } k[] = {{0x4000, "CROSS"}, {0x2000, "CIRCLE"}, {0x8000, "SQUARE"}, {0x1000, "TRIANGLE"},
+        {0x100, "L"}, {0x200, "R"}, {0x10, "UP"}, {0x40, "DOWN"}, {0x80, "LEFT"}, {0x20, "RIGHT"}, {0x8, "START"}, {0x1, "SELECT"}};
+    std::string out;
+    for (const auto& e : k) if (b & e.m) { if (!out.empty()) out += "+"; out += e.n; }
+    return out;
+}
+void input_debug_frame() {
+    if (!g_input_dbg) return;
+    uint32_t b = 0, a = 0x8080;
+    psp_ctrl_last_sample(&b, &a);
+    const uint32_t face = b & 0xF3F9u;   // buttons only: the stick has its own fields
+    static uint32_t last = 0xFFFFFFFFu;
+    static uint64_t presses = 0;
+    static std::string shown;
+    static double shown_at = -1e9;
+    if (face != last) {
+        const uint32_t newly = face & ~(last == 0xFFFFFFFFu ? 0u : last);
+        for (uint32_t bit = 1; bit; bit <<= 1) if (newly & bit) presses++;
+        std::fprintf(stderr, "[INPUT] t=%.0f %s=%s stick=%u,%u presses=%llu\n", g_play_ms, face ? "down" : "up", face ? button_names(face).c_str() : "-",
+                     a & 255u, (a >> 8) & 255u, (unsigned long long)presses);
+        last = face;
+    }
+    char buf[160];
+    std::snprintf(buf, sizeof buf, "%s  stick %u,%u  presses %llu", face ? button_names(face).c_str() : "-", a & 255u, (a >> 8) & 255u, (unsigned long long)presses);
+    if (shown != buf || g_play_ms - shown_at > 100.0) { shown = buf; shown_at = g_play_ms; ge_draw_toast(buf, 400); }
+}
+
 void testdrive_frame(uint8_t* rdram, recomp_context* ctx) {
     if (!g_test_on) return;
     const bool run = battle_running() && test_go();
@@ -370,6 +416,35 @@ void testdrive_frame(uint8_t* rdram, recomp_context* ctx) {
             const uint32_t ga = assist_gauge_addr(static_cast<int>(e.a));
             if (ga) wrf(ga, static_cast<float>(std::atof(e.text.c_str())));
             std::fprintf(stderr, "[TEST] gt=%.0f gauge side %u = %s (%s)\n", g_gt_ms, e.a, e.text.c_str(), ga ? "set" : "no gauge");
+        }
+        else if (e.kind == 8) {
+            const uint32_t a = test_fighter(e.b);
+            if (a && ok(a)) {
+                for (int i = 0; i < 7; i++) std::fprintf(stderr, "[TEST] ex state table %d -> %08X\n", i + 1, r32(0x08ACBBA8u + 4u * i));
+                std::fprintf(stderr, "[TEST] gt=%.0f EX obj %08X state %u -> %u\n", g_gt_ms, a + 1924u, r32(a + 1928u), e.a);
+                w32(a + 1928u, e.a);
+            }
+        }
+        else if (e.kind == 7) {
+            const uint32_t a = test_fighter(e.b);
+            FuncPtr start = ovl_battle_lookup(0x08A3EB70u);
+            const uint32_t ctl = r32(0x08A405E0u);   // the EX Burst controller object (global, the caller in FUN_08ACB208 reads it at 0x08A40000 + 1504)
+            bool started = false;
+            if (a && start && ok(ctl)) {
+                const recomp_context after = *ctx;
+                const uint32_t info = r32(a + 1348u) + 288u;   // the caller's own query: the foe, through the actor's vtable-like entry
+                recomp_context c = *ctx;
+                c.r[4] = static_cast<int32_t>(a + static_cast<uint32_t>(static_cast<int16_t>(r32(info) & 0xFFFFu)));
+                FuncPtr getter = ok(info) ? (ovl_battle_lookup(r32(info + 4u)) ? ovl_battle_lookup(r32(info + 4u)) : psp_dispatch_probe_lookup(r32(info + 4u))) : nullptr;
+                if (getter) getter(rdram, &c);
+                const uint32_t foe = getter ? static_cast<uint32_t>(c.r[2]) : 0u;
+                c = *ctx;
+                c.r[4] = static_cast<int32_t>(ctl); c.r[5] = static_cast<int32_t>(a); c.r[6] = static_cast<int32_t>(foe);
+                start(rdram, &c);
+                *ctx = after;
+                started = true;
+            }
+            std::fprintf(stderr, "[TEST] gt=%.0f exburst on %08X: %s\n", g_gt_ms, a, started ? "started" : "NOT started");
         }
         else if (e.kind == 3) { std::fprintf(stderr, "[TEST] quit at gt=%.0f ms\n", g_gt_ms); g_should_exit.store(true); }
     }
@@ -443,6 +518,8 @@ void frame_end_hook(uint8_t* rdram, recomp_context* ctx) {
         g_fx_period = rate / 30;
     }
     g_orig_frame_end(rdram, ctx);
+    g_play_ms += g_ticks * (1000.0 / 60.0);
+    input_debug_frame();
     testdrive_frame(rdram, ctx);
     fighter_log_frame();
     if (g_rate > 60 && ok(timer)) wrf(timer + 0x18u, g_ticks);   // the frame waited for one (short) vblank: dt = 60 / rate
@@ -592,7 +669,15 @@ uint32_t actor_of_pad(uint32_t pad) {   // the fighter whose controller (actor+0
 void pressed_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t obj = static_cast<uint32_t>(ctx->r[4]), bit = static_cast<uint32_t>(ctx->r[5]);
     g_orig_pressed(rdram, ctx);
+    {   static const bool lg = std::getenv("PSPRECOMP_EXB_LOG") != nullptr; static uint32_t seen[64]; static int ns = 0;
+        if (lg && overlay_id() == 1 && ok(r32(0x08A405E0u))) {
+            const uint32_t ph = r32(r32(0x08A405E0u) + 632u); const uint32_t key = ph * 64u + (bit & 63u) + (g_exb_in ? 4096u : 0u);
+            bool k = false; for (int i = 0; i < ns; i++) if (seen[i] == key) k = true;
+            if (!k && ph && ns < 64) { seen[ns++] = key; std::fprintf(stderr, "[EXBT] pressed(08AB399C) obj=%08X bit=%u phase=%u in=%d gt=%.0f\n", obj, bit, ph, g_exb_in ? 1 : 0, g_gt_ms); } } }
+    if (g_exb_log_on && (ctx->r[2] & 1) && overlay_id() == 1 && ok(r32(0x08A405E0u)) && r32(r32(0x08A405E0u) + 632u) != 0)
+        std::fprintf(stderr, "[EXBG] bt=%.0f pad-edge pad=%08X(ctrl %08X) bit=%u owner=%08X in=%d\n", g_play_ms - g_exb_t0, obj, obj - 0x53Cu, bit, actor_of_pad(obj), g_exb_in ? 1 : 0);
     g_press_calls++;
+    if (g_exb_in || g_exb_poll) return;   // the EX Burst keeps its own edges (sticky): a latched press would count once per run and again from the sticky flag
     if (!g_press_latch || g_ticks >= 2.0f || overlay_id() != 1) return;
     const uint64_t window = static_cast<uint64_t>(g_press_ms * 0.001f * 60.0f / g_ticks + 0.5f);   // updates a press stays "pressed"
     PressEntry* free_slot = nullptr;
@@ -787,51 +872,161 @@ bool g_exb30 = true;
 // The controller reads 'pressed this update' edges (FUN_08B326C4(actor)), which last one update. With the controller run on one
 // update in 2 / 4, an edge on a held update would be lost (the burst waited for a press it never saw, and timing felt off).
 // While held, every actor the controller asked about is polled and the edge kept until the next controller run.
-bool g_exb_in = false;
 uint32_t g_exb_args[8] = {};
 bool g_exb_sticky[8] = {};
 int g_exb_nargs = 0;
-void exb_pressed_hook(uint8_t* rdram, recomp_context* ctx) {
+// Two tests are polled (08B326C4 and 08B324CC); each actor keeps one sticky flag per test.
+bool g_exb_sticky2[8] = {};
+int g_exb_edges = 0, g_exb_used = 0;
+void exb_pressed_common(FuncPtr orig, bool* sticky, uint32_t addr, uint8_t* rdram, recomp_context* ctx) {
     const uint32_t id = overlay_id();
     if (id != 1) {
-        FuncPtr f = id == 2 ? ovl_menu_lookup(EXB_PRESSED) : id == 3 ? ovl_extra_lookup(EXB_PRESSED) : nullptr;
+        FuncPtr f = id == 2 ? ovl_menu_lookup(addr) : id == 3 ? ovl_extra_lookup(addr) : nullptr;
         if (f) f(rdram, ctx);
         return;
     }
     const uint32_t actor = static_cast<uint32_t>(ctx->r[4]);
-    g_orig_exb_pressed(rdram, ctx);
+    {   static const bool lg = std::getenv("PSPRECOMP_EXB_LOG") != nullptr; static uint32_t seen[32]; static int ns = 0;
+        const uint32_t key = (ok(r32(0x08A405E0u)) ? r32(r32(0x08A405E0u) + 632u) : 99u) * 4u + (g_exb_in ? 1u : 0u);
+        bool k = false; for (int i = 0; i < ns; i++) if (seen[i] == key) k = true;
+        if (lg && !k && ns < 32) { seen[ns++] = key; std::fprintf(stderr, "[EXBT] test %08X ra=%08X gt=%.0f phase=%u in=%d\n", addr, static_cast<uint32_t>(ctx->r[31]), g_gt_ms, ok(r32(0x08A405E0u)) ? r32(r32(0x08A405E0u) + 632u) : 99u, g_exb_in ? 1 : 0); } }
+    orig(rdram, ctx);
+    if (ctx->r[2] != 0 && g_exb_in) { g_exb_edges++; if (g_exb_log_on) std::fprintf(stderr, "[EXBG] bt=%.0f edge test=%08X actor=%08X src=run\n", g_play_ms - g_exb_t0, addr, actor); }
     if (!g_exb_in) return;
     int i = 0;
     while (i < g_exb_nargs && g_exb_args[i] != actor) i++;
-    if (i == g_exb_nargs && i < 8) { g_exb_args[i] = actor; g_exb_sticky[i] = false; g_exb_nargs++; }
+    if (i == g_exb_nargs && i < 8) { g_exb_args[i] = actor; g_exb_sticky[i] = g_exb_sticky2[i] = false; g_exb_nargs++; }
     if (i < 8) {
-        if (g_exb_sticky[i]) ctx->r[2] = 1;
-        g_exb_sticky[i] = false;
+        if (sticky[i]) ctx->r[2] = 1;
+        sticky[i] = false;
     }
+    if (ctx->r[2] != 0) g_exb_used++;
 }
+void exb_pressed_hook(uint8_t* rdram, recomp_context* ctx) { exb_pressed_common(g_orig_exb_pressed, g_exb_sticky, EXB_PRESSED, rdram, ctx); }
+void exb_pressed2_hook(uint8_t* rdram, recomp_context* ctx) { exb_pressed_common(g_orig_exb_pressed2, g_exb_sticky2, EXB_PRESSED2, rdram, ctx); }
+void vt_poll_held(uint8_t* rdram, recomp_context* ctx);
 void exb_poll_held(uint8_t* rdram, recomp_context* ctx) {
+    struct Guard { Guard() { g_exb_poll = true; } ~Guard() { g_exb_poll = false; } } guard;
+    vt_poll_held(rdram, ctx);
     for (int i = 0; i < g_exb_nargs; i++) {
         recomp_context tmp = *ctx;
         tmp.r[4] = static_cast<int32_t>(g_exb_args[i]);
         g_orig_exb_pressed(rdram, &tmp);
-        if (tmp.r[2] != 0) g_exb_sticky[i] = true;
+        if (tmp.r[2] != 0) { g_exb_sticky[i] = true; g_exb_edges++; if (g_exb_log_on) std::fprintf(stderr, "[EXBG] bt=%.0f edge test=%08X actor=%08X src=held\n", g_play_ms - g_exb_t0, EXB_PRESSED, g_exb_args[i]); }
+        if (g_orig_exb_pressed2) {
+            tmp = *ctx;
+            tmp.r[4] = static_cast<int32_t>(g_exb_args[i]);
+            g_orig_exb_pressed2(rdram, &tmp);
+            if (tmp.r[2] != 0) { g_exb_sticky2[i] = true; if (g_exb_log_on) std::fprintf(stderr, "[EXBG] bt=%.0f edge test=%08X actor=%08X src=held\n", g_play_ms - g_exb_t0, EXB_PRESSED2, g_exb_args[i]); }
+        }
     }
 }
 // PSPRECOMP_EXB_LOG=1: one line per controller update (before the gate) while a burst is active: phase (+632), phase timer (+636),
 // +644 flag, the global step, slow-motion object value / time left, whether the update ran the controller.
+
+// PSPRECOMP_EXB_LOG=1: every virtual-button test function (FUN_08B30B54 ... 08B3315C, 37 of them) is counted per burst phase: calls, and
+// calls that returned true ("ph3=12/80": 12 true of 80 calls in phase 3). Printed at the end of a burst.
+constexpr uint32_t k_vtests[] = {0x08B30B54u, 0x08B30CC0u, 0x08B30D68u, 0x08B30F9Cu, 0x08B31244u, 0x08B313BCu, 0x08B31640u, 0x08B316E8u, 0x08B318BCu, 0x08B31964u, 0x08B31A0Cu, 0x08B31CFCu, 0x08B31DA4u, 0x08B31F54u, 0x08B31FFCu, 0x08B3237Cu, 0x08B32424u, 0x08B324CCu, 0x08B32574u, 0x08B3261Cu, 0x08B326C4u, 0x08B32774u, 0x08B32824u, 0x08B328CCu, 0x08B32974u, 0x08B32A1Cu, 0x08B32AC4u, 0x08B32B6Cu, 0x08B32C14u, 0x08B32CBCu, 0x08B32D64u, 0x08B32E14u, 0x08B32EBCu, 0x08B32F64u, 0x08B3300Cu, 0x08B330B4u, 0x08B3315Cu};
+constexpr int kNV = static_cast<int>(sizeof(k_vtests) / sizeof(k_vtests[0]));
+FuncPtr g_vt_orig[kNV] = {};
+uint32_t g_vt_calls[kNV][6] = {}, g_vt_true[kNV][6] = {};
+// Sticky presses for every virtual-button test the gated burst code calls (the two 08B326C4 / 08B324CC have their own hooks above): the
+// first gated call of a (test, actor) pair registers it; on skipped updates exb_poll_held polls every registered pair and keeps an edge
+// until the next gated call asks. The mash prompt of Kain / Terra uses the test of the displayed button (08B328CC = Square, ...).
+struct VtPair { int test; uint32_t actor; bool sticky; };
+VtPair g_vt_pairs[48];
+int g_vt_npairs = 0;
+void vt_poll_held(uint8_t* rdram, recomp_context* ctx) {
+    for (int i = 0; i < g_vt_npairs; i++) {
+        recomp_context tmp = *ctx;
+        tmp.r[4] = static_cast<int32_t>(g_vt_pairs[i].actor);
+        g_vt_orig[g_vt_pairs[i].test](rdram, &tmp);
+        if (tmp.r[2] & 1) {
+            g_vt_pairs[i].sticky = true;
+            if (g_exb_log_on) std::fprintf(stderr, "[EXBG] bt=%.0f edge test=%08X actor=%08X src=held\n", g_play_ms - g_exb_t0, k_vtests[g_vt_pairs[i].test], g_vt_pairs[i].actor);
+        }
+    }
+}
+template <int I> void vt_probe(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t id = overlay_id();
+    if (id != 1) { FuncPtr f = id == 2 ? ovl_menu_lookup(k_vtests[I]) : id == 3 ? ovl_extra_lookup(k_vtests[I]) : nullptr; if (f) f(rdram, ctx); return; }
+    const uint32_t who = static_cast<uint32_t>(ctx->r[4]);
+    g_vt_orig[I](rdram, ctx);
+    const uint32_t c = r32(0x08A405E0u);
+    const uint32_t ph = ok(c) ? r32(c + 632u) : 0u;
+    if (g_exb_in) {
+        int k = 0;
+        while (k < g_vt_npairs && !(g_vt_pairs[k].test == I && g_vt_pairs[k].actor == who)) k++;
+        if (k == g_vt_npairs && k < 48) { g_vt_pairs[k] = VtPair{I, who, false}; g_vt_npairs++; }
+        if (k < 48) {
+            if (g_vt_pairs[k].sticky) ctx->r[2] = 1;
+            g_vt_pairs[k].sticky = false;
+        }
+    }
+    if (ph < 6) {
+        g_vt_calls[I][ph]++;
+        if (ctx->r[2] & 1) {
+            g_vt_true[I][ph]++;
+            if (g_exb_log_on && ph) std::fprintf(stderr, "[EXBG] bt=%.0f ph=%u true test=%08X on=%08X gauge=%.2f in=%d\n", g_play_ms - g_exb_t0, ph, k_vtests[I], who, rdf(c + 596u), g_exb_in ? 1 : 0);
+        }
+        if (g_exb_log_on && ph && k_vtests[I] == 0x08B328CCu) std::fprintf(stderr, "[EXBG] bt=%.0f ph=%u call test=08B328CC in=%d result=%d\n", g_play_ms - g_exb_t0, ph, g_exb_in ? 1 : 0, static_cast<int>(ctx->r[2] & 1));
+    }
+}
+template <int I> struct VtReg { static void go() { VtReg<I - 1>::go(); if (k_vtests[I] != 0x08B326C4u && k_vtests[I] != 0x08B324CCu && (g_vt_orig[I] = ovl_battle_lookup(k_vtests[I]))) psp_dispatch_register(k_vtests[I], vt_probe<I>); } };
+template <> struct VtReg<-1> { static void go() {} };
+void vt_summary() {
+    for (int i = 0; i < kNV; i++) {
+        bool any = false;
+        for (int ph = 1; ph < 6; ph++) any = any || g_vt_calls[i][ph];
+        if (any) {
+            std::fprintf(stderr, "[EXBG] test %08X:", k_vtests[i]);
+            for (int ph = 1; ph < 6; ph++) if (g_vt_calls[i][ph]) std::fprintf(stderr, " ph%d=%u/%u", ph, g_vt_true[i][ph], g_vt_calls[i][ph]);
+            std::fprintf(stderr, "\n");
+        }
+        for (int ph = 0; ph < 6; ph++) g_vt_calls[i][ph] = g_vt_true[i][ph] = 0;
+    }
+}
+
 void exb_log(const char* what, uint32_t ctl, bool ran) {
-    static const bool on = std::getenv("PSPRECOMP_EXB_LOG") != nullptr;
-    if (!on || !ok(ctl)) return;
+    static const char* lv = std::getenv("PSPRECOMP_EXB_LOG");
+    if (!lv || !ok(ctl)) return;
+    const bool verbose = lv[0] == '2';   // =2: also the held (skipped) updates, with the full [EXB] line
     const uint32_t ph = r32(ctl + 632u);
     static uint32_t last_ph = 0xFFFFFFFFu;
-    static int n = 0;
+    static int n = 0, runs = 0;
+    double& t0 = g_exb_t0; static double p0 = 0;
+    static int used0 = 0, edges0 = 0;
     if (ph == 0 && last_ph == 0) return;
     const uint32_t sm = r32(SLOWMO_PTR);
-    if (ph != last_ph) n = 0;
+    if (ph != last_ph) {
+        n = 0;
+        if (last_ph == 0xFFFFFFFFu || last_ph == 0) { t0 = g_play_ms; runs = 0; used0 = g_exb_used; edges0 = g_exb_edges; }   // a burst begins
+        if (last_ph == 0xFFFFFFFFu || last_ph == 0) {
+            for (int w = 0; w < 2; w++) {
+                const uint32_t a = r32(ctl + 620u + 4u * w);
+                const uint32_t info = ok(a) ? r32(a + 0x2F8u) : 0u;
+                std::fprintf(stderr, "[EXBG] burst actor%d=%08X char=%d pad-owner-ctrl=%08X\n", w, a, ok(info) ? static_cast<int8_t>(g_ram[(info + 6u) & 0x07FFFFFFu]) : -99, ok(a) ? r32(a + 0x5C4u) : 0u);
+            }
+        }
+        std::fprintf(stderr, "[EXBG] bt=%.0f phase %u -> %u (fps %d)\n", g_play_ms - t0, last_ph == 0xFFFFFFFFu ? 0u : last_ph, ph, g_rate);
+        if (ph == 4) p0 = g_play_ms;
+        if (ph == 0 && last_ph != 0xFFFFFFFFu && last_ph != 0) vt_summary();
+        if (ph == 0 && last_ph == 4) std::fprintf(stderr, "[EXBG] bt=%.0f burst end: gauge %.2f, presses handed to the burst %d, edges seen %d, runs %d, fps %d\n", g_play_ms - t0,
+                                                   rdf(ctl + 596u), g_exb_used - used0, g_exb_edges - edges0, runs, g_rate);
+    }
     last_ph = ph;
-    if (n++ > 400) return;
-    std::fprintf(stderr, "[EXB] gt=%.0f %s ran=%d phase=%u t636=%d f644=%u pointer=(pos %.2f vel %.2f held %u) step=%.3f slow=(%.3f,%.3f) ticks=%.2f\n", g_gt_ms, what, ran ? 1 : 0, ph,
-                 static_cast<int>(r32(ctl + 636u)), r32(ctl + 644u), rdf(ctl + 596u), rdf(ctl + 604u), r32(ctl + 593u) & 0xFFu, rdf(FRAME_STEP), ok(sm) ? rdf(sm) : -1.f, ok(sm) ? rdf(sm + 4u) : -1.f, g_ticks);
+    if (ran) {
+        runs++;
+        uint32_t b = 0, an = 0x8080; psp_ctrl_last_sample(&b, &an);
+        // one line per burst update at the burst's own 30 Hz rate (identical rows at any frame rate): bt = ms since the burst began,
+        // pt = ms since the gauge phase began, gauge = the bar (0..100), vel = its speed, used/edges = presses seen so far
+        std::fprintf(stderr, "[EXBG] bt=%.0f pt=%.0f phase=%u gauge=%.2f vel=%.2f used=%d edges=%d btn=%s\n", g_play_ms - t0, ph == 4 ? g_play_ms - p0 : 0.0, ph,
+                     rdf(ctl + 596u), rdf(ctl + 604u), g_exb_used - used0, g_exb_edges - edges0, button_names(b & 0xF3F9u).c_str());
+    }
+    if (!verbose) return;
+    if (n++ > 4000) return;
+    std::fprintf(stderr, "[EXB] gt=%.0f %s ran=%d phase=%u t636=%d f644=%u pointer=(pos %.2f vel %.2f held %u) step=%.3f slow=(%.3f,%.3f) ticks=%.2f edges=%d used=%d\n", g_gt_ms, what, ran ? 1 : 0, ph,
+                 static_cast<int>(r32(ctl + 636u)), r32(ctl + 644u), rdf(ctl + 596u), rdf(ctl + 604u), r32(ctl + 593u) & 0xFFu, rdf(FRAME_STEP), ok(sm) ? rdf(sm) : -1.f, ok(sm) ? rdf(sm + 4u) : -1.f, g_ticks, g_exb_edges, g_exb_used);
 }
 // Log only (PSPRECOMP_EXB_LOG=1): the prompt object (r4+20 -> state words +0 state, +4 stage, +8 / +12 button counters, +16 / +20 gauges, +28 timer).
 void exb_prompt_hook(uint8_t* rdram, recomp_context* ctx) {
@@ -1014,6 +1209,41 @@ void gauge_sm_hook(uint8_t* rdram, recomp_context* ctx) {
     g_orig_gauge_sm(rdram, ctx);
     wrf(FRAME_STEP, step);
 }
+
+// PSPRECOMP_EXB_LOG=1: which of the button-mash style updaters (all six virtual-button tests) the burst calls (log only)
+#define EXB_PROBE(NAME, ADDR) \
+    FuncPtr g_orig_probe_##NAME = nullptr; \
+    void probe_##NAME(uint8_t* rdram, recomp_context* ctx) { \
+        const uint32_t id = overlay_id(); \
+        if (id != 1) { FuncPtr f = id == 2 ? ovl_menu_lookup(ADDR) : id == 3 ? ovl_extra_lookup(ADDR) : nullptr; if (f) f(rdram, ctx); return; } \
+        static int n = 0; if (n++ < 6 || n % 200 == 0) std::fprintf(stderr, "[EXBX] %08X called gt=%.0f n=%d\n", ADDR, g_gt_ms, n); \
+        g_orig_probe_##NAME(rdram, ctx); }
+EXB_PROBE(a, 0x08A32EBCu)
+EXB_PROBE(b, 0x08A3419Cu)
+EXB_PROBE(c, 0x08A35B20u)
+EXB_PROBE(d, 0x08A36830u)
+EXB_PROBE(e, 0x08A38F50u)
+EXB_PROBE(f, 0x08A37A00u)
+
+
+// PSPRECOMP_EXB_LOG=1: every distinct (test function, return address) of the virtual-button tests while a burst runs (log only)
+#define EXB_TPROBE(NAME, ADDR) \
+    FuncPtr g_orig_tp_##NAME = nullptr; \
+    void tp_##NAME(uint8_t* rdram, recomp_context* ctx) { \
+        const uint32_t id = overlay_id(); \
+        if (id != 1) { FuncPtr f = id == 2 ? ovl_menu_lookup(ADDR) : id == 3 ? ovl_extra_lookup(ADDR) : nullptr; if (f) f(rdram, ctx); return; } \
+        static uint32_t seen[16]; static int ns = 0; const uint32_t ra = ok(r32(0x08A405E0u)) ? r32(r32(0x08A405E0u) + 632u) : 99u; bool k = false; \
+        for (int i = 0; i < ns; i++) if (seen[i] == ra) k = true; \
+        if (!k && ns < 16) { seen[ns++] = ra; std::fprintf(stderr, "[EXBT] test %08X ra=%08X gt=%.0f phase=%u\n", ADDR, ra, g_gt_ms, r32(r32(0x08A405E0u) + 632u)); } \
+        g_orig_tp_##NAME(rdram, ctx); }
+EXB_TPROBE(t0, 0x08B320A4u)
+EXB_TPROBE(t1, 0x08B3214Cu)
+EXB_TPROBE(t2, 0x08B321F4u)
+EXB_TPROBE(t3, 0x08B322B8u)
+EXB_TPROBE(t4, 0x08B3237Cu)
+EXB_TPROBE(t5, 0x08B32424u)
+EXB_TPROBE(t7, 0x08B32574u)
+EXB_TPROBE(t8, 0x08B3261Cu)
 
 // ---- Effect components ------------------------------------------------------------------------------------------
 // The effect runtime advances its components by dt = instance+352 (the global step x the handle's scale, written by
@@ -1214,6 +1444,7 @@ void dissidia_framerate_install(uint8_t* rdram) {
     if ((e = std::getenv("PSPRECOMP_PRESS_LATCH")) && e[0]) { g_press_ms = float(std::atof(e)); if (g_press_ms == 1.0f) g_press_ms = 33.4f; }
     g_press_latch = g_press_ms > 0.5f;
     testdrive_install();
+    if (const char* id = std::getenv("PSPRECOMP_INPUT_DEBUG"); id && id[0] && id[0] != '0') { g_input_dbg = true; std::fprintf(stderr, "[FPS] input debug on (buttons on screen, [INPUT] log)\n"); }
     g_fighter_dump = g_fighter_log && (e = std::getenv("PSPRECOMP_FIGHTER_DUMP")) && e[0] && e[0] != '0';
     g_orig_frame_end = psp_dispatch_probe_lookup(FRAME_END);
     g_orig_pad = psp_dispatch_probe_lookup(PAD_SET);
@@ -1230,6 +1461,16 @@ void dissidia_framerate_install(uint8_t* rdram) {
     psp_dispatch_register(ACTOR_DT, actor_dt_hook);
     psp_dispatch_register(CAM_DT, cam_dt_hook);
     if ((g_orig_exb_pressed = ovl_battle_lookup(EXB_PRESSED))) psp_dispatch_register(EXB_PRESSED, exb_pressed_hook);
+    if ((g_orig_exb_pressed2 = ovl_battle_lookup(EXB_PRESSED2))) psp_dispatch_register(EXB_PRESSED2, exb_pressed2_hook);
+    VtReg<kNV - 1>::go();   // sticky presses for every virtual-button test the gated burst code calls (+ counts with PSPRECOMP_EXB_LOG)
+    if (std::getenv("PSPRECOMP_EXB_LOG")) {
+        if ((g_orig_probe_a = ovl_battle_lookup(0x08A32EBCu))) psp_dispatch_register(0x08A32EBCu, probe_a);
+        if ((g_orig_probe_b = ovl_battle_lookup(0x08A3419Cu))) psp_dispatch_register(0x08A3419Cu, probe_b);
+        if ((g_orig_probe_c = ovl_battle_lookup(0x08A35B20u))) psp_dispatch_register(0x08A35B20u, probe_c);
+        if ((g_orig_probe_d = ovl_battle_lookup(0x08A36830u))) psp_dispatch_register(0x08A36830u, probe_d);
+        if ((g_orig_probe_e = ovl_battle_lookup(0x08A38F50u))) psp_dispatch_register(0x08A38F50u, probe_e);
+        if ((g_orig_probe_f = ovl_battle_lookup(0x08A37A00u))) psp_dispatch_register(0x08A37A00u, probe_f);
+    }
     if (std::getenv("PSPRECOMP_EXB_LOG") && (g_orig_exb_prompt = ovl_battle_lookup(EXB_PROMPT))) psp_dispatch_register(EXB_PROMPT, exb_prompt_hook);
     if (const char* x = std::getenv("PSPRECOMP_EXB_UI"); x && x[0] == '0') g_exb_ui = false;
     if ((g_orig_exb_ui = ovl_battle_lookup(EXB_UI))) psp_dispatch_register(EXB_UI, exb_ui_hook);
