@@ -166,6 +166,19 @@ The cost: the prompt and the pointer move 30 times a second while the picture dr
 pointer position / velocity, step) and `[EXBP]` (button prompt `0x08A3D1C4`, which turned out not to be the quicktime). Checked by
 play on Jecht at 120 Hz (video against a 30 Hz run). Cloud of Darkness uses the same code. Not checked at 60 / 240 Hz.
 
+#### Kain / Terra mash prompt (fixed 12 Nov)
+
+The EX Burst command prompt (bottom-middle bar with a button icon; the bar on the right is the foe's EX defence, driven by the CPU's pad)
+reads the displayed button through a per-button test (`FUN_08B328CC` = Square, ... 37 tests `08B30B54..08B3315C`, virtual id in the
+second operand) from the gated burst code. Only two of those tests had sticky edges, so at 120 fps about five presses in six were lost.
+Every test the gated code calls now gets a per-(test, actor) sticky edge, polled on skipped updates (`vt_probe` / `vt_poll_held` in
+`runtime/framerate.cpp`); the press latch is bypassed for these tests so a press counts once.
+
+Debugging aids: `PSPRECOMP_INPUT_DEBUG=1` shows the pressed buttons on screen and logs `[INPUT]` lines; `PSPRECOMP_EXB_LOG=1` logs one
+`[EXBG]` row per burst update (bar, speed, presses handed to the burst), every true button test with the burst time, and a per-phase
+call / true summary of all 37 tests (`=2` adds the verbose `[EXB]` lines). Headless: `exstate 6` (test driver) starts a real burst;
+`battle_test.py --char kain|terra`.
+
 ### Timed button inputs above 30 Hz (press latch)
 
 The fighter code asks the virtual pad whether a button was *pressed this update* (`FUN_08AB399C`: state and not previous state), so
