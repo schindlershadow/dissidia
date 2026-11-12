@@ -725,12 +725,13 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
         }
         case ROW_RT_REFL: {
             const bool avail = psp_rt_available();
-            const bool on = avail && psp_rt_refl_enabled();
+            const int v = avail ? psp_rt_refl_quality() : 0;
             m.label = "Ray-Traced Reflections";
-            m.value = on ? "On" : "Off";
+            static const char* const k_rrq[4] = {"Off", "Low", "Medium", "High"};
+            m.value = k_rrq[v];
             m.disabled = !avail;
-            m.can_dec = on; m.can_inc = avail && !on;
-            m.help = avail ? "Ray-traced reflections (PSPRECOMP_VK_RT_REFL)\nFloors mirror the scene by tracing the reflected view ray against the real geometry with the GPU's ray tracing hardware, so they also show what is off screen or hidden behind a fighter. Where the hit is on screen it uses the real picture, elsewhere the surface's average colour. Replaces Reflections while on (that row is hidden). Costs GPU time. Takes effect at once. Saved."
+            m.can_dec = v > 0; m.can_inc = avail && v < 3;
+            m.help = avail ? "Ray-traced reflections (PSPRECOMP_VK_RT_REFL)\nFloors mirror the scene by tracing the reflected view ray against the real geometry with the GPU's ray tracing hardware, so they also show what is off screen or hidden behind a fighter. Where the hit is on screen it uses the real picture, elsewhere the surface's average colour. Low traces solid geometry only; Medium adds orbs, auras and glass; High also blurs the reflection slightly with several rays (most GPU time). Replaces Reflections while on (that row is hidden). Takes effect at once. Saved."
                            : std::string("Ray-traced reflections: unavailable\n") + psp_rt_unavailable_reason();
             break;
         }
@@ -1022,10 +1023,11 @@ void change(int d) {   // left / right on the selected row
         break;
     }
     case ROW_RT_REFL: {
-        const bool on = d > 0;
-        if (!psp_rt_available() || on == psp_rt_refl_enabled()) break;
-        psp_rt_refl_set_enabled(on);
-        save("rt_reflections", on ? "1" : "0");
+        if (!psp_rt_available()) break;
+        const int v = std::min(3, std::max(0, psp_rt_refl_quality() + d));
+        if (v == psp_rt_refl_quality()) break;
+        psp_rt_refl_set_quality(v);
+        save("rt_refl_level", std::to_string(v));
         build_rows();
         break;
     }
@@ -1271,7 +1273,7 @@ void confirm() {
     case ROW_SSAO: change(psp_fx_ssao() >= 3 ? -3 : 1); return;
     case ROW_CONTACT: change(psp_fx_contact() >= 3 ? -3 : 1); return;
     case ROW_RT: if (psp_rt_available()) change(psp_rt_quality() >= 3 ? -3 : 1); return;
-    case ROW_RT_REFL: if (psp_rt_available()) change(psp_rt_refl_enabled() ? -1 : 1); return;
+    case ROW_RT_REFL: if (psp_rt_available()) change(psp_rt_refl_quality() >= 3 ? -3 : 1); return;
     case ROW_SSR: change(psp_fx_ssr() >= 3 ? -3 : 1); return;
     case ROW_ANISO: change(ge_texture_aniso() >= 16 ? -4 : 1); return;
     case ROW_UPSCALE: change(psp_post_upscale() >= 2 ? -2 : 1); return;
@@ -1350,7 +1352,8 @@ void psp_settings_load_early() {
     if ((it = g_saved.find("contact_shadows")) != g_saved.end()) put("PSPRECOMP_CONTACT_SHADOWS", it->second);
     if ((it = g_saved.find("rt_shadow_level")) != g_saved.end()) put("PSPRECOMP_VK_RT", it->second);
     else if ((it = g_saved.find("rt_shadows")) != g_saved.end()) put("PSPRECOMP_VK_RT", it->second == "1" ? "2" : "0");   // before the levels: on = Medium
-    if ((it = g_saved.find("rt_reflections")) != g_saved.end()) put("PSPRECOMP_VK_RT_REFL", it->second == "1" ? "1" : "0");
+    if ((it = g_saved.find("rt_refl_level")) != g_saved.end()) put("PSPRECOMP_VK_RT_REFL", it->second);
+    else if ((it = g_saved.find("rt_reflections")) != g_saved.end()) put("PSPRECOMP_VK_RT_REFL", it->second == "1" ? "2" : "0");   // before the levels: on = Medium
     if ((it = g_saved.find("ssr")) != g_saved.end()) put("PSPRECOMP_SSR", it->second);
     if ((it = g_saved.find("upscale")) != g_saved.end() && (it->second == "bilinear" || it->second == "sharp" || it->second == "bicubic"))
         put("PSPRECOMP_UPSCALE", it->second);

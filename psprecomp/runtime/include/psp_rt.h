@@ -30,7 +30,9 @@ inline bool psp_rt_active();
 /// User switch "Ray-Traced Reflections" (env PSPRECOMP_VK_RT_REFL=1 / saved `rt_reflections`): the floor reflection is a ray query along the
 /// reflected view ray instead of the screen-space march, so it also shows what is off screen or hidden. Replaces the Reflections row.
 bool psp_rt_refl_enabled();
-void psp_rt_refl_set_enabled(bool on);
+void psp_rt_refl_set_enabled(bool on);   // on = Medium
+int psp_rt_refl_quality();               // 0 off, 1 low (opaque geometry only), 2 medium (+ effects layer), 3 high (+ 3 jittered rays, a glossy blur)
+void psp_rt_refl_set_quality(int q);
 inline bool psp_rt_available() { return g_psp_rt.available && g_psp_rt.available(); }
 inline bool psp_rt_active() { return psp_rt_available() && psp_rt_enabled(); }
 inline bool psp_rt_refl_active() { return psp_rt_available() && psp_rt_refl_enabled(); }
