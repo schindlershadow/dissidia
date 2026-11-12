@@ -1,3 +1,4 @@
+#include "psp_rt.h"
 #include "psp_gl_window.h"
 #include "psp_event_loop.h"
 #include "psp_runtime.h"
@@ -401,6 +402,7 @@ static void handle_sdl_event(const SDL_Event& ev) {
             toggle_fullscreen(SDL_GetWindowFromID(ev.key.windowID));
             return;
         }
+        if (down && k == SDLK_F9) { psp_rt_request_dump(); std::fprintf(stderr, "[RTDUMP] requested (F9)\n"); return; }
         uint8_t arrow = k == SDLK_UP ? 1 : k == SDLK_DOWN ? 2 :
                         k == SDLK_LEFT ? 4 : k == SDLK_RIGHT ? 8 : 0;
         if (arrow) {

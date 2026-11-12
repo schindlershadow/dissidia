@@ -19,6 +19,7 @@
 #include "psp_gl.h"
 #include "psp_touch.h"
 #include <atomic>
+#include <cstdarg>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -2358,15 +2359,29 @@ static std::vector<uint32_t> g_rt_cols[GE_MAX_TARGETS];   // one RGBA8 per captu
 // Effects (blended, depth-tested, not depth-writing: orbs, auras, glass): a second set for the reflection's effects layer; alpha = coverage.
 static std::vector<float> g_rt_fx_tris[GE_MAX_TARGETS];
 static std::vector<uint32_t> g_rt_fx_cols[GE_MAX_TARGETS];
+// RT scene debugging (docs/VULKAN_PORT.md): psp_rt_request_dump() (F9 in the window) logs every 3D draw of the next frame with what the RT
+// scene did with it ([RTDUMP] lines on stderr), to see which draws a shadow / reflection is missing.
+static std::atomic<int> g_rtdump{0};   // 0 idle, 1 armed (next frame start), 2 logging this frame
+static thread_local const char* g_rt_why = "ok";
+// To stderr and to rtdump.log in the working directory (appended), so a player can send the file.
+static void rtdump_printf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+static void rtdump_printf(const char* fmt, ...) {
+    static FILE* f = std::getenv("PSPRECOMP_RT_DUMP_EVERY") ? nullptr : std::fopen("rtdump.log", "a");
+    va_list a; va_start(a, fmt);
+    if (f) { va_list b; va_copy(b, a); std::vfprintf(f, fmt, b); va_end(b); std::fflush(f); }
+    std::vfprintf(stderr, fmt, a); va_end(a);
+}
+void psp_rt_request_dump() { g_rtdump.store(1); }
 static void rt_capture(const GeState& st, uint8_t* rdram, int prim_type, int count, int target, bool fx = false) {
     static const bool dbg = std::getenv("PSPRECOMP_RT_DEBUG") != nullptr;
     static int why[4] = {}, seen = 0;
     if (dbg && (++seen % 20000) == 0) std::fprintf(stderr, "[RT] capture: seen %d, rejected prim/count %d, blend %d, atest %d (blend_en=%d atest_en=%d)\n", seen, why[0], why[1], why[2], st.alpha_blend_enable, st.alpha_test_enable);
-    if (count < 3 || prim_type < GE_PRIM_TRIANGLES || prim_type > GE_PRIM_TRIANGLE_FAN) { why[0]++; return; }
+    g_rt_why = "ok";
+    if (count < 3 || prim_type < GE_PRIM_TRIANGLES || prim_type > GE_PRIM_TRIANGLE_FAN) { why[0]++; g_rt_why = "prim"; return; }
     // The caller only passes depth-testing, depth-writing 3D draws, which leaves out particles / glass. The game keeps
     // GE_BLEND on for nearly every draw (opaque blend function), so blending cannot be used as a filter.
     std::vector<float>& out = fx ? g_rt_fx_tris[target] : g_rt_tris[target];
-    if (out.size() > 9u * (fx ? 100000u : 400000u)) return;
+    if (out.size() > 9u * (fx ? 100000u : 400000u)) { g_rt_why = "limit"; return; }
     static thread_local std::vector<DecodedVertex> dv;
     ge_decode_vertices(rdram, st, prim_type, count, dv);
     const size_t n = dv.size();
@@ -2382,7 +2397,7 @@ static void rt_capture(const GeState& st, uint8_t* rdram, int prim_type, int cou
     const uint32_t tex = st.texture_enable ? ge_texture_bound_avg_color() : 0xFFFFFFFFu;
     // A texture that is mostly transparent is a cut-out / glow / haze card: the game draws it alpha-tested or blended, and as an opaque
     // reflector it showed up as a bright flat quad behind far ruins. Leave such draws out of the scene.
-    if (!fx && st.texture_enable && (tex >> 24) < 200 && (st.tex_func_rgba || st.alpha_test_enable)) return;
+    if (!fx && st.texture_enable && (tex >> 24) < 200 && (st.tex_func_rgba || st.alpha_test_enable)) { g_rt_why = "transparent-texture"; return; }
     const float tr = float(tex & 255) / 255.f, tg = float((tex >> 8) & 255) / 255.f, tb = float((tex >> 16) & 255) / 255.f;
     const bool lit = st.lighting_enable != 0;
     const bool replace = st.texture_enable && st.tex_func == 3;
@@ -2429,12 +2444,22 @@ static void fx_track(const GeState& st, uint8_t* rdram, int prim_type, int count
     const int cur = g_current_target;
     if (st.clear_mode) {
         if (st.clear_flags == 0 || (st.clear_flags & 4)) { g_fx_n[cur] = 0; g_fx_done[cur] = false; g_fx_vote[cur].n = 0; g_rt_tris[cur].clear(); g_rt_cols[cur].clear(); g_rt_fx_tris[cur].clear(); g_rt_fx_cols[cur].clear(); }
+        { static const int every = std::getenv("PSPRECOMP_RT_DUMP_EVERY") ? std::atoi(std::getenv("PSPRECOMP_RT_DUMP_EVERY")) : 0; static int fr = 0;
+          if (every > 0 && g_rtdump.load() == 0 && (st.clear_flags == 0 || (st.clear_flags & 4)) && ++fr % every == 0) g_rtdump.store(1); }   // automated runs: one dump every N frames
+        if (g_rtdump.load() == 1) { g_rtdump.store(2); rtdump_printf("[RTDUMP] begin target %d\n", cur); }
         return;
     }
     if (!ge_vtype_through(st.vertex_type)) {
+        if (g_rtdump.load() == 2 && !st.clear_mode) {
+            g_rt_why = "not-captured";
+            const bool will = st.depth_test_enable && !st.depth_write_disable;
+            if (will) { /* reason is filled in by rt_capture below; log after */ }
+            else rtdump_printf("[RTDUMP] draw prim %d n %d  skip: depth_test %d depth_write_off %d blend %d atest %d  pos %.1f %.1f %.1f  vt %08x\n", prim_type, count, st.depth_test_enable, st.depth_write_disable, st.alpha_blend_enable, st.alpha_test_enable, st.world_matrix[9], st.world_matrix[10], st.world_matrix[11], (unsigned)st.vertex_type);
+        }
         if (st.depth_test_enable && !st.depth_write_disable) {
             g_fx_n[cur]++;
             if (psp_rt_scene_wanted()) rt_capture(st, rdram, prim_type, count, cur);
+            if (g_rtdump.load() == 2) rtdump_printf("[RTDUMP] draw prim %d n %d  %s: blend %d atest %d tex %d texalpha %u rgba %d lit %d  pos %.1f %.1f %.1f  vt %08x\n", prim_type, count, g_rt_why, st.alpha_blend_enable, st.alpha_test_enable, st.texture_enable, (unsigned)(st.texture_enable ? ge_texture_bound_avg_color() >> 24 : 255u), st.tex_func_rgba, st.lighting_enable, st.world_matrix[9], st.world_matrix[10], st.world_matrix[11], (unsigned)st.vertex_type);
             FxVote& v = g_fx_vote[cur];
             // widescreen: the x of the clip position is scaled outside the matrix (build_xf), so the effects get the same
             float proj[16];
@@ -2466,6 +2491,7 @@ static void fx_track(const GeState& st, uint8_t* rdram, int prim_type, int count
         s.near_z = g_fx_vote[i].near_z; s.far_z = g_fx_vote[i].far_z;
         s.clear_z = g_fx_clearz[i];
         { static int dbg = 0; if (psp_rt_available() && dbg++ % 600 == 0) std::fprintf(stderr, "[RT] scene complete: %zu captured triangles, rt %d\n", g_rt_tris[i].size() / 9, (int)psp_rt_available()); }
+        if (g_rtdump.load() == 2) { g_rtdump.store(0); rtdump_printf("[RTDUMP] end: %zu scene triangles, %zu effects triangles\n", g_rt_tris[i].size() / 9, g_rt_fx_tris[i].size() / 9); }
         s.rt_ready = !g_rt_tris[i].empty() && psp_rt_scene_wanted() && g_psp_rt.set_scene(g_rt_tris[i].data(), (uint32_t)(g_rt_tris[i].size() / 9), g_rt_cols[i].size() == g_rt_tris[i].size() / 9 ? g_rt_cols[i].data() : nullptr, g_rt_fx_tris[i].data(), g_rt_fx_cols[i].size() == g_rt_fx_tris[i].size() / 9 ? (uint32_t)g_rt_fx_cols[i].size() : 0u, g_rt_fx_cols[i].data());
         s.rt_fx = s.rt_ready && !g_rt_fx_cols[i].empty();
         if (s.rt_ready) {
