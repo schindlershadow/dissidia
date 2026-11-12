@@ -1306,6 +1306,9 @@ static float draw_wide_x(const GeState& st) {
     if (w <= 480) return 1.0f;
     if (ge_vtype_through(st.vertex_type)) return 480.0f / float(w);
     const GeViewportDepth vp = compute_state_viewport_depth(st);
+    // A projection whose aspect (y scale / x scale) is already as wide as the target (the game was given the wide aspect, so
+    // it culls with it too) needs no scaling here.
+    if (st.proj_matrix[0] != 0.0f && st.proj_matrix[5] / st.proj_matrix[0] >= 0.98f * float(w) / 272.0f) return 1.0f;
     return (vp.x <= 0 && vp.x + vp.w >= 480) ? 480.0f / float(w) : 1.0f;
 }
 

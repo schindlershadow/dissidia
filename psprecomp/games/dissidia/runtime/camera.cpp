@@ -29,6 +29,7 @@
 #include "psp_runtime.h"
 #include "recomp.h"
 #include "hle/psp_hle.h"
+#include "psp_ge_draw.h"
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -156,6 +157,14 @@ void dissidia_cam_update(uint8_t* rdram, recomp_context* ctx) {
     g_last_t = t;
     if (dt > 0.1) dt = 0.1;
     g_mgr = static_cast<uint32_t>(ctx->r[4]);
+    // Widescreen: the camera object keeps its aspect ratio at +0xCC (+0xC0 = {fov, near, far, aspect}, 480/272 on the PSP). The game
+    // builds the projection AND culls its objects / shadow casters with it, so the wider aspect makes it draw everything the wider
+    // picture shows (no pop-in at the edges). The runtime's draw_wide_x sees the already-wide projection and leaves it alone.
+    static const bool wide_cull = !(std::getenv("PSPRECOMP_WIDE_CULL") && std::getenv("PSPRECOMP_WIDE_CULL")[0] == '0');   // =0: the PSP's own aspect (A/B tests)
+    if (wide_cull && ge_draw_widescreen()) {
+        const float asp = static_cast<float>(ge_draw_widescreen_width()) / 272.0f;
+        std::memcpy(rdram + ((g_mgr + 0xCCu) & 0x07FFFFFFu), &asp, sizeof asp);
+    }
     float sx = 0, sy = 0;
     bool active = psp_ctrl_right_stick(&sx, &sy);
     if (psp_ctrl_take_camera_recenter()) { g_yaw = g_pitch = 0.f; g_idle = 0.f; }   // R3 / C: back to the game's camera now
