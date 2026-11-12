@@ -2364,6 +2364,16 @@ static std::vector<uint32_t> g_rt_cols[GE_MAX_TARGETS];   // one RGBA8 per captu
 struct RtPersist { std::vector<float> tris; std::vector<uint32_t> cols; uint32_t last_frame = 0; int streak = 0; float bmin[3], bmax[3]; };
 static std::unordered_map<uint64_t, RtPersist> g_rt_persist[GE_MAX_TARGETS];
 static uint32_t g_rt_frame[GE_MAX_TARGETS];
+// Some draws (the broken-block debris) use their own view matrix. Their world matrix then is not a world position: the game's position is
+// view_draw * world. Re-express such triangles in the world of the frame's main view: p' = inv(view_main) * view_draw * p.
+static void rt_fix_view(std::vector<float>& tr, size_t t0, const float* vd, const float* vm) {
+    if (!std::memcmp(vd, vm, 12 * sizeof(float))) return;
+    for (size_t i = t0; i + 2 < tr.size(); i += 3) {
+        const float x = tr[i], y = tr[i + 1], z = tr[i + 2];
+        const float px = vd[0] * x + vd[3] * y + vd[6] * z + vd[9] - vm[9], py = vd[1] * x + vd[4] * y + vd[7] * z + vd[10] - vm[10], pz = vd[2] * x + vd[5] * y + vd[8] * z + vd[11] - vm[11];
+        tr[i] = vm[0] * px + vm[1] * py + vm[2] * pz; tr[i + 1] = vm[3] * px + vm[4] * py + vm[5] * pz; tr[i + 2] = vm[6] * px + vm[7] * py + vm[8] * pz;
+    }
+}
 static void rt_persist_note(int target, size_t t0, size_t c0) {
     const std::vector<float>& tr = g_rt_tris[target]; const std::vector<uint32_t>& co = g_rt_cols[target];
     if (tr.size() <= t0 || co.size() <= c0) return;
@@ -2435,7 +2445,8 @@ static std::atomic<bool> g_rt_keep_masked{std::getenv("PSPRECOMP_RT_KEEP_MASKED"
 // F5..F8 debug bisect: bit set = leave that group of draws out of the RT scene. Group 0 (vertex type 0x99: octagonal prisms ~2.5 units
 // high and spheres, one per fighter / breakable object) is on by default: they are invisible proxy volumes in the picture, and as occluders they
 // printed dark octagons in the middle of the floor while the real broken blocks lay elsewhere. PSPRECOMP_RT_KEEP_PROXIES=1 keeps them.
-static std::atomic<int> g_rt_skip{std::getenv("PSPRECOMP_RT_KEEP_PROXIES") ? 0 : 1};
+static const bool g_rt_nofix = std::getenv("PSPRECOMP_RT_NO_VIEWFIX") != nullptr;
+static std::atomic<int> g_rt_skip{std::getenv("PSPRECOMP_RT_SKIP_PROXIES") ? 1 : 0};
 static int rt_group(const GeState& st) {
     const uint32_t vt = st.vertex_type;
     if (vt == 0x99u) return 0;                                   // F5: small unskinned pieces (the dark balls)
@@ -2534,7 +2545,7 @@ static void fx_track(const GeState& st, uint8_t* rdram, int prim_type, int count
         if (st.depth_test_enable && !st.depth_write_disable) {
             g_fx_n[cur]++;
             const size_t dump_t0 = g_rt_tris[cur].size();
-            if (psp_rt_scene_wanted() && !((g_rt_skip.load() >> rt_group(st)) & 1) && !((st.mask_rgb & 0xFFFFFFu) == 0xFFFFFFu && !g_rt_keep_masked.load()) && !(g_rt_ignore_far.load() && std::fabs(st.world_matrix[10]) > 50.f)) { const size_t t0 = g_rt_tris[cur].size(), c0 = g_rt_cols[cur].size(); rt_capture(st, rdram, prim_type, count, cur); rt_persist_note(cur, t0, c0); }
+            if (psp_rt_scene_wanted() && !((g_rt_skip.load() >> rt_group(st)) & 1) && !((st.mask_rgb & 0xFFFFFFu) == 0xFFFFFFu && !g_rt_keep_masked.load()) && !(g_rt_ignore_far.load() && std::fabs(st.world_matrix[10]) > 50.f)) { const size_t t0 = g_rt_tris[cur].size(), c0 = g_rt_cols[cur].size(); rt_capture(st, rdram, prim_type, count, cur); if (g_fx_vote[cur].n > 0 && !g_rt_nofix) rt_fix_view(g_rt_tris[cur], t0 * 1, st.view_matrix, g_fx_vote[cur].view); rt_persist_note(cur, t0, c0); }
             if (g_rtdump.load() == 2) rtdump_printf("[RTDUMP] draw prim %d n %d  %s: blend %d atest %d tex %d texalpha %u rgba %d lit %d mask %06x/%02x bm %03x fa %06x fb %06x zw %d  pos %.1f %.1f %.1f  vt %08x\n", prim_type, count, g_rt_why, st.alpha_blend_enable, st.alpha_test_enable, st.texture_enable, (unsigned)(st.texture_enable ? ge_texture_bound_avg_color() >> 24 : 255u), st.tex_func_rgba, st.lighting_enable, (unsigned)st.mask_rgb, (unsigned)(st.mask_alpha & 0xFF), (unsigned)st.blend_mode, (unsigned)st.blend_fix_a & 0xFFFFFFu, (unsigned)st.blend_fix_b & 0xFFFFFFu, st.depth_write_disable ? 0 : 1, st.world_matrix[9], st.world_matrix[10], st.world_matrix[11], (unsigned)st.vertex_type);
             if (g_rtdump.load() == 2 && g_rt_tris[cur].size() > dump_t0) { float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f}; const std::vector<float>& tv = g_rt_tris[cur];
                 for (size_t q = dump_t0; q + 2 < tv.size(); q += 3) for (int k = 0; k < 3; ++k) { lo[k] = std::min(lo[k], tv[q + k]); hi[k] = std::max(hi[k], tv[q + k]); }
