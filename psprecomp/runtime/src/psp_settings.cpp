@@ -92,17 +92,21 @@ bool renderer_vulkan_at_start() {
     return false;
 #endif
 }
-bool renderer_vulkan_choice() {
-    auto it = g_saved.find("renderer");
-    return it != g_saved.end() ? it->second == "vulkan" : renderer_vulkan_at_start();
-}
-bool renderer_row_wanted() {
+// Whether Vulkan can be chosen at all; *why says why not (shown in the row's description).
+bool renderer_vulkan_available(std::string* why) {
 #if defined(PSPRECOMP_HAVE_VKGL)
-    return true;
+    return vkgl::available(why);
 #else
+    if (why) *why = "This build of the game was made without the Vulkan backend (the Vulkan headers or glslang were missing when it was compiled).";
     return false;
 #endif
 }
+bool renderer_vulkan_choice() {
+    if (!renderer_vulkan_available(nullptr)) return false;
+    auto it = g_saved.find("renderer");
+    return it != g_saved.end() ? it->second == "vulkan" : renderer_vulkan_at_start();
+}
+bool renderer_row_wanted() { return true; }   // always listed; greyed out with a reason when Vulkan is unavailable
 bool voice_jp_choice();
 bool voice_at_start();
 bool updates_choice();
@@ -393,12 +397,16 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             break;
         }
         case ROW_RENDERER: {
+            std::string why;
+            const bool avail = renderer_vulkan_available(&why);
             const bool vk = renderer_vulkan_choice();
             m.label = "Graphics API";
             m.value = std::string(vk ? "Vulkan" : "OpenGL") + (vk != renderer_vulkan_at_start() ? "  (next start)" : "");
-            m.can_dec = vk;
-            m.can_inc = !vk;
-            m.help = "Graphics API (PSPRECOMP_RENDERER)\nOpenGL is the default and the most tested. Vulkan renders the same picture through a Vulkan layer (experimental; needs a Vulkan 1.1 GPU). Takes effect the next time the game starts. Saved.";
+            m.disabled = !avail;
+            m.can_dec = avail && vk;
+            m.can_inc = avail && !vk;
+            m.help = avail ? "Graphics API (PSPRECOMP_RENDERER)\nOpenGL is the default and the most tested. Vulkan renders the same picture through a Vulkan layer (experimental; needs a Vulkan 1.1 GPU). Takes effect the next time the game starts. Saved."
+                           : "Graphics API: Vulkan unavailable\n" + why + " OpenGL is used.";
             break;
         }
         case ROW_VOICE: {
@@ -805,7 +813,7 @@ void change(int d) {   // left / right on the selected row
         if (i >= 0 && i < g_fps.count) apply_fps(i);
         break;
     }
-    case ROW_RENDERER: save("renderer", d > 0 ? "vulkan" : "gl"); break;   // left: OpenGL, right: Vulkan
+    case ROW_RENDERER: if (renderer_vulkan_available(nullptr)) save("renderer", d > 0 ? "vulkan" : "gl"); break;   // left: OpenGL, right: Vulkan
     case ROW_VOICE: apply_voice(d > 0); break;   // left: English, right: Japanese
     case ROW_TEXPACK: apply_texpack(d > 0); break;
     case ROW_UPDATES: apply_updates(d > 0); break;
@@ -1068,7 +1076,7 @@ void confirm() {
     case ROW_FPS:
         apply_fps((fps_index() + 1) % g_fps.count);
         break;
-    case ROW_RENDERER: save("renderer", renderer_vulkan_choice() ? "gl" : "vulkan"); break;
+    case ROW_RENDERER: if (renderer_vulkan_available(nullptr)) save("renderer", renderer_vulkan_choice() ? "gl" : "vulkan"); break;
     case ROW_VOICE: apply_voice(!voice_jp_choice()); break;
     case ROW_TEXPACK: apply_texpack(!texpack_choice()); break;
     case ROW_UPDATES: apply_updates(!updates_choice()); break;

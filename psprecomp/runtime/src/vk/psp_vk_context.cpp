@@ -5,8 +5,8 @@
 #include <cstdio>
 #include <cstring>
 
-#define VMA_STATIC_VULKAN_FUNCTIONS 1
-#define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
+#define VMA_STATIC_VULKAN_FUNCTIONS 0
+#define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
 #define VMA_IMPLEMENTATION
 #include "../../third_party/vk_mem_alloc.h"
 
@@ -26,6 +26,10 @@ static bool has_ext(const std::vector<VkExtensionProperties>& v, const char* n) 
 bool Context::init(const ContextOptions& opt, std::string* err) {
     auto fail = [&](const char* m, VkResult r = VK_SUCCESS) { if (err) { *err = m; if (r) *err += " (VkResult " + std::to_string(r) + ")"; } return false; };
     window_ = opt.window;
+    {
+        std::string lerr;
+        if (!load_global(&lerr)) return fail(lerr.c_str());
+    }
 
     std::vector<const char*> iext;
     if (window_) {
@@ -54,6 +58,7 @@ bool Context::init(const ContextOptions& opt, std::string* err) {
     ici.enabledExtensionCount = (uint32_t)iext.size(); ici.ppEnabledExtensionNames = iext.data();
     VkResult r = vkCreateInstance(&ici, nullptr, &instance_);
     if (r != VK_SUCCESS) return fail("vkCreateInstance failed", r);
+    load_instance(instance_);
     if (dbg) {
         auto fn = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance_, "vkCreateDebugUtilsMessengerEXT");
         VkDebugUtilsMessengerCreateInfoEXT mi{VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
@@ -140,6 +145,7 @@ bool Context::init(const ContextOptions& opt, std::string* err) {
     }
     r = vkCreateDevice(phys_, &di, nullptr, &dev_);
     if (r != VK_SUCCESS) return fail("vkCreateDevice failed", r);
+    load_device(dev_);
     vkGetDeviceQueue(dev_, qfam_, 0, &queue_);
 
     VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -149,6 +155,9 @@ bool Context::init(const ContextOptions& opt, std::string* err) {
 
     VmaAllocatorCreateInfo vi{};
     vi.physicalDevice = phys_; vi.device = dev_; vi.instance = instance_; vi.vulkanApiVersion = VK_API_VERSION_1_1;
+    VmaVulkanFunctions vf{};
+    vf.vkGetInstanceProcAddr = vkGetInstanceProcAddr; vf.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
+    vi.pVulkanFunctions = &vf;
     VmaAllocator a = nullptr;
     r = vmaCreateAllocator(&vi, &a);
     if (r != VK_SUCCESS) return fail("vmaCreateAllocator failed", r);
