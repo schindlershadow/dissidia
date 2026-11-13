@@ -253,6 +253,7 @@ set(RUNTIME_SOURCES
     $<$<PLATFORM_ID:Android>:src/psp_android.cpp>
     src/psp_touch.cpp
     src/psp_post.cpp
+    src/psp_smaa_data.cpp
     src/psp_screenfx.cpp
     src/psp_debug_socket.cpp
     src/psp_gl_stats.cpp

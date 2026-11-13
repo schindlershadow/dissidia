@@ -1406,7 +1406,9 @@ static bool create_fb0(int w, int h) {
         if (g().fb0.fb) { VkFramebuffer old = g().fb0.fb; defer([old]() { vkDestroyFramebuffer(G->dev, old, nullptr); }); g().fb0.fb = VK_NULL_HANDLE; }
         if (g().fb0.fb_nd) { VkFramebuffer old = g().fb0.fb_nd; defer([old]() { vkDestroyFramebuffer(G->dev, old, nullptr); }); g().fb0.fb_nd = VK_NULL_HANDLE; }
     }
-    if (!create_img(g().fb0_color, VK_FORMAT_R8G8B8A8_UNORM, w, h, 1, kTexUsage, VK_IMAGE_ASPECT_COLOR_BIT)) return false;
+    // An HDR swapchain needs a float default framebuffer: the final pass (psp_post.cpp) writes scRGB nits / 80, or the PQ-encoded signal, into it.
+    const VkFormat fb0_fmt = g().ctx.swapchain().hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
+    if (!create_img(g().fb0_color, fb0_fmt, w, h, 1, kTexUsage, VK_IMAGE_ASPECT_COLOR_BIT)) return false;
     create_img(g().fb0_depth, g().depth_fmt, w, h, 1, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
     g().fb0_color.valid_levels = 1;
     g().fb0_w = w; g().fb0_h = h;
@@ -1438,6 +1440,7 @@ bool core_init(SDL_Window* w, bool vsync, std::string* err) {
     gl.vma = (VmaAllocator)gl.ctx.allocator();
     int dw = 0, dh = 0;
     SDL_Vulkan_GetDrawableSize(w, &dw, &dh);
+    { const char* he = std::getenv("PSPRECOMP_HDR"); gl.ctx.set_hdr_wanted(he && he[0] && he[0] != '0'); }
     if (!gl.ctx.create_swapchain(dw, dh, vsync, err)) { core_shutdown(); return false; }
     gl.ts_period = gl.ctx.props().limits.timestampPeriod;
     gl.passprof = std::getenv("PSPRECOMP_VK_PASSPROF") != nullptr;
@@ -1687,6 +1690,12 @@ static void log_stats() {
     }
 }
 
+static bool g_hdr_dirty = false;
+void core_set_hdr(bool on) { if (!G) return; G->ctx.set_hdr_wanted(on); g_hdr_dirty = true; }
+bool core_hdr_supported() { return G && G->ctx.hdr_supported(); }
+int core_hdr_encoding() { return G ? G->ctx.swapchain().hdr : 0; }
+const char* core_hdr_reason() { return G ? G->ctx.hdr_reason().c_str() : "The Vulkan renderer is not running."; }
+
 void core_swap() {
     Globals& gl = *G;
     Context& c = gl.ctx;
@@ -1695,6 +1704,15 @@ void core_swap() {
     int dw = 0, dh = 0;
     SDL_Vulkan_GetDrawableSize(gl.window, &dw, &dh);
     Frame& f = fr();
+    if (g_hdr_dirty && !gl.no_present && dw > 0 && dh > 0) {   // HDR switched in the settings: new swapchain format, new default framebuffer
+        g_hdr_dirty = false;
+        vkDeviceWaitIdle(gl.dev);
+        std::string herr;
+        if (c.create_swapchain(dw, dh, gl.vsync, &herr)) create_fb0(dw, dh);
+        else std::fprintf(stderr, "[VKGL] HDR swapchain switch failed: %s\n", herr.c_str());
+        vkDestroySemaphore(gl.dev, f.acquire_sem, nullptr);
+        VkSemaphoreCreateInfo hsi{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO}; vkCreateSemaphore(gl.dev, &hsi, nullptr, &f.acquire_sem);
+    }
     if (gl.no_present) {
         // Measurement mode: no swapchain, just run the frame (the default framebuffer is never shown).
         VkCommandBuffer cbn = main_cb();

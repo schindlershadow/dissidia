@@ -3,6 +3,7 @@
 // instead of silently doing nothing.
 #include "vkgl.h"
 #include "../../include/psp_rt.h"
+#include "../../include/psp_hdr.h"
 #define PSP_GL_TABLE_UNDEF
 #include "vkgl_internal.h"
 #include <SDL.h>
@@ -413,6 +414,10 @@ bool init(SDL_Window* window, bool vsync, std::string* err) {
     install();
     g_active = true;
     g_psp_rt.unavailable_reason = rt_unavailable_reason;
+    g_psp_hdr.available = [] { return core_hdr_supported(); };
+    g_psp_hdr.encoding = [] { return core_hdr_encoding(); };
+    g_psp_hdr.set_wanted = [](bool on) { core_set_hdr(on); };
+    g_psp_hdr.reason = core_hdr_reason;
     if (rt_available()) { g_psp_rt.available = [] { return rt_available(); }; g_psp_rt.set_scene = rt_set_scene; }
     // GL starts with FBO 0 bound and a full-window viewport.
     int w = 0, h = 0;

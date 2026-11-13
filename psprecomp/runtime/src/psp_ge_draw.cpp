@@ -3922,6 +3922,11 @@ static void present_blit(GLuint fbo, const char* why = "flip") {
     glBlitFramebuffer(0, 0, spw * srs, 272 * srs, pr.x0, pr.y0, pr.x1, pr.y1,
                       GL_COLOR_BUFFER_BIT, pf);
     if (!std::strcmp(why, "flip")) perf_note_flip();
+    if (psp_post_final_active()) {   // copy of the scene for the final pass (grade / HDR), taken before the HUD and overlays
+        int sdw = 0, sdh = 0;
+        psp_gl_drawable_size(window, &sdw, &sdh);
+        psp_post_scene_snapshot(sdw, sdh);
+    }
     if (std::strcmp(why, "menu") != 0) { present_perf_hud(pr); present_toast(pr); present_flash(pr); }
     present_dialog_overlay(cpr);
     if (psp_touch_enabled()) {   // on-screen controls over the whole window (own program/VAO: the GE's cached GL state is reset after)
@@ -3930,6 +3935,16 @@ static void present_blit(GLuint fbo, const char* why = "flip") {
         psp_touch_draw(tw, th);
         glc::invalidate();
         ge_shader_note_external_program();
+    }
+    if (psp_post_final_active()) {   // colour grade / HDR over the whole window (psp_post.cpp)
+        int fdw = 0, fdh = 0;
+        psp_gl_drawable_size(window, &fdw, &fdh);
+        if (psp_post_final(fdw, fdh)) {
+            glViewport(0, 0, fdw, fdh);
+            glc::invalidate();
+            ge_texture_invalidate_bind_cache();
+            ge_shader_note_external_program();
+        }
     }
     present_service_window_capture();
     glBindFramebuffer(GL_FRAMEBUFFER, 0);

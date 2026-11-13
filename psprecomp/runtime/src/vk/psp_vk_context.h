@@ -29,6 +29,7 @@ struct Swapchain {
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkExtent2D extent{};
     std::vector<VkImage> images;
+    int hdr = 0;                      // 0 SDR, 1 scRGB (R16G16B16A16_SFLOAT, extended sRGB linear), 2 HDR10 (A2B10G10R10, ST2084 PQ)
 };
 
 class Context {
@@ -55,6 +56,12 @@ public:
     bool create_swapchain(int w, int h, bool vsync, std::string* err);
     void destroy_swapchain();
     const Swapchain& swapchain() const { return sc_; }
+    // HDR output: the swapchain takes an HDR format when the user wants it and the surface offers one (needs
+    // VK_EXT_swapchain_colorspace, enabled at instance creation when present). Takes effect at the next create_swapchain.
+    void set_hdr_wanted(bool on) { hdr_wanted_ = on; }
+    bool hdr_wanted() const { return hdr_wanted_; }
+    bool hdr_supported() const { return hdr_supported_; }   // as of the last create_swapchain
+    const std::string& hdr_reason() const { return hdr_reason_; }
 
     // One-shot command buffer helpers (init-time and tests; the frame path uses its own ring).
     VkCommandBuffer begin_once();
@@ -75,6 +82,8 @@ private:
     bool ray_query_ = false;
     bool multi_draw_ = false;           // VK_EXT_multi_draw enabled (one command for a batch of strip segments)
     Swapchain sc_;
+    bool hdr_wanted_ = false, hdr_supported_ = false, colorspace_ext_ = false;
+    std::string hdr_reason_ = "The Vulkan swapchain has not been created yet.";
     SDL_Window* window_ = nullptr;
 };
 

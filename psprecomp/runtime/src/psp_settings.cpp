@@ -143,7 +143,7 @@ bool updates_choice();
 bool texpack_choice();
 bool texpack_at_start();
 
-enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_RENDERER, ROW_AA, ROW_SHARP, ROW_SSAO, ROW_CONTACT, ROW_RT, ROW_RT_REFL, ROW_SSR, ROW_ANISO, ROW_UPSCALE, ROW_VOICE, ROW_TEXPACK, ROW_TOUCH, ROW_TOUCH_EDIT, ROW_UPDATES, ROW_QUIT,
+enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_RENDERER, ROW_AA, ROW_SHARP, ROW_BRIGHT, ROW_CONTRAST, ROW_SAT, ROW_HDR, ROW_HDR_BOOST, ROW_HDR_GAMUT, ROW_HDR_PEAK, ROW_HDR_PAPER, ROW_SSAO, ROW_CONTACT, ROW_RT, ROW_RT_SOFT, ROW_RT_REFL, ROW_SSR, ROW_ANISO, ROW_UPSCALE, ROW_VOICE, ROW_TEXPACK, ROW_TOUCH, ROW_TOUCH_EDIT, ROW_UPDATES, ROW_QUIT,
            ROW_NET_MODE, ROW_NET_SERVER, ROW_NET_ROOM, ROW_NET_PEERS, ROW_NET_STATUS,   // Network page
            ROW_CLOUD_PROVIDER, ROW_CLOUD_FOLDER, ROW_CLOUD_URL, ROW_CLOUD_USER, ROW_CLOUD_PASS, ROW_CLOUD_GOOGLE,
            ROW_CLOUD_AUTO, ROW_CLOUD_REPLAYS, ROW_CLOUD_NOW, ROW_CLOUD_STATUS,   // Cloud page
@@ -686,11 +686,11 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             break;
         }
         case ROW_AA: {
-            const bool on = psp_post_aa() != 0;
+            const int v = psp_post_aa();
             m.label = "Anti-Aliasing";
-            m.value = on ? "FXAA" : "Off";
-            m.can_dec = on; m.can_inc = !on;
-            m.help = "Post-process anti-aliasing (PSPRECOMP_POST_AA)\nSmooths jagged edges on the finished picture (FXAA). It does not touch the game's glow, so it is safe at any render scale. Saved.";
+            m.value = v == POST_AA_SMAA ? "SMAA" : v == POST_AA_FXAA ? "FXAA" : "Off";
+            m.can_dec = v > 0; m.can_inc = v < POST_AA_SMAA;
+            m.help = "Post-process anti-aliasing (PSPRECOMP_POST_AA)\nSmooths jagged edges on the finished picture. FXAA is cheap but softens the whole picture; SMAA finds the edges and shapes, so it keeps textures and the HUD crisp and handles long near-horizontal edges better, for a little more GPU time. Neither touches the game's glow, so both are safe at any render scale. Saved.";
             break;
         }
         case ROW_SHARP: {
@@ -699,6 +699,64 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.value = v ? "Level " + std::to_string(v) : "Off";
             m.can_dec = v > 0; m.can_inc = v < 4;
             m.help = "Sharpening (PSPRECOMP_SHARPEN)\nContrast-adaptive sharpening of the finished picture. Levels 1 to 4; use it with FXAA to win back crispness. Saved.";
+            break;
+        }
+        case ROW_BRIGHT: case ROW_CONTRAST: case ROW_SAT: {
+            const int v = r == ROW_BRIGHT ? psp_post_brightness() : r == ROW_CONTRAST ? psp_post_contrast() : psp_post_saturation();
+            const int lo = r == ROW_SAT ? 0 : 50, hi = r == ROW_SAT ? 200 : 150;
+            m.label = r == ROW_BRIGHT ? "Brightness" : r == ROW_CONTRAST ? "Contrast" : "Saturation";
+            m.value = v == 100 ? "Default" : std::to_string(v) + "%";
+            m.can_dec = v > lo; m.can_inc = v < hi;
+            m.help = r == ROW_BRIGHT ? "Brightness (PSPRECOMP_BRIGHTNESS)\nLifts or lowers the midtones of the whole picture without crushing blacks or clipping whites. 100% is the original look. Saved."
+                   : r == ROW_CONTRAST ? "Contrast (PSPRECOMP_CONTRAST)\nSpreads the picture's light and dark apart (above 100%) or pulls them together. 100% is the original look. Saved."
+                   : "Saturation (PSPRECOMP_SATURATION)\nColour strength. The PSP's screen was washed out next to a modern display: 110 to 125% suits most. 100% is the original look. Saved.";
+            break;
+        }
+        case ROW_HDR: {
+            const bool avail = psp_hdr_available(), on = psp_hdr_wanted();
+            const int enc = psp_hdr_encoding();
+            m.label = "HDR Output";
+            m.value = !avail ? "Unavailable" : on ? (enc == 1 ? "On (scRGB)" : enc == 2 ? "On (HDR10)" : "On (waiting)") : "Off";
+            m.disabled = !avail;   // greyed out, the reason is in the description
+            m.can_dec = avail && on; m.can_inc = avail && !on;
+            m.help = avail ? "HDR output (PSPRECOMP_HDR)\nSends the picture to an HDR display: highlights (glows, spell flashes, the sky) are expanded past SDR white up to the peak brightness below; the HUD and menus stay at paper white. The game itself is SDR, so this is an inverse tone map, not native HDR. Turn on HDR in your system's display settings first. Saved."
+                           : std::string("HDR output: unavailable\n") + (g_psp_hdr.reason ? g_psp_hdr.reason() : "Needs the Vulkan renderer.");
+            break;
+        }
+        case ROW_HDR_GAMUT: {
+            static const char* const k_names[4] = {"Off", "Low", "Medium", "High"};
+            const int v = psp_hdr_gamut();
+            const bool live = psp_hdr_available() && psp_hdr_wanted();
+            m.label = "HDR Colour";
+            m.value = k_names[v];
+            m.disabled = !live;
+            m.can_dec = live && v > 0; m.can_inc = live && v < 3;
+            m.help = !live ? "HDR colour only applies while HDR Output is on (see the HDR Output row for why it may be unavailable)."
+                           : "HDR colour (PSPRECOMP_HDR_GAMUT)\nA wide-gamut screen (OLED) stretches ordinary SDR colour to its own primaries, but shows HDR content as plain sRGB, which looks drained next to SDR. This stretches the colours towards Display-P3 by the chosen amount. Off is plain sRGB. Saved.";
+            break;
+        }
+        case ROW_HDR_BOOST: {
+            static const char* const k_names[4] = {"Off", "Low", "Medium", "High"};
+            const int v = psp_hdr_boost();
+            const bool live = psp_hdr_available() && psp_hdr_wanted();
+            m.label = "HDR Highlights";
+            m.value = k_names[v];
+            m.disabled = !live;
+            m.can_dec = live && v > 0; m.can_inc = live && v < 3;
+            m.help = !live ? "HDR highlights only apply while HDR Output is on (see the HDR Output row for why it may be unavailable)."
+                           : "HDR highlights (PSPRECOMP_HDR_BOOST)\nHow far small bright features (glows, sparks, spell flashes, specular) rise above paper white, up to the peak brightness. Large bright areas such as menus and white skies are never lifted. Off shows the picture at plain SDR brightness. Saved.";
+            break;
+        }
+        case ROW_HDR_PEAK: case ROW_HDR_PAPER: {
+            const bool pk = r == ROW_HDR_PEAK;
+            const int v = pk ? psp_hdr_peak() : psp_hdr_paper();
+            m.label = pk ? "HDR Peak Brightness" : "HDR Paper White";
+            m.value = std::to_string(v) + " nits";
+            const bool live = psp_hdr_available() && psp_hdr_wanted();
+            m.disabled = !live;
+            m.can_dec = live && v > (pk ? 400 : 80); m.can_inc = live && v < (pk ? 4000 : 400);
+            m.help = !live ? "HDR peak brightness and paper white only apply while HDR Output is on (see the HDR Output row for why it may be unavailable)." : pk ? "HDR peak brightness (PSPRECOMP_HDR_PEAK)\nThe brightest level expanded highlights reach, in nits. Set it to about what your display can show (OLED 600 to 1000, mini-LED 1000 to 1600). Saved."
+                        : "HDR paper white (PSPRECOMP_HDR_PAPER)\nHow bright ordinary white (the HUD, menus, a plain SDR picture) is shown, in nits. 203 is the broadcast reference; raise it in a bright room. Saved.";
             break;
         }
         case ROW_SSAO: case ROW_CONTACT: case ROW_SSR: {
@@ -711,6 +769,19 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.help = ao ? "Ambient occlusion, SSAO (PSPRECOMP_SSAO)\nDarkens creases and the ground around characters and objects. Low, Medium or High (more samples, more GPU time). Runs on the 3D scene before the glow and the HUD, so the HUD is never darkened. Costs GPU time; not for the Steam Deck at a high render scale. Saved."
                 : cs ? "Contact shadows (PSPRECOMP_CONTACT_SHADOWS)\nA short ray-marched shadow cast from fighters and objects onto the floor and each other. Low, Medium or High (more samples, more GPU time). Saved."
                      : "Screen-space reflections (PSPRECOMP_SSR)\nFloors mirror the characters, ruins and sky that are on screen. Low, Medium or High (more samples, more GPU time). Only what is visible in the picture can be reflected. Saved.";
+            break;
+        }
+        case ROW_RT_SOFT: {
+            static const char* const k_names[5] = {"Sharp", "Firm", "Normal", "Soft", "Very Soft"};
+            const int v = psp_rt_softness();
+            m.label = "Shadow Softness";
+            m.value = k_names[v];
+            const bool usable = psp_rt_available() && psp_rt_quality() >= 2;
+            m.disabled = !usable;
+            m.can_dec = usable && v > 0; m.can_inc = usable && v < 4;
+            m.help = !psp_rt_available() ? std::string("Shadow softness: unavailable\n") + psp_rt_unavailable_reason()
+                   : psp_rt_quality() < 2 ? "Shadow softness: needs Ray-Traced Shadows set to Medium or High (Off and Low use at most one hard ray, so there is no soft edge to adjust)."
+                   : "Shadow softness (PSPRECOMP_RT_SOFT)\nHow wide the light is for ray-traced shadows. A wider light gives softer edges that sharpen where a shadow meets its caster, like a real shadow; Sharp is almost a point light. Firm is the default. Needs Medium or High ray-traced shadows (Low uses one hard ray). Takes effect at once. Saved.";
             break;
         }
         case ROW_RT: {
@@ -995,12 +1066,53 @@ void change(int d) {   // left / right on the selected row
     case ROW_SOFT:
         if ((d > 0) != ge_soft_focus()) { ge_set_soft_focus(d > 0); save("soft_focus", d > 0 ? "1" : "0"); }
         break;
-    case ROW_AA:
-        if ((d > 0) != (psp_post_aa() != 0)) { psp_post_set_aa(d > 0); save("post_aa", d > 0 ? "1" : "0"); }
+    case ROW_AA: {
+        const int v = std::min(int(POST_AA_SMAA), std::max(0, psp_post_aa() + d));
+        if (v != psp_post_aa()) { psp_post_set_aa(v); save("post_aa", std::to_string(v)); }
         break;
+    }
     case ROW_SHARP: {
         const int v = std::min(4, std::max(0, psp_post_sharpen() + d));
         if (v != psp_post_sharpen()) { psp_post_set_sharpen(v); save("sharpen", std::to_string(v)); }
+        break;
+    }
+    case ROW_BRIGHT: case ROW_CONTRAST: case ROW_SAT: {
+        const Row r = g_rows[size_t(g_sel)];
+        const int lo = r == ROW_SAT ? 0 : 50, hi = r == ROW_SAT ? 200 : 150;
+        const int cur = r == ROW_BRIGHT ? psp_post_brightness() : r == ROW_CONTRAST ? psp_post_contrast() : psp_post_saturation();
+        const int v = std::min(hi, std::max(lo, cur + d * 5));
+        if (v == cur) break;
+        if (r == ROW_BRIGHT) { psp_post_set_brightness(v); save("brightness", std::to_string(v)); }
+        else if (r == ROW_CONTRAST) { psp_post_set_contrast(v); save("contrast", std::to_string(v)); }
+        else { psp_post_set_saturation(v); save("saturation", std::to_string(v)); }
+        break;
+    }
+    case ROW_HDR:
+        if (!psp_hdr_available()) break;
+        if ((d > 0) != psp_hdr_wanted()) { psp_hdr_set_wanted(d > 0); save("hdr", d > 0 ? "1" : "0"); }
+        break;
+    case ROW_HDR_GAMUT: {
+        if (!psp_hdr_available() || !psp_hdr_wanted()) break;
+        const int v = std::min(3, std::max(0, psp_hdr_gamut() + d));
+        if (v != psp_hdr_gamut()) { psp_hdr_set_gamut(v); save("hdr_gamut", std::to_string(v)); }
+        break;
+    }
+    case ROW_HDR_BOOST: {
+        if (!psp_hdr_available() || !psp_hdr_wanted()) break;
+        const int v = std::min(3, std::max(0, psp_hdr_boost() + d));
+        if (v != psp_hdr_boost()) { psp_hdr_set_boost(v); save("hdr_boost", std::to_string(v)); }
+        break;
+    }
+    case ROW_HDR_PEAK: {
+        if (!psp_hdr_available() || !psp_hdr_wanted()) break;
+        const int v = std::min(4000, std::max(400, psp_hdr_peak() + d * 100));
+        if (v != psp_hdr_peak()) { psp_hdr_set_peak(v); save("hdr_peak", std::to_string(v)); }
+        break;
+    }
+    case ROW_HDR_PAPER: {
+        if (!psp_hdr_available() || !psp_hdr_wanted()) break;
+        const int v = std::min(400, std::max(80, psp_hdr_paper() + d * 10));
+        if (v != psp_hdr_paper()) { psp_hdr_set_paper(v); save("hdr_paper", std::to_string(v)); }
         break;
     }
     case ROW_SSAO: {
@@ -1011,6 +1123,12 @@ void change(int d) {   // left / right on the selected row
     case ROW_CONTACT: {
         const int v = std::min(3, std::max(0, psp_fx_contact() + d));
         if (v != psp_fx_contact()) { psp_fx_set_contact(v); save("contact_shadows", std::to_string(v)); }
+        break;
+    }
+    case ROW_RT_SOFT: {
+        if (!psp_rt_available() || psp_rt_quality() < 2) break;
+        const int v = std::min(4, std::max(0, psp_rt_softness() + d));
+        if (v != psp_rt_softness()) { psp_rt_set_softness(v); save("rt_soft", std::to_string(v)); }
         break;
     }
     case ROW_RT: {
@@ -1117,9 +1235,18 @@ void build_rows() {
         if (texpack_row_wanted()) g_rows.push_back(ROW_TEXPACK);
         g_rows.push_back(ROW_AA);
         g_rows.push_back(ROW_SHARP);
+        g_rows.push_back(ROW_BRIGHT);
+        g_rows.push_back(ROW_CONTRAST);
+        g_rows.push_back(ROW_SAT);
+        g_rows.push_back(ROW_HDR);
+        g_rows.push_back(ROW_HDR_BOOST);
+        g_rows.push_back(ROW_HDR_GAMUT);
+        g_rows.push_back(ROW_HDR_PEAK);
+        g_rows.push_back(ROW_HDR_PAPER);
         g_rows.push_back(ROW_SSAO);
         if (!psp_rt_active()) g_rows.push_back(ROW_CONTACT);   // ray-traced shadows replace them
         g_rows.push_back(ROW_RT);
+        g_rows.push_back(ROW_RT_SOFT);
         g_rows.push_back(ROW_RT_REFL);
         if (!psp_rt_refl_active()) g_rows.push_back(ROW_SSR);   // ray-traced reflections replace them
         g_rows.push_back(ROW_ANISO);
@@ -1286,10 +1413,12 @@ void confirm() {
     case ROW_SYNC: ge_draw_set_sync_mode((ge_draw_sync_mode() + 1) % 5); break;
     case ROW_RING: change((g_ring_next >= 0 ? g_ring_next : ge_draw_ring_mode()) ? -1 : 1); return;
     case ROW_SOFT: change(ge_soft_focus() ? -1 : 1); return;
-    case ROW_AA: change(psp_post_aa() ? -1 : 1); return;
+    case ROW_AA: change(psp_post_aa() >= POST_AA_SMAA ? -int(POST_AA_SMAA) : 1); return;
     case ROW_SHARP: change(psp_post_sharpen() >= 4 ? -4 : 1); return;
+    case ROW_HDR: if (psp_hdr_available()) change(psp_hdr_wanted() ? -1 : 1); return;
     case ROW_SSAO: change(psp_fx_ssao() >= 3 ? -3 : 1); return;
     case ROW_CONTACT: change(psp_fx_contact() >= 3 ? -3 : 1); return;
+    case ROW_RT_SOFT: if (psp_rt_available() && psp_rt_quality() >= 2) change(psp_rt_softness() >= 4 ? -4 : 1); return;
     case ROW_RT: if (psp_rt_available()) change(psp_rt_quality() >= 3 ? -3 : 1); return;
     case ROW_RT_REFL: if (psp_rt_available()) change(psp_rt_refl_quality() >= 3 ? -3 : 1); return;
     case ROW_SSR: change(psp_fx_ssr() >= 3 ? -3 : 1); return;
@@ -1369,12 +1498,21 @@ void psp_settings_load_early() {
         put("PSPRECOMP_RENDER_SCALE", it->second);
     if ((it = g_saved.find("widescreen")) != g_saved.end()) put("PSPRECOMP_WIDESCREEN", it->second == "1" ? "1" : "0");
     if ((it = g_saved.find("soft_focus")) != g_saved.end()) put("PSPRECOMP_SOFT_FOCUS", it->second == "0" ? "0" : "1");
-    if ((it = g_saved.find("post_aa")) != g_saved.end()) put("PSPRECOMP_POST_AA", it->second == "1" ? "1" : "0");
+    if ((it = g_saved.find("post_aa")) != g_saved.end()) put("PSPRECOMP_POST_AA", it->second == "2" ? "2" : it->second == "1" ? "1" : "0");
     if ((it = g_saved.find("aniso")) != g_saved.end()) put("PSPRECOMP_ANISO", it->second);
     if ((it = g_saved.find("sharpen")) != g_saved.end()) put("PSPRECOMP_SHARPEN", it->second);
+    if ((it = g_saved.find("brightness")) != g_saved.end()) put("PSPRECOMP_BRIGHTNESS", it->second);
+    if ((it = g_saved.find("contrast")) != g_saved.end()) put("PSPRECOMP_CONTRAST", it->second);
+    if ((it = g_saved.find("saturation")) != g_saved.end()) put("PSPRECOMP_SATURATION", it->second);
+    if ((it = g_saved.find("hdr")) != g_saved.end()) put("PSPRECOMP_HDR", it->second == "1" ? "1" : "0");
+    if ((it = g_saved.find("hdr_gamut")) != g_saved.end()) put("PSPRECOMP_HDR_GAMUT", it->second);
+    if ((it = g_saved.find("hdr_boost")) != g_saved.end()) put("PSPRECOMP_HDR_BOOST", it->second);
+    if ((it = g_saved.find("hdr_peak")) != g_saved.end()) put("PSPRECOMP_HDR_PEAK", it->second);
+    if ((it = g_saved.find("hdr_paper")) != g_saved.end()) put("PSPRECOMP_HDR_PAPER", it->second);
     if ((it = g_saved.find("ssao")) != g_saved.end()) put("PSPRECOMP_SSAO", it->second);
     if ((it = g_saved.find("contact_shadows")) != g_saved.end()) put("PSPRECOMP_CONTACT_SHADOWS", it->second);
     if ((it = g_saved.find("rt_shadow_level")) != g_saved.end()) put("PSPRECOMP_VK_RT", it->second);
+    if ((it = g_saved.find("rt_soft")) != g_saved.end()) psp_rt_set_softness(std::atoi(it->second.c_str()));
     else if ((it = g_saved.find("rt_shadows")) != g_saved.end()) put("PSPRECOMP_VK_RT", it->second == "1" ? "2" : "0");   // before the levels: on = Medium
     if ((it = g_saved.find("rt_refl_level")) != g_saved.end()) put("PSPRECOMP_VK_RT_REFL", it->second);
     else if ((it = g_saved.find("rt_reflections")) != g_saved.end()) put("PSPRECOMP_VK_RT_REFL", it->second == "1" ? "2" : "0");   // before the levels: on = Medium

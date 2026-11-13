@@ -57,7 +57,7 @@ class Game:
         self.go_file = os.path.join(out, 'go_%d' % fps)
         self.pos = 0
         self.n = 0
-        self.window, self.render_scale, self.widescreen = os.environ.get('BT_WINDOW', '480x272'), 1, int(os.environ.get('BT_WIDESCREEN', '0'))   # a visual test can ask for a bigger window / widescreen (BT_WINDOW=1088x272 BT_WIDESCREEN=1)
+        self.window, self.render_scale, self.widescreen = os.environ.get('BT_WINDOW', '480x272'), int(os.environ.get('BT_RENDER_SCALE', '1')), int(os.environ.get('BT_WIDESCREEN', '0'))   # a visual test can ask for a bigger window / widescreen (BT_WINDOW=1088x272 BT_WIDESCREEN=1)
 
     def start(self):
         ms0 = os.path.join(self.out, 'ms0_%d' % self.fps)
@@ -294,7 +294,7 @@ def run(a, fps=None):
             t_start = time.time()
             for sec in [float(x) for x in a.shots.split(',') if x.strip()]:
                 time.sleep(max(0.0, t_start + sec - time.time()))
-                g.cmd('S ' + os.path.join(os.path.abspath(a.out), 'battle_%s_%03d.tga' % (os.environ.get('PSPRECOMP_RENDERER', 'gl'), int(sec))))
+                g.cmd(('V ' if os.environ.get('BT_WINDOW_SHOT') else 'S ') + os.path.join(os.path.abspath(a.out), 'battle_%s_%03d.tga' % (os.environ.get('PSPRECOMP_RENDERER', 'gl'), int(sec))))   # BT_WINDOW_SHOT=1: the whole window with the post passes (AA, sharpen, grade), not the 480x272 render target
             return g.log
         if a.script:
             end = time.time() + a.timeout
