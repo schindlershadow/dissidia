@@ -4,7 +4,8 @@
 // PSP_TOUCH_PAD_ID), so everything that listens to a pad (the game's input, the settings menu, the dialogs) works with touch
 // unchanged. The controls are drawn as translucent shapes over the finished frame (psp_touch_draw, GL thread).
 // Layout: left stick bottom-left, d-pad above it, face buttons bottom-right, L / R top corners, Select / Start bottom centre,
-// a menu button (opens the settings menu) top centre. Auto mode: hidden until the first touch, hidden again when a real
+// a menu button (opens the settings menu) top centre. The right (camera) stick is always floating on the right half of the screen (a touch on
+// no control starts it there); a floating left stick uses the left half only. Auto mode: hidden until the first touch, hidden again when a real
 // pad button is pressed.
 #pragma once
 #include <SDL.h>
