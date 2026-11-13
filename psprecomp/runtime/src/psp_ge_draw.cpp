@@ -3653,12 +3653,44 @@ static std::mutex g_toast_mu;
 static std::string g_toast_text;
 static std::chrono::steady_clock::time_point g_toast_until{};
 static bool g_toast_dirty = false;
+static int g_toast_y = 10;
 
-void ge_draw_toast(const char* text, int ms) {
+void ge_draw_toast(const char* text, int ms, int y_px) {
     std::lock_guard<std::mutex> lk(g_toast_mu);
+    g_toast_y = y_px;
     g_toast_text = text ? text : "";
     g_toast_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
     g_toast_dirty = true;
+}
+
+// Flash: four bars along the edges of the picture, cleared to one colour through the scissor box (no shader needed), for a short time.
+static std::atomic<int64_t> g_flash_until_ms{0};
+static std::atomic<uint32_t> g_flash_rgb{0};
+static int64_t steady_ms() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+void ge_draw_flash(uint32_t rgb, int ms) {
+    g_flash_rgb.store(rgb, std::memory_order_relaxed);
+    g_flash_until_ms.store(steady_ms() + ms, std::memory_order_relaxed);
+}
+
+static void present_flash(const PresentRect& pr) {
+    if (steady_ms() >= g_flash_until_ms.load(std::memory_order_relaxed)) return;
+    const uint32_t c = g_flash_rgb.load(std::memory_order_relaxed);
+    const int left = std::min(pr.x0, pr.x1), right = std::max(pr.x0, pr.x1), bottom = std::min(pr.y0, pr.y1), top = std::max(pr.y0, pr.y1);
+    const int w = right - left, h = top - bottom;
+    if (w <= 0 || h <= 0) return;
+    const int t = std::max(2, int(std::lround(0.03 * double(h))));
+    GLint box[4]; GLfloat clear[4];
+    const GLboolean sc = glIsEnabled(GL_SCISSOR_TEST);
+    glGetIntegerv(GL_SCISSOR_BOX, box);
+    glGetFloatv(GL_COLOR_CLEAR_VALUE, clear);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glEnable(GL_SCISSOR_TEST);
+    glClearColor(float((c >> 16) & 255) / 255.f, float((c >> 8) & 255) / 255.f, float(c & 255) / 255.f, 1.f);
+    const int bars[4][4] = {{left, top - t, w, t}, {left, bottom, w, t}, {left, bottom, t, h}, {right - t, bottom, t, h}};
+    for (const auto& b : bars) { glScissor(b[0], b[1], b[2], b[3]); glClear(GL_COLOR_BUFFER_BIT); }
+    glClearColor(clear[0], clear[1], clear[2], clear[3]);
+    glScissor(box[0], box[1], box[2], box[3]);
+    if (!sc) glDisable(GL_SCISSOR_TEST);
 }
 
 static void present_toast(const PresentRect& pr) {
@@ -3709,7 +3741,9 @@ static void present_toast(const PresentRect& pr) {
     const int bw = int(std::lround(float(tw) / float(tscale) * sx));
     const int x0 = left + (int(std::lround(480.f * sx)) - bw) / 2;     // centred
     const int x1 = x0 + bw;
-    const int y_top = top - int(std::lround(10.f * sy));
+    int ty;
+    { std::lock_guard<std::mutex> lk(g_toast_mu); ty = g_toast_y; }
+    const int y_top = top - int(std::lround(float(ty) * sy));
     const int y_bot = y_top - int(std::lround(float(th) / float(tscale) * sy));
     const GLboolean sc = glIsEnabled(GL_SCISSOR_TEST);
     if (sc) glDisable(GL_SCISSOR_TEST);
@@ -3875,7 +3909,7 @@ static void present_blit(GLuint fbo, const char* why = "flip") {
     glBlitFramebuffer(0, 0, spw * srs, 272 * srs, pr.x0, pr.y0, pr.x1, pr.y1,
                       GL_COLOR_BUFFER_BIT, pf);
     if (!std::strcmp(why, "flip")) perf_note_flip();
-    if (std::strcmp(why, "menu") != 0) { present_perf_hud(pr); present_toast(pr); }
+    if (std::strcmp(why, "menu") != 0) { present_perf_hud(pr); present_toast(pr); present_flash(pr); }
     present_dialog_overlay(cpr);
     if (psp_touch_enabled()) {   // on-screen controls over the whole window (own program/VAO: the GE's cached GL state is reset after)
         int tw = 0, th = 0;

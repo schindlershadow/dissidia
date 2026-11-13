@@ -65,7 +65,11 @@ void ge_draw_set_perf_overlay(bool on);
 
 /// A short message over the picture, top centre, for `ms` milliseconds (a new call replaces the old
 /// message). Any thread. Used for "frame rate set to 30 fps" when a multiplayer group agrees on one.
-void ge_draw_toast(const char* text, int ms);
+void ge_draw_toast(const char* text, int ms, int y_px = 10);   // y_px: distance of the box from the top of the picture, in PSP pixels (272 high)
+
+/// A bright frame around the picture (3% thick on every side, colour 0xRRGGBB) for `ms` milliseconds; a new call replaces the old one.
+/// Any thread. Debug aid (the game module's timing helpers).
+void ge_draw_flash(uint32_t rgb, int ms);
 
 /// Present the last frame with the dialog/menu overlay now (game paused).
 /// Main (GL) thread.
