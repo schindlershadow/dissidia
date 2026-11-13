@@ -11,7 +11,8 @@
 - **Debug page**: L / R (shoulder buttons), or Q / E / Tab on a keyboard, switches between System and Debug:
   - Performance Overlay: for debugging. Frames per second, average and worst frame time over the last half second,
     presents per second (a gap to the fps means the presenter runs without new game frames), render scale and process
-    memory (Linux), top-left.
+    memory (Linux), top-left, with a frame-time graph under it (last 120 frames, green up to 16.7 ms, yellow up to
+    33.3 ms, red above).
     Saved (`perf_overlay`); `PSPRECOMP_PERF_HUD=1` turns it on without the menu.
   - FX Shaders: bypasses the `mods/fx_shaders` overrides live ("Not loaded" when none were loaded at start).
     This session only.

@@ -1697,7 +1697,8 @@ void KeyboardDialog::render(Canvas& c) const {
     }
 }
 
-bool render_hud_box(const std::string& text, int scale, std::vector<uint32_t>& out, int* w, int* h) {
+bool render_hud_box(const std::string& text, int scale, std::vector<uint32_t>& out, int* w, int* h,
+                    const float* graph_ms, int graph_n) {
     static FT_Library lib = nullptr;
     static FT_Face face = nullptr;
     static std::once_flag once;
@@ -1709,11 +1710,35 @@ bool render_hud_box(const std::string& text, int scale, std::vector<uint32_t>& o
     Canvas c(scale);
     c.clear(Canvas::rgba(14, 16, 36));
     Painter P(c);
-    const float size = 9.f, pad = 5.f, bh = 14.f;
+    const float size = 9.f, pad = 5.f, text_h = 14.f;
+    const bool graph = graph_ms && graph_n > 1;
+    const float graph_h = graph ? 30.f : 0.f, bh = text_h + (graph ? graph_h + 4.f : 0.f);
     const float tw = P.text_width(face, size, text);
     const float bw = std::min(float(SCREEN_W) - 8.f, std::ceil(tw + 2.f * pad));
     P.hline(0.f, bw, bh - 0.5f, 1.f, rgb(120, 128, 200, 0.9f));   // thin accent line along the bottom edge
     P.text(face, size, pad, 10.5f, text, rgb(255, 255, 255));
+    if (graph) {
+        // Frame-time graph, newest sample on the right: one bar per flip, 0..50 ms top to bottom-up, green up to
+        // 16.7 ms, yellow up to 33.3 ms, red above. Guide lines at 16.7 and 33.3 ms.
+        constexpr float kMax = 50.f;
+        const int gx0 = int(std::lround(pad * float(c.scale))), gx1 = int(std::floor((bw - pad) * float(c.scale)));
+        const int gy1 = int(std::lround((text_h + 2.f + graph_h) * float(c.scale))), gh = int(std::lround(graph_h * float(c.scale)));
+        auto px_at = [&](int x, int y) -> uint32_t& { return c.px[size_t(y) * size_t(c.w) + size_t(x)]; };
+        for (int y = gy1 - gh; y < gy1; ++y)
+            for (int x = gx0; x < gx1; ++x) px_at(x, y) = Canvas::rgba(6, 8, 22);
+        const int span = gx1 - gx0;
+        for (int x = 0; x < span; ++x) {
+            const int i = std::min(graph_n - 1, int(int64_t(x) * graph_n / span));   // spread over the width, newest at the right
+            const float ms = std::max(0.f, graph_ms[i]);
+            const int bar = std::min(gh, int(std::lround(ms / kMax * float(gh))));
+            const uint32_t col = ms <= 16.9f ? Canvas::rgba(90, 220, 120) : ms <= 33.5f ? Canvas::rgba(235, 205, 70) : Canvas::rgba(240, 90, 80);
+            for (int y = gy1 - bar; y < gy1; ++y) px_at(gx0 + x, y) = col;
+        }
+        for (float g : {16.7f, 33.3f}) {
+            const int y = gy1 - int(std::lround(g / kMax * float(gh)));
+            for (int x = gx0; x < gx1; x += 2) px_at(x, std::clamp(y, gy1 - gh, gy1 - 1)) = Canvas::rgba(150, 156, 220);
+        }
+    }
     const int pw = std::min(c.w, int(std::ceil(bw * float(c.scale)))), ph = std::min(c.h, int(std::ceil(bh * float(c.scale))));
     out.resize(size_t(pw) * size_t(ph));
     for (int y = 0; y < ph; ++y)

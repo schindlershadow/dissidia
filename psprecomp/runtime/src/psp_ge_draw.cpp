@@ -3653,6 +3653,10 @@ struct PerfHud {
     std::chrono::steady_clock::time_point last{}, win0{};
     int frames = 0, presents = 0;
     double sum_ms = 0, worst_ms = 0;
+    static constexpr int kGraph = 120;   // frame times shown in the debug overlay's graph (oldest first)
+    float graph[kGraph] = {};
+    int graph_n = 0;
+    std::chrono::steady_clock::time_point graph_drawn{};
     std::string text;       // performance overlay line
     std::string fps_text;   // fps counter
     bool dirty = false, fps_dirty = false;
@@ -3699,6 +3703,12 @@ static void perf_note_flip() {
     g_perf.frames++;
     g_perf.sum_ms += ms;
     g_perf.worst_ms = std::max(g_perf.worst_ms, ms);
+    if (g_perf_hud.load(std::memory_order_relaxed)) {
+        if (g_perf.graph_n == PerfHud::kGraph) std::memmove(g_perf.graph, g_perf.graph + 1, (PerfHud::kGraph - 1) * sizeof(float));
+        else g_perf.graph_n++;
+        g_perf.graph[g_perf.graph_n - 1] = float(ms);
+        if (now - g_perf.graph_drawn >= milliseconds(50)) { g_perf.graph_drawn = now; g_perf.dirty = true; }   // ~20 redraws/s
+    }
     const double win = duration<double, std::milli>(now - g_perf.win0).count();
     if (win >= 500.0 && g_perf.frames > 0) {
         const double fps = g_perf.frames * 1000.0 / win;
@@ -3937,7 +3947,8 @@ static void present_toast(const PresentRect& pr) {
 // own tiny program (GL state saved and restored, like the touch controls). `box` = the performance overlay's dark box
 // (top-left), otherwise the bare number with a soft shadow (top-right). `alpha` is the overall opacity.
 struct HudBlend { GLuint tex = 0; int tw = 0, th = 0, tscale = 0, alloc_w = 0, alloc_h = 0; std::vector<uint32_t> px; };
-static void present_blend_hud(HudBlend& st, const std::string& text, bool& text_dirty, bool box, float alpha, const PresentRect& pr) {
+static void present_blend_hud(HudBlend& st, const std::string& text, bool& text_dirty, bool box, float alpha, const PresentRect& pr,
+                              const float* graph = nullptr, int graph_n = 0) {
     if (text.empty()) return;
     static GLuint prog = 0, vao = 0, vbo = 0;
     static GLint u_tex = -1, u_alpha = -1;
@@ -3997,7 +4008,7 @@ static void present_blend_hud(HudBlend& st, const std::string& text, bool& text_
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev_tex);
     if (text_dirty || scale != tscale || !tex) {
         int w = 0, h = 0;
-        const bool ok = box ? psp_sddialog::render_hud_box(text, scale, px, &w, &h)
+        const bool ok = box ? psp_sddialog::render_hud_box(text, scale, px, &w, &h, graph, graph_n)
                             : psp_sddialog::render_hud_text(text, scale, px, &w, &h);
         if (!ok || w <= 0 || h <= 0) {
             glActiveTexture(GLenum(prev_active));
@@ -4101,7 +4112,7 @@ static void present_fps_counter(const PresentRect& pr) {
 static void present_perf_hud(const PresentRect& pr) {
     static HudBlend st;
     if (!g_perf_hud.load(std::memory_order_relaxed)) return;
-    present_blend_hud(st, g_perf.text, g_perf.dirty, true, 0.65f, pr);
+    present_blend_hud(st, g_perf.text, g_perf.dirty, true, 0.65f, pr, g_perf.graph, g_perf.graph_n);
 }
 
 
