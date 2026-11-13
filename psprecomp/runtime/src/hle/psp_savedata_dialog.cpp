@@ -1469,8 +1469,10 @@ static std::vector<uint32_t> g_menu;
 static int g_menu_w = 0, g_menu_h = 0;
 static bool g_menu_active = false;
 
-void menu_overlay_publish(const Canvas& c) {
+static bool g_menu_translucent = false;
+void menu_overlay_publish(const Canvas& c, bool translucent) {
     std::lock_guard<std::mutex> g(g_ovl_mu);
+    g_menu_translucent = translucent;
     g_menu = c.px;
     g_menu_w = c.w;
     g_menu_h = c.h;
@@ -1494,8 +1496,9 @@ void overlay_clear() {
     g_ovl_active = false;
     g_ovl.clear();
 }
-bool overlay_fetch(std::vector<uint32_t>& out, int* w, int* h) {
+bool overlay_fetch(std::vector<uint32_t>& out, int* w, int* h, bool* translucent) {
     std::lock_guard<std::mutex> g(g_ovl_mu);
+    if (translucent) *translucent = g_menu_active && g_menu_translucent;
     if (g_menu_active) {
         out = g_menu;
         if (w) *w = g_menu_w;

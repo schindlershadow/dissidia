@@ -269,6 +269,7 @@ public:
     // Draws a frame (advances the animation by the time since the previous call).
     void render(Canvas& c, const SetScene& s, double now_ms);
     const SetGeom& geom() const { return g_; }
+    bool translucent() const { return translucent_; }
     // True while something moves (the caller keeps drawing at the frame rate); false once everything has settled.
     bool animating() const { return animating_; }
     // Scrolling by hand (wheel, a dragged finger): pixels in design units, positive = down. `momentum` = a fling speed to coast on.
@@ -286,6 +287,7 @@ public:
     double last_ms_ = -1, t_ = 0;
     float scroll_ = 0, scroll_target_ = 0, scroll_max_ = 0, fling_v_ = 0;
     float cat_scroll_ = 0, cat_scroll_t_ = 0, cat_scroll_max_ = 0; bool cat_manual_ = false; int cat_follow_ = -1;   // category list scrolling
+    bool translucent_ = false;                // this frame leaves part of the canvas transparent (the iris)
     float dlg_p_ = 0.f;                       // dialog fade
     float tab_focus_ = 1.f;                   // eases to 1 while the category list has the focus
     float sel_y_ = 0, cat_y_ = 0;             // gliding highlight positions (design units)
@@ -307,10 +309,10 @@ void overlay_publish(const Canvas& c);   // activates the overlay
 void overlay_clear();                    // deactivates it
 // Copies the current overlay into `out` (w*h uint32, top row first). Returns
 // false when no dialog is active. The menu overlay (below) wins while active.
-bool overlay_fetch(std::vector<uint32_t>& out, int* w = nullptr, int* h = nullptr);
+bool overlay_fetch(std::vector<uint32_t>& out, int* w = nullptr, int* h = nullptr, bool* translucent = nullptr);   // translucent: pixels carry alpha (the settings screen's opening circle shows the game around it)
 // Settings-menu overlay: a second slot drawn over (instead of) the dialog one,
 // so opening the menu during a save dialog does not disturb it.
-void menu_overlay_publish(const Canvas& c);
+void menu_overlay_publish(const Canvas& c, bool translucent = false);
 void menu_overlay_clear();
 
 // ---------------------------------------------------------------------------
