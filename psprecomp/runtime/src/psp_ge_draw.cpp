@@ -33,6 +33,9 @@
 #include <random>
 #include "psp_platform.h"
 #include <cstdio>
+#ifdef __linux__
+#include <unistd.h>
+#endif
 #include <cstdlib>
 #include <cstring>
 void gl_stats_frame();   // psp_gl_stats.cpp
@@ -3681,6 +3684,157 @@ static int perf_rss_mb() {
 #endif
 }
 
+// ---- system information for the performance overlay (Linux; elsewhere the fields read "n/a") ----
+struct SysInfo {
+    std::string cpu_model, gpu_model, gl_version;
+    int cpu_threads = 0;
+    bool have_nvx = false, have_ati = false, init = false;
+    unsigned long long last_idle = 0, last_total = 0, last_proc = 0;   // /proc/stat jiffies, process utime+stime
+    std::chrono::steady_clock::time_point last_t{};
+    double cpu_sys = -1, cpu_proc = -1;          // percent; proc is of one core (can exceed 100)
+    double ram_used_gb = -1, ram_total_gb = -1;
+    double vram_used_gb = -1, vram_total_gb = -1;
+    int gpu_busy = -1;
+};
+static SysInfo g_sys;
+
+static std::string sys_read_line(const char* path, const char* key) {   // first line starting with `key`, value after ':'
+    FILE* f = std::fopen(path, "r");
+    if (!f) return {};
+    char buf[512];
+    std::string r;
+    while (std::fgets(buf, sizeof buf, f)) {
+        if (std::strncmp(buf, key, std::strlen(key)) == 0) {
+            const char* c = std::strchr(buf, ':');
+            if (c) { r = c + 1; while (!r.empty() && (r[0] == ' ' || r[0] == '\t')) r.erase(0, 1); while (!r.empty() && (r.back() == '\n' || r.back() == ' ')) r.pop_back(); }
+            break;
+        }
+    }
+    std::fclose(f);
+    return r;
+}
+static long long sys_read_ll(const std::string& path) {
+    FILE* f = std::fopen(path.c_str(), "r");
+    if (!f) return -1;
+    long long v = -1;
+    if (std::fscanf(f, "%lld", &v) != 1) v = -1;
+    std::fclose(f);
+    return v;
+}
+// amdgpu exposes VRAM and load in sysfs; returns the first card that has them.
+static std::string sys_amdgpu_dir() {
+    static std::string dir = [] {
+        for (int i = 0; i < 8; ++i) {
+            std::string d = "/sys/class/drm/card" + std::to_string(i) + "/device/";
+            if (sys_read_ll(d + "mem_info_vram_total") > 0) return d;
+        }
+        return std::string();
+    }();
+    return dir;
+}
+static bool gl_has_ext(const char* name) {
+    GLint n = 0;
+    glGetIntegerv(GL_NUM_EXTENSIONS, &n);
+    for (GLint i = 0; i < n; ++i) {
+        const char* e = reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, GLuint(i)));
+        if (e && !std::strcmp(e, name)) return true;
+    }
+    return false;
+}
+static void sys_info_init() {
+    SysInfo& s = g_sys;
+    s.init = true;
+    auto gs = [](GLenum e) { const GLubyte* p = glGetString(e); return p ? std::string(reinterpret_cast<const char*>(p)) : std::string(); };
+    s.gpu_model = gs(GL_RENDERER);
+    s.gl_version = gs(GL_VERSION);
+    const std::string vendor = gs(GL_VENDOR);
+    if (!vendor.empty() && s.gpu_model.find(vendor) == std::string::npos && vendor.size() < 24) s.gpu_model = vendor + " " + s.gpu_model;
+    s.have_nvx = gl_has_ext("GL_NVX_gpu_memory_info");
+    s.have_ati = gl_has_ext("GL_ATI_meminfo");
+    glGetError();
+#ifdef __linux__
+    s.cpu_model = sys_read_line("/proc/cpuinfo", "model name");
+    if (s.cpu_model.empty()) s.cpu_model = sys_read_line("/proc/cpuinfo", "Hardware");
+    FILE* f = std::fopen("/proc/cpuinfo", "r");
+    if (f) { char b[256]; while (std::fgets(b, sizeof b, f)) if (!std::strncmp(b, "processor", 9)) s.cpu_threads++; std::fclose(f); }
+#endif
+}
+// Called about twice a second from the overlay's window; every read is a small /proc or sysfs file.
+static void sys_info_sample() {
+    SysInfo& s = g_sys;
+    if (!s.init) sys_info_init();
+#ifdef __linux__
+    using namespace std::chrono;
+    unsigned long long user = 0, nice = 0, sysm = 0, idle = 0, iow = 0, irq = 0, sirq = 0, steal = 0;
+    if (FILE* f = std::fopen("/proc/stat", "r")) {
+        if (std::fscanf(f, "cpu %llu %llu %llu %llu %llu %llu %llu %llu", &user, &nice, &sysm, &idle, &iow, &irq, &sirq, &steal) >= 4) {
+            const unsigned long long idle_all = idle + iow, total = user + nice + sysm + idle + iow + irq + sirq + steal;
+            if (s.last_total && total > s.last_total) s.cpu_sys = 100.0 * double((total - s.last_total) - (idle_all - s.last_idle)) / double(total - s.last_total);
+            s.last_idle = idle_all; s.last_total = total;
+        }
+        std::fclose(f);
+    }
+    if (FILE* f = std::fopen("/proc/self/stat", "r")) {
+        char buf[1024];
+        size_t n = std::fread(buf, 1, sizeof buf - 1, f);
+        buf[n] = 0;
+        std::fclose(f);
+        const char* p = std::strrchr(buf, ')');   // fields after the command name; utime / stime are the 12th / 13th
+        unsigned long long ut = 0, st = 0;
+        if (p && std::sscanf(p + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu", &ut, &st) == 2) {
+            const auto now = steady_clock::now();
+            const double dt = duration<double>(now - s.last_t).count();
+            const unsigned long long proc = ut + st;
+            if (s.last_proc && dt > 0.05 && proc >= s.last_proc) s.cpu_proc = 100.0 * double(proc - s.last_proc) / (double(sysconf(_SC_CLK_TCK)) * dt);
+            s.last_proc = proc; s.last_t = now;
+        }
+    }
+    {
+        const std::string tot = sys_read_line("/proc/meminfo", "MemTotal"), av = sys_read_line("/proc/meminfo", "MemAvailable");
+        const double t = std::atof(tot.c_str()) / (1024.0 * 1024.0), a = std::atof(av.c_str()) / (1024.0 * 1024.0);   // kB -> GB
+        if (t > 0) { s.ram_total_gb = t; s.ram_used_gb = t - a; }
+    }
+    const std::string d = sys_amdgpu_dir();
+    if (!d.empty()) {
+        const long long used = sys_read_ll(d + "mem_info_vram_used"), tot = sys_read_ll(d + "mem_info_vram_total");
+        if (tot > 0 && used >= 0) { s.vram_total_gb = double(tot) / 1073741824.0; s.vram_used_gb = double(used) / 1073741824.0; }
+        s.gpu_busy = int(sys_read_ll(d + "gpu_busy_percent"));
+    }
+#endif
+    if (s.vram_total_gb < 0 && s.have_nvx) {
+        GLint total_kb = 0, avail_kb = 0;
+        glGetIntegerv(0x9048, &total_kb);   // GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX
+        glGetIntegerv(0x9049, &avail_kb);   // GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX
+        if (total_kb > 0) { s.vram_total_gb = total_kb / 1048576.0; s.vram_used_gb = (total_kb - avail_kb) / 1048576.0; }
+        glGetError();
+    } else if (s.vram_total_gb < 0 && s.have_ati) {
+        GLint v[4] = {0, 0, 0, 0};
+        glGetIntegerv(0x87FB, v);   // TEXTURE_FREE_MEMORY_ATI: free KB in the pool (total is not exposed)
+        if (v[0] > 0) s.vram_used_gb = -2, s.vram_total_gb = v[0] / 1048576.0;   // -2 = "free" only
+        glGetError();
+    }
+}
+static std::string sys_info_text() {
+    const SysInfo& s = g_sys;
+    char b[256];
+    std::string r;
+    auto clip = [](std::string v, size_t n) { if (v.size() > n) v.resize(n); return v; };
+    auto pct = [&](double v) { if (v < 0) return std::string("n/a"); std::snprintf(b, sizeof b, "%.0f%%", v); return std::string(b); };
+    r += "CPU: " + clip(s.cpu_model.empty() ? "n/a" : s.cpu_model, 48);
+    if (s.cpu_threads) r += " (" + std::to_string(s.cpu_threads) + " threads)";
+    r += "  |  system " + pct(s.cpu_sys) + "  game " + pct(s.cpu_proc) + " of one core\n";
+    r += "GPU: " + clip(s.gpu_model.empty() ? "n/a" : s.gpu_model, 56) + "  |  load " + (s.gpu_busy >= 0 ? pct(double(s.gpu_busy)) : std::string("n/a"));
+    if (s.vram_total_gb > 0 && s.vram_used_gb >= 0) { std::snprintf(b, sizeof b, "  |  VRAM %.1f / %.1f GB", s.vram_used_gb, s.vram_total_gb); r += b; }
+    else if (s.vram_used_gb == -2) { std::snprintf(b, sizeof b, "  |  VRAM %.1f GB free", s.vram_total_gb); r += b; }
+    else r += "  |  VRAM n/a";
+    r += "\nDriver: " + clip(s.gl_version.empty() ? "n/a" : s.gl_version, 80) + "\n";
+    const int mb = perf_rss_mb();
+    if (mb >= 0) r += "RAM: game " + std::to_string(mb) + " MB";
+    else r += "RAM: game n/a";
+    if (s.ram_total_gb > 0) { std::snprintf(b, sizeof b, "  |  system %.1f / %.1f GB", s.ram_used_gb, s.ram_total_gb); r += b; }
+    return r;
+}
+
 static void perf_note_present() {
     if (perf_stats_wanted()) g_perf.presents++;
 }
@@ -3719,10 +3873,9 @@ static void perf_note_flip() {
             int n = std::snprintf(buf, sizeof buf, "%.0f fps  %.1f ms  worst %.1f ms  |  present %.0f/s  |  %dx",
                                   fps, g_perf.sum_ms / g_perf.frames, g_perf.worst_ms, g_perf.presents * 1000.0 / win,
                                   ge_draw_render_scale());
-            if (ge_draw_widescreen() && n > 0 && n < int(sizeof buf)) n += std::snprintf(buf + n, sizeof buf - n, " wide");
-            const int mb = perf_rss_mb();
-            if (mb >= 0 && n > 0 && n < int(sizeof buf)) std::snprintf(buf + n, sizeof buf - n, "  |  %d MB", mb);
-            g_perf.text = buf;
+            if (ge_draw_widescreen() && n > 0 && n < int(sizeof buf)) std::snprintf(buf + n, sizeof buf - n, " wide");
+            sys_info_sample();
+            g_perf.text = std::string(buf) + "\n" + sys_info_text();
             g_perf.dirty = true;
         }
         g_perf.win0 = now;

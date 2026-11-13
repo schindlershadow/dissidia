@@ -1710,13 +1710,22 @@ bool render_hud_box(const std::string& text, int scale, std::vector<uint32_t>& o
     Canvas c(scale);
     c.clear(Canvas::rgba(14, 16, 36));
     Painter P(c);
-    const float size = 9.f, pad = 5.f, text_h = 14.f;
+    std::vector<std::string> lines;   // '\n' starts a new line
+    for (size_t b = 0; b <= text.size();) {
+        const size_t e = text.find('\n', b);
+        lines.push_back(text.substr(b, e == std::string::npos ? std::string::npos : e - b));
+        if (e == std::string::npos) break;
+        b = e + 1;
+    }
+    const float size = 9.f, pad = 5.f, line_h = 11.f, text_h = 14.f + float(lines.size() - 1) * line_h;
     const bool graph = graph_ms && graph_n > 1;
     const float graph_h = graph ? 30.f : 0.f, bh = text_h + (graph ? graph_h + 4.f : 0.f);
-    const float tw = P.text_width(face, size, text);
+    float tw = 0.f;
+    for (const std::string& l : lines) tw = std::max(tw, P.text_width(face, size, l));
     const float bw = std::min(float(SCREEN_W) - 8.f, std::ceil(tw + 2.f * pad));
     P.hline(0.f, bw, bh - 0.5f, 1.f, rgb(120, 128, 200, 0.9f));   // thin accent line along the bottom edge
-    P.text(face, size, pad, 10.5f, text, rgb(255, 255, 255));
+    for (size_t i = 0; i < lines.size(); ++i)
+        P.text(face, size, pad, 10.5f + float(i) * line_h, lines[i], i == 0 ? rgb(255, 255, 255) : rgb(200, 206, 235));
     if (graph) {
         // Frame-time graph, newest sample on the right: one bar per flip, 0..50 ms top to bottom-up, green up to
         // 16.7 ms, yellow up to 33.3 ms, red above. Guide lines at 16.7 and 33.3 ms.
