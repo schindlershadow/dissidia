@@ -13,6 +13,7 @@
 #include <SDL.h>
 #include "psp_gl.h"
 #include "psp_touch.h"
+#include "psp_platform.h"
 void gl_stats_install();
 #include <csignal>
 #include <cstdio>
@@ -434,7 +435,7 @@ static void handle_sdl_event(const SDL_Event& ev) {
             static int seq = 0;
             ++seq;
             char path[64]; std::snprintf(path, sizeof path, "rtdump_%d.tga", seq);
-            setenv("PSPRECOMP_SHOT_FULL", "1", 0);
+            if (!std::getenv("PSPRECOMP_SHOT_FULL")) psp_plat::setenv_("PSPRECOMP_SHOT_FULL", "1");   // (portable: setenv does not exist on Windows)
             psp_rt_request_dump();
             std::fprintf(stderr, "[RTDUMP] requested #%d (F9), screenshot %s\n", seq, path);
             std::thread([p = std::string(path)] { ge_draw_capture_screenshot(p.c_str(), 5000); }).detach();   // served by this thread's next loop pass
