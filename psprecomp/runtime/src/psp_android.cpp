@@ -4,7 +4,11 @@
 // data (disc0/, ms0/, mods, voice_jp ...: the same work folder the desktop uses) is copied by the player to the app's external
 // storage folder, <ExternalStorage>/Android/data/org.psprecomp.game/files/game, with adb or a file manager. Nothing of the game is in the APK.
 #ifdef __ANDROID__
+#include <arpa/inet.h>
 #include <dirent.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/system_properties.h>
 #include "psp_android.h"
 
 #include <SDL.h>
@@ -14,6 +18,9 @@
 #include <pthread.h>
 #include <unistd.h>
 
+#include <cerrno>
+#include <vector>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -99,6 +106,61 @@ std::string psp_android_workdir() {
     return std::string(ext ? ext : "/sdcard") + "/game";
 }
 
+
+// Developer side-load for a user that adb cannot write to (a secondary Android user: the shell's storage is always user 0). With the system
+// property debug.psprecomp.import_port set (adb shell setprop) and `adb reverse tcp:<port> tcp:<port>` to a host script (tools/android_sideload.py),
+// the app fetches the game's files itself while it runs as that user. Stream: "F <size> <relative path>\n" + bytes per file, "E\n" at the end.
+static bool read_line(int fd, std::string& out) {
+    out.clear();
+    char c;
+    while (true) { const ssize_t n = recv(fd, &c, 1, 0); if (n <= 0) return false; if (c == '\n') return true; out.push_back(c); if (out.size() > 4096) return false; }
+}
+static bool mkdirs(const std::string& path) {
+    for (size_t i = 1; i <= path.size(); ++i)
+        if (i == path.size() || path[i] == '/') { const std::string d = path.substr(0, i); if (mkdir(d.c_str(), 0775) != 0 && errno != EEXIST) return false; }
+    return true;
+}
+static bool import_from_host(const std::string& wd) {
+    char val[PROP_VALUE_MAX] = {0};
+    __system_property_get("debug.psprecomp.import_port", val);
+    const int port = std::atoi(val);
+    if (port <= 0) return false;
+    const int fd = socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in sa{}; sa.sin_family = AF_INET; sa.sin_port = htons((uint16_t)port); inet_pton(AF_INET, "127.0.0.1", &sa.sin_addr);
+    if (fd < 0 || connect(fd, reinterpret_cast<sockaddr*>(&sa), sizeof sa) != 0) { std::fprintf(stderr, "[ANDROID] side-load: nothing listening on 127.0.0.1:%d\n", port); if (fd >= 0) close(fd); return false; }
+    std::fprintf(stderr, "[ANDROID] side-load: receiving the game's files into %s\n", wd.c_str());
+    mkdirs(wd);
+    if (FILE* mk = std::fopen((wd + "/.importing").c_str(), "w")) std::fclose(mk);   // removed when the transfer is complete: a leftover marker means a partial copy
+    std::string line; std::vector<char> buf(1 << 20);
+    long long total = 0, next_log = 100ll << 20; int files = 0;
+    bool ok = false;
+    while (read_line(fd, line)) {
+        if (line == "E") { ok = true; break; }
+        long long size = 0; int off = 0;
+        if (std::sscanf(line.c_str(), "F %lld %n", &size, &off) < 1 || off <= 0) break;
+        const std::string rel = line.substr((size_t)off);
+        if (rel.empty() || rel[0] == '/' || rel.find("..") != std::string::npos) { std::fprintf(stderr, "[ANDROID] side-load: refused path %s\n", rel.c_str()); break; }
+        const std::string full = wd + "/" + rel;
+        mkdirs(full.substr(0, full.rfind('/')));
+        FILE* f = std::fopen(full.c_str(), "wb");
+        long long left = size;
+        while (left > 0) {
+            const ssize_t n = recv(fd, buf.data(), (size_t)std::min<long long>(left, (long long)buf.size()), 0);
+            if (n <= 0) { left = -1; break; }
+            if (f) std::fwrite(buf.data(), 1, (size_t)n, f);
+            left -= n; total += n;
+            if (total >= next_log) { std::fprintf(stderr, "[ANDROID] side-load: %lld MB, %d files\n", total >> 20, files); next_log += 100ll << 20; }
+        }
+        if (f) std::fclose(f);
+        if (left != 0) break;
+        ++files;
+    }
+    close(fd);
+    if (ok) std::remove((wd + "/.importing").c_str());
+    std::fprintf(stderr, "[ANDROID] side-load: %s (%d files, %lld MB)\n", ok ? "done" : "FAILED", files, total >> 20);
+    return ok;
+}
+
 void psp_android_init() {
     const std::string wd = psp_android_workdir();
     // stderr -> logcat (tag psprecomp) and <workdir>/last_run.log, like the desktop launcher's log
@@ -123,8 +185,10 @@ void psp_android_init() {
     std::fprintf(stderr, "[ANDROID] work folder %s\n", wd.c_str());
     // No game data (a user that never had the files copied, a wrong folder): say so, instead of a black screen.
     const char* d0 = std::getenv("PSPRECOMP_DISC0");
-    bool have = false;
-    if (d0) { DIR* dir = opendir(d0); if (dir) { while (dirent* e = readdir(dir)) if (std::strcmp(e->d_name, ".") && std::strcmp(e->d_name, "..")) { have = true; break; } closedir(dir); } }
+    auto has_files = [&]() { bool h = false; DIR* dir = d0 ? opendir(d0) : nullptr; if (dir) { while (dirent* e = readdir(dir)) if (std::strcmp(e->d_name, ".") && std::strcmp(e->d_name, "..")) { h = true; break; } closedir(dir); } return h; };
+    const bool partial = access((wd + "/.importing").c_str(), F_OK) == 0;   // an earlier side-load was cut short
+    bool have = has_files() && !partial;
+    if (!have && import_from_host(wd)) have = has_files();
     if (!have) {
         const std::string msg = std::string("The game's files were not found.\n\nReinstall the game with the installer to copy them to:\n") + wd;
         std::fprintf(stderr, "[ANDROID] ERROR: %s\n", msg.c_str());
