@@ -50,6 +50,8 @@ public:
     bool has_multi_draw() const { return multi_draw_; }
     const std::string& device_name() const { return name_; }
 
+    bool create_surface(std::string* err);
+    bool recreate_surface(std::string* err);   // after VK_ERROR_SURFACE_LOST_KHR (Android window recreated)
     bool create_swapchain(int w, int h, bool vsync, std::string* err);
     void destroy_swapchain();
     const Swapchain& swapchain() const { return sc_; }

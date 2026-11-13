@@ -78,20 +78,7 @@ bool Context::init(const ContextOptions& opt, std::string* err) {
         mi.pfnUserCallback = dbg_cb;
         if (fn) fn(instance_, &mi, nullptr, &messenger_);
     }
-    if (window_) {
-#ifdef __ANDROID__
-        if (using_custom_driver()) {   // SDL's helper uses the system loader's entry points, which do not know this instance
-            SDL_SysWMinfo wm;
-            SDL_VERSION(&wm.version);
-            if (!SDL_GetWindowWMInfo(window_, &wm) || !wm.info.android.window || !vkCreateAndroidSurfaceKHR) return fail("no Android window for the custom driver's surface");
-            VkAndroidSurfaceCreateInfoKHR sci{VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR};
-            sci.window = wm.info.android.window;
-            r = vkCreateAndroidSurfaceKHR(instance_, &sci, nullptr, &surface_);
-            if (r != VK_SUCCESS) return fail("vkCreateAndroidSurfaceKHR failed", r);
-        } else
-#endif
-        if (!SDL_Vulkan_CreateSurface(window_, instance_, &surface_)) return fail("SDL_Vulkan_CreateSurface failed");
-    }
+    if (window_ && !create_surface(err)) return false;
 
     // Pick a device: has a graphics queue (+ present support when windowed), then name/index, then discrete > integrated > other.
     uint32_t nd = 0; vkEnumeratePhysicalDevices(instance_, &nd, nullptr);
@@ -191,6 +178,35 @@ bool Context::init(const ContextOptions& opt, std::string* err) {
                  VK_VERSION_MINOR(props_.apiVersion), VK_VERSION_PATCH(props_.apiVersion),
                  using_custom_driver() ? " [custom driver]" : "", ray_query_ ? " [ray query]" : "");
     return true;
+}
+
+bool Context::create_surface(std::string* err) {
+    auto fail = [&](const char* what, VkResult r = VK_SUCCESS) { if (err) *err = std::string(what) + (r ? " (" + std::to_string(r) + ")" : ""); return false; };
+    VkResult r = VK_SUCCESS;
+#ifdef __ANDROID__
+    if (using_custom_driver()) {   // SDL's helper uses the system loader's entry points, which do not know this instance
+        SDL_SysWMinfo wm;
+        SDL_VERSION(&wm.version);
+        if (!SDL_GetWindowWMInfo(window_, &wm) || !wm.info.android.window || !vkCreateAndroidSurfaceKHR) return fail("no Android window for the custom driver's surface");
+        VkAndroidSurfaceCreateInfoKHR sci{VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR};
+        sci.window = wm.info.android.window;
+        r = vkCreateAndroidSurfaceKHR(instance_, &sci, nullptr, &surface_);
+        if (r != VK_SUCCESS) return fail("vkCreateAndroidSurfaceKHR failed", r);
+        return true;
+    }
+#endif
+    if (!SDL_Vulkan_CreateSurface(window_, instance_, &surface_)) return fail("SDL_Vulkan_CreateSurface failed");
+    return true;
+}
+
+bool Context::recreate_surface(std::string* err) {
+    // Android destroys the native window when the app is paused (sleep, app switch) and hands SDL a new one on resume: the old
+    // VkSurfaceKHR is lost for good (VK_ERROR_SURFACE_LOST_KHR). Drop the swapchain and surface and build them again.
+    if (!window_) { if (err) *err = "no window"; return false; }
+    if (dev_) vkDeviceWaitIdle(dev_);
+    destroy_swapchain();
+    if (surface_) { vkDestroySurfaceKHR(instance_, surface_, nullptr); surface_ = VK_NULL_HANDLE; }
+    return create_surface(err);
 }
 
 bool Context::create_swapchain(int w, int h, bool vsync, std::string* err) {
