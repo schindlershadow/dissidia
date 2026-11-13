@@ -250,6 +250,8 @@ void main() {
     if (u_alpha_double) color.a = min(color.a * 2.0, 1.0);
     if (u_alpha_override > 0.5) color.a = u_alpha_override - 1.0;
 
-    frag_color = color;
+    // fp16 scene targets (HDR Scene) do not clamp like RGBA8: an un-blended draw must still write 0..1, so the LDR look is
+    // unchanged and only blending (additive effects) can take the picture above 1.0.
+    frag_color = clamp(color, 0.0, 1.0);
 }
 )GLSL";

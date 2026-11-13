@@ -16,6 +16,7 @@ static void one(const char* tag, const std::string& defines) {
     if (!compile_to_spirv(Stage::Fragment, p.fragment, &f, &err)) { std::printf("FAIL %s fragment: %s\n", tag, err.c_str()); fails++; }
     std::printf("%s: vertex %zu words, fragment %zu words, ubo %u bytes, %zu uniforms\n", tag, v.size(), f.size(), p.ubo_size, p.uniforms.size());
     CHECK(!v.empty() && v[0] == 0x07230203u);
+    CHECK(p.fragment.find("clamp(color, 0.0, 1.0)") != std::string::npos);   // HDR Scene: un-blended draws stay 0..1 on fp16 targets
     CHECK(p.samplers.size() == 1 && p.samplers[0] == "u_texture");
     const UniformMember* w = p.find("u_world"); const UniformMember* lt = p.find("u_lt"); const UniformMember* b = p.find("u_bones");
     CHECK(w && w->offset % 16 == 0 && w->size == 64);

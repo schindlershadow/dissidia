@@ -34,6 +34,9 @@ bool psp_hdr_wanted();
 void psp_hdr_set_wanted(bool on);
 bool psp_hdr_available();
 int psp_hdr_encoding();
+bool psp_hdr_scene_wanted();     // HDR Scene (PSPRECOMP_HDR_SCENE, default off): render the scene in fp16 so additive effects keep values above 1.0
+void psp_hdr_scene_set_wanted(bool on);
+bool psp_hdr_scene_live();       // wanted AND an HDR swapchain is live (Vulkan only): the scene targets are fp16
 int psp_hdr_peak();              // nits the brightest expanded highlight reaches, 400..4000; PSPRECOMP_HDR_PEAK (default 1000)
 void psp_hdr_set_peak(int nits);
 int psp_hdr_paper();             // nits SDR white is shown at, 80..1000; PSPRECOMP_HDR_PAPER (default 203, the BT.2408 reference)

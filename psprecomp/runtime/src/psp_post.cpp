@@ -179,6 +179,7 @@ GLuint g_sm_prog[3] = {0, 0, 0};
 GLuint g_sm_edges = 0, g_sm_blend = 0, g_sm_out = 0, g_sm_area = 0, g_sm_search = 0;
 GLuint g_sm_fbo[3] = {0, 0, 0};
 int g_sm_w = 0, g_sm_h = 0;
+bool g_sm_hdr = false;
 bool g_sm_failed = false;
 
 const char* const k_sm_main[3] = {
@@ -269,11 +270,13 @@ bool ensure_smaa(int w, int h) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         std::fprintf(stderr, "[POST] SMAA ready\n");
     }
-    if (g_sm_w != w || g_sm_h != h) {
+    const bool want_hdr = psp_hdr_scene_live();
+    if (g_sm_w != w || g_sm_h != h || g_sm_hdr != want_hdr) {
+        g_sm_hdr = want_hdr;   // fp16 intermediates keep the scene's values above 1.0 through the AA pass
         GLuint* texs[3] = {&g_sm_edges, &g_sm_blend, &g_sm_out};
         for (int i = 0; i < 3; ++i) {
             if (*texs[i]) glDeleteTextures(1, texs[i]);
-            make_sm_tex(*texs[i], GL_RGBA8, GL_RGBA, w, h, nullptr);
+            make_sm_tex(*texs[i], g_sm_hdr ? GL_RGBA16F : GL_RGBA8, GL_RGBA, w, h, nullptr);
             if (!g_sm_fbo[i]) glGenFramebuffers(1, &g_sm_fbo[i]);
             glBindFramebuffer(GL_FRAMEBUFFER, g_sm_fbo[i]);
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, *texs[i], 0);
@@ -317,7 +320,7 @@ GLuint smaa_run(GLuint tex, int w, int h) {
 
 // ---- Final pass: colour grade + HDR ------------------------------------------------------------------------------------
 
-std::atomic<int> g_sat{-1}, g_bright{-1}, g_contrast{-1}, g_hdr{-1}, g_peak{-1}, g_paper{-1}, g_hboost{-1}, g_hgamut{-1};
+std::atomic<int> g_sat{-1}, g_bright{-1}, g_contrast{-1}, g_hdr{-1}, g_peak{-1}, g_paper{-1}, g_hboost{-1}, g_hgamut{-1}, g_hscene{-1};
 
 int env_clamped(const char* name, int dflt, int lo, int hi) {
     int v = env_int(name, dflt);
@@ -339,6 +342,7 @@ uniform float u_scrgb_nits;  // nits that scRGB 1.0 stands for: 80 per the spec 
 uniform float u_boost;       // 0..1 how much of the headroom small highlights may use
 uniform float u_gamut;       // 0..1 how far the picture is stretched from sRGB towards the Display-P3 primaries
 uniform vec2 u_texel;        // one window pixel in uv
+uniform int u_hscene;        // 1 = the scene copies are fp16 and may hold real values above 1.0 (HDR Scene): keep them
 
 vec3 srgb_to_lin(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c)); }
 
@@ -355,10 +359,13 @@ void main() {
     // Pixels the overlays changed (HUD, menus, dialogs) stay at SDR level; only the 3D picture is expanded.
     const bool scene_px = max(abs(c.r - sc.r), max(abs(c.g - sc.g), abs(c.b - sc.b))) < (2.5 / 255.0);
     // Grade, in display (gamma) space.
-    c = clamp((c - 0.5) * u_contrast + 0.5, 0.0, 1.0);
-    c = pow(c, vec3(1.0 / u_bright));
+    // With HDR Scene on, values above 1.0 are real light (additive effects) and are kept (extended sRGB); the grade
+    // never lifts a value that was at or below 1.0 above it, so the LDR look is unchanged.
+    const float hi = u_hscene != 0 ? 64.0 : 1.0;
+    c = clamp((c - 0.5) * u_contrast + 0.5, 0.0, hi);
+    c = pow(max(c, vec3(0.0)), vec3(1.0 / u_bright));
     float l = dot(c, vec3(0.299, 0.587, 0.114));
-    c = clamp(mix(vec3(l), c, u_sat), 0.0, 1.0);
+    c = clamp(mix(vec3(l), c, u_sat), 0.0, hi);
     if (u_enc == 0) { o_color = vec4(c, 1.0); return; }
     // HDR. The game is SDR: linearise, then lift only the bright end (glows, spell flashes, the sky, specular) so that
     // SDR white sits at paper white and the brightest pixels reach the display's peak.
@@ -390,6 +397,7 @@ void main() {
     if (u_enc == 1) lin = mix(lin, p3_to_709 * lin, u_gamut);
     else lin = mix(srgb_to_2020 * lin, p3_to_2020 * lin, u_gamut);
     vec3 nits = lin * u_paper * gain;
+    if (u_hscene != 0) nits *= min(1.0, u_peak / max(max(nits.r, max(nits.g, nits.b)), 1.0));   // real HDR data stops at the display peak
     if (u_enc == 1) o_color = vec4(nits / u_scrgb_nits, 1.0);   // scRGB: 1.0 = 80 nits (Android: 1.0 = SDR white, so paper white is the system's)
     else o_color = vec4(pq_encode(nits), 1.0);
 }
@@ -398,7 +406,7 @@ void main() {
 GLuint g_fprog = 0, g_scene_tex = 0, g_comp_tex = 0, g_scene_fbo = 0, g_comp_fbo = 0;
 int g_ftw = 0, g_fth = 0;
 bool g_ffailed = false, g_scene_valid = false;
-GLint fu_scene = -1, fu_comp = -1, fu_sat = -1, fu_bright = -1, fu_contrast = -1, fu_enc = -1, fu_peak = -1, fu_paper = -1, fu_boost = -1, fu_texel = -1, fu_gamut = -1, fu_scrgb = -1;
+GLint fu_scene = -1, fu_comp = -1, fu_sat = -1, fu_bright = -1, fu_contrast = -1, fu_enc = -1, fu_peak = -1, fu_paper = -1, fu_boost = -1, fu_texel = -1, fu_gamut = -1, fu_scrgb = -1, fu_hscene = -1;
 
 bool ensure_final_program() {
     if (g_fprog) return true;
@@ -416,15 +424,18 @@ bool ensure_final_program() {
     fu_sat = glGetUniformLocation(p, "u_sat"); fu_bright = glGetUniformLocation(p, "u_bright");
     fu_contrast = glGetUniformLocation(p, "u_contrast"); fu_enc = glGetUniformLocation(p, "u_enc");
     fu_peak = glGetUniformLocation(p, "u_peak"); fu_paper = glGetUniformLocation(p, "u_paper");
-    fu_boost = glGetUniformLocation(p, "u_boost"); fu_scrgb = glGetUniformLocation(p, "u_scrgb_nits"); fu_gamut = glGetUniformLocation(p, "u_gamut"); fu_texel = glGetUniformLocation(p, "u_texel");
+    fu_boost = glGetUniformLocation(p, "u_boost"); fu_scrgb = glGetUniformLocation(p, "u_scrgb_nits"); fu_gamut = glGetUniformLocation(p, "u_gamut"); fu_texel = glGetUniformLocation(p, "u_texel"); fu_hscene = glGetUniformLocation(p, "u_hscene");
     std::fprintf(stderr, "[POST] final pass ready\n");
     return true;
 }
 
+bool g_copy_hdr = false;   // the scene / window copies are fp16 (HDR Scene on): values above 1.0 survive to the final pass
+
 void make_copy_target(GLuint& tex, GLuint& fbo, int w, int h) {
     if (!tex) glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    if (g_copy_hdr) glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+    else glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -435,7 +446,9 @@ void make_copy_target(GLuint& tex, GLuint& fbo, int w, int h) {
 }
 
 bool ensure_copy_targets(int w, int h) {
-    if (g_scene_tex && g_ftw == w && g_fth == h) return true;
+    const bool hdr = psp_hdr_scene_live();
+    if (g_scene_tex && g_ftw == w && g_fth == h && g_copy_hdr == hdr) return true;
+    g_copy_hdr = hdr;
     make_copy_target(g_scene_tex, g_scene_fbo, w, h);
     make_copy_target(g_comp_tex, g_comp_fbo, w, h);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -475,6 +488,13 @@ bool psp_hdr_wanted() {
 void psp_hdr_set_wanted(bool on) { g_hdr.store(on ? 1 : 0); if (g_psp_hdr.set_wanted) g_psp_hdr.set_wanted(on); }
 bool psp_hdr_available() { return g_psp_hdr.available && g_psp_hdr.available(); }
 int psp_hdr_encoding() { return g_psp_hdr.encoding ? g_psp_hdr.encoding() : 0; }
+bool psp_hdr_scene_wanted() {
+    int v = g_hscene.load();
+    if (v < 0) { v = env_int("PSPRECOMP_HDR_SCENE", 0) ? 1 : 0; g_hscene.store(v); }
+    return v != 0;
+}
+void psp_hdr_scene_set_wanted(bool on) { g_hscene.store(on ? 1 : 0); }
+bool psp_hdr_scene_live() { return psp_hdr_scene_wanted() && psp_hdr_encoding() != 0; }
 int psp_hdr_peak() {
     int v = g_peak.load();
     if (v < 0) { v = env_clamped("PSPRECOMP_HDR_PEAK", 1000, 400, 4000); g_peak.store(v); }
@@ -539,6 +559,7 @@ bool psp_post_final(int dw, int dh) {
     glUniform1f(fu_bright, psp_post_brightness() / 100.f);
     glUniform1f(fu_contrast, psp_post_contrast() / 100.f);
     glUniform1i(fu_enc, enc);
+    glUniform1i(fu_hscene, g_copy_hdr ? 1 : 0);
     glUniform1f(fu_peak, float(psp_hdr_peak()));
     glUniform1f(fu_paper, float(psp_hdr_paper()));
 #ifdef __ANDROID__

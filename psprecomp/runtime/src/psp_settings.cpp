@@ -143,7 +143,7 @@ bool updates_choice();
 bool texpack_choice();
 bool texpack_at_start();
 
-enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_RENDERER, ROW_AA, ROW_SHARP, ROW_BRIGHT, ROW_CONTRAST, ROW_SAT, ROW_HDR, ROW_HDR_BOOST, ROW_HDR_GAMUT, ROW_HDR_PEAK, ROW_HDR_PAPER, ROW_SSAO, ROW_CONTACT, ROW_RT, ROW_RT_SOFT, ROW_RT_REFL, ROW_SSR, ROW_ANISO, ROW_UPSCALE, ROW_VOICE, ROW_TEXPACK, ROW_TOUCH, ROW_TOUCH_EDIT, ROW_UPDATES, ROW_QUIT,
+enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_RENDERER, ROW_AA, ROW_SHARP, ROW_BRIGHT, ROW_CONTRAST, ROW_SAT, ROW_HDR, ROW_HDR_BOOST, ROW_HDR_GAMUT, ROW_HDR_PEAK, ROW_HDR_PAPER, ROW_HDR_SCENE, ROW_SSAO, ROW_CONTACT, ROW_RT, ROW_RT_SOFT, ROW_RT_REFL, ROW_SSR, ROW_ANISO, ROW_UPSCALE, ROW_VOICE, ROW_TEXPACK, ROW_TOUCH, ROW_TOUCH_EDIT, ROW_UPDATES, ROW_QUIT,
            ROW_NET_MODE, ROW_NET_SERVER, ROW_NET_ROOM, ROW_NET_PEERS, ROW_NET_STATUS,   // Network page
            ROW_CLOUD_PROVIDER, ROW_CLOUD_FOLDER, ROW_CLOUD_URL, ROW_CLOUD_USER, ROW_CLOUD_PASS, ROW_CLOUD_GOOGLE,
            ROW_CLOUD_AUTO, ROW_CLOUD_REPLAYS, ROW_CLOUD_NOW, ROW_CLOUD_STATUS,   // Cloud page
@@ -173,6 +173,7 @@ bool g_dirty = true;
 int g_drawn_scale = 0;
 int64_t g_last_present = 0;
 int g_pending_rs = 0;                  // render scale waiting for the game to park
+bool g_pending_scene = false;         // HDR Scene toggled: reformat the scene targets once the game has parked
 int g_pending_wide = -1;               // widescreen (0 / 1) waiting for the game to park, -1 = none
 
 // Display: fullscreen or a window. Window sizes: k x 480x272, or the Steam Deck's 1280 x 800 (k = K_DECK; the
@@ -747,6 +748,17 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
                            : "HDR highlights (PSPRECOMP_HDR_BOOST)\nHow far small bright features (glows, sparks, spell flashes, specular) rise above paper white, up to the peak brightness. Large bright areas such as menus and white skies are never lifted. Off shows the picture at plain SDR brightness. Saved.";
             break;
         }
+        case ROW_HDR_SCENE: {
+            const bool live_out = psp_hdr_available() && psp_hdr_wanted() && psp_hdr_encoding() != 0;
+            const bool on = psp_hdr_scene_wanted();
+            m.label = "HDR Scene";
+            m.value = on ? (live_out ? "On" : "On (needs HDR)") : "Off";
+            m.disabled = !live_out;   // greyed out, the reason is in the description
+            m.can_dec = live_out && on; m.can_inc = live_out && !on;
+            m.help = live_out ? "HDR scene (PSPRECOMP_HDR_SCENE)\nRenders the picture in 16-bit float instead of 8-bit, so additive effects (glows, spell flashes, beams) keep their real brightness above white instead of clipping, and HDR output shows them as true highlights. Opaque drawing is unchanged. Costs some memory bandwidth. Experimental. Saved."
+                           : "HDR scene: unavailable\nNeeds HDR Output switched on and working (see its row), with the Vulkan renderer.";
+            break;
+        }
         case ROW_HDR_PEAK: case ROW_HDR_PAPER: {
             const bool pk = r == ROW_HDR_PEAK;
             const int v = pk ? psp_hdr_peak() : psp_hdr_paper();
@@ -1092,6 +1104,10 @@ void change(int d) {   // left / right on the selected row
         if (!psp_hdr_available()) break;
         if ((d > 0) != psp_hdr_wanted()) { psp_hdr_set_wanted(d > 0); save("hdr", d > 0 ? "1" : "0"); }
         break;
+    case ROW_HDR_SCENE:
+        if (!psp_hdr_available() || !psp_hdr_wanted() || psp_hdr_encoding() == 0) break;
+        if ((d > 0) != psp_hdr_scene_wanted()) { psp_hdr_scene_set_wanted(d > 0); save("hdr_scene", d > 0 ? "1" : "0"); g_pending_scene = true; }
+        break;
     case ROW_HDR_GAMUT: {
         if (!psp_hdr_available() || !psp_hdr_wanted()) break;
         const int v = std::min(4, std::max(0, psp_hdr_gamut() + d));
@@ -1245,6 +1261,7 @@ void build_rows() {
         g_rows.push_back(ROW_HDR_GAMUT);
         g_rows.push_back(ROW_HDR_PEAK);
         g_rows.push_back(ROW_HDR_PAPER);
+        g_rows.push_back(ROW_HDR_SCENE);
         g_rows.push_back(ROW_SSAO);
         if (!psp_rt_active()) g_rows.push_back(ROW_CONTACT);   // ray-traced shadows replace them
         g_rows.push_back(ROW_RT);
@@ -1418,6 +1435,7 @@ void confirm() {
     case ROW_AA: change(psp_post_aa() >= POST_AA_SMAA ? -int(POST_AA_SMAA) : 1); return;
     case ROW_SHARP: change(psp_post_sharpen() >= 4 ? -4 : 1); return;
     case ROW_HDR: if (psp_hdr_available()) change(psp_hdr_wanted() ? -1 : 1); return;
+    case ROW_HDR_SCENE: if (psp_hdr_available() && psp_hdr_wanted() && psp_hdr_encoding() != 0) change(psp_hdr_scene_wanted() ? -1 : 1); return;
     case ROW_SSAO: change(psp_fx_ssao() >= 3 ? -3 : 1); return;
     case ROW_CONTACT: change(psp_fx_contact() >= 3 ? -3 : 1); return;
     case ROW_RT_SOFT: if (psp_rt_available() && psp_rt_quality() >= 2) change(psp_rt_softness() >= 4 ? -4 : 1); return;
@@ -1507,6 +1525,7 @@ void psp_settings_load_early() {
     if ((it = g_saved.find("contrast")) != g_saved.end()) put("PSPRECOMP_CONTRAST", it->second);
     if ((it = g_saved.find("saturation")) != g_saved.end()) put("PSPRECOMP_SATURATION", it->second);
     if ((it = g_saved.find("hdr")) != g_saved.end()) put("PSPRECOMP_HDR", it->second == "1" ? "1" : "0");
+    if ((it = g_saved.find("hdr_scene")) != g_saved.end()) put("PSPRECOMP_HDR_SCENE", it->second == "1" ? "1" : "0");
     if ((it = g_saved.find("hdr_gamut")) != g_saved.end()) put("PSPRECOMP_HDR_GAMUT", it->second);
     if ((it = g_saved.find("hdr_boost")) != g_saved.end()) put("PSPRECOMP_HDR_BOOST", it->second);
     if ((it = g_saved.find("hdr_peak")) != g_saved.end()) put("PSPRECOMP_HDR_PEAK", it->second);
@@ -1655,6 +1674,12 @@ void psp_settings_tick() {
     if (g_pending_wide >= 0 && g_parked.load() > 0) {
         ge_draw_set_widescreen(g_pending_wide != 0);
         g_pending_wide = -1;
+        g_dirty = true;
+    }
+    // HDR Scene (or HDR output) changed: the scene targets change format once the game has parked.
+    if ((g_pending_scene || ge_draw_scene_format_stale()) && g_parked.load() > 0) {
+        ge_draw_sync_scene_format();
+        g_pending_scene = false;
         g_dirty = true;
     }
     if (g_pending_rs && g_parked.load() > 0) {
