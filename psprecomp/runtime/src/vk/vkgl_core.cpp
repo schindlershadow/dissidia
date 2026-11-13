@@ -1704,8 +1704,28 @@ void core_swap() {
     auto nowms = [] { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
     const double t_acq0 = swap_log ? nowms() : 0;
     swap_t0 = t_acq0;
-    VkResult r = vkAcquireNextImageKHR(gl.dev, c.swapchain().handle, UINT64_MAX, f.acquire_sem, VK_NULL_HANDLE, &idx);
+    VkResult r = c.swapchain().handle ? vkAcquireNextImageKHR(gl.dev, c.swapchain().handle, UINT64_MAX, f.acquire_sem, VK_NULL_HANDLE, &idx) : VK_ERROR_SURFACE_LOST_KHR;
     if (swap_log) acq_ms += nowms() - t_acq0;
+    if (r == VK_ERROR_SURFACE_LOST_KHR || c.surface() == VK_NULL_HANDLE) {
+        // Android destroyed the window (sleep / app switch) and gave SDL a new one: rebuild surface + swapchain, drop this frame's present.
+        std::string err;
+        if (!c.recreate_surface(&err) || dw <= 0 || dh <= 0 || !c.create_swapchain(dw, dh, gl.vsync, &err)) {
+            std::fprintf(stderr, "[VKGL] surface lost, waiting for a window: %s\n", err.c_str());
+            c.destroy_swapchain();
+            submit_now(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, f.fence, false);   // nothing to present: run the frame like measurement mode
+            f.end_serial = gl.serial - 1;
+            f.fence_pending = true;
+            gl.cur = (gl.cur + 1) % kFrames;
+            frame_begin(gl.cur);
+            SDL_Delay(50);   // paused in the background: do not spin
+            return;
+        }
+        std::fprintf(stderr, "[VKGL] surface recreated (%dx%d)\n", dw, dh);
+        if (dw != gl.fb0_w || dh != gl.fb0_h) create_fb0(dw, dh);
+        vkDestroySemaphore(gl.dev, f.acquire_sem, nullptr);
+        VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO}; vkCreateSemaphore(gl.dev, &si, nullptr, &f.acquire_sem);
+        r = vkAcquireNextImageKHR(gl.dev, c.swapchain().handle, UINT64_MAX, f.acquire_sem, VK_NULL_HANDLE, &idx);
+    }
     if (r == VK_ERROR_OUT_OF_DATE_KHR || (dw > 0 && dh > 0 && ((uint32_t)dw != c.swapchain().extent.width || (uint32_t)dh != c.swapchain().extent.height))) {
         // acquire semaphore may be signalled if r == SUBOPTIMAL; recreate everything and skip this present
         vkDeviceWaitIdle(gl.dev);
@@ -1772,7 +1792,8 @@ void core_swap() {
             acq_ms = pres_ms = wait_ms = 0; swaps = 0;
         }
     }
-    if (pr != VK_SUCCESS && pr != VK_SUBOPTIMAL_KHR && pr != VK_ERROR_OUT_OF_DATE_KHR) std::fprintf(stderr, "[VKGL] present failed (%d)\n", (int)pr);
+    if (pr == VK_ERROR_SURFACE_LOST_KHR) { vkDeviceWaitIdle(gl.dev); c.destroy_swapchain(); }   // rebuilt on the next swap
+    else if (pr != VK_SUCCESS && pr != VK_SUBOPTIMAL_KHR && pr != VK_ERROR_OUT_OF_DATE_KHR) std::fprintf(stderr, "[VKGL] present failed (%d)\n", (int)pr);
     log_stats();
     gl.cur = (gl.cur + 1) % kFrames;
     frame_begin(gl.cur);
