@@ -44,6 +44,7 @@ extern FuncPtr ovl_extra_lookup(uint32_t vaddr);
 bool dissidia_nearest_fighter(const float eye[3], float pos[3]);   // framerate.cpp
 extern uint32_t g_dissidia_cine_actor, g_dissidia_cine_seq;   // roster.cpp (hitcam=)
 extern int g_dissidia_cine_ticks;
+float dissidia_battle_age();
 uint32_t dissidia_player_actor();   // framerate.cpp: the human-controlled fighter
 
 namespace {
@@ -76,6 +77,7 @@ constexpr uint32_t LOCK_TARGET = 0x08B3B280u, ACT_LOCK = 0x5ACu;   // FUN_08B3B2
 FuncPtr g_lock_fn = nullptr;
 double g_first_lock_t = 0, g_force_unlock_s = -1;   // PSPRECOMP_CAM_FORCE_UNLOCK=<s>: test aid, report 'not locked' that long after the first lock
 bool g_ever_locked = false;
+float g_arm_ticks = 600.f;   // PSPRECOMP_CAM_HOLD_ARM=<ticks>: with no lock yet, the hold starts this long after the battle began
 bool g_hold_on = true, g_locked = true, g_lock_known = false, g_holding = false, g_held_valid = false;
 float g_held_p[3] = {0, 0, 0}, g_off[3] = {0, 0, 0};
 bool g_held_p_set = false;
@@ -205,12 +207,12 @@ void dissidia_cam_update(uint8_t* rdram, recomp_context* ctx) {
                 if (g_force_unlock_s >= 0 && g_ever_locked && t - g_first_lock_t > g_force_unlock_s) locked = false;
                 if (g_lock_logs && (locked != g_locked || !g_lock_known)) {
                     g_lock_logs--;
-                    std::fprintf(stderr, "[CAMLOCK] player %08X lock block %08X target %08X -> %s\n", pl, blk, tgt, locked ? "locked" : "NOT locked");
+                    std::fprintf(stderr, "[CAMLOCK] age %.0f player %08X lock block %08X target %08X -> %s\n", dissidia_battle_age(), pl, blk, tgt, locked ? "locked" : "NOT locked");
                 }
             }
         }
         if (g_lock_logs > 0 && !known) { static int n = 0; if (n++ % 60 == 0) std::fprintf(stderr, "[CAMLOCK] unknown: player %08X\n", pl); }
-        if (!g_ever_locked) { locked = true; known = false; }   // intro / before the first lock: the game's camera runs
+        if (!g_ever_locked && dissidia_battle_age() < g_arm_ticks) { locked = true; known = false; }   // intro: the game's camera runs
         if (g_locked && !locked && g_game_valid) {
             g_relock_w = 0.f;   // just lost the lock: freeze the camera where the game had it
             std::memcpy(g_held_e, g_game_e, sizeof g_held_e); std::memcpy(g_held_t, g_game_t, sizeof g_held_t); g_held_valid = true; g_held_p_set = false;
@@ -294,12 +296,12 @@ void dissidia_cam_seteye(uint8_t* rdram, recomp_context* ctx) {
         }
     }
     float pivot[3];
-    if (g_in_update && cam == g_mgr && g_eye_calls == 0 && (g_yaw != 0.f || g_pitch != 0.f) && g_pivot_on && !held_now) {
+    if (g_in_update && cam == g_mgr && g_eye_calls == 0 && (g_yaw != 0.f || g_pitch != 0.f) && g_pivot_on) {
         // Orbit the fighter, not the game's look-at point (which sits in front of him): the whole rig, eye and look-at,
         // turns about a vertical axis through the fighter, and tilts about a horizontal one, so he keeps his place on the
         // screen and can't be lost behind the lens. The pivot is the fighter nearest to the game's own eye.
         const float ev[3] = {rdf(eye), rdf(eye + 4), rdf(eye + 8)};
-        if (dissidia_nearest_fighter(ev, pivot)) {
+        if (held_now ? pl_pos(pivot) : dissidia_nearest_fighter(ev, pivot)) {
             g_eye_calls++;
             pivot[1] += 1.0f;   // about the chest
             float E[3] = {ev[0] - pivot[0], ev[1] - pivot[1], ev[2] - pivot[2]};
@@ -390,6 +392,7 @@ void dissidia_camera_install(uint8_t* rdram) {
     if ((e = std::getenv("PSPRECOMP_CAMX_LOG"))) g_log_left = std::atoi(e);
     g_hold_on = !((e = std::getenv("PSPRECOMP_CAM_UNLOCK_HOLD")) && e[0] == '0');
     if ((e = std::getenv("PSPRECOMP_CAMLOCK_LOG"))) g_lock_logs = std::atoi(e);
+    if ((e = std::getenv("PSPRECOMP_CAM_HOLD_ARM"))) g_arm_ticks = static_cast<float>(std::atof(e));
     if ((e = std::getenv("PSPRECOMP_CAM_FORCE_UNLOCK"))) g_force_unlock_s = std::atof(e);
     g_lock_fn = ovl_battle_lookup(LOCK_TARGET);
     g_orig_update = ovl_battle_lookup(CAM_UPDATE);

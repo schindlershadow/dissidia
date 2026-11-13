@@ -1422,6 +1422,8 @@ bool dissidia_nearest_fighter(const float eye[3], float pos[3]) {
     return found;
 }
 
+float dissidia_battle_age() { return g_battle_age; }   // ticks (1/60 s) since the battle started running (camera.cpp)
+
 // The fighter a person controls (its brain, actor +0x5C4, is in human mode: brain +0x54 != 0), 0 if none is known (camera.cpp).
 uint32_t dissidia_player_actor() {
     static uint32_t last = 0;   // sticky: a lookup that fails for a frame keeps the last answer
