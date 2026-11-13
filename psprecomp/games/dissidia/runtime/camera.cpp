@@ -63,6 +63,8 @@ float g_sens = 1.0f, g_pitch_min = -5.f, g_pitch_max = 80.f, g_recenter = 1.0f, 
 float g_yaw = 0.f, g_pitch = 0.f;   // accumulated offsets (radians)
 double g_last_t = 0;
 int g_log_left = 0;
+float g_final_eye[3] = {0, 0, 0};   // the eye as SetEye leaves it (after our own changes)
+bool g_blocker_on = true;   // PSPRECOMP_CAM_BLOCKER_FADE=0: no fade of walls that block our own camera
 bool g_pivot_on = true, g_invert_x = false;   // orbit the fighter (PSPRECOMP_CAM_PIVOT=0: orbit the game's look-at point, the old way)
 // hitcam= framing (roster.cpp posts the request when a hitact= action starts)
 bool g_cine_on = true;
@@ -253,6 +255,12 @@ void dissidia_cam_update(uint8_t* rdram, recomp_context* ctx) {
     g_in_update = true; g_eye_calls = 0;
     g_orig_update(rdram, ctx);
     g_in_update = false;
+    {   // our own camera (turned view or hold): the game's wall fade used its eye, so fade what blocks ours
+        float P[3];
+        const bool ours = (g_yaw != 0.f || g_pitch != 0.f || g_holding) && g_blocker_on && pl_pos(P);
+        if (ours) P[1] += 1.0f;
+        ge_draw_set_view_blocker(ours, P, g_final_eye);
+    }
     if (set_wide) set_aspect(static_cast<float>(ge_draw_widescreen_width()) / 272.0f);
 }
 
@@ -369,6 +377,7 @@ void dissidia_cam_seteye(uint8_t* rdram, recomp_context* ctx) {
         std::fprintf(stderr, "[CAMX] hold=%d locked=%d known=%d held_valid=%d game_valid=%d yaw=%.2fdeg pitch_off=%.2fdeg yaw_off=%.2fdeg eye=(%.2f,%.2f,%.2f) tgt=(%.2f,%.2f,%.2f)\n",
             (int)held_now, (int)g_locked, (int)g_lock_known, (int)g_held_valid, (int)g_game_valid, std::atan2(ex - tx, ez - tz) * 57.29578f, g_pitch * 57.29578f, g_yaw * 57.29578f, ex, ey, ez, tx, ty, tz);
     }
+    if (g_in_update && cam == g_mgr) for (int i = 0; i < 3; i++) g_final_eye[i] = rdf(eye + 4 * i);
     g_orig_seteye(rdram, ctx);
 }
 
@@ -387,6 +396,7 @@ void dissidia_camera_install(uint8_t* rdram) {
     g_invert = (e = std::getenv("PSPRECOMP_CAM_INVERT_Y")) && e[0] && e[0] != '0';
     if ((e = std::getenv("PSPRECOMP_CAM_PITCH_MIN"))) g_pitch_min = static_cast<float>(std::atof(e));
     if ((e = std::getenv("PSPRECOMP_CAM_PITCH_MAX"))) g_pitch_max = static_cast<float>(std::atof(e));
+    if ((e = std::getenv("PSPRECOMP_CAM_BLOCKER_FADE"))) g_blocker_on = e[0] != '0';
     if ((e = std::getenv("PSPRECOMP_CAM_PIVOT"))) g_pivot_on = e[0] != '0';
     g_invert_x = (e = std::getenv("PSPRECOMP_CAM_INVERT_X")) && e[0] && e[0] != '0';
     if ((e = std::getenv("PSPRECOMP_CAM_RECENTER"))) g_recenter = static_cast<float>(std::atof(e));
