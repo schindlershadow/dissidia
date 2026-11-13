@@ -239,6 +239,8 @@ void osk_push_key(uint32_t cp);   // printable code point; 8 = delete; 13 = done
 // (1..MAX_SCALE) into `out` (w*h, top row first, opaque). Uses its own FreeType
 // instance, so the GL thread can call it while a dialog renders elsewhere.
 bool render_hud_box(const std::string& text, int scale, std::vector<uint32_t>& out, int* w, int* h);
+// Same font, but a transparent RGBA image (white text, soft shadow, alpha = coverage) for the simple fps counter.
+bool render_hud_text(const std::string& text, int scale, std::vector<uint32_t>& out, int* w, int* h);
 
 }  // namespace psp_sddialog
 

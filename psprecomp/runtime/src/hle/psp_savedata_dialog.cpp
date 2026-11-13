@@ -1723,6 +1723,45 @@ bool render_hud_box(const std::string& text, int scale, std::vector<uint32_t>& o
     return true;
 }
 
+bool render_hud_text(const std::string& text, int scale, std::vector<uint32_t>& out, int* w, int* h) {
+    static FT_Library lib = nullptr;
+    static FT_Face face = nullptr;
+    static std::once_flag once;
+    std::call_once(once, [] {
+        if (FT_Init_FreeType(&lib)) { lib = nullptr; return; }
+        if (FT_New_Memory_Face(lib, psp_ui_font_bodyb, FT_Long(psp_ui_font_bodyb_len), 0, &face)) face = nullptr;
+    });
+    if (!face || text.empty()) return false;
+    // The painter blends onto an opaque canvas, so draw white text on black and read the red channel back as
+    // coverage: the result is white text with a soft dark drop shadow on a fully transparent background.
+    Canvas c(scale);
+    c.clear(Canvas::rgba(0, 0, 0));
+    Painter P(c);
+    const float size = 11.f, pad = 2.f, bh = 15.f;
+    const float tw = P.text_width(face, size, text);
+    const float bw = std::min(float(SCREEN_W) - 8.f, std::ceil(tw + 2.f * pad + 1.f));
+    P.text(face, size, pad, 11.5f, text, rgb(255, 255, 255));
+    const int pw = std::min(c.w, int(std::ceil(bw * float(c.scale)))), ph = std::min(c.h, int(std::ceil(bh * float(c.scale))));
+    const int off = std::max(1, c.scale);   // shadow offset: 1 design pixel down and right
+    out.assign(size_t(pw) * size_t(ph), 0);
+    auto cov = [&](int x, int y) -> float {
+        if (x < 0 || y < 0 || x >= pw || y >= ph) return 0.f;
+        return float(c.px[size_t(y) * size_t(c.w) + size_t(x)] & 255) / 255.f;
+    };
+    for (int y = 0; y < ph; ++y)
+        for (int x = 0; x < pw; ++x) {
+            const float fg = cov(x, y), sh = cov(x - off, y - off) * 0.85f;
+            const float a = fg + sh * (1.f - fg);   // text over shadow
+            if (a <= 0.f) continue;
+            const float col = fg / a * 255.f;       // white where the text is, black where only the shadow is
+            const uint8_t cc = uint8_t(std::min(255.f, col) + 0.5f);
+            out[size_t(y) * size_t(pw) + size_t(x)] = Canvas::rgba(cc, cc, cc, uint8_t(std::min(1.f, a) * 255.f + 0.5f));
+        }
+    *w = pw;
+    *h = ph;
+    return true;
+}
+
 }  // namespace psp_sddialog
 
 void psp_sddialog_set_theme(const psp_sddialog::SdTheme* t) {

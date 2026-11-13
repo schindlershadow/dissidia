@@ -1265,6 +1265,7 @@ static int g_ring_mode = 0;
 static int g_sync_mode = 0;
 static bool g_sync_each = false;
 static std::atomic<bool> g_fx_live{true};     // settings menu Debug page: FX shaders on/off (this session)
+static std::atomic<bool> g_fps_counter{false};   // simple transparent fps number (settings menu Display page / PSPRECOMP_FPS_COUNTER=1)
 static std::atomic<bool> g_perf_hud{false};   // settings menu Debug page / PSPRECOMP_PERF_HUD=1
 static Stream g_s2d, g_s3d;
 static std::atomic<bool> g_vb_active{false};   // view blocker fade (ge_draw_set_view_blocker)
@@ -1713,6 +1714,11 @@ void ge_draw_set_sync_mode(int mode) {
 }
 int ge_draw_ring_mode() { return g_ring_mode; }
 bool ge_draw_perf_overlay() { return g_perf_hud.load(); }
+bool ge_draw_fps_counter() { return g_fps_counter.load(); }
+void ge_draw_set_fps_counter(bool on) {
+    g_fps_counter = on;
+    std::fprintf(stderr, "[DRAW] fps counter %s\n", on ? "on" : "off");
+}
 void ge_draw_set_perf_overlay(bool on) {
     g_perf_hud = on;
     std::fprintf(stderr, "[DRAW] performance overlay %s\n", on ? "on" : "off");
@@ -2326,6 +2332,7 @@ void ge_draw_init() {
     if (g_ab) std::fprintf(stderr, "[AB] fast-vs-legacy dual rendering on (compare logged per present)\n");
     g_cpu_xform = std::getenv("PSPRECOMP_GE_CPU3D") != nullptr;
     if (const char* ph = std::getenv("PSPRECOMP_PERF_HUD")) g_perf_hud = ph[0] && ph[0] != '0';
+    if (const char* fc = std::getenv("PSPRECOMP_FPS_COUNTER")) g_fps_counter = fc[0] && fc[0] != '0';
     g_nobatch = std::getenv("PSPRECOMP_GE_NOBATCH") != nullptr;
     if (const char* sm = std::getenv("PSPRECOMP_GE_SYNC")) {
         g_sync_mode = !std::strcmp(sm, "flush") ? 4 : std::atoi(sm);
@@ -3636,45 +3643,80 @@ static void present_dialog_overlay(const PresentRect& pr) {
     glPixelStorei(GL_UNPACK_ROW_LENGTH, prev_row_len);
 }
 
-// Performance overlay: page flips per second, average and worst time between
-// flips over the last half second, drawn as a small box in the top-left corner
-// of the picture. The text is rendered (FreeType, the dialog's font) only when
-// it changes; every present is then a single small blit.
+// Frame statistics behind both on-screen counters. Page flips (what the game calls a frame) are timed; presents are
+// counted separately, so a gap between the two shows the presenter running without the game producing frames.
+//  - fps counter: just the flips per second, a transparent number in the top-right corner.
+//  - performance overlay (debug): flips per second, average / worst / 1%-low-ish frame time, presents per second,
+//    render scale, output size and process memory, in a box in the top-left corner.
+// Text is rendered (FreeType, the dialog's font) only when it changes; every present is then a single small draw.
 struct PerfHud {
     std::chrono::steady_clock::time_point last{}, win0{};
-    int frames = 0;
+    int frames = 0, presents = 0;
     double sum_ms = 0, worst_ms = 0;
-    std::string text;
-    bool dirty = false;
+    std::string text;       // performance overlay line
+    std::string fps_text;   // fps counter
+    bool dirty = false, fps_dirty = false;
 };
 static PerfHud g_perf;
+
+static bool perf_stats_wanted() { return g_perf_hud.load(std::memory_order_relaxed) || g_fps_counter.load(std::memory_order_relaxed); }
+
+// Resident memory of the process in MB, or -1 where it isn't cheap to read.
+static int perf_rss_mb() {
+#ifdef __linux__
+    static FILE* f = nullptr;
+    if (!f) f = std::fopen("/proc/self/statm", "r");
+    if (!f) return -1;
+    std::rewind(f);
+    long total = 0, rss = 0;
+    if (std::fscanf(f, "%ld %ld", &total, &rss) != 2) return -1;
+    std::fflush(f);
+    return int(rss * 4096L / (1024L * 1024L));
+#else
+    return -1;
+#endif
+}
+
+static void perf_note_present() {
+    if (perf_stats_wanted()) g_perf.presents++;
+}
 
 static void perf_note_flip() {
     using namespace std::chrono;
     const auto now = steady_clock::now();
-    if (!g_perf_hud.load(std::memory_order_relaxed)) { g_perf.last = {}; return; }
+    if (!perf_stats_wanted()) { g_perf.last = {}; return; }
     if (g_perf.last.time_since_epoch().count() == 0) {   // first flip after turning it on / a pause
         g_perf = PerfHud{};
         g_perf.last = g_perf.win0 = now;
         g_perf.text = "-- fps";
-        g_perf.dirty = true;
+        g_perf.fps_text = "--";
+        g_perf.dirty = g_perf.fps_dirty = true;
         return;
     }
     const double ms = duration<double, std::milli>(now - g_perf.last).count();
     g_perf.last = now;
-    if (ms > 1000.0) { g_perf.win0 = now; g_perf.frames = 0; g_perf.sum_ms = g_perf.worst_ms = 0; return; }   // paused
+    if (ms > 1000.0) { g_perf.win0 = now; g_perf.frames = g_perf.presents = 0; g_perf.sum_ms = g_perf.worst_ms = 0; return; }   // paused
     g_perf.frames++;
     g_perf.sum_ms += ms;
     g_perf.worst_ms = std::max(g_perf.worst_ms, ms);
     const double win = duration<double, std::milli>(now - g_perf.win0).count();
     if (win >= 500.0 && g_perf.frames > 0) {
-        char buf[96];
-        std::snprintf(buf, sizeof buf, "%.0f fps   %.1f ms   worst %.1f ms", g_perf.frames * 1000.0 / win,
-                      g_perf.sum_ms / g_perf.frames, g_perf.worst_ms);
-        g_perf.text = buf;
-        g_perf.dirty = true;
+        const double fps = g_perf.frames * 1000.0 / win;
+        char buf[160];
+        std::snprintf(buf, sizeof buf, "%.0f", fps);
+        if (g_perf.fps_text != buf) { g_perf.fps_text = buf; g_perf.fps_dirty = true; }
+        if (g_perf_hud.load(std::memory_order_relaxed)) {
+            int n = std::snprintf(buf, sizeof buf, "%.0f fps  %.1f ms  worst %.1f ms  |  present %.0f/s  |  %dx",
+                                  fps, g_perf.sum_ms / g_perf.frames, g_perf.worst_ms, g_perf.presents * 1000.0 / win,
+                                  ge_draw_render_scale());
+            if (ge_draw_widescreen() && n > 0 && n < int(sizeof buf)) n += std::snprintf(buf + n, sizeof buf - n, " wide");
+            const int mb = perf_rss_mb();
+            if (mb >= 0 && n > 0 && n < int(sizeof buf)) std::snprintf(buf + n, sizeof buf - n, "  |  %d MB", mb);
+            g_perf.text = buf;
+            g_perf.dirty = true;
+        }
         g_perf.win0 = now;
-        g_perf.frames = 0;
+        g_perf.frames = g_perf.presents = 0;
         g_perf.sum_ms = g_perf.worst_ms = 0;
     }
 }
@@ -3891,6 +3933,161 @@ static void present_toast(const PresentRect& pr) {
     if (sc) glEnable(GL_SCISSOR_TEST);
 }
 
+// Simple fps counter: the number alone, white with a soft shadow and partly transparent, top-right corner. Unlike the
+// opaque boxes this one has to blend, so it is drawn as a textured quad with its own tiny program (GL state saved and
+// restored, like the touch controls).
+static void present_fps_counter(const PresentRect& pr) {
+    if (!g_fps_counter.load(std::memory_order_relaxed) || g_perf.fps_text.empty()) return;
+    static GLuint tex = 0, prog = 0, vao = 0, vbo = 0;
+    static GLint u_tex = -1, u_alpha = -1;
+    static int tw = 0, th = 0, tscale = 0, alloc_w = 0, alloc_h = 0;
+    static bool failed = false;
+    static std::vector<uint32_t> px;
+    if (failed) return;
+    if (!prog) {
+        const char* vs_body = "in vec2 a_pos; in vec2 a_uv; out vec2 v_uv;\n"
+                              "void main() { v_uv = a_uv; gl_Position = vec4(a_pos, 0.0, 1.0); }\n";
+        const char* fs_body = "in vec2 v_uv; out vec4 o_col; uniform sampler2D u_tex; uniform float u_alpha;\n"
+                              "void main() { vec4 c = texture(u_tex, v_uv); o_col = vec4(c.rgb, c.a * u_alpha); }\n";
+        auto compile = [](GLenum type, const char* body) {
+            const char* src[2] = {PSP_GLSL_VERSION, body};
+            GLuint sh = glCreateShader(type);
+            glShaderSource(sh, 2, src, nullptr);
+            glCompileShader(sh);
+            GLint ok = 0;
+            glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+            if (!ok) { glDeleteShader(sh); return GLuint(0); }
+            return sh;
+        };
+        GLuint vs = compile(GL_VERTEX_SHADER, vs_body), fs = compile(GL_FRAGMENT_SHADER, fs_body);
+        if (!vs || !fs) { failed = true; return; }
+        prog = glCreateProgram();
+        glAttachShader(prog, vs);
+        glAttachShader(prog, fs);
+        glBindAttribLocation(prog, 0, "a_pos");
+        glBindAttribLocation(prog, 1, "a_uv");
+        glLinkProgram(prog);
+        glDeleteShader(vs);
+        glDeleteShader(fs);
+        GLint ok = 0;
+        glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+        if (!ok) { glDeleteProgram(prog); prog = 0; failed = true; return; }
+        u_tex = glGetUniformLocation(prog, "u_tex");
+        u_alpha = glGetUniformLocation(prog, "u_alpha");
+        GLint prev_vao = 0, prev_abo = 0;
+        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prev_vao);
+        glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &prev_abo);
+        glGenVertexArrays(1, &vao);
+        glGenBuffers(1, &vbo);
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+        glBindBuffer(GL_ARRAY_BUFFER, GLuint(prev_abo));
+        glBindVertexArray(GLuint(prev_vao));
+    }
+    const int scale = psp_sddialog::output_scale();
+    GLint prev_tex = 0, prev_active = 0;
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &prev_active);
+    glActiveTexture(GL_TEXTURE0);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev_tex);
+    if (g_perf.fps_dirty || scale != tscale || !tex) {
+        int w = 0, h = 0;
+        if (!psp_sddialog::render_hud_text(g_perf.fps_text, scale, px, &w, &h) || w <= 0 || h <= 0) {
+            glActiveTexture(GLenum(prev_active));
+            return;
+        }
+        GLint prev_align = 4, prev_row_len = 0;
+        glGetIntegerv(GL_UNPACK_ALIGNMENT, &prev_align);
+        glGetIntegerv(GL_UNPACK_ROW_LENGTH, &prev_row_len);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+        if (!tex) {
+            glGenTextures(1, &tex);
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        }
+        glBindTexture(GL_TEXTURE_2D, tex);
+        if (w > alloc_w || h > alloc_h) {   // grow only; the text is drawn from the texture's corner
+            alloc_w = std::max(w, alloc_w); alloc_h = std::max(h, alloc_h);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, alloc_w, alloc_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        }
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        glPixelStorei(GL_UNPACK_ALIGNMENT, prev_align);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, prev_row_len);
+        tw = w; th = h; tscale = scale;
+        g_perf.fps_dirty = false;
+    } else {
+        glBindTexture(GL_TEXTURE_2D, tex);
+    }
+    // Quad in window pixels, top-right of the picture, then to clip space.
+    int dw = 0, dh = 0;
+    psp_gl_drawable_size(psp_get_sdl_window(), &dw, &dh);
+    if (dw <= 0 || dh <= 0) { glBindTexture(GL_TEXTURE_2D, GLuint(prev_tex)); glActiveTexture(GLenum(prev_active)); return; }
+    const float sx = float(pr.x1 - pr.x0) / 480.f, sy = float(std::abs(pr.y1 - pr.y0)) / 272.f;
+    const float right = float(std::max(pr.x0, pr.x1)) - 4.f * sx;
+    const float top = float(std::max(pr.y0, pr.y1)) - 4.f * sy;   // GL origin is bottom-left
+    const float qw = float(tw) / float(tscale) * sx, qh = float(th) / float(tscale) * sy;
+    auto cx = [&](float x) { return x / float(dw) * 2.f - 1.f; };
+    auto cy = [&](float y) { return y / float(dh) * 2.f - 1.f; };
+    const float u1 = float(tw) / float(alloc_w), v1 = float(th) / float(alloc_h);
+    // texture row 0 = canvas top, so v = 0 is the top edge of the quad
+    const float verts[] = {
+        cx(right - qw), cy(top),      0.f, 0.f,
+        cx(right),      cy(top),      u1,  0.f,
+        cx(right - qw), cy(top - qh), 0.f, v1,
+        cx(right),      cy(top - qh), u1,  v1,
+    };
+    GLint prev_prog = 0, prev_vao = 0, prev_abo = 0, prev_vp[4], bsrc_rgb, bdst_rgb, bsrc_a, bdst_a, prev_fbo = 0;
+    GLboolean prev_blend = glIsEnabled(GL_BLEND), prev_depth = glIsEnabled(GL_DEPTH_TEST), prev_cull = glIsEnabled(GL_CULL_FACE),
+              prev_scissor = glIsEnabled(GL_SCISSOR_TEST), prev_stencil = glIsEnabled(GL_STENCIL_TEST);
+    GLboolean cmask[4];
+    glGetIntegerv(GL_CURRENT_PROGRAM, &prev_prog);
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prev_vao);
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &prev_abo);
+    glGetIntegerv(GL_VIEWPORT, prev_vp);
+    glGetIntegerv(GL_BLEND_SRC_RGB, &bsrc_rgb);
+    glGetIntegerv(GL_BLEND_DST_RGB, &bdst_rgb);
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, &bsrc_a);
+    glGetIntegerv(GL_BLEND_DST_ALPHA, &bdst_a);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_fbo);
+    glGetBooleanv(GL_COLOR_WRITEMASK, cmask);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glViewport(0, 0, dw, dh);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE); glDisable(GL_SCISSOR_TEST); glDisable(GL_STENCIL_TEST);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glUseProgram(prog);
+    glUniform1i(u_tex, 0);
+    glUniform1f(u_alpha, 0.65f);   // the transparency
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof verts, verts, GL_STREAM_DRAW);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindBuffer(GL_ARRAY_BUFFER, GLuint(prev_abo));
+    glBindVertexArray(GLuint(prev_vao));
+    glUseProgram(GLuint(prev_prog));
+    glBlendFuncSeparate(bsrc_rgb, bdst_rgb, bsrc_a, bdst_a);
+    if (!prev_blend) glDisable(GL_BLEND);
+    if (prev_depth) glEnable(GL_DEPTH_TEST);
+    if (prev_cull) glEnable(GL_CULL_FACE);
+    if (prev_scissor) glEnable(GL_SCISSOR_TEST);
+    if (prev_stencil) glEnable(GL_STENCIL_TEST);
+    glColorMask(cmask[0], cmask[1], cmask[2], cmask[3]);
+    glViewport(prev_vp[0], prev_vp[1], prev_vp[2], prev_vp[3]);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, GLuint(prev_fbo));
+    glBindTexture(GL_TEXTURE_2D, GLuint(prev_tex));
+    glActiveTexture(GLenum(prev_active));
+    glc::invalidate();
+    ge_shader_note_external_program();
+}
+
 static void present_perf_hud(const PresentRect& pr) {
     if (!g_perf_hud.load(std::memory_order_relaxed) || g_perf.text.empty()) return;
     static GLuint tex = 0, fbo = 0;
@@ -4066,13 +4263,14 @@ static void present_blit(GLuint fbo, const char* why = "flip") {
     if (!post_done)
     glBlitFramebuffer(0, 0, spw * srs, 272 * srs, pr.x0, pr.y0, pr.x1, pr.y1,
                       GL_COLOR_BUFFER_BIT, pf);
+    perf_note_present();
     if (!std::strcmp(why, "flip")) perf_note_flip();
     if (psp_post_final_active()) {   // copy of the scene for the final pass (grade / HDR), taken before the HUD and overlays
         int sdw = 0, sdh = 0;
         psp_gl_drawable_size(window, &sdw, &sdh);
         psp_post_scene_snapshot(sdw, sdh);
     }
-    if (std::strcmp(why, "menu") != 0) { present_perf_hud(pr); present_toast(pr); present_flash(pr); }
+    if (std::strcmp(why, "menu") != 0) { present_perf_hud(pr); present_fps_counter(pr); present_toast(pr); present_flash(pr); }
     present_dialog_overlay(cpr);
     if (psp_touch_enabled()) {   // on-screen controls over the whole window (own program/VAO: the GE's cached GL state is reset after)
         int tw = 0, th = 0;
