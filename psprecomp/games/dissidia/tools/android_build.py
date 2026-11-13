@@ -251,16 +251,20 @@ def device_build(adir, work, jobs, say, tag, die):
     objs = [obj_of(s) for s, _ in srcs if s != main_cpp]
     cl = lib + "/%d" % api
     dl = deps + "/lib"
+    # what the core needs besides SDL2 / FreeType / zlib: the Android part lists it (android/build_deps.py link.txt); an older part without the file is the plain set
+    link_txt = os.path.join(adir, "deps", "link.txt")
+    names = [l.strip() for l in open(link_txt)] if os.path.isfile(link_txt) else ["libavcodec.a", "libavutil.a", "-lm"]
+    extra_libs = [n if n.startswith("-l") else dl + "/" + n for n in names if n]
     libmain = os.path.join(base, "build", "libmain.so")
     os.makedirs(os.path.dirname(libmain), exist_ok=True)
     cmd = [zig, "ld.lld", "-m", "aarch64linux", "-shared", "-z", "noexecstack", "-z", "relro", "-z", "now", "-z", "max-page-size=16384",
            "--hash-style=gnu", "--eh-frame-hdr", "--build-id=sha1", "--gc-sections", "--threads=1", "-s", "--no-rosegment", "--no-undefined",
            "--fatal-warnings", "-soname", "libmain.so", "-o", libmain, cl + "/crtbegin_so.o", obj_of(main_cpp),
            "--start-group", os.path.join(adir, "sdk", "lib", "libpsprecomp_core.a")] + objs + ["--end-group",
-           dl + "/libSDL2.so", dl + "/libfreetype.a", cl + "/libz.so", "-L" + cl, "-L" + lib, "-lGLESv3", "-llog", "-landroid",
-           dl + "/libavcodec.a", dl + "/libavutil.a", "-lm", lib + "/libc++_static.a", lib + "/libc++abi.a",
+           dl + "/libSDL2.so", dl + "/libfreetype.a", cl + "/libz.so", "-L" + cl, "-L" + lib, "-lGLESv3", "-llog", "-landroid"] + extra_libs + [
+           lib + "/libc++_static.a", lib + "/libc++abi.a",
            rt + "/libunwind.a", rt + "/libatomic.a", "-lm", "-ldl", "-lc", rt + "/libclang_rt.builtins-aarch64-android.a", cl + "/crtend_so.o"]
     r = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
     if r.returncode != 0:
-        die("linking failed:\n" + r.stdout[-2000:])
+        die("linking failed:\n" + "\n".join(l[:300] for l in r.stdout.splitlines()[:12]))
     return libmain
