@@ -3750,7 +3750,7 @@ static float vb_fade_factor(uint8_t* rdram, const GeState& st, int n, int prim) 
             const float o[3] = {eye[0] - dir[0] / dl * back, eye[1] - dir[1] / dl * back, eye[2] - dir[2] / dl * back};
             const float d[3] = {tg[0] - o[0], tg[1] - o[1], tg[2] - o[2]};
             const float len = dl + back;
-            const float tmax = std::max(0.f, 1.f - 1.2f / len);   // stop short of the player: whatever he stands against does not fade
+            const float tmax = std::max(0.f, 1.f - 0.5f / len);   // stop a body's width short of the player: only what he is touching does not fade (a wall a step in front of him must)
             float t0 = 0.f, t1 = tmax;
             for (int k = 0; k < 3 && t0 <= t1; ++k) {
                 const bool thin = whi[k] - wlo[k] < 0.3f;   // a wall is often a flat sheet: shrinking it would invert the box, so widen it a little instead
