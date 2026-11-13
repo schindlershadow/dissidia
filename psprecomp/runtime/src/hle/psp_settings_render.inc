@@ -370,6 +370,7 @@ struct SettingsDraw {
             if (!v.glide_init_) v.cat_scroll_ = v.cat_scroll_t_;
             else v.cat_scroll_ += (v.cat_scroll_t_ - v.cat_scroll_) * (1.f - std::exp(-dt * 16.f));
         }
+        v.translucent_ = clamp01(v.p_open_ / 0.42f) < 0.999f;
         v.dlg_p_ = clamp01(v.dlg_p_ + (S.dlg.active ? 1.f : -1.f) * dt / 0.16f);
         v.tab_focus_ += ((S.focus_tabs ? 1.f : 0.f) - v.tab_focus_) * (1.f - std::exp(-dt * 18.f));
         const float cat_t = float(S.cat);
@@ -1076,10 +1077,8 @@ struct SettingsDraw {
         const float edge = 14.f;
         const int ya = std::max(0, tl_band_y0), yb = std::min(c.h, tl_band_y1);
         const float R2 = R * R, Re2 = (R + edge) * (R + edge);
-        auto shade = [&](uint32_t& px, float a) {
-            const float r = float(px & 255), g = float((px >> 8) & 255), b = float((px >> 16) & 255);
-            px = Canvas::rgba(uint8_t(lerpf(r, 16.f, a)), uint8_t(lerpf(g, 18.f, a)), uint8_t(lerpf(b, 58.f, a)));
-        };
+        // outside the circle the canvas is transparent: the game's own picture shows there (a soft edge `edge` wide)
+        auto shade = [&](uint32_t& px, float veil) { px = (px & 0x00FFFFFFu) | (uint32_t(std::clamp(int((1.f - veil) * 255.f + 0.5f), 0, 255)) << 24); };
         for (int y = ya; y < yb; ++y) {
             const float dy = (float(y) + 0.5f) / s - cy, dy2 = dy * dy * 1.6f;
             uint32_t* row = &c.px[size_t(y) * size_t(c.w)];
@@ -1091,11 +1090,11 @@ struct SettingsDraw {
             const int xf1 = flat_all ? 0 : int(std::ceil((cx + std::sqrt(Re2 - dy2)) * s - 0.5f));
             for (int x = 0; x < c.w; ++x) {
                 if (x >= xin0 && x <= xin1) { x = xin1; continue; }
-                if (flat_all || x <= xf0 || x >= xf1) { shade(row[x], 0.98f); continue; }
+                if (flat_all || x <= xf0 || x >= xf1) { shade(row[x], 1.f); continue; }
                 const float dxp = (float(x) + 0.5f) / s - cx;
                 const float d = std::sqrt(dxp * dxp + dy2);
                 if (d <= R) continue;
-                shade(row[x], clamp01((d - R) / edge) * 0.96f + 0.02f);
+                shade(row[x], clamp01((d - R) / edge));
             }
         }
         // a gold ring riding the rim of the opening

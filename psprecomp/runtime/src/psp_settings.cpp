@@ -2500,7 +2500,7 @@ void psp_settings_tick() {
     const auto r0 = Clock::now();
     g_view.render(*canvas, sc, double(t));
     const auto r1 = Clock::now();
-    psp_sddialog::menu_overlay_publish(*canvas);
+    psp_sddialog::menu_overlay_publish(*canvas, g_view.translucent());
     const double pub_ms = std::chrono::duration<double, std::milli>(Clock::now() - r1).count();
     const double ms = std::chrono::duration<double, std::milli>(Clock::now() - r0).count();
     g_ui_ms = g_ui_ms * 0.6 + ms * 0.4;

@@ -3606,12 +3606,121 @@ static void present_service_window_capture() {
 // and publishes it; while one is active it is blitted opaquely over the game
 // frame, filtered linearly when it is not a 1:1 blit. GL texture/pixel-store
 // state is saved and restored so the GE's own state tracking is not disturbed.
+// The overlay texture drawn with its own alpha over the window (the settings screen's opening circle): a textured quad over the
+// picture rectangle instead of the opaque blit.
+static void draw_overlay_alpha(GLuint tex, const PresentRect& pr) {
+    static GLuint prog = 0, vao = 0, vbo = 0;
+    static GLint u_tex = -1;
+    static bool failed = false;
+    if (failed) return;
+    if (!prog) {
+        const char* vs_body = "in vec2 a_pos; in vec2 a_uv; out vec2 v_uv;\n"
+                              "void main() { v_uv = a_uv; gl_Position = vec4(a_pos, 0.0, 1.0); }\n";
+        const char* fs_body = "in vec2 v_uv; out vec4 o_col; uniform sampler2D u_tex;\n"
+                              "void main() { o_col = texture(u_tex, v_uv); }\n";
+        auto compile = [](GLenum type, const char* body) {
+            const char* src[2] = {PSP_GLSL_VERSION, body};
+            GLuint sh = glCreateShader(type);
+            glShaderSource(sh, 2, src, nullptr);
+            glCompileShader(sh);
+            GLint ok = 0;
+            glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+            if (!ok) { glDeleteShader(sh); return GLuint(0); }
+            return sh;
+        };
+        GLuint vs = compile(GL_VERTEX_SHADER, vs_body), fs = compile(GL_FRAGMENT_SHADER, fs_body);
+        if (!vs || !fs) { failed = true; return; }
+        prog = glCreateProgram();
+        glAttachShader(prog, vs); glAttachShader(prog, fs);
+        glBindAttribLocation(prog, 0, "a_pos"); glBindAttribLocation(prog, 1, "a_uv");
+        glLinkProgram(prog);
+        glDeleteShader(vs); glDeleteShader(fs);
+        GLint ok = 0;
+        glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+        if (!ok) { glDeleteProgram(prog); prog = 0; failed = true; return; }
+        u_tex = glGetUniformLocation(prog, "u_tex");
+        GLint prev_vao = 0, prev_abo = 0;
+        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prev_vao);
+        glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &prev_abo);
+        glGenVertexArrays(1, &vao);
+        glGenBuffers(1, &vbo);
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+        glBindBuffer(GL_ARRAY_BUFFER, GLuint(prev_abo));
+        glBindVertexArray(GLuint(prev_vao));
+    }
+    int dw = 0, dh = 0;
+    psp_gl_drawable_size(psp_get_sdl_window(), &dw, &dh);
+    if (dw <= 0 || dh <= 0) return;
+    auto cx = [&](float x) { return x / float(dw) * 2.f - 1.f; };
+    auto cy = [&](float y) { return y / float(dh) * 2.f - 1.f; };
+    const float x0 = float(std::min(pr.x0, pr.x1)), x1 = float(std::max(pr.x0, pr.x1));
+    const float yb = float(std::min(pr.y0, pr.y1)), yt = float(std::max(pr.y0, pr.y1));
+    const float verts[] = {   // texture row 0 = canvas top = the top edge of the quad
+        cx(x0), cy(yt), 0.f, 0.f,
+        cx(x1), cy(yt), 1.f, 0.f,
+        cx(x0), cy(yb), 0.f, 1.f,
+        cx(x1), cy(yb), 1.f, 1.f,
+    };
+    GLint prev_prog = 0, prev_vao = 0, prev_abo = 0, prev_vp[4], bsrc_rgb, bdst_rgb, bsrc_a, bdst_a, prev_fbo = 0, prev_tex = 0, prev_active = 0;
+    GLboolean prev_blend = glIsEnabled(GL_BLEND), prev_depth = glIsEnabled(GL_DEPTH_TEST), prev_cull = glIsEnabled(GL_CULL_FACE),
+              prev_scissor = glIsEnabled(GL_SCISSOR_TEST), prev_stencil = glIsEnabled(GL_STENCIL_TEST);
+    GLboolean cmask[4];
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &prev_active);
+    glActiveTexture(GL_TEXTURE0);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev_tex);
+    glGetIntegerv(GL_CURRENT_PROGRAM, &prev_prog);
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prev_vao);
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &prev_abo);
+    glGetIntegerv(GL_VIEWPORT, prev_vp);
+    glGetIntegerv(GL_BLEND_SRC_RGB, &bsrc_rgb);
+    glGetIntegerv(GL_BLEND_DST_RGB, &bdst_rgb);
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, &bsrc_a);
+    glGetIntegerv(GL_BLEND_DST_ALPHA, &bdst_a);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_fbo);
+    glGetBooleanv(GL_COLOR_WRITEMASK, cmask);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glViewport(0, 0, dw, dh);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE); glDisable(GL_SCISSOR_TEST); glDisable(GL_STENCIL_TEST);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glUseProgram(prog);
+    glUniform1i(u_tex, 0);
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof verts, verts, GL_STREAM_DRAW);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindBuffer(GL_ARRAY_BUFFER, GLuint(prev_abo));
+    glBindVertexArray(GLuint(prev_vao));
+    glUseProgram(GLuint(prev_prog));
+    glBlendFuncSeparate(bsrc_rgb, bdst_rgb, bsrc_a, bdst_a);
+    if (!prev_blend) glDisable(GL_BLEND);
+    if (prev_depth) glEnable(GL_DEPTH_TEST);
+    if (prev_cull) glEnable(GL_CULL_FACE);
+    if (prev_scissor) glEnable(GL_SCISSOR_TEST);
+    if (prev_stencil) glEnable(GL_STENCIL_TEST);
+    glColorMask(cmask[0], cmask[1], cmask[2], cmask[3]);
+    glViewport(prev_vp[0], prev_vp[1], prev_vp[2], prev_vp[3]);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, GLuint(prev_fbo));
+    glBindTexture(GL_TEXTURE_2D, GLuint(prev_tex));
+    glActiveTexture(GLenum(prev_active));
+    glc::invalidate();
+    ge_shader_note_external_program();
+}
+
 static void present_dialog_overlay(const PresentRect& pr) {
     static GLuint ovl_tex = 0, ovl_fbo = 0;
     static int tex_w = 0, tex_h = 0;
     static std::vector<uint32_t> px;
     int ow = 0, oh = 0;
-    if (!psp_sddialog::overlay_fetch(px, &ow, &oh) || ow <= 0 || oh <= 0 ||
+    bool translucent = false;
+    if (!psp_sddialog::overlay_fetch(px, &ow, &oh, &translucent) || ow <= 0 || oh <= 0 ||
         px.size() != size_t(ow) * size_t(oh))
         return;
     GLint prev_tex = 0, prev_align = 4, prev_row_len = 0;
@@ -3636,6 +3745,15 @@ static void present_dialog_overlay(const PresentRect& pr) {
         tex_w = ow; tex_h = oh;
     }
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, ow, oh, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    if (translucent) {   // draw with alpha so the game's picture shows where the canvas is transparent
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        draw_overlay_alpha(ovl_tex, pr);
+        glBindTexture(GL_TEXTURE_2D, GLuint(prev_tex));
+        glPixelStorei(GL_UNPACK_ALIGNMENT, prev_align);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, prev_row_len);
+        return;
+    }
     glBindFramebuffer(GL_READ_FRAMEBUFFER, ovl_fbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     const bool one_to_one = (pr.x1 - pr.x0) == ow && (pr.y1 - pr.y0) == oh;
