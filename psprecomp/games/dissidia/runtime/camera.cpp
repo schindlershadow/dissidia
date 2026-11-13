@@ -63,6 +63,7 @@ float g_sens = 1.0f, g_pitch_min = -5.f, g_pitch_max = 80.f, g_recenter = 1.0f, 
 float g_yaw = 0.f, g_pitch = 0.f;   // accumulated offsets (radians)
 double g_last_t = 0;
 int g_log_left = 0;
+float g_final_eye[3] = {0, 0, 0};   // the eye as SetEye leaves it (after our own changes)
 bool g_blocker_on = true;   // PSPRECOMP_CAM_BLOCKER_FADE=0: no fade of walls that block our own camera
 bool g_pivot_on = true, g_invert_x = false;   // orbit the fighter (PSPRECOMP_CAM_PIVOT=0: orbit the game's look-at point, the old way)
 // hitcam= framing (roster.cpp posts the request when a hitact= action starts)
@@ -267,9 +268,9 @@ void dissidia_cam_update(uint8_t* rdram, recomp_context* ctx) {
         const bool phase = !tg || std::fmod(t, 2.0 * std::atof(tg)) < std::atof(tg);
         const bool ours = (g_yaw != 0.f || g_pitch != 0.f || g_holding) && g_blocker_on && phase && pl_pos(P);
         if (ours) P[1] += 1.0f;
-        ge_draw_set_view_blocker(ours, P);
+        ge_draw_set_view_blocker(ours, P, g_final_eye);
         static int fr = 0;
-        if (++fr % 60 == 0 && ge_draw_blocker_log_on()) std::fprintf(stderr, "[BLOCKER] state active=%d yaw=%.0f pitch=%.0f holding=%d locked=%d known=%d\n", (int)ours, g_yaw * 57.29578f, g_pitch * 57.29578f, (int)g_holding, (int)g_locked, (int)g_lock_known);
+        if (++fr % 60 == 0 && ge_draw_blocker_log_on()) std::fprintf(stderr, "[BLOCKER] state active=%d yaw=%.0f pitch=%.0f holding=%d locked=%d known=%d eye %.1f %.1f %.1f player %.1f %.1f %.1f\n", (int)ours, g_yaw * 57.29578f, g_pitch * 57.29578f, (int)g_holding, (int)g_locked, (int)g_lock_known, g_final_eye[0], g_final_eye[1], g_final_eye[2], P[0], P[1], P[2]);
     }
     if (set_wide) set_aspect(static_cast<float>(ge_draw_widescreen_width()) / 272.0f);
 }
@@ -387,6 +388,7 @@ void dissidia_cam_seteye(uint8_t* rdram, recomp_context* ctx) {
         std::fprintf(stderr, "[CAMX] hold=%d locked=%d known=%d held_valid=%d game_valid=%d yaw=%.2fdeg pitch_off=%.2fdeg yaw_off=%.2fdeg eye=(%.2f,%.2f,%.2f) tgt=(%.2f,%.2f,%.2f)\n",
             (int)held_now, (int)g_locked, (int)g_lock_known, (int)g_held_valid, (int)g_game_valid, std::atan2(ex - tx, ez - tz) * 57.29578f, g_pitch * 57.29578f, g_yaw * 57.29578f, ex, ey, ez, tx, ty, tz);
     }
+    if (g_in_update && cam == g_mgr) for (int i = 0; i < 3; i++) g_final_eye[i] = rdf(eye + 4 * i);
     g_orig_seteye(rdram, ctx);
 }
 

@@ -74,7 +74,7 @@ void ge_draw_flash(uint32_t rgb, int ms);
 /// View blocker fade: while `active`, static scene geometry (not skinned) that lies between the camera and `target` (world space, the
 /// player's chest) fades out to a see-through alpha, like the game's own wall fade does for its camera (the game computes that from its
 /// own eye, so a camera we move ourselves needs it done here). Call once per camera update (game thread).
-void ge_draw_set_view_blocker(bool active, const float target[3]);
+void ge_draw_set_view_blocker(bool active, const float target[3], const float eye[3]);   // eye: the game camera's eye this update; only draws made from that view fade
 bool ge_draw_blocker_log_on();      // the view blocker diagnostics are on (env PSPRECOMP_CAM_BLOCKER_LOG, or Android: setprop debug.psprecomp.blocker_log 1)
 int ge_draw_view_blocker_count();   // draws faded since the last call (tests / log)
 

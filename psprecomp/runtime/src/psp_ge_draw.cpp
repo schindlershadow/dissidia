@@ -3692,12 +3692,19 @@ void ge_draw_toast(const char* text, int ms, int y_px) {
 
 // ---- View blocker fade (ge_draw_set_view_blocker) ----------------------------------------------------------------------------------
 static float g_vb_target[3] = {0, 0, 0};
-void ge_draw_set_view_blocker(bool active, const float target[3]) {
-    if (active) for (int i = 0; i < 3; i++) g_vb_target[i] = target[i];
+static float g_vb_eye[3] = {0, 0, 0};   // the game camera's eye (the draws of the main view have this eye; screen-space effects use another view and are left alone)
+void ge_draw_set_view_blocker(bool active, const float target[3], const float eye[3]) {
+    if (active) for (int i = 0; i < 3; i++) { g_vb_target[i] = target[i]; g_vb_eye[i] = eye[i]; }
     g_vb_active.store(active, std::memory_order_relaxed);
 }
 // Fade factor of a draw (1 = opaque), eased per draw so blocks fade in and out instead of popping. Keyed by the vertex data address and count.
 static std::unordered_map<uint64_t, float> g_vb_fade;
+static bool vb_main_view(const GeState& st, float eye[3]) {
+    const float* V = st.view_matrix;
+    eye[0] = -(V[0] * V[9] + V[1] * V[10] + V[2] * V[11]); eye[1] = -(V[3] * V[9] + V[4] * V[10] + V[5] * V[11]); eye[2] = -(V[6] * V[9] + V[7] * V[10] + V[8] * V[11]);
+    const float dx = eye[0] - g_vb_eye[0], dy = eye[1] - g_vb_eye[1], dz = eye[2] - g_vb_eye[2];
+    return dx * dx + dy * dy + dz * dz < 0.25f;
+}
 struct VbBox { float lo[3], hi[3]; };
 static std::unordered_map<uint64_t, VbBox> g_vb_box;   // model-space box of a draw's vertices, by vertex address and count (static geometry: decoded once)
 static float vb_fade_factor(uint8_t* rdram, const GeState& st, int n, int prim) {
@@ -3721,8 +3728,8 @@ static float vb_fade_factor(uint8_t* rdram, const GeState& st, int n, int prim) 
         const float w[3] = {m[0] * x + m[3] * y + m[6] * z + m[9], m[1] * x + m[4] * y + m[7] * z + m[10], m[2] * x + m[5] * y + m[8] * z + m[11]};
         for (int k = 0; k < 3; ++k) { wlo[k] = std::min(wlo[k], w[k]); whi[k] = std::max(whi[k], w[k]); }
     }
-    const float* V = st.view_matrix;   // eye = -R^T t (4x3 column-major view)
-    const float eye[3] = {-(V[0] * V[9] + V[1] * V[10] + V[2] * V[11]), -(V[3] * V[9] + V[4] * V[10] + V[5] * V[11]), -(V[6] * V[9] + V[7] * V[10] + V[8] * V[11])};
+    float eye[3];
+    if (!vb_main_view(st, eye)) return 1.f;   // not drawn from the game camera (screen-space effects, shadow maps, ...)
     const float* T = g_vb_target;   // the player's chest
     bool hit = false;
     float big = 0; for (int k = 0; k < 3; ++k) big = std::max(big, whi[k] - wlo[k]);
@@ -3820,10 +3827,16 @@ static void vb_probe(uint8_t* rdram, const GeState& st, int n, int prim, int pat
         const float w[3] = {m[0] * x + m[3] * y + m[6] * z + m[9], m[1] * x + m[4] * y + m[7] * z + m[10], m[2] * x + m[5] * y + m[8] * z + m[11]};
         for (int k = 0; k < 3; ++k) { wlo[k] = std::min(wlo[k], w[k]); whi[k] = std::max(whi[k], w[k]); }
     }
-    const float* V = st.view_matrix;
-    const float eye[3] = {-(V[0] * V[9] + V[1] * V[10] + V[2] * V[11]), -(V[3] * V[9] + V[4] * V[10] + V[5] * V[11]), -(V[6] * V[9] + V[7] * V[10] + V[8] * V[11])};
+    float eye[3];
+    if (!vb_main_view(st, eye)) {
+        static int other = 0; static uint64_t osec = 0;
+        const uint64_t t = (uint64_t)std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (t != osec) { osec = t; other = 0; }
+        if (other++ < 3 && st.vertex_type == 0x11a) std::fprintf(stderr, "[BLOCKER] wall draw from another view: its eye %.1f %.1f %.1f, camera eye %.1f %.1f %.1f\n", eye[0], eye[1], eye[2], g_vb_eye[0], g_vb_eye[1], g_vb_eye[2]);
+        return;
+    }
     float d2 = 0; for (int k = 0; k < 3; ++k) { const float o = std::max(0.f, std::max(wlo[k] - eye[k], eye[k] - whi[k])); d2 += o * o; }
-    if (d2 > 4.f) return;
+    if (d2 > 36.f) return;   // within 6 units
     static int per_sec = 0; static uint64_t sec = 0;
     const uint64_t now = (uint64_t)std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
     if (now != sec) { sec = now; per_sec = 0; }
