@@ -335,6 +335,7 @@ uniform float u_contrast;    // 1 = unchanged
 uniform int u_enc;           // 0 SDR out, 1 scRGB linear, 2 HDR10 PQ
 uniform float u_peak;        // nits
 uniform float u_paper;       // nits
+uniform float u_scrgb_nits;  // nits that scRGB 1.0 stands for: 80 per the spec (desktop, gamescope); Android makes 1.0 the system's SDR white
 uniform float u_boost;       // 0..1 how much of the headroom small highlights may use
 uniform float u_gamut;       // 0..1 how far the picture is stretched from sRGB towards the Display-P3 primaries
 uniform vec2 u_texel;        // one window pixel in uv
@@ -389,7 +390,7 @@ void main() {
     if (u_enc == 1) lin = mix(lin, p3_to_709 * lin, u_gamut);
     else lin = mix(srgb_to_2020 * lin, p3_to_2020 * lin, u_gamut);
     vec3 nits = lin * u_paper * gain;
-    if (u_enc == 1) o_color = vec4(nits / 80.0, 1.0);       // scRGB: 1.0 = 80 nits
+    if (u_enc == 1) o_color = vec4(nits / u_scrgb_nits, 1.0);   // scRGB: 1.0 = 80 nits (Android: 1.0 = SDR white, so paper white is the system's)
     else o_color = vec4(pq_encode(nits), 1.0);
 }
 )GLSL";
@@ -397,7 +398,7 @@ void main() {
 GLuint g_fprog = 0, g_scene_tex = 0, g_comp_tex = 0, g_scene_fbo = 0, g_comp_fbo = 0;
 int g_ftw = 0, g_fth = 0;
 bool g_ffailed = false, g_scene_valid = false;
-GLint fu_scene = -1, fu_comp = -1, fu_sat = -1, fu_bright = -1, fu_contrast = -1, fu_enc = -1, fu_peak = -1, fu_paper = -1, fu_boost = -1, fu_texel = -1, fu_gamut = -1;
+GLint fu_scene = -1, fu_comp = -1, fu_sat = -1, fu_bright = -1, fu_contrast = -1, fu_enc = -1, fu_peak = -1, fu_paper = -1, fu_boost = -1, fu_texel = -1, fu_gamut = -1, fu_scrgb = -1;
 
 bool ensure_final_program() {
     if (g_fprog) return true;
@@ -415,7 +416,7 @@ bool ensure_final_program() {
     fu_sat = glGetUniformLocation(p, "u_sat"); fu_bright = glGetUniformLocation(p, "u_bright");
     fu_contrast = glGetUniformLocation(p, "u_contrast"); fu_enc = glGetUniformLocation(p, "u_enc");
     fu_peak = glGetUniformLocation(p, "u_peak"); fu_paper = glGetUniformLocation(p, "u_paper");
-    fu_boost = glGetUniformLocation(p, "u_boost"); fu_gamut = glGetUniformLocation(p, "u_gamut"); fu_texel = glGetUniformLocation(p, "u_texel");
+    fu_boost = glGetUniformLocation(p, "u_boost"); fu_scrgb = glGetUniformLocation(p, "u_scrgb_nits"); fu_gamut = glGetUniformLocation(p, "u_gamut"); fu_texel = glGetUniformLocation(p, "u_texel");
     std::fprintf(stderr, "[POST] final pass ready\n");
     return true;
 }
@@ -533,6 +534,11 @@ bool psp_post_final(int dw, int dh) {
     glUniform1i(fu_enc, enc);
     glUniform1f(fu_peak, float(psp_hdr_peak()));
     glUniform1f(fu_paper, float(psp_hdr_paper()));
+#ifdef __ANDROID__
+    glUniform1f(fu_scrgb, float(psp_hdr_paper()));   // Android: scRGB 1.0 is the SDR white the user's brightness slider sets; only the headroom (peak / paper) is ours
+#else
+    glUniform1f(fu_scrgb, 80.f);
+#endif
     { static const float k_boost[4] = {0.f, 0.35f, 0.65f, 1.f}; glUniform1f(fu_boost, k_boost[psp_hdr_boost()]); }
     glUniform2f(fu_texel, 1.f / float(dw), 1.f / float(dh));
     { static const float k_gamut[4] = {0.f, 0.4f, 0.7f, 1.f}; glUniform1f(fu_gamut, k_gamut[psp_hdr_gamut()]); }
