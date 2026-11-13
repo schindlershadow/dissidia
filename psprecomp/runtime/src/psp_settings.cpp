@@ -143,7 +143,7 @@ bool updates_choice();
 bool texpack_choice();
 bool texpack_at_start();
 
-enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_WIDE, ROW_SOFT, ROW_RENDERER, ROW_AA, ROW_SHARP, ROW_BRIGHT, ROW_CONTRAST, ROW_SAT, ROW_HDR, ROW_HDR_BOOST, ROW_HDR_GAMUT, ROW_HDR_PEAK, ROW_HDR_PAPER, ROW_HDR_SCENE, ROW_SSAO, ROW_CONTACT, ROW_RT, ROW_RT_SOFT, ROW_RT_REFL, ROW_SSR, ROW_ANISO, ROW_UPSCALE, ROW_VOICE, ROW_TEXPACK, ROW_TOUCH, ROW_TOUCH_EDIT, ROW_UPDATES, ROW_QUIT,
+enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_FPSCOUNT, ROW_WIDE, ROW_SOFT, ROW_RENDERER, ROW_AA, ROW_SHARP, ROW_BRIGHT, ROW_CONTRAST, ROW_SAT, ROW_HDR, ROW_HDR_BOOST, ROW_HDR_GAMUT, ROW_HDR_PEAK, ROW_HDR_PAPER, ROW_HDR_SCENE, ROW_SSAO, ROW_CONTACT, ROW_RT, ROW_RT_SOFT, ROW_RT_REFL, ROW_SSR, ROW_ANISO, ROW_UPSCALE, ROW_VOICE, ROW_TEXPACK, ROW_TOUCH, ROW_TOUCH_EDIT, ROW_UPDATES, ROW_QUIT,
            ROW_NET_MODE, ROW_NET_SERVER, ROW_NET_ROOM, ROW_NET_PEERS, ROW_NET_STATUS,   // Network page
            ROW_CLOUD_PROVIDER, ROW_CLOUD_FOLDER, ROW_CLOUD_URL, ROW_CLOUD_USER, ROW_CLOUD_PASS, ROW_CLOUD_GOOGLE,
            ROW_CLOUD_AUTO, ROW_CLOUD_REPLAYS, ROW_CLOUD_NOW, ROW_CLOUD_STATUS,   // Cloud page
@@ -652,12 +652,20 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.help = g_quit_armed ? "Quit\nUnsaved progress is lost. Press again to quit, or move away to cancel."
                                   : "Quit\nClose the game and return to the desktop / Steam.";
             break;
+        case ROW_FPSCOUNT: {
+            const bool on = ge_draw_fps_counter();
+            m.label = "FPS Counter";
+            m.value = on ? "On" : "Off";
+            m.can_dec = on; m.can_inc = !on;
+            m.help = "FPS counter\nShows the frames per second as a small transparent number in the top-right corner. Saved.";
+            break;
+        }
         case ROW_PERF: {
             const bool on = ge_draw_perf_overlay();
             m.label = "Performance Overlay";
             m.value = on ? "On" : "Off";
             m.can_dec = on; m.can_inc = !on;
-            m.help = "Frame counter\nFrames per second and frame times in the top-left corner. Saved.";
+            m.help = "Performance overlay\nFor debugging: frames per second, average and worst frame time, presents per second, render scale and memory use in the top-left corner. Saved.";
             break;
         }
         case ROW_FX: {
@@ -1062,6 +1070,12 @@ void change(int d) {   // left / right on the selected row
     case ROW_CLOUD_REPLAYS: if (g_cloud.replays != (d > 0)) { g_cloud.replays = d > 0; cloud_apply(); } break;
     case ROW_CLOUD_FOLDER: case ROW_CLOUD_URL: case ROW_CLOUD_USER: case ROW_CLOUD_PASS: case ROW_CLOUD_GOOGLE:
     case ROW_CLOUD_NOW: case ROW_CLOUD_STATUS: break;
+    case ROW_FPSCOUNT:
+        if ((d > 0) != ge_draw_fps_counter()) {
+            ge_draw_set_fps_counter(d > 0);
+            save("fps_counter", d > 0 ? "1" : "0");
+        }
+        break;
     case ROW_PERF:
         if ((d > 0) != ge_draw_perf_overlay()) {
             ge_draw_set_perf_overlay(d > 0);
@@ -1248,6 +1262,7 @@ void build_rows() {
     } else {
         g_rows = {ROW_DISPLAY, ROW_RES, ROW_SCALE};
         if (g_fps.get && g_fps.count > 1) g_rows.push_back(ROW_FPS);
+        g_rows.push_back(ROW_FPSCOUNT);
         g_rows.push_back(ROW_WIDE);
         g_rows.push_back(ROW_SOFT);
         if (texpack_row_wanted()) g_rows.push_back(ROW_TEXPACK);
@@ -1427,6 +1442,7 @@ void confirm() {
         if (psp_cloud_svc::configured() && psp_cloud_svc::status().state != psp_cloud_svc::Status::Syncing) psp_cloud_svc::sync_now();
         break;
     case ROW_CLOUD_STATUS: break;
+    case ROW_FPSCOUNT: change(ge_draw_fps_counter() ? -1 : 1); return;
     case ROW_PERF: change(ge_draw_perf_overlay() ? -1 : 1); return;
     case ROW_FX: change(ge_draw_fx_shaders() ? -1 : 1); return;
     case ROW_SYNC: ge_draw_set_sync_mode((ge_draw_sync_mode() + 1) % 5); break;
@@ -1562,6 +1578,7 @@ void psp_settings_load_early() {
     if ((it = g_saved.find("net_server")) != g_saved.end() && !it->second.empty()) put("PSPRECOMP_ADHOC_SERVER", it->second);
     if ((it = g_saved.find("net_room")) != g_saved.end()) put("PSPRECOMP_ADHOC_ROOM", it->second);
     if ((it = g_saved.find("net_peers")) != g_saved.end()) put("PSPRECOMP_ADHOC_PEERS", it->second);
+    if ((it = g_saved.find("fps_counter")) != g_saved.end()) put("PSPRECOMP_FPS_COUNTER", it->second == "1" ? "1" : "0");
     if ((it = g_saved.find("perf_overlay")) != g_saved.end()) put("PSPRECOMP_PERF_HUD", it->second == "1" ? "1" : "0");
     if ((it = g_saved.find("ge_ring")) != g_saved.end() && (it->second == "map" || it->second == "sub"))
         put("PSPRECOMP_GE_RING", it->second);

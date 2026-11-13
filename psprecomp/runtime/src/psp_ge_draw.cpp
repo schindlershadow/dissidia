@@ -33,6 +33,9 @@
 #include <random>
 #include "psp_platform.h"
 #include <cstdio>
+#ifdef __linux__
+#include <unistd.h>
+#endif
 #include <cstdlib>
 #include <cstring>
 void gl_stats_frame();   // psp_gl_stats.cpp
@@ -1265,6 +1268,7 @@ static int g_ring_mode = 0;
 static int g_sync_mode = 0;
 static bool g_sync_each = false;
 static std::atomic<bool> g_fx_live{true};     // settings menu Debug page: FX shaders on/off (this session)
+static std::atomic<bool> g_fps_counter{false};   // simple transparent fps number (settings menu Display page / PSPRECOMP_FPS_COUNTER=1)
 static std::atomic<bool> g_perf_hud{false};   // settings menu Debug page / PSPRECOMP_PERF_HUD=1
 static Stream g_s2d, g_s3d;
 static std::atomic<bool> g_vb_active{false};   // view blocker fade (ge_draw_set_view_blocker)
@@ -1713,6 +1717,11 @@ void ge_draw_set_sync_mode(int mode) {
 }
 int ge_draw_ring_mode() { return g_ring_mode; }
 bool ge_draw_perf_overlay() { return g_perf_hud.load(); }
+bool ge_draw_fps_counter() { return g_fps_counter.load(); }
+void ge_draw_set_fps_counter(bool on) {
+    g_fps_counter = on;
+    std::fprintf(stderr, "[DRAW] fps counter %s\n", on ? "on" : "off");
+}
 void ge_draw_set_perf_overlay(bool on) {
     g_perf_hud = on;
     std::fprintf(stderr, "[DRAW] performance overlay %s\n", on ? "on" : "off");
@@ -2326,6 +2335,7 @@ void ge_draw_init() {
     if (g_ab) std::fprintf(stderr, "[AB] fast-vs-legacy dual rendering on (compare logged per present)\n");
     g_cpu_xform = std::getenv("PSPRECOMP_GE_CPU3D") != nullptr;
     if (const char* ph = std::getenv("PSPRECOMP_PERF_HUD")) g_perf_hud = ph[0] && ph[0] != '0';
+    if (const char* fc = std::getenv("PSPRECOMP_FPS_COUNTER")) g_fps_counter = fc[0] && fc[0] != '0';
     g_nobatch = std::getenv("PSPRECOMP_GE_NOBATCH") != nullptr;
     if (const char* sm = std::getenv("PSPRECOMP_GE_SYNC")) {
         g_sync_mode = !std::strcmp(sm, "flush") ? 4 : std::atoi(sm);
@@ -3636,45 +3646,263 @@ static void present_dialog_overlay(const PresentRect& pr) {
     glPixelStorei(GL_UNPACK_ROW_LENGTH, prev_row_len);
 }
 
-// Performance overlay: page flips per second, average and worst time between
-// flips over the last half second, drawn as a small box in the top-left corner
-// of the picture. The text is rendered (FreeType, the dialog's font) only when
-// it changes; every present is then a single small blit.
+// Frame statistics behind both on-screen counters. Page flips (what the game calls a frame) are timed; presents are
+// counted separately, so a gap between the two shows the presenter running without the game producing frames.
+//  - fps counter: just the flips per second, a transparent number in the top-right corner.
+//  - performance overlay (debug): flips per second, average / worst / 1%-low-ish frame time, presents per second,
+//    render scale, output size and process memory, in a box in the top-left corner.
+// Text is rendered (FreeType, the dialog's font) only when it changes; every present is then a single small draw.
 struct PerfHud {
     std::chrono::steady_clock::time_point last{}, win0{};
-    int frames = 0;
+    int frames = 0, presents = 0;
     double sum_ms = 0, worst_ms = 0;
-    std::string text;
-    bool dirty = false;
+    static constexpr int kGraph = 120;   // frame times shown in the debug overlay's graph (oldest first)
+    float graph[kGraph] = {};
+    int graph_n = 0;
+    std::chrono::steady_clock::time_point graph_drawn{};
+    std::string text;       // performance overlay line
+    std::string fps_text;   // fps counter
+    bool dirty = false, fps_dirty = false;
 };
 static PerfHud g_perf;
+
+static bool perf_stats_wanted() { return g_perf_hud.load(std::memory_order_relaxed) || g_fps_counter.load(std::memory_order_relaxed); }
+
+// Resident memory of the process in MB, or -1 where it isn't cheap to read.
+static int perf_rss_mb() {
+#ifdef __linux__
+    static FILE* f = nullptr;
+    if (!f) f = std::fopen("/proc/self/statm", "r");
+    if (!f) return -1;
+    std::rewind(f);
+    long total = 0, rss = 0;
+    if (std::fscanf(f, "%ld %ld", &total, &rss) != 2) return -1;
+    std::fflush(f);
+    return int(rss * 4096L / (1024L * 1024L));
+#else
+    return -1;
+#endif
+}
+
+#ifndef PSPRECOMP_RELEASE_VERSION
+#define PSPRECOMP_RELEASE_VERSION "dev"
+#endif
+static std::string psp_release_version() { return PSPRECOMP_RELEASE_VERSION; }
+
+// ---- system information for the performance overlay (Linux; elsewhere the fields read "n/a") ----
+struct SysInfo {
+    std::string cpu_model, gpu_model, gl_version, api_name, release;   // api_name: "OpenGL" / "Vulkan 1.2.x"
+    int cpu_threads = 0;
+    bool have_nvx = false, have_ati = false, init = false, vulkan = false;
+    unsigned long long last_idle = 0, last_total = 0, last_proc = 0;   // /proc/stat jiffies, process utime+stime
+    std::chrono::steady_clock::time_point last_t{};
+    double cpu_sys = -1, cpu_proc = -1;          // percent; proc is of one core (can exceed 100)
+    double ram_used_gb = -1, ram_total_gb = -1;
+    double vram_used_gb = -1, vram_total_gb = -1;
+    int gpu_busy = -1;
+};
+static SysInfo g_sys;
+
+static std::string sys_read_line(const char* path, const char* key) {   // first line starting with `key`, value after ':'
+    FILE* f = std::fopen(path, "r");
+    if (!f) return {};
+    char buf[512];
+    std::string r;
+    while (std::fgets(buf, sizeof buf, f)) {
+        if (std::strncmp(buf, key, std::strlen(key)) == 0) {
+            const char* c = std::strchr(buf, ':');
+            if (c) { r = c + 1; while (!r.empty() && (r[0] == ' ' || r[0] == '\t')) r.erase(0, 1); while (!r.empty() && (r.back() == '\n' || r.back() == ' ')) r.pop_back(); }
+            break;
+        }
+    }
+    std::fclose(f);
+    return r;
+}
+static long long sys_read_ll(const std::string& path) {
+    FILE* f = std::fopen(path.c_str(), "r");
+    if (!f) return -1;
+    long long v = -1;
+    if (std::fscanf(f, "%lld", &v) != 1) v = -1;
+    std::fclose(f);
+    return v;
+}
+// amdgpu exposes VRAM and load in sysfs; returns the first card that has them.
+static std::string sys_amdgpu_dir() {
+    static std::string dir = [] {
+        for (int i = 0; i < 8; ++i) {
+            std::string d = "/sys/class/drm/card" + std::to_string(i) + "/device/";
+            if (sys_read_ll(d + "mem_info_vram_total") > 0) return d;
+        }
+        return std::string();
+    }();
+    return dir;
+}
+static bool gl_has_ext(const char* name) {
+    GLint n = 0;
+    glGetIntegerv(GL_NUM_EXTENSIONS, &n);
+    for (GLint i = 0; i < n; ++i) {
+        const char* e = reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, GLuint(i)));
+        if (e && !std::strcmp(e, name)) return true;
+    }
+    return false;
+}
+static void sys_info_init() {
+    SysInfo& s = g_sys;
+    s.init = true;
+    s.release = psp_release_version();
+#if defined(PSPRECOMP_HAVE_VKGL)
+    {
+        vkgl::DeviceInfo di;
+        if (vkgl::device_info(&di)) {   // GL-on-Vulkan: the GL strings are placeholders, ask the Vulkan device
+            s.api_name = "Vulkan (" + di.api + ")";
+            s.gpu_model = di.name;
+            s.gl_version = di.driver;
+            s.vram_total_gb = di.vram_total_gb;   // used: filled in by sysfs below where available
+            s.vulkan = true;
+        }
+    }
+#endif
+    if (!s.vulkan) s.api_name = "OpenGL";
+    if (!s.vulkan) {
+        auto gs = [](GLenum e) { const GLubyte* p = glGetString(e); return p ? std::string(reinterpret_cast<const char*>(p)) : std::string(); };
+        s.gpu_model = gs(GL_RENDERER);
+        s.gl_version = gs(GL_VERSION);
+        const std::string vendor = gs(GL_VENDOR);
+        if (!vendor.empty() && s.gpu_model.find(vendor) == std::string::npos && vendor.size() < 24) s.gpu_model = vendor + " " + s.gpu_model;
+        s.have_nvx = gl_has_ext("GL_NVX_gpu_memory_info");
+        s.have_ati = gl_has_ext("GL_ATI_meminfo");
+        glGetError();
+    }
+#ifdef __linux__
+    s.cpu_model = sys_read_line("/proc/cpuinfo", "model name");
+    if (s.cpu_model.empty()) s.cpu_model = sys_read_line("/proc/cpuinfo", "Hardware");
+    FILE* f = std::fopen("/proc/cpuinfo", "r");
+    if (f) { char b[256]; while (std::fgets(b, sizeof b, f)) if (!std::strncmp(b, "processor", 9)) s.cpu_threads++; std::fclose(f); }
+#endif
+}
+// Called about twice a second from the overlay's window; every read is a small /proc or sysfs file.
+static void sys_info_sample() {
+    SysInfo& s = g_sys;
+    if (!s.init) sys_info_init();
+#ifdef __linux__
+    using namespace std::chrono;
+    unsigned long long user = 0, nice = 0, sysm = 0, idle = 0, iow = 0, irq = 0, sirq = 0, steal = 0;
+    if (FILE* f = std::fopen("/proc/stat", "r")) {
+        if (std::fscanf(f, "cpu %llu %llu %llu %llu %llu %llu %llu %llu", &user, &nice, &sysm, &idle, &iow, &irq, &sirq, &steal) >= 4) {
+            const unsigned long long idle_all = idle + iow, total = user + nice + sysm + idle + iow + irq + sirq + steal;
+            if (s.last_total && total > s.last_total) s.cpu_sys = 100.0 * double((total - s.last_total) - (idle_all - s.last_idle)) / double(total - s.last_total);
+            s.last_idle = idle_all; s.last_total = total;
+        }
+        std::fclose(f);
+    }
+    if (FILE* f = std::fopen("/proc/self/stat", "r")) {
+        char buf[1024];
+        size_t n = std::fread(buf, 1, sizeof buf - 1, f);
+        buf[n] = 0;
+        std::fclose(f);
+        const char* p = std::strrchr(buf, ')');   // fields after the command name; utime / stime are the 12th / 13th
+        unsigned long long ut = 0, st = 0;
+        if (p && std::sscanf(p + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu", &ut, &st) == 2) {
+            const auto now = steady_clock::now();
+            const double dt = duration<double>(now - s.last_t).count();
+            const unsigned long long proc = ut + st;
+            if (s.last_proc && dt > 0.05 && proc >= s.last_proc) s.cpu_proc = 100.0 * double(proc - s.last_proc) / (double(sysconf(_SC_CLK_TCK)) * dt);
+            s.last_proc = proc; s.last_t = now;
+        }
+    }
+    {
+        const std::string tot = sys_read_line("/proc/meminfo", "MemTotal"), av = sys_read_line("/proc/meminfo", "MemAvailable");
+        const double t = std::atof(tot.c_str()) / (1024.0 * 1024.0), a = std::atof(av.c_str()) / (1024.0 * 1024.0);   // kB -> GB
+        if (t > 0) { s.ram_total_gb = t; s.ram_used_gb = t - a; }
+    }
+    const std::string d = sys_amdgpu_dir();
+    if (!d.empty()) {
+        const long long used = sys_read_ll(d + "mem_info_vram_used"), tot = sys_read_ll(d + "mem_info_vram_total");
+        if (tot > 0 && used >= 0) { s.vram_total_gb = double(tot) / 1073741824.0; s.vram_used_gb = double(used) / 1073741824.0; }
+        s.gpu_busy = int(sys_read_ll(d + "gpu_busy_percent"));
+    }
+#endif
+    if (s.vram_total_gb < 0 && s.have_nvx) {
+        GLint total_kb = 0, avail_kb = 0;
+        glGetIntegerv(0x9048, &total_kb);   // GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX
+        glGetIntegerv(0x9049, &avail_kb);   // GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX
+        if (total_kb > 0) { s.vram_total_gb = total_kb / 1048576.0; s.vram_used_gb = (total_kb - avail_kb) / 1048576.0; }
+        glGetError();
+    } else if (s.vram_total_gb < 0 && s.have_ati) {
+        GLint v[4] = {0, 0, 0, 0};
+        glGetIntegerv(0x87FB, v);   // TEXTURE_FREE_MEMORY_ATI: free KB in the pool (total is not exposed)
+        if (v[0] > 0) s.vram_used_gb = -2, s.vram_total_gb = v[0] / 1048576.0;   // -2 = "free" only
+        glGetError();
+    }
+}
+static std::string sys_info_text() {
+    const SysInfo& s = g_sys;
+    char b[256];
+    std::string r;
+    auto clip = [](std::string v, size_t n) { if (v.size() > n) v.resize(n); return v; };
+    auto pct = [&](double v) { if (v < 0) return std::string("n/a"); std::snprintf(b, sizeof b, "%.0f%%", v); return std::string(b); };
+    r += "Release: " + (s.release.empty() ? std::string("dev") : s.release) + "  |  API: " + s.api_name + "\n";
+    r += "CPU: " + clip(s.cpu_model.empty() ? "n/a" : s.cpu_model, 48);
+    if (s.cpu_threads) r += " (" + std::to_string(s.cpu_threads) + " threads)";
+    r += "  |  system " + pct(s.cpu_sys) + "  game " + pct(s.cpu_proc) + " of one core\n";
+    r += "GPU: " + clip(s.gpu_model.empty() ? "n/a" : s.gpu_model, 56) + "  |  load " + (s.gpu_busy >= 0 ? pct(double(s.gpu_busy)) : std::string("n/a"));
+    if (s.vram_total_gb > 0 && s.vram_used_gb >= 0) { std::snprintf(b, sizeof b, "  |  VRAM %.1f / %.1f GB", s.vram_used_gb, s.vram_total_gb); r += b; }
+    else if (s.vram_used_gb == -2) { std::snprintf(b, sizeof b, "  |  VRAM %.1f GB free", s.vram_total_gb); r += b; }
+    else if (s.vram_total_gb > 0) { std::snprintf(b, sizeof b, "  |  VRAM %.1f GB", s.vram_total_gb); r += b; }
+    else r += "  |  VRAM n/a";
+    r += std::string("\n") + (s.vulkan ? "Driver: " : "GL driver: ") + clip(s.gl_version.empty() ? "n/a" : s.gl_version, 80) + "\n";
+    const int mb = perf_rss_mb();
+    if (mb >= 0) r += "RAM: game " + std::to_string(mb) + " MB";
+    else r += "RAM: game n/a";
+    if (s.ram_total_gb > 0) { std::snprintf(b, sizeof b, "  |  system %.1f / %.1f GB", s.ram_used_gb, s.ram_total_gb); r += b; }
+    return r;
+}
+
+static void perf_note_present() {
+    if (perf_stats_wanted()) g_perf.presents++;
+}
 
 static void perf_note_flip() {
     using namespace std::chrono;
     const auto now = steady_clock::now();
-    if (!g_perf_hud.load(std::memory_order_relaxed)) { g_perf.last = {}; return; }
+    if (!perf_stats_wanted()) { g_perf.last = {}; return; }
     if (g_perf.last.time_since_epoch().count() == 0) {   // first flip after turning it on / a pause
         g_perf = PerfHud{};
         g_perf.last = g_perf.win0 = now;
         g_perf.text = "-- fps";
-        g_perf.dirty = true;
+        g_perf.fps_text = "--";
+        g_perf.dirty = g_perf.fps_dirty = true;
         return;
     }
     const double ms = duration<double, std::milli>(now - g_perf.last).count();
     g_perf.last = now;
-    if (ms > 1000.0) { g_perf.win0 = now; g_perf.frames = 0; g_perf.sum_ms = g_perf.worst_ms = 0; return; }   // paused
+    if (ms > 1000.0) { g_perf.win0 = now; g_perf.frames = g_perf.presents = 0; g_perf.sum_ms = g_perf.worst_ms = 0; return; }   // paused
     g_perf.frames++;
     g_perf.sum_ms += ms;
     g_perf.worst_ms = std::max(g_perf.worst_ms, ms);
+    if (g_perf_hud.load(std::memory_order_relaxed)) {
+        if (g_perf.graph_n == PerfHud::kGraph) std::memmove(g_perf.graph, g_perf.graph + 1, (PerfHud::kGraph - 1) * sizeof(float));
+        else g_perf.graph_n++;
+        g_perf.graph[g_perf.graph_n - 1] = float(ms);
+        if (now - g_perf.graph_drawn >= milliseconds(50)) { g_perf.graph_drawn = now; g_perf.dirty = true; }   // ~20 redraws/s
+    }
     const double win = duration<double, std::milli>(now - g_perf.win0).count();
     if (win >= 500.0 && g_perf.frames > 0) {
-        char buf[96];
-        std::snprintf(buf, sizeof buf, "%.0f fps   %.1f ms   worst %.1f ms", g_perf.frames * 1000.0 / win,
-                      g_perf.sum_ms / g_perf.frames, g_perf.worst_ms);
-        g_perf.text = buf;
-        g_perf.dirty = true;
+        const double fps = g_perf.frames * 1000.0 / win;
+        char buf[160];
+        std::snprintf(buf, sizeof buf, "%.0f", fps);
+        if (g_perf.fps_text != buf) { g_perf.fps_text = buf; g_perf.fps_dirty = true; }
+        if (g_perf_hud.load(std::memory_order_relaxed)) {
+            int n = std::snprintf(buf, sizeof buf, "%.0f fps  %.1f ms  worst %.1f ms  |  present %.0f/s  |  %dx",
+                                  fps, g_perf.sum_ms / g_perf.frames, g_perf.worst_ms, g_perf.presents * 1000.0 / win,
+                                  ge_draw_render_scale());
+            if (ge_draw_widescreen() && n > 0 && n < int(sizeof buf)) std::snprintf(buf + n, sizeof buf - n, " wide");
+            sys_info_sample();
+            g_perf.text = std::string(buf) + "\n" + sys_info_text();
+            g_perf.dirty = true;
+        }
         g_perf.win0 = now;
-        g_perf.frames = 0;
+        g_perf.frames = g_perf.presents = 0;
         g_perf.sum_ms = g_perf.worst_ms = 0;
     }
 }
@@ -3891,17 +4119,78 @@ static void present_toast(const PresentRect& pr) {
     if (sc) glEnable(GL_SCISSOR_TEST);
 }
 
-static void present_perf_hud(const PresentRect& pr) {
-    if (!g_perf_hud.load(std::memory_order_relaxed) || g_perf.text.empty()) return;
-    static GLuint tex = 0, fbo = 0;
-    static int tw = 0, th = 0, tscale = 0, alloc_w = 0, alloc_h = 0;
-    static std::vector<uint32_t> px;
+// Translucent HUD text (the fps counter and the performance overlay): a textured quad blended over the picture with its
+// own tiny program (GL state saved and restored, like the touch controls). `box` = the performance overlay's dark box
+// (top-left), otherwise the bare number with a soft shadow (top-right). `alpha` is the overall opacity.
+struct HudBlend { GLuint tex = 0; int tw = 0, th = 0, tscale = 0, alloc_w = 0, alloc_h = 0; std::vector<uint32_t> px; };
+static void present_blend_hud(HudBlend& st, const std::string& text, bool& text_dirty, bool box, float alpha, const PresentRect& pr,
+                              const float* graph = nullptr, int graph_n = 0) {
+    if (text.empty()) return;
+    static GLuint prog = 0, vao = 0, vbo = 0;
+    static GLint u_tex = -1, u_alpha = -1;
+    static bool failed = false;
+    GLuint& tex = st.tex;
+    int &tw = st.tw, &th = st.th, &tscale = st.tscale, &alloc_w = st.alloc_w, &alloc_h = st.alloc_h;
+    std::vector<uint32_t>& px = st.px;
+    if (failed) return;
+    if (!prog) {
+        const char* vs_body = "in vec2 a_pos; in vec2 a_uv; out vec2 v_uv;\n"
+                              "void main() { v_uv = a_uv; gl_Position = vec4(a_pos, 0.0, 1.0); }\n";
+        const char* fs_body = "in vec2 v_uv; out vec4 o_col; uniform sampler2D u_tex; uniform float u_alpha;\n"
+                              "void main() { vec4 c = texture(u_tex, v_uv); o_col = vec4(c.rgb, c.a * u_alpha); }\n";
+        auto compile = [](GLenum type, const char* body) {
+            const char* src[2] = {PSP_GLSL_VERSION, body};
+            GLuint sh = glCreateShader(type);
+            glShaderSource(sh, 2, src, nullptr);
+            glCompileShader(sh);
+            GLint ok = 0;
+            glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+            if (!ok) { glDeleteShader(sh); return GLuint(0); }
+            return sh;
+        };
+        GLuint vs = compile(GL_VERTEX_SHADER, vs_body), fs = compile(GL_FRAGMENT_SHADER, fs_body);
+        if (!vs || !fs) { failed = true; return; }
+        prog = glCreateProgram();
+        glAttachShader(prog, vs);
+        glAttachShader(prog, fs);
+        glBindAttribLocation(prog, 0, "a_pos");
+        glBindAttribLocation(prog, 1, "a_uv");
+        glLinkProgram(prog);
+        glDeleteShader(vs);
+        glDeleteShader(fs);
+        GLint ok = 0;
+        glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+        if (!ok) { glDeleteProgram(prog); prog = 0; failed = true; return; }
+        u_tex = glGetUniformLocation(prog, "u_tex");
+        u_alpha = glGetUniformLocation(prog, "u_alpha");
+        GLint prev_vao = 0, prev_abo = 0;
+        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prev_vao);
+        glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &prev_abo);
+        glGenVertexArrays(1, &vao);
+        glGenBuffers(1, &vbo);
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+        glBindBuffer(GL_ARRAY_BUFFER, GLuint(prev_abo));
+        glBindVertexArray(GLuint(prev_vao));
+    }
     const int scale = psp_sddialog::output_scale();
-    if (g_perf.dirty || scale != tscale || !tex) {
+    GLint prev_tex = 0, prev_active = 0;
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &prev_active);
+    glActiveTexture(GL_TEXTURE0);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev_tex);
+    if (text_dirty || scale != tscale || !tex) {
         int w = 0, h = 0;
-        if (!psp_sddialog::render_hud_box(g_perf.text, scale, px, &w, &h) || w <= 0 || h <= 0) return;
-        GLint prev_tex = 0, prev_align = 4, prev_row_len = 0;
-        glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev_tex);
+        const bool ok = box ? psp_sddialog::render_hud_box(text, scale, px, &w, &h, graph, graph_n)
+                            : psp_sddialog::render_hud_text(text, scale, px, &w, &h);
+        if (!ok || w <= 0 || h <= 0) {
+            glActiveTexture(GLenum(prev_active));
+            return;
+        }
+        GLint prev_align = 4, prev_row_len = 0;
         glGetIntegerv(GL_UNPACK_ALIGNMENT, &prev_align);
         glGetIntegerv(GL_UNPACK_ROW_LENGTH, &prev_row_len);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
@@ -3911,36 +4200,97 @@ static void present_perf_hud(const PresentRect& pr) {
             glBindTexture(GL_TEXTURE_2D, tex);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glGenFramebuffers(1, &fbo);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         }
         glBindTexture(GL_TEXTURE_2D, tex);
-        if (w > alloc_w || h > alloc_h) {   // grow only; the box is blitted from its corner
+        if (w > alloc_w || h > alloc_h) {   // grow only; the text is drawn from the texture's corner
             alloc_w = std::max(w, alloc_w); alloc_h = std::max(h, alloc_h);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, alloc_w, alloc_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
         }
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
-        glBindTexture(GL_TEXTURE_2D, GLuint(prev_tex));
         glPixelStorei(GL_UNPACK_ALIGNMENT, prev_align);
         glPixelStorei(GL_UNPACK_ROW_LENGTH, prev_row_len);
         tw = w; th = h; tscale = scale;
-        g_perf.dirty = false;
+        text_dirty = false;
+    } else {
+        glBindTexture(GL_TEXTURE_2D, tex);
     }
+    // Quad in window pixels, top-right of the picture, then to clip space.
+    int dw = 0, dh = 0;
+    psp_gl_drawable_size(psp_get_sdl_window(), &dw, &dh);
+    if (dw <= 0 || dh <= 0) { glBindTexture(GL_TEXTURE_2D, GLuint(prev_tex)); glActiveTexture(GLenum(prev_active)); return; }
     const float sx = float(pr.x1 - pr.x0) / 480.f, sy = float(std::abs(pr.y1 - pr.y0)) / 272.f;
-    const int top = std::max(pr.y0, pr.y1), left = std::min(pr.x0, pr.x1);
-    const int x0 = left + int(std::lround(4.f * sx));
-    const int x1 = x0 + int(std::lround(float(tw) / float(tscale) * sx));
-    const int y_top = top - int(std::lround(4.f * sy));
-    const int y_bot = y_top - int(std::lround(float(th) / float(tscale) * sy));
-    const GLboolean sc = glIsEnabled(GL_SCISSOR_TEST);
-    if (sc) glDisable(GL_SCISSOR_TEST);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    const float qw = float(tw) / float(tscale) * sx;
+    const float right = box ? float(std::min(pr.x0, pr.x1)) + 4.f * sx + qw : float(std::max(pr.x0, pr.x1)) - 4.f * sx;
+    const float top = float(std::max(pr.y0, pr.y1)) - 4.f * sy;   // GL origin is bottom-left
+    const float qh = float(th) / float(tscale) * sy;
+    auto cx = [&](float x) { return x / float(dw) * 2.f - 1.f; };
+    auto cy = [&](float y) { return y / float(dh) * 2.f - 1.f; };
+    const float u1 = float(tw) / float(alloc_w), v1 = float(th) / float(alloc_h);
+    // texture row 0 = canvas top, so v = 0 is the top edge of the quad
+    const float verts[] = {
+        cx(right - qw), cy(top),      0.f, 0.f,
+        cx(right),      cy(top),      u1,  0.f,
+        cx(right - qw), cy(top - qh), 0.f, v1,
+        cx(right),      cy(top - qh), u1,  v1,
+    };
+    GLint prev_prog = 0, prev_vao = 0, prev_abo = 0, prev_vp[4], bsrc_rgb, bdst_rgb, bsrc_a, bdst_a, prev_fbo = 0;
+    GLboolean prev_blend = glIsEnabled(GL_BLEND), prev_depth = glIsEnabled(GL_DEPTH_TEST), prev_cull = glIsEnabled(GL_CULL_FACE),
+              prev_scissor = glIsEnabled(GL_SCISSOR_TEST), prev_stencil = glIsEnabled(GL_STENCIL_TEST);
+    GLboolean cmask[4];
+    glGetIntegerv(GL_CURRENT_PROGRAM, &prev_prog);
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prev_vao);
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &prev_abo);
+    glGetIntegerv(GL_VIEWPORT, prev_vp);
+    glGetIntegerv(GL_BLEND_SRC_RGB, &bsrc_rgb);
+    glGetIntegerv(GL_BLEND_DST_RGB, &bdst_rgb);
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, &bsrc_a);
+    glGetIntegerv(GL_BLEND_DST_ALPHA, &bdst_a);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_fbo);
+    glGetBooleanv(GL_COLOR_WRITEMASK, cmask);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    // Canvas row 0 is the top; GL texture row 0 is the bottom => flip Y.
-    glBlitFramebuffer(0, 0, tw, th, x0, y_top, x1, y_bot, GL_COLOR_BUFFER_BIT, GL_LINEAR);
-    if (sc) glEnable(GL_SCISSOR_TEST);
+    glViewport(0, 0, dw, dh);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE); glDisable(GL_SCISSOR_TEST); glDisable(GL_STENCIL_TEST);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glUseProgram(prog);
+    glUniform1i(u_tex, 0);
+    glUniform1f(u_alpha, alpha);
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof verts, verts, GL_STREAM_DRAW);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindBuffer(GL_ARRAY_BUFFER, GLuint(prev_abo));
+    glBindVertexArray(GLuint(prev_vao));
+    glUseProgram(GLuint(prev_prog));
+    glBlendFuncSeparate(bsrc_rgb, bdst_rgb, bsrc_a, bdst_a);
+    if (!prev_blend) glDisable(GL_BLEND);
+    if (prev_depth) glEnable(GL_DEPTH_TEST);
+    if (prev_cull) glEnable(GL_CULL_FACE);
+    if (prev_scissor) glEnable(GL_SCISSOR_TEST);
+    if (prev_stencil) glEnable(GL_STENCIL_TEST);
+    glColorMask(cmask[0], cmask[1], cmask[2], cmask[3]);
+    glViewport(prev_vp[0], prev_vp[1], prev_vp[2], prev_vp[3]);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, GLuint(prev_fbo));
+    glBindTexture(GL_TEXTURE_2D, GLuint(prev_tex));
+    glActiveTexture(GLenum(prev_active));
+    glc::invalidate();
+    ge_shader_note_external_program();
 }
+
+static void present_fps_counter(const PresentRect& pr) {
+    static HudBlend st;
+    if (!g_fps_counter.load(std::memory_order_relaxed)) return;
+    present_blend_hud(st, g_perf.fps_text, g_perf.fps_dirty, false, 0.5f, pr);
+}
+static void present_perf_hud(const PresentRect& pr) {
+    static HudBlend st;
+    if (!g_perf_hud.load(std::memory_order_relaxed)) return;
+    present_blend_hud(st, g_perf.text, g_perf.dirty, true, 0.65f, pr, g_perf.graph, g_perf.graph_n);
+}
+
 
 // PSPRECOMP_FRAME_DUMP=<dir>,<n>: write the next n presented frames (every
 // present_blit, including liveness-net presents) as <dir>/f_<k>.tga, with the
@@ -4066,13 +4416,14 @@ static void present_blit(GLuint fbo, const char* why = "flip") {
     if (!post_done)
     glBlitFramebuffer(0, 0, spw * srs, 272 * srs, pr.x0, pr.y0, pr.x1, pr.y1,
                       GL_COLOR_BUFFER_BIT, pf);
+    perf_note_present();
     if (!std::strcmp(why, "flip")) perf_note_flip();
     if (psp_post_final_active()) {   // copy of the scene for the final pass (grade / HDR), taken before the HUD and overlays
         int sdw = 0, sdh = 0;
         psp_gl_drawable_size(window, &sdw, &sdh);
         psp_post_scene_snapshot(sdw, sdh);
     }
-    if (std::strcmp(why, "menu") != 0) { present_perf_hud(pr); present_toast(pr); present_flash(pr); }
+    if (std::strcmp(why, "menu") != 0) { present_perf_hud(pr); present_fps_counter(pr); present_toast(pr); present_flash(pr); }
     present_dialog_overlay(cpr);
     if (psp_touch_enabled()) {   // on-screen controls over the whole window (own program/VAO: the GE's cached GL state is reset after)
         int tw = 0, th = 0;

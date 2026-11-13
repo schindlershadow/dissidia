@@ -60,8 +60,12 @@ int ge_draw_ring_mode();
 bool ge_draw_fx_available();
 bool ge_draw_fx_shaders();
 void ge_draw_set_fx_shaders(bool on);
-/// Performance overlay: presented frames per second, average and worst frame
-/// time, in the top-left corner (PSPRECOMP_PERF_HUD=1 turns it on at start).
+/// Simple fps counter: just the frames-per-second number, white and partly transparent, in the top-right
+/// corner (PSPRECOMP_FPS_COUNTER=1 turns it on at start).
+bool ge_draw_fps_counter();
+void ge_draw_set_fps_counter(bool on);
+/// Performance overlay (debugging): frames per second, average / worst frame time, presents per second, render
+/// scale and process memory, in the top-left corner (PSPRECOMP_PERF_HUD=1 turns it on at start).
 bool ge_draw_perf_overlay();
 void ge_draw_set_perf_overlay(bool on);
 

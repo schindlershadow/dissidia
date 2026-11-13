@@ -238,7 +238,11 @@ void osk_push_key(uint32_t cp);   // printable code point; 8 = delete; 13 = done
 // Performance overlay box: `text` in white on a dark box, rendered at `scale`
 // (1..MAX_SCALE) into `out` (w*h, top row first, opaque). Uses its own FreeType
 // instance, so the GL thread can call it while a dialog renders elsewhere.
-bool render_hud_box(const std::string& text, int scale, std::vector<uint32_t>& out, int* w, int* h);
+// With `graph_ms` (graph_n >= 2 frame times in ms, oldest first) a frame-time graph is drawn under the text.
+bool render_hud_box(const std::string& text, int scale, std::vector<uint32_t>& out, int* w, int* h,
+                    const float* graph_ms = nullptr, int graph_n = 0);
+// Same font, but a transparent RGBA image (white text, soft shadow, alpha = coverage) for the simple fps counter.
+bool render_hud_text(const std::string& text, int scale, std::vector<uint32_t>& out, int* w, int* h);
 
 }  // namespace psp_sddialog
 

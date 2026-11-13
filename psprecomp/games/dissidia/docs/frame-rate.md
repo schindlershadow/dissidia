@@ -5,10 +5,16 @@
 - **Settings menu**: Esc or F1 on a keyboard, Guide or L3 + R3 (both stick buttons) on a pad. The game pauses while it
   is open. Rows: Display (Fullscreen / Window), Window Size (a whole multiple of 480x272, or 1280 x 800, the Deck's
   screen, when the desktop is big enough; in fullscreen it is remembered for Window mode), Render Scale (1x to 4x),
-  Frame Rate (30 / 60), Quit Game (press twice). Left / right changes a value, Cross cycles it, Circle or Start closes.
+  Frame Rate (30 / 60), FPS Counter (a small transparent frames-per-second number in the top-right corner; saved as
+  `fps_counter`, `PSPRECOMP_FPS_COUNTER=1` turns it on without the menu), Quit Game (press twice). Left / right changes a value, Cross cycles it, Circle or Start closes.
   It is drawn from the game's own menu textures, like the save dialog.
 - **Debug page**: L / R (shoulder buttons), or Q / E / Tab on a keyboard, switches between System and Debug:
-  - Performance Overlay: frames per second, average and worst frame time over the last half second, top-left.
+  - Performance Overlay: for debugging. Frames per second, average and worst frame time over the last half second,
+    presents per second (a gap to the fps means the presenter runs without new game frames), render scale and process
+    release version and graphics API (OpenGL, or Vulkan with its API version, device and driver), system info (CPU model, system and game CPU load, GPU model, GPU load and VRAM where the driver exposes them
+    (amdgpu sysfs, NVIDIA / ATI GL extensions), GL driver version, game and system RAM; "n/a" where unavailable),
+    top-left, with a frame-time graph under it (last 120 frames, green up to 16.7 ms, yellow up to
+    33.3 ms, red above).
     Saved (`perf_overlay`); `PSPRECOMP_PERF_HUD=1` turns it on without the menu.
   - FX Shaders: bypasses the `mods/fx_shaders` overrides live ("Not loaded" when none were loaded at start).
     This session only.
