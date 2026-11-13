@@ -15,6 +15,11 @@
 
 #include <zlib.h>
 
+#ifdef _WIN32
+#include <direct.h>
+#define mkdir(path, mode) _mkdir(path)
+#endif
+
 #include "hle/psp_http.h"
 
 #if defined(__ANDROID__)
