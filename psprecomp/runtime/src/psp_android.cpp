@@ -13,6 +13,7 @@
 
 #include <SDL.h>
 #include <android/log.h>
+#include <jni.h>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -71,6 +72,37 @@ __attribute__((constructor(101))) static void early_env() { load_env_file("/sdca
 // (msm-adreno-tz on Adreno) sits at its lowest clock until a frame is already late: a heavy-but-not-full GPU load, such as ray-traced
 // shadows at 90 fps, then misses its rate (84 fps instead of 90 measured on the RP6; pinning the GPU clock gave 88-89).
 // Called once per presented frame by the thread that presents (psp_gl_swap). PSPRECOMP_ADPF=0 turns it off.
+int psp_android_display_hdr_peak_nits() {
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
+    jobject act = static_cast<jobject>(SDL_AndroidGetActivity());
+    if (!env || !act) return -1;
+    int nits = -1;
+    jclass ac = env->GetObjectClass(act);
+    jmethodID gwm = ac ? env->GetMethodID(ac, "getWindowManager", "()Landroid/view/WindowManager;") : nullptr;
+    jobject wm = gwm ? env->CallObjectMethod(act, gwm) : nullptr;
+    jclass wmc = wm ? env->GetObjectClass(wm) : nullptr;
+    jmethodID gdd = wmc ? env->GetMethodID(wmc, "getDefaultDisplay", "()Landroid/view/Display;") : nullptr;
+    jobject disp = gdd ? env->CallObjectMethod(wm, gdd) : nullptr;
+    jclass dc = disp ? env->GetObjectClass(disp) : nullptr;
+    jmethodID ghc = dc ? env->GetMethodID(dc, "getHdrCapabilities", "()Landroid/view/Display$HdrCapabilities;") : nullptr;
+    jobject hc = ghc ? env->CallObjectMethod(disp, ghc) : nullptr;
+    if (hc) {
+        jclass hcc = env->GetObjectClass(hc);
+        jmethodID gml = hcc ? env->GetMethodID(hcc, "getDesiredMaxLuminance", "()F") : nullptr;
+        if (gml) nits = static_cast<int>(env->CallFloatMethod(hc, gml));
+        if (hcc) env->DeleteLocalRef(hcc);
+        env->DeleteLocalRef(hc);
+    }
+    if (env->ExceptionCheck()) { env->ExceptionClear(); nits = -1; }
+    if (dc) env->DeleteLocalRef(dc);
+    if (disp) env->DeleteLocalRef(disp);
+    if (wmc) env->DeleteLocalRef(wmc);
+    if (wm) env->DeleteLocalRef(wm);
+    if (ac) env->DeleteLocalRef(ac);
+    env->DeleteLocalRef(act);
+    return nits;
+}
+
 void psp_android_frame_hint() {
     typedef void* (*PFN_mgr)();
     typedef void* (*PFN_create)(void*, const int32_t*, size_t, int64_t);

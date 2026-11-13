@@ -379,7 +379,7 @@ void main() {
         float lum = dot(lin, vec3(0.2126, 0.7152, 0.0722));
         float stand = smoothstep(0.10, 0.55, lum - lm);       // how much it stands out from its surroundings
         float bright = smoothstep(0.50, 0.95, m);             // and that it is actually bright
-        gain = 1.0 + (u_peak / u_paper - 1.0) * u_boost * stand * bright;
+        gain = 1.0 + max(u_peak / u_paper - 1.0, 0.0) * u_boost * stand * bright;
     }
     // Colour: a wide-gamut panel shows plain sRGB colour dull next to its own SDR mode (the compositor stretches SDR colour to the
     // panel gamut, but not HDR content). u_gamut stretches the picture the same way, treating the PSP's RGB as Display-P3 by that amount.
@@ -483,7 +483,7 @@ int psp_hdr_peak() {
 void psp_hdr_set_peak(int nits) { g_peak.store(nits < 400 ? 400 : nits > 4000 ? 4000 : nits); }
 int psp_hdr_paper() {
     int v = g_paper.load();
-    if (v < 0) { v = env_clamped("PSPRECOMP_HDR_PAPER", 203, 80, 400); g_paper.store(v); }
+    if (v < 0) { v = env_clamped("PSPRECOMP_HDR_PAPER", 203, 80, 1000); g_paper.store(v); }
     return v;
 }
 int psp_hdr_boost() {
@@ -494,11 +494,18 @@ int psp_hdr_boost() {
 void psp_hdr_set_boost(int level) { g_hboost.store(level < 0 ? 0 : level > 3 ? 3 : level); }
 int psp_hdr_gamut() {
     int v = g_hgamut.load();
-    if (v < 0) { v = env_clamped("PSPRECOMP_HDR_GAMUT", 2, 0, 3); g_hgamut.store(v); }
+    if (v < 0) {
+#ifdef __ANDROID__
+        v = env_clamped("PSPRECOMP_HDR_GAMUT", 4, 0, 4);   // a phone's SDR mode boosts colour well past P3
+#else
+        v = env_clamped("PSPRECOMP_HDR_GAMUT", 2, 0, 4);
+#endif
+        g_hgamut.store(v);
+    }
     return v;
 }
-void psp_hdr_set_gamut(int level) { g_hgamut.store(level < 0 ? 0 : level > 3 ? 3 : level); }
-void psp_hdr_set_paper(int nits) { g_paper.store(nits < 80 ? 80 : nits > 400 ? 400 : nits); }
+void psp_hdr_set_gamut(int level) { g_hgamut.store(level < 0 ? 0 : level > 4 ? 4 : level); }
+void psp_hdr_set_paper(int nits) { g_paper.store(nits < 80 ? 80 : nits > 1000 ? 1000 : nits); }
 
 bool psp_post_final_active() {
     return psp_post_saturation() != 100 || psp_post_brightness() != 100 || psp_post_contrast() != 100 || psp_hdr_encoding() != 0;
@@ -535,13 +542,13 @@ bool psp_post_final(int dw, int dh) {
     glUniform1f(fu_peak, float(psp_hdr_peak()));
     glUniform1f(fu_paper, float(psp_hdr_paper()));
 #ifdef __ANDROID__
-    glUniform1f(fu_scrgb, float(psp_hdr_paper()));   // Android: scRGB 1.0 is the SDR white the user's brightness slider sets; only the headroom (peak / paper) is ours
+    glUniform1f(fu_scrgb, 203.f);   // Android: scRGB 1.0 is the SDR white the user's brightness slider sets (taken as the 203-nit reference): paper white 350 shows white at 1.7x that
 #else
     glUniform1f(fu_scrgb, 80.f);
 #endif
     { static const float k_boost[4] = {0.f, 0.35f, 0.65f, 1.f}; glUniform1f(fu_boost, k_boost[psp_hdr_boost()]); }
     glUniform2f(fu_texel, 1.f / float(dw), 1.f / float(dh));
-    { static const float k_gamut[4] = {0.f, 0.4f, 0.7f, 1.f}; glUniform1f(fu_gamut, k_gamut[psp_hdr_gamut()]); }
+    { static const float k_gamut[5] = {0.f, 0.4f, 0.7f, 1.f, 1.7f}; glUniform1f(fu_gamut, k_gamut[psp_hdr_gamut()]); }   // level 4 = 1.7: extrapolated past Display-P3
     glBindVertexArray(g_vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);

@@ -4,6 +4,7 @@
 #include <SDL_syswm.h>
 #ifdef __ANDROID__
 #include "../psp_gpu_driver.h"
+#include "../../include/psp_android.h"
 #endif
 #include <algorithm>
 #include <cstdio>
@@ -230,7 +231,22 @@ bool Context::create_swapchain(int w, int h, bool vsync, std::string* err) {
             if (f.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 && f.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT) hdr10 = &f;
         }
         hdr_supported_ = scrgb || hdr10;
+        std::string android_reason;
+#ifdef __ANDROID__
+        // Android offers an scRGB surface on any wide-colour screen, but HDR only helps when the panel has brightness to spare: the window
+        // then reserves headroom, which dims SDR white. A panel whose HDR peak is about its SDR maximum (the Retroid Pocket 6 reports 420
+        // nits) would only get a dimmer, less vivid picture.
+        if (hdr_supported_) {
+            const int peak = psp_android_display_hdr_peak_nits();
+            if (peak < 600) {
+                hdr_supported_ = false;
+                android_reason = peak < 0 ? "This display does not report HDR support."
+                                       : "This display's HDR peak is only " + std::to_string(peak) + " nits, no brighter than its normal picture, so HDR would only make it dimmer.";
+            }
+        }
+#endif
         if (hdr_supported_) hdr_reason_.clear();
+        else if (!android_reason.empty()) hdr_reason_ = android_reason;
         else hdr_reason_ = colorspace_ext_ ? "The display or the window system offers no HDR format. Turn HDR on in the system display settings, and use Wayland, Windows or gamescope (X11 has no HDR)."
                                            : "The Vulkan driver has no VK_EXT_swapchain_colorspace.";
         if (hdr_wanted_ && hdr_supported_) {
