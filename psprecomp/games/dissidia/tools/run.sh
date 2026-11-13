@@ -179,7 +179,9 @@ export PSPRECOMP_PAD_R2="${PSPRECOMP_PAD_R2:-R+TRIANGLE}"   # R2 = dash
 [ "$LEGACY_GE" = 0 ] || export PSPRECOMP_GE_FAST=0
 # GPU sync: the Deck's driver runs GL work asynchronously and battles flicker without it; flush fixes that at no
 # visible cost. An explicit --ge-sync or PSPRECOMP_GE_SYNC wins; "off" = no sync.
-if [ -z "$GE_SYNC" ] && [ -z "${PSPRECOMP_GE_SYNC:-}" ] && [ "$(cat /sys/devices/virtual/dmi/id/sys_vendor 2>/dev/null)" = Valve ]; then
+# Not with the Vulkan renderer: there glFlush is a vkQueueSubmit, so flush-per-batch meant ~340 submits and render passes a frame
+# (8-9 ms of CPU on the Deck: 42-52 fps in combat instead of ~90) and the layer tracks its own buffer/image hazards.
+if [ -z "$GE_SYNC" ] && [ -z "${PSPRECOMP_GE_SYNC:-}" ] && [ "${PSPRECOMP_RENDERER:-}" != vulkan ] && [ "$(cat /sys/devices/virtual/dmi/id/sys_vendor 2>/dev/null)" = Valve ]; then
   GE_SYNC=flush
 fi
 case "$GE_SYNC" in "") ;; off) unset PSPRECOMP_GE_SYNC ;; *) export PSPRECOMP_GE_SYNC="$GE_SYNC" ;; esac

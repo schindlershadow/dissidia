@@ -23,13 +23,39 @@ pub fn emit_dispatch_table(
     out.push_str("#include \"funcs.h\"\n\n");
     out.push_str("using FuncPtr = void(*)(uint8_t*, recomp_context*);\n\n");
     out.push_str("static void noop_func(uint8_t*, recomp_context*) {}\n\n");
+    // Flat table over the address range the module's functions span (code is 4-byte aligned): an indirect call is one
+    // bounds check and one load instead of an unordered_map probe (about 10% of the game thread on a Steam Deck).
+    // Anything outside the range (the 0 sentinel, runtime registrations elsewhere) lives in the map.
+    let mut lo = u32::MAX;
+    let mut hi = 0u32;
+    for a in functions.iter().map(|f| &f.address).chain(mid_entries.iter().map(|m| &m.addr)) {
+        let v = u64::from_str_radix(a.trim_start_matches("0x"), 16).unwrap_or(0) as u32;
+        if v & 3 == 0 && (0x0880_0000..0x0A00_0000).contains(&v) {   // guest user RAM; stray analysis addresses elsewhere stay in the map
+            lo = lo.min(v);
+            hi = hi.max(v);
+        }
+    }
+    if lo > hi {
+        lo = 0;
+        hi = 0;
+    }
+    let flat_n = ((hi - lo) >> 2) + 1;
+    out.push_str(&format!("static constexpr uint32_t kFlatLo = 0x{lo:08X}U;\nstatic constexpr uint32_t kFlatN = {flat_n}U;\n"));
+    out.push_str("static FuncPtr s_flat[kFlatN];\n");
     out.push_str("static std::unordered_map<uint32_t, FuncPtr> s_dispatch;\n\n");
+    out.push_str("static inline void disp_set(uint32_t a, FuncPtr f) {\n");
+    out.push_str("    const uint32_t i = (a - kFlatLo) >> 2;\n");
+    out.push_str("    if (!(a & 3) && i < kFlatN) s_flat[i] = f; else s_dispatch[a] = f;\n}\n\n");
+    out.push_str("static inline FuncPtr disp_get(uint32_t a) {\n");
+    out.push_str("    const uint32_t i = (a - kFlatLo) >> 2;\n");
+    out.push_str("    if (!(a & 3) && i < kFlatN) { if (FuncPtr f = s_flat[i]) return f; }\n");
+    out.push_str("    auto it = s_dispatch.find(a);\n");
+    out.push_str("    return it == s_dispatch.end() ? nullptr : it->second;\n}\n\n");
 
     // psp_init_dispatch_table() populates the map at startup
     out.push_str("void psp_init_dispatch_table() {\n");
-    out.push_str(&format!("    s_dispatch.reserve({});\n",
-        functions.len() + mid_entries.len() + 1));
-    out.push_str("    s_dispatch[0x00000000U] = noop_func;\n");
+    out.push_str("    s_dispatch.reserve(16);\n");
+    out.push_str("    disp_set(0x00000000U, noop_func);\n");
 
     for func in functions {
         let addr: u32 = u64::from_str_radix(
@@ -41,7 +67,7 @@ pub fn emit_dispatch_table(
             .map(|n| crate::sanitize::sanitize_identifier(n))
             .unwrap_or_else(|| crate::sanitize::sanitize_identifier(&func.name));
         out.push_str(&format!(
-            "    s_dispatch[0x{addr:08X}U] = {cpp_name};\n"
+            "    disp_set(0x{addr:08X}U, {cpp_name});\n"
         ));
     }
 
@@ -52,7 +78,7 @@ pub fn emit_dispatch_table(
         ).unwrap_or(0) as u32;
         let wrapper_name = format!("func_{addr:08X}_entry");
         out.push_str(&format!(
-            "    s_dispatch[0x{addr:08X}U] = {wrapper_name};\n"
+            "    disp_set(0x{addr:08X}U, {wrapper_name});\n"
         ));
     }
 
@@ -63,15 +89,14 @@ pub fn emit_dispatch_table(
 
     // RECOMP_LOOKUP — the entry point called by emitted indirect calls
     out.push_str("FuncPtr RECOMP_LOOKUP(uint32_t vaddr) {\n");
-    out.push_str("    auto it = s_dispatch.find(vaddr);\n");
-    out.push_str("    if (it == s_dispatch.end()) { return psp_on_lookup_miss(vaddr); }\n");
-    out.push_str("    return it->second;\n");
+    out.push_str("    if (FuncPtr f = disp_get(vaddr)) return f;\n");
+    out.push_str("    return psp_on_lookup_miss(vaddr);\n");
     out.push_str("}\n\n");
 
     // psp_dispatch_register — allows runtime HLE to override dispatch entries
     // Used by Phase 4 HLE to replace import stub no-ops with HLE implementations
     out.push_str("void psp_dispatch_register(uint32_t vaddr, FuncPtr fn) {\n");
-    out.push_str("    s_dispatch[vaddr] = fn;\n");
+    out.push_str("    disp_set(vaddr, fn);\n");
     out.push_str("}\n");
 
     out
@@ -84,9 +109,10 @@ mod tests {
     #[test]
     fn dispatch_contains_noop() {
         let result = emit_dispatch_table(&[], &[], "test", &std::collections::HashMap::new());
-        assert!(result.contains("0x00000000U] = noop_func"));
+        assert!(result.contains("disp_set(0x00000000U, noop_func)"));
         assert!(result.contains("RECOMP_LOOKUP"));
         assert!(result.contains(".reserve("));
+        assert!(result.contains("s_flat"));
     }
 
     #[test]

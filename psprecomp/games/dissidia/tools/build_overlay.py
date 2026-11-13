@@ -55,15 +55,13 @@ def main():
     d = os.path.join(out, 'dispatch.cpp'); s = sym.sub(ren, open(d).read())
     s = s.replace('void psp_init_dispatch_table()', f'void {prefix}_init_dispatch_table()')
     s = re.sub(r'FuncPtr RECOMP_LOOKUP\(uint32_t vaddr\) \{.*?\n\}\n', f'''FuncPtr {prefix}_lookup(uint32_t vaddr) {{
-    auto it = s_dispatch.find(vaddr);
-    if (it == s_dispatch.end()) return nullptr;
-    return it->second;
+    return disp_get(vaddr);
 }}
 ''', s, flags=re.S)
     # drop the duplicate runtime-facing helpers (the EBOOT's dispatch.cpp owns them)
     s = re.sub(r'void psp_dispatch_register\(.*?\n\}\n', '', s, flags=re.S)
     s = re.sub(r'FuncPtr psp_dispatch_probe_lookup\(.*?\n\}\n', '', s, flags=re.S)
-    s = re.sub(r'\n\s*s_dispatch\[0x00000000U\] = noop_func;', '', s)
+    s = re.sub(r'\n\s*disp_set\(0x00000000U, noop_func\);', '', s)
     s = s.replace('static void noop_func(uint8_t*, recomp_context*) {}\n', '')
     open(d, 'w').write(s)
     # The game's own entry symbol must not be duplicated by an overlay.
@@ -79,7 +77,7 @@ def main():
         t = t.replace('recomp_nid_stubs', f'{prefix}_nid_stubs').replace('recomp_nid_stub_count', f'{prefix}_nid_stub_count')
         open(st, 'w').write(t)
     open(os.path.join(out, 'overlay.txt'), 'w').write(f'{ovl_id} {prefix}\n')
-    n = len(re.findall(r's_dispatch\[0x', open(d).read()))
+    n = len(re.findall(r'disp_set\(0x', open(d).read()))
     print(f'{prefix}: id={ovl_id} functions={n} -> {out}')
 
 if __name__ == '__main__':
