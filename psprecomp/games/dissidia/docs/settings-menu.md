@@ -28,5 +28,13 @@ Text fields (server, room, sync folder, WebDAV) open an on-screen keyboard: pad,
 
 ## Status
 
-The in-game entry points (title screen Load, main menu Options, pause menu) are not wired yet: they need the game's own menu code
-(overlay patches) found and verified against a real disc image. The runtime side is ready (`psp_settings_request_open()`).
+Verified in a real run (Xvfb, NVIDIA GL, 2026-11-13): opens with Esc, category switch (Q/E and mouse), toggles and sliders write
+`settings.ini`, the Network on-screen keyboard (typing, Esc cancels), mouse click / wheel in a letterboxed 1200x500 window, close
+returns to the game. Not verified: pad, touch / Android, HDR and Ray Tracing sub-menus (the host GPU reports both Unavailable),
+the ~60 fps animation / scale auto-drop (no frame timing taken), held-button leak after close.
+
+The in-game entry points (title screen, main menu Options, battle pause) are not wired. The runtime side is ready
+(`psp_settings_request_open()`). What was found: the title's NEW GAME / LOAD GAME / EXTRAS cursor is the word at 0x096AE20C
+(0, 1, 2; heap object, address may move), written by EBOOT code under 0x088DA0A8 (the generic data-driven list engine, shared with
+other menus), and the labels are game art, so a fourth row needs a new sprite and layout plus the engine's item table, not just a
+hook.
