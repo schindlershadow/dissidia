@@ -62,11 +62,25 @@ class IsoError(Exception):
 
 # --------------------------------------------------------------------------- CSO
 
+def is_fd(path):
+    return isinstance(path, str) and path.startswith("fd:") and path[3:].isdigit()
+
+
+def open_src(path):
+    """Open the disc image. "fd:N" = an inherited open file descriptor: on Android the system file picker hands the app a descriptor
+    (the app has no path it may open), and the setup app passes it on to this script."""
+    if is_fd(path):
+        f = os.fdopen(os.dup(int(path[3:])), "rb")
+        f.seek(0)
+        return f
+    return open(path, "rb")
+
+
 class CsoFile:
     """Read-only file-like view (seek/tell/read) of a CSO (CISO v1, zlib) image as a flat ISO."""
 
     def __init__(self, path):
-        self.f = open(path, "rb")
+        self.f = open_src(path)
         h = self.f.read(24)
         if len(h) < 24 or h[:4] != b"CISO":
             raise IsoError("not a CSO file")
@@ -131,7 +145,7 @@ class CsoFile:
 
 def open_image(path):
     """Open an ISO or CSO as a seekable binary file; raise IsoError with advice for unsupported formats."""
-    with open(path, "rb") as f:
+    with open_src(path) as f:
         magic = f.read(4)
     if magic == b"CISO":
         return CsoFile(path)
@@ -141,7 +155,7 @@ def open_image(path):
         raise IsoError("DAX images are not supported; convert to .iso first")
     if magic == b"\x7fPBP" or magic == b"\0PBP":
         raise IsoError("this is a PBP (PSN eboot) package, not a disc image; extract the ISO first")
-    f = open(path, "rb")
+    f = open_src(path)
     if not _has_cd001(f, 16 * SECTOR):
         for hdr in (16, 24):                     # MODE1 / MODE2-form1 raw sectors
             if _has_cd001(f, 16 * 2352 + hdr):
@@ -636,9 +650,9 @@ def main(argv=None):
     ap.add_argument("--force", action="store_true", help="re-extract files even if present with the same size")
     args = ap.parse_args(argv)
 
-    iso_path = os.path.abspath(args.iso)
+    iso_path = args.iso if is_fd(args.iso) else os.path.abspath(args.iso)
     workdir = os.path.abspath(args.workdir)
-    if not os.path.isfile(iso_path):
+    if not is_fd(iso_path) and not os.path.isfile(iso_path):
         print("error: ISO not found: %s" % iso_path, file=sys.stderr)
         return 2
     os.makedirs(workdir, exist_ok=True)
