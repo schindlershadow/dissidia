@@ -4,11 +4,40 @@
     "version": "27.2.12479018",
     "name": "r27c",
     "files": {
-      "linux": {"url": "https://dl.google.com/android/repository/android-ndk-r27c-linux.zip", "sha1": "090e8083a715fdb1a3e402d0763c388abb03fb4e", "size": 663987688, "prebuilt": "linux-x86_64"},
-      "windows": {"url": "https://dl.google.com/android/repository/android-ndk-r27c-windows.zip", "sha1": "ac5f7762764b1f15341094e148ad4f847d050c38", "size": 781511249, "prebuilt": "windows-x86_64"}
+      "linux": {
+        "url": "https://dl.google.com/android/repository/android-ndk-r27c-linux.zip",
+        "sha1": "090e8083a715fdb1a3e402d0763c388abb03fb4e",
+        "size": 663987688,
+        "prebuilt": "linux-x86_64"
+      },
+      "windows": {
+        "url": "https://dl.google.com/android/repository/android-ndk-r27c-windows.zip",
+        "sha1": "ac5f7762764b1f15341094e148ad4f847d050c38",
+        "size": 781511249,
+        "prebuilt": "windows-x86_64"
+      }
     }
   },
   "api": 29,
   "abi": "arm64-v8a",
-  "package": "org.psprecomp.game"
+  "package": "org.psprecomp.game",
+  "tools": {
+    "_comment": "Prebuilt inputs of the Android setup app (release/build_android_app.py): the zig that compiles the game ON the phone (static aarch64 Linux, runs on Android as is), the Python that runs the build tools there (python-build-standalone, musl) and Alpine's musl loader it needs. sha256 values are the publishers' (ziglang.org index.json, python-build-standalone SHA256SUMS, alpine latest-releases.yaml).",
+    "zig_aarch64": {
+      "version": "0.15.2",
+      "url": "https://ziglang.org/download/0.15.2/zig-aarch64-linux-0.15.2.tar.xz",
+      "sha256": "958ed7d1e00d0ea76590d27666efbf7a932281b3d7ba0c6b01b0ff26498f667f"
+    },
+    "python": {
+      "version": "3.13.18+20261110",
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.13.18%2B20261110-aarch64-unknown-linux-musl-install_only_stripped.tar.gz",
+      "sha256": "5616ed1d426cb12cc135e5998b42bfd665cf2f9e3f3f9f6c77c73f0ae26f7d03"
+    },
+    "musl_loader": {
+      "version": "alpine 3.24.4",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.4-aarch64.tar.gz",
+      "sha256": "4b14c18f7e90a063b61462ea1462a5732c154bf6adad594974fe6487cd98a8de",
+      "member": "./lib/ld-musl-aarch64.so.1"
+    }
+  }
 }

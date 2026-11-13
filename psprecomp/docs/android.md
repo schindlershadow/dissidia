@@ -25,6 +25,45 @@ Command line (what the wizard runs): `psp_build.py <install folder> --sdk sdk --
 
 The launcher icon is original artwork (a crystal), drawn by `android/icon/make_icon.py` (Pillow); `android/icon/icon_512.png` is the full-size version, `make_skeleton.py` compiles the sized copies into the APK. The desktop uses the same artwork: `games/dissidia/icon/` (icon.png for the Linux menu entry, icon.ico for the Windows Start Menu shortcut, both written next to the install; `embed_icon.py` regenerates them and the 64x64 window icon in `runtime/include/psp_app_icon_dissidia.h`, set with `psp_set_window_icon` for the game window and the wizard).
 
+## Building on the phone (the setup app)
+
+`DissidiaRecomp-Setup-<version>-android.apk` (a release asset) is a wizard, in the same look as the PC one, that builds the game **on the phone** from your own
+disc image and installs it. Nothing but the APK is downloaded, and no PC or terminal is involved.
+
+1. Install the setup APK (allow your browser or file manager to install apps once) and open "Dissidia Recomp Setup". The first start unpacks its tools (about a minute).
+2. **Build the game** opens Android's own file picker: choose your disc image (`.iso`/`.cso`) anywhere (SD card, Download...). The picker hands the app an open
+   file, so no storage permission is needed to read it. "Use the simple browser instead" is a built-in fallback (needs "all files access").
+3. The app asks for "all files access" once: the game app reads its files from the shared folder `<storage>/Android/media/org.psprecomp.game/game` (since Android 11 no
+   other app may write to `Android/data`).
+4. It extracts and decrypts the disc, translates the game to C++ and compiles it (about 5 minutes on a Snapdragon 8 Gen 2; the screen is kept on and a wake lock is held),
+   copies the files, and asks Android to install the game (confirm the dialog; allow the setup app to install apps once). Then start "Dissidia 012".
+
+How it works: the app ships, as `lib*.so` in its native-library folder (the only place an app may run files from), a static aarch64 **zig** (clang + lld in one binary; it
+compiles the game against the NDK's headers and libc++, linking with `zig ld.lld --threads=1`), the recompiler and pspdecrypt (static musl), and python-build-standalone
+(musl; its interpreter is patched to a link the app makes to Alpine's musl loader). The rest (Python's library, zig's headers, the NDK sysroot, the prebuilt Android core and libraries,
+the game's tools) is one zip, `libpayload.so`, unpacked on the first start. `games/dissidia/tools/psp_build.py --android` runs unchanged on the phone
+(`android_build.py` `device_build`). Built by `release/build_android_app.py` (CI job `android-app`); pinned inputs: `android/versions.json` ("tools"), `toolchain/versions.json`.
+Sources of the Java glue: `android/setup/`; the wizard: `setup/` (`#ifdef __ANDROID__`, `setup/android.cpp`).
+
+Status (2026-11-13): verified on a Retroid Pocket 6 (Android 13): extract, build, copy, install and the installed game booting, driven through the app's touch UI. Not yet
+verified: a first-ever install on a phone with no earlier game folder (the shared-folder fallback in `runtime/src/psp_android.cpp` needs a core built after that change),
+and the CI job itself.
+
+### Updates of the setup app
+
+The app checks `manifest.json` of the latest GitHub release (the same signed manifest as the PC updater; entry `platforms.android-aarch64`) at start (silently; only the start
+screen shows an offer) and from **Check for updates**. The download goes through Android's own HTTPS stack (`SetupActivity.download`: the bundled Python is musl and has no DNS
+configuration or CA store on Android); `games/dissidia/tools/update.py android-check` verifies the manifest's Ed25519 signature (`game/update_key.pub`, the committed key) and compares
+versions, `android-verify` checks the APK's size and sha256 (a mismatch deletes the file), then the PackageInstaller installs it (Android asks to confirm; the new APK has a higher
+`versionCode`, derived from the release version by `make_skeleton.py --version`, and the same signing key, so the app and its unpacked work folder stay). The APK's contents are
+fingerprinted (`android/build_fingerprint.txt`: recompiler, analysis, tools, core, libraries, zig; also in the manifest as `build_fingerprint`): when it differs from the fingerprint
+stored with the last build, the start screen offers **Update the game** (translate + compile + copy again from the files already on the phone, no game file needed).
+Debug switch: a file `manifest_url.txt` in the app's files folder replaces the manifest URL (the signature must still verify). CI: `manifest` job builds and signs the manifest after
+the `build` and `android-app` jobs.
+
+Status (2026-11-13): tested on the RP6 against a local server with a throwaway key: silent check, offer, download, verify, install 0.1.0 -> 0.2.0, then the rebuild prompt and rebuild.
+Not yet run: the GitHub workflow, and an update against a real release.
+
 ## On the device
 
 - **Touch controls**: shown after the first touch (Auto), hidden when a controller button is pressed; Settings > System > Touch Controls

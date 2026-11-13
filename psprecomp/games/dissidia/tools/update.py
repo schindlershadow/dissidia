@@ -253,7 +253,66 @@ def cmd_apply(a):
     return 0
 
 
+# ---- the Android setup app (setup/ on a phone): the app downloads manifest.json, its .sig and the APK itself (Java HttpURLConnection: the bundled Python
+# has no DNS or CA store on Android), these commands only check what was downloaded.
+
+def cmd_android_check(a):
+    """android-check --manifest FILE --current VERSION [--sig FILE --key FILE]: prints UPDATE version=.. current=.. size=.. url=.. sha256=.. |
+    NOUPDATE current=.. | ERROR ..."""
+    try:
+        body = open(a.manifest, "rb").read()
+        if a.key and os.path.isfile(a.key):
+            pub = bytes.fromhex(open(a.key).read().strip())
+            try:
+                sig = bytes.fromhex(open(a.sig).read().strip())
+            except (OSError, ValueError) as e:
+                raise RuntimeError("manifest signature missing (%s)" % e)
+            if not ed25519.verify(pub, body, sig):
+                raise RuntimeError("manifest signature is not valid")
+        m = json.loads(body.decode("utf-8"))
+        p = m.get("platforms", {}).get("android-aarch64")
+        if not p or version_key(m["version"]) <= version_key(a.current):
+            say("NOUPDATE current=%s" % a.current)
+            return 0
+        say("UPDATE version=%s current=%s size=%d url=%s sha256=%s" % (m["version"], a.current, p["size"], p["url"], p["sha256"]))
+    except Exception as e:  # noqa: BLE001
+        say("ERROR %s" % e)
+    return 0
+
+
+def cmd_android_verify(a):
+    """android-verify --file APK --sha256 HEX --size N: OK or ERROR (the file is deleted when it does not match)."""
+    try:
+        if os.path.getsize(a.file) != a.size or sha256_file(a.file) != a.sha256.lower():
+            os.remove(a.file)
+            say("ERROR the download does not match the manifest (deleted)")
+            return 1
+        say("OK")
+        return 0
+    except OSError as e:
+        say("ERROR %s" % e)
+        return 1
+
+
+def main_android(argv):
+    ap = argparse.ArgumentParser()
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    c = sub.add_parser("android-check")
+    c.add_argument("--manifest", required=True)
+    c.add_argument("--current", required=True)
+    c.add_argument("--sig")
+    c.add_argument("--key")
+    v = sub.add_parser("android-verify")
+    v.add_argument("--file", required=True)
+    v.add_argument("--sha256", required=True)
+    v.add_argument("--size", type=int, required=True)
+    a = ap.parse_args(argv)
+    return cmd_android_check(a) if a.cmd == "android-check" else cmd_android_verify(a)
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1].startswith("android-"):
+        return main_android(sys.argv[1:])
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("command", choices=["check", "apply"])
     ap.add_argument("--root", required=True)
