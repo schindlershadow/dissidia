@@ -163,3 +163,104 @@ everything goes through adb (debug socket forwarded, log read from the game fold
 - **`hd_textures=1` makes the scripted spell cancel itself** (`action 2303` plays script 10047 for one update, then idle, no orb): `--drop hd_textures`.
 - The screenshot is taken when the debug socket answers: with the player's settings the fight clock starts ~1 s later, so catch the Watera orb with
   shots at 6.5 - 9 s (action 2303 at game time 3000).
+
+## Making automated runs fast (notes for other sessions)
+
+Measured 2026-11-11 while building the Jecht combo timing tests (`tools/combo_timing.py`). The menu trip dominates a naive run
+(about 3 minutes with the box busy); the fight itself can go many times faster than real time.
+
+- **Boot once, feed many trials.** The test driver's `batch <file>` command holds the script until the file exists, then plays
+  (and deletes) its lines. A driver (`combo_timing.py` `Session.submit`) writes the next batch into the *running* battle, so the
+  menus are walked once per frame rate, not once per experiment. Never start a new game per trial.
+- **Fast-forward**: debug socket `FF <ms> [x]` makes the vblank wait skip its sleep, so the game runs as fast as frames render
+  (x caps it at x times real time). Re-issue before the 120 s cap (`battle_test.run --ff` / `Session` do it every 50 s). Test scripts
+  run in game time, so results are identical with or without it. Menus: `FF 120000 4` works (`ff_menus=4`); unthrottled `FF`
+  breaks the title (it never opens the save list) and 6x made cursor presses get lost. Turn it off (`FF 0`) before the clock starts is
+  not needed: the harness leaves it on for the script.
+- **Run the rates in parallel**, each in its own process with its own Xvfb display, debug port, memory-stick copy and `--out`
+  directory (the `Game` class already does this): 30 / 60 / 120 fps boots and sweeps overlap. Use absolute `--out` paths (a relative
+  one breaks `PSPRECOMP_MS0`) and a fresh `--out` each run (the log is appended to, an old "Debug socket listening" line makes
+  `wait_log` return at once).
+- **Own work folder and build dir** (`~/dissidia/work_<name>/` with symlinks to `work/` plus its own `build/`, `cmake -S <worktree>/psprecomp/runtime -B
+  work_<name>/build ...` with the same `PSPRECOMP_*` cache values as another work folder): other sessions run tests too; never share
+  a build dir, work folder, display or port with them. An incremental runtime rebuild is a few seconds to a minute.
+- **Time things relative to the move, not the clock.** `sync [timeout] [script id]` waits for the player's action to change (or
+  become a given script id) and `+<ms>` lines count from that update; absolute times drift with press latency (a Rush tap is script 10000
+  while the button is down and 10001 after release). Put a `waitidle` / `sync` before the first `+` line: `+` times count from
+  the last sync, 0 at the start, so a press and its release can fall into the same update and be lost.
+- **No dead time between trials**: `waitidle` (player out of any action) then `place <m>` (teleport next to the dummy) beats
+  walking back. Taps shorter than two updates at 30 fps (67 ms is used) are sometimes missed.
+- **Detect results from the log, not screenshots**: `[TEST] gt=<ms> scr <old> -> <new>` lines (the player's action script id) carry
+  everything needed; screenshots (`S`) cost a settle wait each.
+- Other findings: the harness CPU dummy (time step 0) still takes hits (HUD BRV changes); Jecht's Rush from the start position
+  (20 m) never reaches the dummy, so `place 3` first; HP attack is Square, bravery Circle (not Triangle).
+- Background long runs with `nohup` and send a Gotify message at the end (see ~/CLAUDE.md).
+
+## Finding a stat the HUD shows (BRV, HP...) in guest RAM, and what keeps a test fight alive
+
+Notes from the Jecht combo work (2026-11-11), for whoever needs a live value again.
+
+- The fighter struct (`actor`, the block `g_fighters` points at) holds only *base* stats at `+0x10A8..+0x10B8` (`450 <BRV base> <HP> 100 23`);
+  `+0x10B0` is the HP the harness keeps for the dummy. The **current bravery is not in the actor (0x0000-0x3000), nor in the info
+  block at `+0x2F8..+0x304`**: dumps over 3 hits showed no int or float that follows the HUD there.
+- `PSPRECOMP_TEST_DUMP=1` logs `[TESTDUMP]` word dumps of the player and the dummy at every action change
+  (`PSPRECOMP_TEST_DUMP_RANGE=lo,hi` in hex offsets, default 1000,1400; also the 0x600 bytes behind the info pointers).
+- **The `scan` script command** is the general tool: `scan <min drop> <max drop> <max value>` snapshots user RAM
+  (0x08800000..0x0A000000) and keeps only words that fell by that much since the last scan (three encodings at once: int,
+  int x 100, float). Put one scan before the first hit and one after every hit (`+0 scan 0 0 99999` first, then `+2300 scan 30 700 3000`
+  after each Rush); after two or three hits few words are left, and the log lists them with the words around them and every word in RAM
+  that points just before them (the owner). Guest addresses must be masked with `0x07FFFFFF` before indexing `g_ram`
+  (forgetting it reads the wrong memory and finds nothing).
+- Result so far: after 3 Rush hits the only survivor was a **float at 0x09AE9DCC** (2291 -> 2103 -> 1915 -> 1725, about -188 per
+  hit, same address in every run) inside a small object (vtable-like `08AC03B8` before it). It does not match the HUD's own numbers
+  (the HUD dropped about 234 a hit) and is probably a gauge animation object, not the stat; the real BRV is still unlocated.
+- **Why fights ended mid-sweep**: every Rush takes ~190-230 bravery; after ~5 hits the dummy is BROKEN, from then on the attacker's
+  hits do HP damage (the player's bravery, 4000+), and the game's KO check runs inside the update, before the harness rewrites the
+  dummy's HP each update. Fix used: in AI-off mode the dummy's HP is rewritten to 100,000,000 every update, so a hit cannot reach 0.
+  Taking Jecht's equipment off (the user's tip) lowers his damage and would delay the break; not needed with the big HP pool.
+- A *frozen* dummy (`PSPRECOMP_TEST_FREEZE_CPU`, time step 0) is no good for combos: its hit reaction never finishes and the attacker
+  hangs in hit-stop (Jecht stuck in script 10031 with a constant motion time). `PSPRECOMP_TEST_AI_OFF=1` instead blocks the CPU pad's
+  bit setters (`FUN_08AB387C` / `FUN_08AB38C4`; pad object `+4` state, `+8` pending, `+12` previous) so the CPU never presses a
+  button, and lets it run and react normally.
+
+## Combo input windows across frame rates (`tools/combo_timing.py`)
+
+Built 2026-11-11 for Jecht (his chain inputs have 3 to 5 frame windows at 30 fps; the wiki list is
+https://dissidia.wiki/Jecht_(Dissidia_012)/Combos). One battle per frame rate runs in parallel (own display / port / memory stick); the CPU
+fighter has no AI input (`PSPRECOMP_TEST_AI_OFF=1`) but is hit normally; trials are fed as script batches (`batch`), so menus are walked once
+per rate.
+
+    combo_timing.py sweep  --work ~/dissidia/work_x --rates 30,120 --prefix 'CIRCLE@800=10001' --probe CIRCLE:n --from 150 --to 700
+    combo_timing.py combos --work ~/dissidia/work_x --rates 30,120      # Rush > N2/Up2 > N3/Up3 > HP, the window of each step
+
+A trial: wait until the player and the dummy are idle (`waitidle`), `place` both at a fixed spot, press the prefix inputs (each pressed a fixed
+delay after the previous move's script id appeared, `sync <script id>`), press the probe D ms after the last move started, and log which
+script id follows. The accepted window of a transition is the set of D that start the chain move; the same D grid (every 1/120 s) is used at
+every rate, so windows compare directly. Jecht's moves: Rush = Circle (script 10000 while the button is down, 10001 the rush itself);
+Neutral 2 = Circle again (10004); a Circle outside the window starts 10030/10031 (the "repeat"); HP = Square.
+
+Things that broke the first runs, now handled (see also "Making automated runs fast"):
+- Every hit pushes the dummy on (42 m after 18 trials, out of the arena, where the game runs into unrecompiled code and logs a line per
+  call: a 42 GB log). `place` puts both fighters back at fixed spots; `Session` aborts a game whose log passes 1.5 GB.
+- A dummy still in a hit reaction does not take the next hit, and no hit means no chain: `waitidle` waits for the dummy's motion to be 1 / 2.
+- The per-update fighter log (`PSPRECOMP_FIGHTER_LOG`) is tens of GB at 120 fps: off in these runs, only `[TEST]` lines are kept in memory
+  (the first version kept every line: 23 GB of python memory).
+- A fight has a time limit; when it ends the game starts a new fight and replays the initial script. `Session.submit` notices and plays the
+  batch again in the new fight.
+- The dummy gets 100,000,000 HP (a broken dummy takes HP damage and the KO check runs inside the update).
+
+## Debug menu options for playtesting (Settings > Debug page)
+
+Added with `psp_settings_add_debug_toggle` (runtime/include/psp_settings.h: a game module adds on/off rows, this session only; Dissidia's are registered in `runtime/framerate.cpp`).
+
+- **Enemy AI** (On / Off): Off skips the CPU brain tick (`FUN_08A64400`, brains in CPU mode), so the CPU fighter never chooses an action; it stands and takes hits. It starts to apply about 7 s into a fight (the intro waits for the brains). `PSPRECOMP_DBG_NOAI=1` starts with it off.
+- **Jecht Combo Timing** (On / Off): for the player's Jecht, any combo step (ground and air). The screen edge flashes green when the window for the next press opens, and each attack press (Circle, Square, Triangle) shows GOOD / TOO EARLY (n ms) / TOO LATE (n ms) as a toast and a red or green edge flash. It reads the game's own rules, nothing is tabled (framerate.cpp, "Debug menu: Jecht combo timing helper"):
+  - **Brave chain steps** (Rush > Neutral 2 / Up 2 > Neutral 3 / Up 3, and the air chain): the move picker asks the chain check `FUN_08AB81E0` for each candidate; its table is a list of 8-byte elements `{action id, start, end}` where element j follows element j-1's action while `start <= actor+0x1A8 (motion time, ticks) < end`. The hook reads that table live. Jecht's table lists a "repeat" move (the id with more than one window: 1629 for Rush at [8,20) and [26,38)) around the chain moves (1664 / 1665 at [18,28)), and the repeat wins where they overlap, so the real window is the chain move's minus the repeat's: Rush > N2 / Up 2 ticks 20..26, N2 > N3 / Up 3 38..44, Stream > next (air) 40..46. Measured at 30 and 120 fps: every press the helper called GOOD started the chain move, every TOO EARLY / TOO LATE started the repeat move.
+  - **HP finishers** (Square after Neutral 3 / Up 3 / Down 3): not in the table; timeline flags. Op 0x004C holds `+0x196` bit 4 (lockout range) and a press in it latches `+0x5B4` bit 2; the window is `+0x195` bits 0 / 1 or `+0x194` bit 7 (ops 0x36 / 0x37 / 0x3A). The helper hooks the three gate functions (`FUN_08B334D0`, `FUN_08B33508`, `FUN_08B33544`, a0 = actor, they return the bit unless the latch is set): open = GOOD, lockout = TOO EARLY, closed after having been open = TOO LATE. Checked at 30 fps: HP started only for presses the helper called GOOD.
+  - Presses are the host pad's (`psp_ctrl_last_sample`: keyboard, pad, scripts): Circle (Brave) and Square (HP) only, never with L or R held (dodge, dash and dodge cancel are R + Cross / Triangle), and only while the fighter is in a move: after a move ends the game keeps its "current action" fields (`+0x101C` pointer, `+0x1A8` motion time), so a press from neutral was being judged against the last move and read TOO LATE. A press so early that the game ignores it (before the move accepts any input) is judged against the table with the motion time at the start of that update; (the chain table is read from the global, so this works from the first press.)
+  - Only Jecht's own attack moves (script ids 10000-10199) count: the dodge, dash and guard have timeline windows of their own. The chain table is read from its global, the pointer at `0x08AB8388` (the move picker `FUN_08848160` loads it as `*(0x08AC0000 - 31864)`; it is the same table the chain check gets inside a move), every update, so the flashes work from the first hit without any press. (Caching the table from the chain check's calls was wrong: a move started from neutral calls it with the fresh-start table, which made the windows vanish after every fresh Rush; before that, nothing showed until a chain press had been made.) The edge flashes green when a window opens and orange when it closes with the move still running (not when a press started the next move). When the move is over the game keeps its last "current action" and frozen motion time, which looked like a window that never closes.
+  - Env: `PSPRECOMP_DBG_COMBO=1` starts with it on; `PSPRECOMP_PRESS_LOG=1` logs `[COMBO]` lines, `[CHAIN]` (the elements reachable from the current action) and `[FLAGS]`.
+- Not done: infinite enemy HP / bravery or zero player damage. HP is held by `+0x10B0` in test runs only; the live bravery value was not found in RAM (see "Finding a stat the HUD shows"); a hit takes exactly 115 BRV off in the test setup whatever attacker stat words (`+0x10A8`, `+0x10AC`, `+0x10B4`, `+0x10B8`) are zeroed.
+- The game's own pressed test (`FUN_08AB399C`, the press latch's hook) returned no edges for the scripted Jecht chain presses at 30 or 120 Hz in test runs (`press latch: ... 0 edges` in the `[FPS]` line), so the press latch may not be doing anything for these inputs; not investigated.
+
+- Jecht's Circle / Square are handed to the game on a 30 Hz grid above 30 fps (`jecht_grid_filter`, `PSPRECOMP_JECHT_GRID=0` to turn it off): the Jecht Combo Timing helper above therefore sees each press on a grid update, and a press can reach the game up to one 30 Hz frame after you pressed it. Details and measurements: docs/frame-rate.md "Jecht timed windows on the 30 Hz grid".

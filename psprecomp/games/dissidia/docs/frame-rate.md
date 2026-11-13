@@ -186,3 +186,55 @@ a press is seen for one update: 33 ms on the PSP, 8 ms at 120 Hz. Timed chain in
 harder to hit at 120 Hz. The hook in `runtime/framerate.cpp` reports a press as pressed for 33 ms in total (4 updates at 120 Hz),
 ending early when the fighter starts another action (script id changes), so the press that starts a move cannot also trip that move's
 early-press lockout (event 0x004C). `PSPRECOMP_PRESS_LATCH=<ms>` changes the time (0 turns it off); the `[FPS]` log line shows the counts.
+
+### Jecht chain windows at 30 vs 120 Hz (measured 11 Nov, not fixed yet)
+
+`tools/combo_timing.py combos` (docs/testing.md) presses the next chain input D ms after the previous move's script id first appears and records
+which move follows. Every ground step of Jecht's wiki combos, 30 Hz against 120 Hz (D in ms, grid 8.33 ms; "start..end" = first and last D that start the chain move):
+
+| Step | 30 Hz | 120 Hz before the fix | 120 Hz with the step (default now) |
+|---|---|---|---|
+| Rush > Neutral 2 (Circle) | 267..358 | 317..408 | 292..383 |
+| Rush > Up 2 (Circle + Up) | 275..358 | 317..408 | 292..383 |
+| Neutral 2 > Neutral 3 | 542..633 | 567..658 | 542..633 |
+| Neutral 2 > Up 3 | 542..617 | 567..658 | 550..633 |
+| Neutral 3 > HP (Square) | 600 (one sample) | 625 (one sample) | 600 (one sample) |
+
+The windows are the same width (12 grid steps, 3 updates at 30 Hz, the wiki's "3f") but sit **25 ms (1.5 ticks) later at 120 Hz**, at both edges, for every step.
+(Rush steps differ by 50 in D because a 30 Hz press is only seen on a 33 ms update boundary; in update time the shift is 25 ms.)
+25 ms = 2.0 - 0.5 ticks: the first update of a move advances its clock by a whole 30 Hz frame (2 ticks) on the PSP and by only 0.5 at 120 Hz, so the move's
+first visible frame is 33 ms into the move at 30 Hz and 8 ms at 120 Hz, while the windows are set in ticks of the move's own clock.
+Fix (`actor_dt_hook`, on by default, `PSPRECOMP_ACTION_START_STEP=0` turns it off): above 30 Hz the update after a fighter's script id changes runs with a 30 Hz sized step (x `2 / ticks`),
+so the move's clock is where the PSP's is at its first visible frame. Checked on Rush > Neutral 2 (D = press delay after the move's script id appeared): 30 Hz 267..358, 120 Hz 292..383
+(before: 317..408). In terms of when a press reaches the game the 120 Hz window now opens about 17 ms earlier and closes about 17 ms later than the 30 Hz one (a 30 Hz press is only seen on
+a 33 ms update boundary, a 120 Hz one on an 8 ms boundary, and the press latch holds it 33 ms), centred on the same moment instead of 25 ms late. All five were re-measured with the step (`combo_timing.py combos --rates 30,120`, 11-12 Nov): the Rush steps now straddle the 30 Hz window by about 17 ms each side, the Neutral 3 / Up 3 steps match to within one grid step (8 ms). The HP step still has one sample each (the sweep for it starts 300 ms after the previous move and the window is narrow); it needs its own finer run.
+Not checked: 60 Hz, other characters (every fighter's first update after an action change is longer now; the dash / rush distance of the first update is 4x at 120 Hz, as it is one whole 30 Hz update at 30 Hz).
+Exactly equal edges would need the in-action pressed test (`FUN_08AB399C`) to answer only on the move's 30 Hz lattice (every 4th update at 120 Hz); not implemented because it adds up to 25 ms input latency for every character's in-action presses.
+Wiki windows for reference (30 fps frames, the page's Eddienput waits): Rush > N2/Up2 W10-12, N2 > N3/Up3 W18-20, N3 > HP W20-23 (4f), Up3 > UJS W27-31 (5f).
+The HP step above has one sample because the sweep started its probe 300 ms after the previous move; the HP window needs its own finer run.
+
+### Jecht timed windows on the 30 Hz grid (12 Nov)
+
+The game compares a press with a window using the move's motion time (`actor +0x1A8`, ticks; the chain check `FUN_08AB81E0`, table element `{id, start, end}`, `start <= time < end`; the HP
+finishers use the flag gates, see testing.md "Jecht Combo Timing"). On the PSP the pad is read once per 33 ms update and the clock is 2, 4, 6 ... at each read, so a press is
+checked at only a few moments (3 for a 6-tick window). The first-update step above fixed the clock; what was left (windows up to 17 ms either side of the 30 Hz ones) was the 8 / 17 ms
+read times. For the human Jecht the game is now handed Circle / Square on a 30 Hz grid above 30 Hz (`jecht_grid_filter`, via the new `psp_ctrl_set_filter` hook in psp_hle_ctrl.cpp):
+
+- the buttons change only on every P-th update (P = 2 / ticks: 4 at 120 Hz, 2 at 60 Hz), counted from the first update after his last move change (`g_grid_anchor`), so the first read after a move
+  starts comes right after its first visible frame and then every 33 ms; a tap that came and went between two reads is latched and seen once;
+- together with the first-update step (the clock at read n is 2 + 2n at every rate) the windows are read at the same real times at 30, 60 and 120 Hz.
+- Cost: Circle / Square reach the game up to one 30 Hz frame late (about 17 ms at 60 Hz, 25 ms at 120 Hz), only while the player is Jecht. The stick and the other buttons are live.
+- `PSPRECOMP_JECHT_GRID=0` turns the input grid off (the first-update step stays); `PSPRECOMP_ACTION_START_STEP=0` turns that off.
+
+Measured with `tools/combo_timing.py combos --rates 30,60,120` (accepted press delays after the move started, ms, grid 8.3 ms; 3517 s run):
+
+| Step | 30 Hz | 60 Hz | 120 Hz |
+|---|---|---|---|
+| Rush > Neutral 2 | 267..358 | 267..358 | 267..358 |
+| Rush > Up 2 | 267..358 | 267..358 | 267..358 |
+| Neutral 2 > Neutral 3 | 542..633 | 542..633 | 533..625 |
+| Neutral 2 > Up 3 | 542..633 | 542..633 | 533..617 |
+| Neutral 3 > HP (Square) | 600 (one sample) | 592 | 592 |
+
+Rush > Neutral 2 at 120 Hz was repeated 5 times at 358 ms (Neutral 2 each time) and 367 ms (the repeat move each time). Everything is identical at 60 Hz and within one 8 ms update at 120 Hz.
+Not measured: the air chain at 60 / 120 Hz, other fighters (their first update still gets the step, no grid).

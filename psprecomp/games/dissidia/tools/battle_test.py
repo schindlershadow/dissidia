@@ -29,6 +29,7 @@ moment the paths part. Rates that disagree by more than --tolerance metres fail 
 import argparse
 import math
 import os
+import random
 import re
 import shutil
 import signal
@@ -43,8 +44,8 @@ BTN = {'select': 0x1, 'start': 0x8, 'up': 0x10, 'right': 0x20, 'down': 0x40, 'le
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Player Select grid: (row, column) of each character with the cursor starting on (0, 0); read off the screen
-GRID = {'lightning': (0, 0), 'vaan': (0, 1), 'squall': (1, 5), 'kain': (0, 4), 'terra': (1, 3)}   # (down presses, right presses; negative = left)
-CHAR_ID = {'lightning': 31, 'squall': 15, 'kain': 24, 'terra': 11}      # the game's charId (the fighter the tests drive; the other one is the dummy)
+GRID = {'lightning': (0, 0), 'vaan': (0, 1), 'squall': (1, 5), 'kain': (0, 4), 'terra': (1, 3), 'jecht': (2, 7)}   # (down presses, right presses; negative = left)
+CHAR_ID = {'lightning': 31, 'squall': 15, 'kain': 24, 'terra': 11, 'jecht': 20}      # the game's charId (the fighter the tests drive; the other one is the dummy)
 
 
 class Game:
@@ -176,7 +177,12 @@ def start_xvfb():
     if os.environ.get('BT_DISPLAY'):           # no Xvfb on this machine: use an existing X display (the 480x272 test windows show on it)
         return _NoProc(), os.environ['BT_DISPLAY']
     n = free_display()
-    p = subprocess.Popen(['Xvfb', ':%d' % n, '-screen', '0', '1280x720x24', '-nolisten', 'tcp', '-ac', '+extension', 'GLX'],
+    # started through a randomly named symlink: other sessions clean up with `pkill Xvfb` and killed this display mid-run (the game then spins in
+    # unrecompiled code logging GBs); a random process name is not matched
+    link_dir = tempfile.mkdtemp(prefix='bt_x_')
+    link = os.path.join(link_dir, 'x%08x' % random.getrandbits(32))
+    os.symlink(shutil.which('Xvfb'), link)
+    p = subprocess.Popen([link, ':%d' % n, '-screen', '0', '1280x720x24', '-nolisten', 'tcp', '-ac', '+extension', 'GLX'],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     for _ in range(50):
         if os.path.exists('/tmp/.X11-unix/X%d' % n):
@@ -191,9 +197,13 @@ def free_port():
         return s.getsockname()[1]
 
 
-def walk_menus(g, char, tries=14, stage=12):
+def walk_menus(g, char, tries=14, stage=12, ff_menus=0):
     """boot -> battle. Raises when a stage does not come up."""
+    t_start = time.time()
+    lap = lambda what: print('[battle_test]   +%5.1f s %s' % (time.time() - t_start, what), file=sys.stderr) if os.environ.get('BT_TRACE') else None
     g.wait_log(r'Debug socket listening', 60)
+    if ff_menus != 0:
+        g.cmd('FF 120000 %d' % max(ff_menus, 0))       # the menu trip at ff_menus x real time (-1: as fast as frames render)
     # title: CROSS until the save list opens
     end = time.time() + 120
     while time.time() < end:
@@ -203,15 +213,18 @@ def walk_menus(g, char, tries=14, stage=12):
             break
     else:
         raise RuntimeError('the save list never opened')
+    lap('title done')
     time.sleep(0.4)
     g.press('cross')                                   # the save list
     g.wait_log(r'sceUtilitySavedata complete: mode=4 result=0x0+\b', 40)
     time.sleep(2.0)
     g.settle(20)
+    lap('save loaded')
     g.step('down', wait=0.6)                                     # Story Mode -> Battle Mode
     g.step('cross')
     g.step('cross')                                    # Quick Battle (1-on-1) -> Player Select
     time.sleep(1.0)
+    lap('player select')
     row, col = GRID[char.lower()]
     for _ in range(row):
         g.step('down', settle=False)
@@ -219,6 +232,7 @@ def walk_menus(g, char, tries=14, stage=12):
         g.step('right' if col > 0 else 'left', settle=False)
     g.step('cross')
     g.step('cross')                                    # YES
+    lap('char chosen')
     g.step('cross')                                    # CPU Select: Lightning
     g.step('cross')                                    # YES
     time.sleep(2.0)
@@ -233,6 +247,7 @@ def walk_menus(g, char, tries=14, stage=12):
             time.sleep(0.5)
             g.shot().save(os.environ['BT_SETUP_SHOT'])
         g.step('up', settle=False)
+    lap('setup done')
     g.press('cross')                                   # Enter Battle
     # loading / opponent pages: CROSS ("Next") until the fight's HUD (dark gauge bar along the bottom) is on screen
     seen = 0
@@ -244,9 +259,17 @@ def walk_menus(g, char, tries=14, stage=12):
         dark = sum(1 for p in ((120, 262), (360, 262), (30, 262), (450, 262)) if sum(im.getpixel(p)) < 330)
         seen = seen + 1 if dark >= 3 else 0
         if seen >= 2:
-            g.touch_go()                                   # the runtime starts its game clock now
-            g.wait_log(r'\[TEST\] battle started', int(os.environ.get('BT_START_WAIT', '10')))
-            return
+            g.touch_go()                   # the runtime starts its game clock now
+            for _ in range(10):                            # (a fade can look like the HUD: if the fight is not up yet, press on)
+                try:
+                    g.wait_log(r'\[TEST\] battle started', 8)
+                    g.cmd('FF 0')
+                    return
+                except RuntimeError as e:
+                    if not g.alive():
+                        raise
+                    g.press('cross')
+            raise RuntimeError('the battle never started')
         if seen == 0:
             g.press('cross')
     raise RuntimeError('the battle never started')
@@ -258,11 +281,11 @@ def run(a, fps=None):
     xp, disp = start_xvfb()
     g = Game(os.path.abspath(a.work), fps, a.out, disp, free_port(), script=os.path.abspath(a.script) if a.script else None,
              record=os.path.abspath(a.record) if getattr(a, 'record', None) else None,
-             extra_env={'PSPRECOMP_TEST_PLAYER_CHAR': str(CHAR_ID[a.char.lower()])})
+             extra_env=dict(({'PSPRECOMP_TEST_PLAYER_CHAR': str(CHAR_ID[a.char.lower()])} if a.char.lower() in CHAR_ID else {}), **(getattr(a, 'env', None) or {})))
     try:
         g.start()
         t0 = time.time()
-        walk_menus(g, a.char, stage=getattr(a, 'stage', 12))
+        walk_menus(g, a.char, stage=getattr(a, 'stage', 12), ff_menus=getattr(a, 'ff_menus', 0))
         print('[battle_test] %d fps: in battle after %.0f s' % (fps, time.time() - t0), file=sys.stderr)
         if getattr(a, 'watch', None):                  # arm the runtime's memory-write watch (debug socket M) `watch_after` s after the clock starts
             time.sleep(a.watch_after)
@@ -275,7 +298,14 @@ def run(a, fps=None):
             return g.log
         if a.script:
             end = time.time() + a.timeout
+            ff, last_ff = getattr(a, 'ff', False), 0
             while g.alive() and time.time() < end:
+                if ff and time.time() - last_ff > 60:   # fast-forward (as fast as frames render) for the script, renewed before the cap
+                    try:
+                        g.cmd('FF 120000')
+                    except OSError:
+                        pass
+                    last_ff = time.time()
                 time.sleep(0.5)
             if g.alive():
                 raise RuntimeError('the script did not finish (no quit) within %d s' % a.timeout)

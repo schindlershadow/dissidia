@@ -27,6 +27,9 @@ extern std::atomic<uint32_t> g_host_analog;
 /// the game was last handed (for recording a play session).
 void psp_ctrl_set_script(bool on, uint32_t buttons, uint32_t analog);
 void psp_ctrl_last_sample(uint32_t* buttons, uint32_t* analog);
+/// A game module can reshape the button state the game is handed (after keyboard / pad / script input): called for every pad poll with the PSP button
+/// mask, returns the mask to give the game. Any thread that polls (the game's). nullptr removes it.
+void psp_ctrl_set_filter(uint32_t (*filter)(uint32_t buttons));
 
 /// Debug-socket injected button mask + expiry (steady_clock milliseconds).
 /// Set by the `B <hexmask> <ms>` debug-socket command; the sceCtrl HLE ORs

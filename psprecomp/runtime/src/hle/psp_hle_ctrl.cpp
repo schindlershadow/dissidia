@@ -78,6 +78,8 @@ void psp_ctrl_set_script(bool on, uint32_t buttons, uint32_t analog) {
     g_script_analog.store(analog, std::memory_order_relaxed);
     g_script_on.store(on, std::memory_order_relaxed);
 }
+static std::atomic<uint32_t (*)(uint32_t)> g_button_filter{nullptr};
+void psp_ctrl_set_filter(uint32_t (*filter)(uint32_t buttons)) { g_button_filter.store(filter, std::memory_order_relaxed); }
 void psp_ctrl_last_sample(uint32_t* buttons, uint32_t* analog) {
     *buttons = g_last_buttons.load(std::memory_order_relaxed);
     *analog = g_last_analog.load(std::memory_order_relaxed);
@@ -109,6 +111,7 @@ static void write_ctrl_data(
     buttons |= right_stick_dpad_bits();
     const bool scripted = g_script_on.load(std::memory_order_relaxed);
     if (scripted) buttons = g_script_buttons.load(std::memory_order_relaxed);
+    if (auto f = g_button_filter.load(std::memory_order_relaxed)) buttons = f(buttons);
     psp_mem_write<uint32_t>(rdram, ptr + 4, buttons);
     g_last_buttons.store(buttons, std::memory_order_relaxed);
 

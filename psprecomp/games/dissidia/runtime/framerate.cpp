@@ -78,6 +78,9 @@ constexpr uint32_t ACTOR_DT = 0x08838300u;      // EBOOT: an actor's time step
 constexpr uint32_t SLOWMO_FRAME = 0x08864DD8u;  // EBOOT: per-frame update of the slow-motion object, writes the global step
 constexpr uint32_t SLOWMO_PTR = 0x089D5EA8u;    // EBOOT: pointer to that object (+0 step value, +4 time left, +8 flags)
 constexpr uint32_t ROOT_MOTION = 0x0882F784u;   // EBOOT: adds (bone pose now - pose last tick) to the motion player's accumulator
+constexpr uint32_t CHAIN_CHECK = 0x08AB81E0u;   // battle overlay: chain check (a0 = chain table, a1 = actor, a2 = u16* requested action id); window = element start <= actor+0x1A8 < end
+constexpr uint32_t GATE_37 = 0x08B334D0u, GATE_36 = 0x08B33508u, GATE_3A = 0x08B33544u;   // battle overlay: input-window gates (a0 = actor): +0x195&1 / +0x194&0x80 / +0x195&2, 0 while the lockout latch +0x5B4&2 is set
+constexpr uint32_t CHAIN_TABLE_PTR = 0x08AB8388u;   // battle overlay data: pointer to the chain table (the move picker FUN_08848160 loads it as *(0x08AC0000 - 31864))
 constexpr uint32_t CPU_TICK = 0x08A64400u;      // battle overlay: brain tick (a0 = brain = actor +0x5C4); NO_AI skips it for CPU brains
 constexpr uint32_t CPU_AI = 0x08A75D38u;        // battle overlay: CPU AI action chooser (returns -1 / -4: no action)
 constexpr uint32_t STEER_MOVE = 0x08A2C960u;   // battle overlay: ground steered move controller (Squall's Revolver Drive rush): a0 = out vector (metres to move this update)
@@ -109,6 +112,21 @@ bool g_scope_all = false, g_log = false;
 int g_switch_logs = 0;
 int g_rm_log_left = 300;
 bool g_fighter_log = false;   // PSPRECOMP_FIGHTER_LOG (see fighter_log_frame)
+uint32_t g_prev_scr[4] = {0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu};
+bool g_action_new[4] = {false, false, false, false};   // the script id changed during the previous update: this update is the move's first one with a step   // each fighter's script id at the end of the previous update
+// 30 Hz grid (Jecht's timed windows): above 30 Hz the human Jecht's Circle / Square are only seen on every P-th update (P = 2 / ticks: 4 at 120 Hz, 2 at 60), counted from
+// the first update after his last move change (g_grid_anchor): reads come right after the move's first visible frame and then every 33 ms, as on the PSP. With the
+// first-update step (the update after a move starts advances 2 ticks, see actor_dt_hook) the move's clock at read n is 2 + 2n at every rate (30 Hz: 2 ticks per update; 120 Hz: 0.5 + 2.0 + 3 x 0.5 + ...),
+// so the windows (clock ranges) are read at the same real times at 30, 60 and 120 Hz.
+bool g_jecht_grid = true;   // PSPRECOMP_JECHT_GRID=0 turns the input half off for A/B (the first update step stays)
+int grid_period() { return std::max(1, static_cast<int>(2.0f / g_ticks + 0.5f)); }
+float first_step() { return 2.0f; }
+uint64_t g_grid_anchor = 0;   // g_tick of the first update after Jecht's last move change: the grid is every P-th update counted from here
+bool g_dbg_no_ai = false;      // debug menu: Enemy AI off (the CPU brain tick is skipped once the fight has been running a while)
+bool g_dbg_combo = false;      // debug menu: Jecht combo timing helper (flash when a chain window opens, messages for early / late presses)
+bool g_env_no_ai = false;      // PSPRECOMP_TEST_NO_AI (the test harnesses)
+float g_battle_age = 0.f;      // ticks (1/60 s) the battle has been running
+bool g_action_start_step = true;   // see actor_dt_hook (PSPRECOMP_ACTION_START_STEP=0 turns it off for A/B)
 uint32_t g_press_calls = 0, g_press_edges = 0, g_press_latched = 0, g_press_dropped = 0;   // press latch counters for the [FPS] log
 uint64_t g_tick = 1;               // frame ends seen (the effect system updates once per frame)
 // logic-rate log
@@ -171,19 +189,31 @@ uint64_t g_fighter_seen[4] = {};   // g_tick when the fighter's step was last as
 //                                               <ms> analog <ax> <ay>           stick only
 //                                               <ms> mark <text>                 [TEST] line in the log
 //                                               <ms> quit                        exit the game
+//                                               <ms> sync [timeout] [scr]        hold the script until the player's action (script id) changes (or becomes `scr`); that update is T0
+//                                               <ms> batch <file>                hold it until <file> exists, then play (and delete) the lines in it: a driver feeds trials into a running battle
+//                                               <ms> waitidle [timeout]          hold it until the player is out of any action (script id 0xFFFF); that update is T0
+//                                               <ms> place <m>                   put the player <m> metres from the dummy (same bearing), teleport
+//                                               +<ms> <command>                  any command with a '+' time runs <ms> of game time after T0 (a script with such lines is
+//                                                                                played in file order). The player's action changes are logged as '[TEST] gt=<ms> scr <old> -> <new>'.
 // BUTTONS: CROSS CIRCLE SQUARE TRIANGLE L R UP DOWN LEFT RIGHT START SELECT joined by '+', or a 0x hex mask. The clock is game
 // time in ms since the battle began (the first fighter in an action), advanced by 1/60 s x dt per update, so the same script
 // plays identically at 30 and 120 fps and the [FIGHTER] logs (gt=) of two rates can be compared line by line (tools/rate_test.py).
 // The scripted pad replaces every other input while a script runs in battle. PSPRECOMP_INPUT_RECORD=<file> writes the pad
 // state the game was given as such a script (play the move once by hand, replay it at any rate).
-struct TestEvent { double t; int kind; uint32_t a, b; std::string text; };   // kind 0 set, 1 analog, 2 mark, 3 quit, 4 action
+struct TestEvent { double t; int kind; uint32_t a, b; std::string text; bool rel = false; };   // kind 0 set, 1 analog, 2 mark, 3 quit, 4 action, 10 sync, 11 waitidle, 12 place, 13 batch, 14 scan (5 gauge and 6 shot are the assist-gauge / screenshot commands); rel: t counts from the last sync
 std::vector<TestEvent> g_test_events;
 size_t g_test_next = 0;
 double g_gt_ms = 0;                     // game time in the battle, ms
 bool g_gt_started = false, g_test_on = false;
 uint32_t g_test_buttons = 0, g_test_analog = 0x8080;
-bool g_dbg_no_ai = false;      // debug menu: Enemy AI off (the CPU brain tick is skipped once the fight has been running a while)
-float g_battle_age = 0.f;      // ticks (1/60 s) the battle has been running (the menu option waits for the intro)
+bool g_test_has_rel = false;
+double g_ref_gt = 0;                    // game time of the last `sync` (the update the player's action changed on): `+<ms>` events count from it
+int g_wait_kind = 0;                    // 5 = waiting in `sync`, 6 = in `waitidle`; the script is held until it ends
+uint32_t g_wait_scr = 0;
+double g_wait_since = 0, g_wait_timeout = 0;
+int g_wait_target = -1;
+bool g_scan_seeded = false;   // `scan`: the candidate lists exist (second scan on)
+bool g_test_ai_off = false;      // PSPRECOMP_TEST_AI_OFF=1: the CPU fighter's pad never gets a button (no AI input) but runs at the normal time step, so it takes hits and reacts
 bool g_test_freeze_cpu = false;   // PSPRECOMP_TEST_FREEZE_CPU=1: every fighter but the first one seen gets time step 0 while a test runs (a standing dummy)
 int g_player_char = -1;   // PSPRECOMP_TEST_PLAYER_CHAR=<charId>: the fighter under test (default: the first one seen)
 uint32_t g_human_vt = 0;   // vtable of the human's controller object (found at the first battle: the one a scripted press reaches)
@@ -210,52 +240,79 @@ uint32_t parse_buttons(const std::string& s) {
     return m;
 }
 
-void testdrive_load(const char* path) {
-    std::ifstream in(path);
-    if (!in) { std::fprintf(stderr, "[TEST] cannot read script %s\n", path); return; }
+// parse script lines into `ev` (rel events keep file order)
+void parse_script(std::istream& in, std::vector<TestEvent>& ev) {
     std::string line;
     while (std::getline(in, line)) {
         const size_t h = line.find('#');
         if (h != std::string::npos) line.resize(h);
         std::istringstream ss(line);
         double t; std::string cmd;
+        const size_t f0 = line.find_first_not_of(" \t");
+        const bool rel = f0 != std::string::npos && line[f0] == '+';   // +<ms>: relative to the last sync
+        if (rel) line[f0] = ' ', ss.str(line);
         if (!(ss >> t >> cmd)) continue;
-        if (cmd == "set" || cmd == "tap") {
+        const size_t before = ev.size();
+        if (cmd == "sync" || cmd == "waitidle") {   // sync [timeout ms]: hold the script until the player's action (script id) changes, then +ms counts from that update
+            double to = 3000; int tgt = -1; ss >> to >> tgt;   // sync [timeout ms] [script id]: ... changes (or becomes that script id)
+            ev.push_back({t, cmd == "sync" ? 10 : 11, static_cast<uint32_t>(tgt), static_cast<uint32_t>(to), "", rel});   // waitidle [timeout ms]: hold it until the player is out of any action
+        } else if (cmd == "batch") {   // batch <file>: hold the script until <file> exists, then play the lines in it (and delete it): lets a driver feed trials into a running battle
+            std::string f; ss >> f;
+            ev.push_back({t, 13, 0, 0, f, rel});
+        } else if (cmd == "scan") {   // scan <min drop> <max drop> <max value>: user RAM words that dropped by min..max since the last scan, and kept dropping (finds a stat the HUD shows)
+            double lo = 150, hi = 400, mx = 2000; ss >> lo >> hi >> mx;
+            ev.push_back({t, 14, static_cast<uint32_t>(lo), static_cast<uint32_t>(hi), std::to_string(static_cast<int>(mx)), rel});
+        } else if (cmd == "poke") {   // poke <player|cpu> <hex offset into the fighter> <int value>: write one word of a fighter (finding which stat a number on the HUD comes from)
+            std::string who = "player", off; long v = 0; ss >> who >> off >> v;
+            ev.push_back({t, 15, static_cast<uint32_t>(std::strtoul(off.c_str(), nullptr, 16)), static_cast<uint32_t>(v), who, rel});
+        } else if (cmd == "place") {   // place <metres>: the player stands that far from the dummy (on the line they were on), at once
+            double d = 4; ss >> d;
+            ev.push_back({t, 12, static_cast<uint32_t>(d * 100.0 + 0.5), 0, "", rel});
+        } else if (cmd == "set" || cmd == "tap") {
             std::string b; ss >> b;
             const uint32_t m = parse_buttons(b);
             if (cmd == "tap") {
                 double d = 100; ss >> d;
-                g_test_events.push_back({t, 0, m, 0x8080, ""});
-                g_test_events.push_back({t + d, 0, 0, 0x8080, "tap"});   // 'tap' release keeps the stick: marked by text
+                ev.push_back({t, 0, m, 0x8080, ""});
+                ev.push_back({t + d, 0, 0, 0x8080, "tap"});   // 'tap' release keeps the stick: marked by text
             } else {
                 unsigned ax = 128, ay = 128; ss >> ax >> ay;
-                g_test_events.push_back({t, 0, m, (ay & 255u) << 8 | (ax & 255u), "set"});
+                ev.push_back({t, 0, m, (ay & 255u) << 8 | (ax & 255u), "set"});
             }
         } else if (cmd == "analog") {
             unsigned ax = 128, ay = 128; ss >> ax >> ay;
-            g_test_events.push_back({t, 1, 0, (ay & 255u) << 8 | (ax & 255u), ""});
+            ev.push_back({t, 1, 0, (ay & 255u) << 8 | (ax & 255u), ""});
         } else if (cmd == "mark") {
             std::string rest; std::getline(ss, rest);
-            g_test_events.push_back({t, 2, 0, 0, rest});
+            ev.push_back({t, 2, 0, 0, rest});
         } else if (cmd == "action") {   // action <id> [who]: start the action; who = player (default) | cpu | <slot>; id -1 lists them
             int id = -1; std::string who = "player"; ss >> id >> who;
-            g_test_events.push_back({t, 4, static_cast<uint32_t>(id), who == "cpu" ? 1u : (who == "player" ? 0u : 2u + static_cast<uint32_t>(std::atoi(who.c_str()))), ""});
+            ev.push_back({t, 4, static_cast<uint32_t>(id), who == "cpu" ? 1u : (who == "player" ? 0u : 2u + static_cast<uint32_t>(std::atoi(who.c_str()))), ""});
         } else if (cmd == "shot") {   // shot <path>: save a screenshot (TGA) of the picture shown at this game time (renderer comparisons)
             std::string path; ss >> path;
-            g_test_events.push_back({t, 6, 0, 0, path});
+            ev.push_back({t, 6, 0, 0, path});
         } else if (cmd == "gauge") {   // gauge <side> <0..10000>: set a side's assist gauge (side 0 / 1 = the controller table order of the HUD)
             unsigned side = 1; double v = 0; ss >> side >> v;
-            g_test_events.push_back({t, 5, side, 0, std::to_string(v)});
+            ev.push_back({t, 5, side, 0, std::to_string(v)});
         } else if (cmd == "exburst") {   // exburst [who]: start the EX Burst (controller FUN_08A3EB70) of a fighter without the EX gauge / trigger
             std::string who = "player"; ss >> who;
-            g_test_events.push_back({t, 7, 0, who == "cpu" ? 1u : (who == "player" ? 0u : 2u + static_cast<uint32_t>(std::atoi(who.c_str()))), ""});
+            ev.push_back({t, 7, 0, who == "cpu" ? 1u : (who == "player" ? 0u : 2u + static_cast<uint32_t>(std::atoi(who.c_str()))), ""});
         } else if (cmd == "exstate") {   // exstate <n> [who]: write the EX Mode state (actor +1924 +4); logs the state table
             unsigned n = 0; std::string who = "player"; ss >> n >> who;
-            g_test_events.push_back({t, 8, n, who == "cpu" ? 1u : (who == "player" ? 0u : 2u + static_cast<uint32_t>(std::atoi(who.c_str()))), ""});
-        } else if (cmd == "quit") g_test_events.push_back({t, 3, 0, 0, ""});
+            ev.push_back({t, 8, n, who == "cpu" ? 1u : (who == "player" ? 0u : 2u + static_cast<uint32_t>(std::atoi(who.c_str()))), ""});
+        } else if (cmd == "quit") ev.push_back({t, 3, 0, 0, ""});
         else std::fprintf(stderr, "[TEST] unknown command '%s'\n", cmd.c_str());
+        for (size_t i = before; i < ev.size(); i++) ev[i].rel = rel;
+        if (rel) g_test_has_rel = true;
     }
-    std::stable_sort(g_test_events.begin(), g_test_events.end(), [](const TestEvent& x, const TestEvent& y) { return x.t < y.t; });
+}
+
+void testdrive_load(const char* path) {
+    std::ifstream in(path);
+    if (!in) { std::fprintf(stderr, "[TEST] cannot read script %s\n", path); return; }
+    parse_script(in, g_test_events);
+    // a script with relative events keeps its file order (the times only mean something after the sync before them)
+    if (!g_test_has_rel) std::stable_sort(g_test_events.begin(), g_test_events.end(), [](const TestEvent& x, const TestEvent& y) { return x.t < y.t; });
     std::fprintf(stderr, "[TEST] script %s: %zu events\n", path, g_test_events.size());
 }
 
@@ -365,7 +422,7 @@ void testdrive_frame(uint8_t* rdram, recomp_context* ctx) {
         return;
     }
     if (!g_gt_started) {
-        g_gt_started = true; g_gt_ms = 0; g_test_next = 0; g_test_buttons = 0; g_test_analog = 0x8080;
+        g_gt_started = true; g_gt_ms = 0; g_test_next = 0; g_test_buttons = 0; g_test_analog = 0x8080; g_wait_kind = 0; g_ref_gt = 0;
         std::fprintf(stderr, "[TEST] battle started (tick %llu)\n", (unsigned long long)g_tick);
         if (g_record_path[0]) {   // one file per fight: <file>, <file>.2, <file>.3 ...
             static int fights = 0;
@@ -392,19 +449,130 @@ void testdrive_frame(uint8_t* rdram, recomp_context* ctx) {
     static bool described = false;
     if (!g_gt_started) described = false;
     if (!described && g_gt_ms >= 1000) { described = true; test_describe_fighters(); }
-    if (g_test_freeze_cpu) {   // the dummy keeps the HP it started with (actor +0x10B0): a hit never ends the fight
+    if (g_test_freeze_cpu || g_test_ai_off) {   // the dummy keeps the HP it started with (actor +0x10B0): a hit never ends the fight
         static uint32_t keep_actor = 0, keep_hp = 0;
         for (int i = 0; i < 4; i++) {
             const uint32_t a = g_fighters[i];
             if (!a || !ok(a) || g_tick - g_fighter_seen[i] > 60 || a == test_player()) continue;
             if (a != keep_actor || !g_gt_started || g_gt_ms < 34) { keep_actor = a; keep_hp = r32(a + 0x10B0u); }
-            else if (keep_hp) w32(a + 0x10B0u, keep_hp);
+            else if (keep_hp) w32(a + 0x10B0u, g_test_ai_off ? 100000000u : keep_hp);   // AI-off dummies get a huge pool: once broken, hits do HP damage and the KO check runs inside the update, before this write
+        }
+    }
+    // the player's action (script id): every change is logged, and sync / waitidle watch it
+    static uint32_t prev_scr = 0xFFFFu;
+    uint32_t cur_scr = 0xFFFFu;
+    if (const uint32_t pa = test_player(); pa && ok(pa)) cur_scr = r32(pa + 0x540u) & 0xFFFFu;
+    if (!g_gt_started) prev_scr = 0xFFFFu;
+    else if (cur_scr != prev_scr) {
+        const uint32_t da = test_fighter(1), pa2 = test_player();   // HP / bravery words of the player and the dummy (offsets 0x10A8..0x10B8)
+        std::fprintf(stderr, "[TEST] gt=%.0f scr %d -> %d  me %d %d %d %d %d  dummy %d %d %d %d %d\n", g_gt_ms, prev_scr == 0xFFFFu ? -1 : static_cast<int>(prev_scr), cur_scr == 0xFFFFu ? -1 : static_cast<int>(cur_scr),
+                     (int)r32(pa2 + 0x10A8u), (int)r32(pa2 + 0x10ACu), (int)r32(pa2 + 0x10B0u), (int)r32(pa2 + 0x10B4u), (int)r32(pa2 + 0x10B8u),
+                     (int)r32(da + 0x10A8u), (int)r32(da + 0x10ACu), (int)r32(da + 0x10B0u), (int)r32(da + 0x10B4u), (int)r32(da + 0x10B8u));
+        prev_scr = cur_scr;
+        if (std::getenv("PSPRECOMP_TEST_DUMP")) {   // raw words 0x1000..0x1400 of the player and the dummy: finds the HP / bravery fields by what changes on a hit
+            for (int w = 0; w < 2; w++) {
+                const uint32_t a = w ? test_fighter(1) : test_player();
+                std::fprintf(stderr, "[TESTDUMP] gt=%.0f %s", g_gt_ms, w ? "dummy" : "me");
+                static uint32_t lo = 0x1000, hi = 0x1400;
+                static bool rd = false;
+                if (!rd) { rd = true; if (const char* r = std::getenv("PSPRECOMP_TEST_DUMP_RANGE")) std::sscanf(r, "%x,%x", &lo, &hi); }
+                for (uint32_t o = lo; o < hi; o += 4) std::fprintf(stderr, " %X", r32(a + o));
+                std::fprintf(stderr, "\n");
+                if (w == 1) {   // the info block the actor points to (+0x2F8) and the one it points to in turn (info +0 ...), 0x600 bytes each
+                    for (uint32_t po : {0x2F8u, 0x2FCu, 0x300u, 0x304u}) {
+                        const uint32_t q = r32(a + po);
+                        if (!ok(q)) continue;
+                        std::fprintf(stderr, "[TESTDUMP] gt=%.0f info%X", g_gt_ms, po);
+                        for (uint32_t o = 0; o < 0x600; o += 4) std::fprintf(stderr, " %X", r32(q + o));
+                        std::fprintf(stderr, "\n");
+                    }
+                }
+            }
         }
     }
     if (g_test_events.empty()) return;
-    while (g_test_next < g_test_events.size() && g_test_events[g_test_next].t <= g_gt_ms) {
-        const TestEvent& e = g_test_events[g_test_next++];
-        if (e.kind == 0) { g_test_buttons = e.a; if (e.text == "set") g_test_analog = e.b; }
+    for (;;) {
+        if (g_wait_kind) {
+            bool dummy_neutral = true;   // waitidle also waits for the CPU fighter to be out of its hit reactions (motion ids 1 / 2 are its standing idle): a hit on a dummy that is still recovering does not connect, so no chain
+        if (g_wait_kind == 11) if (const uint32_t da = test_fighter(1)) { const int dc = static_cast<int16_t>(r32(da + 0x180u) & 0xFFFFu); dummy_neutral = dc == 1 || dc == 2; }
+        const bool done = g_wait_kind == 10 ? (g_wait_target >= 0 ? static_cast<int>(cur_scr) == g_wait_target : cur_scr != g_wait_scr) : (cur_scr == 0xFFFFu && dummy_neutral);
+            const bool late = g_gt_ms - g_wait_since > g_wait_timeout;
+            if (!done && !late) break;
+            std::fprintf(stderr, "[TEST] gt=%.0f %s %s (scr %d)\n", g_gt_ms, g_wait_kind == 10 ? "sync" : "waitidle", done ? "done" : "TIMEOUT", cur_scr == 0xFFFFu ? -1 : static_cast<int>(cur_scr));
+            g_ref_gt = g_gt_ms;
+            g_wait_kind = 0;
+        }
+        if (g_test_next >= g_test_events.size()) break;
+        const TestEvent& e = g_test_events[g_test_next];
+        if (g_gt_ms < (e.rel ? g_ref_gt + e.t : e.t)) break;
+        g_test_next++;
+        if (e.kind == 13) {   // batch: wait for the file, then splice its events in here
+            if (FILE* f = std::fopen(e.text.c_str(), "r")) {
+                std::fclose(f);
+                std::ifstream in(e.text);
+                std::vector<TestEvent> more;
+                parse_script(in, more);
+                std::remove(e.text.c_str());
+                std::fprintf(stderr, "[TEST] gt=%.0f batch %s: %zu events\n", g_gt_ms, e.text.c_str(), more.size());
+                g_test_events.insert(g_test_events.begin() + g_test_next, more.begin(), more.end());
+            } else { g_test_next--; break; }   // not yet: look again next update
+            continue;
+        }
+        if (e.kind == 14) {   // scan: see the `scan` command. Followed at once: 32-bit int, 16-bit halves, float; the baseline is only stored, the first comparison builds the candidate lists
+            static std::vector<uint32_t> prev32, cand[3];   // previous snapshot of user RAM (0x08800000..0x0A000000), candidate indexes per encoding (32-bit words, 16-bit halves, floats)
+            static bool have = false;
+            const uint32_t base = 0x08800000u, words = (0x0A000000u - 0x08800000u) / 4;
+            std::vector<uint32_t> now(words);
+            std::memcpy(now.data(), g_ram + (base & 0x07FFFFFFu), words * 4ull);
+            const double mx = std::atof(e.text.c_str());
+            auto val = [](const std::vector<uint32_t>& m, uint32_t i, int enc) -> double {
+                if (enc == 0) return static_cast<double>(static_cast<int32_t>(m[i]));
+                if (enc == 1) return static_cast<double>(static_cast<uint16_t>((m[i >> 1] >> ((i & 1) * 16)) & 0xFFFFu));
+                float f; std::memcpy(&f, &m[i], 4); return f;
+            };
+            const uint32_t counts[3] = {words, words * 2, words};
+            for (int enc = 0; enc < 3; enc++) {
+                std::vector<uint32_t> next;
+                auto test = [&](uint32_t i) {
+                    const double d = val(prev32, i, enc) - val(now, i, enc), nv = val(now, i, enc);
+                    if (d >= e.a && d <= e.b && nv >= 0 && nv <= mx) next.push_back(i);
+                };
+                if (have) { if (cand[enc].empty() && !g_scan_seeded) { for (uint32_t i = 0; i < counts[enc]; i++) test(i); } else for (uint32_t i : cand[enc]) test(i); }
+                if (have) cand[enc].swap(next);
+                std::fprintf(stderr, "[TEST] gt=%.0f scan enc%d: %zu candidates\n", g_gt_ms, enc, have ? cand[enc].size() : size_t(0));
+                if (have && cand[enc].size() <= 30) for (uint32_t i : cand[enc]) std::fprintf(stderr, "[TEST]   scan enc%d %08X = %g (was %g)\n", enc, base + i * (enc == 1 ? 2 : 4), val(now, i, enc), val(prev32, i, enc));
+            }
+            if (have) g_scan_seeded = true;
+            prev32.swap(now); have = true;
+            continue;
+        }
+        if (e.kind == 10 || e.kind == 11) {
+            g_wait_kind = e.kind; g_wait_scr = cur_scr; g_wait_since = g_gt_ms; g_wait_timeout = e.b; g_wait_target = static_cast<int>(e.a);
+            continue;
+        }
+        if (e.kind == 15) {
+            const uint32_t a = test_fighter(e.text == "cpu" ? 1u : 0u);
+            if (a) { w32(a + e.a, e.b); std::fprintf(stderr, "[TEST] gt=%.0f poke %s +%X = %d\n", g_gt_ms, e.text.c_str(), e.a, static_cast<int>(e.b)); }
+            continue;
+        }
+        if (e.kind == 12) {   // place: both fighters back at their start spot (the dummy where it stood at the first `place`, the player <m> metres from it on the x axis);
+                             // every hit pushes the dummy on, 42 m after 18 trials and out of the arena. x/z of the body root and its copies (+0x30/+0x38, +0x80/+0x88, +0x100/+0x108, +0x110/+0x118)
+            static bool have_home = false;
+            static float hx = 0, hz = 0;
+            const uint32_t me = test_player(), dm = test_fighter(1);
+            if (me && dm) {
+                if (!have_home) { hx = rdf(dm + 0x110u); hz = rdf(dm + 0x118u); have_home = true; }
+                auto put = [](uint32_t a, float x, float z) {
+                    for (uint32_t o : {0x30u, 0x80u, 0x100u, 0x110u}) { uint32_t u; std::memcpy(&u, &x, 4); w32(a + o, u); }
+                    for (uint32_t o : {0x38u, 0x88u, 0x108u, 0x118u}) { uint32_t u; std::memcpy(&u, &z, 4); w32(a + o, u); }
+                };
+                const float d = e.a / 100.0f;
+                put(dm, hx, hz);
+                put(me, hx - d, hz);
+                std::fprintf(stderr, "[TEST] gt=%.0f place: dummy at %.2f,%.2f, player %.2f m away\n", g_gt_ms, hx, hz, d);
+            }
+        }
+        else if (e.kind == 0) { g_test_buttons = e.a; if (e.text == "set") g_test_analog = e.b; }
         else if (e.kind == 1) g_test_analog = e.b;
         else if (e.kind == 2) std::fprintf(stderr, "[TEST] gt=%.0f mark%s\n", g_gt_ms, e.text.c_str());
         else if (e.kind == 4) {
@@ -453,12 +621,251 @@ void testdrive_frame(uint8_t* rdram, recomp_context* ctx) {
     psp_ctrl_set_script(true, g_test_buttons, g_test_analog);
 }
 
+// ---- Debug menu: Jecht combo timing helper ------------------------------------------------------------------------------------------
+// Reads the game's own timing rule. The move picker asks the chain check FUN_08AB81E0(table, actor, &requested action id) for every candidate
+// follow-up of a press (call sites: docs/archive/event-ops/D.md). The table is a list of groups, each a list of 8-byte elements
+// {s16 action id, s16 start, s16 end, ...}; element j is reachable from the action the fighter is in (the u16 behind actor +0x101C) when
+// element j-1 has that id, and only while start <= actor +0x1A8 (the move's motion time, ticks) and (end < 0 or motion time < end).
+// Jecht's timed chain steps are elements with a bounded window. Here that table is read live:
+//   window opens (some bounded element's start is reached)  -> green edge flash
+//   a press while a bounded element is open                 -> GOOD;  before its start -> TOO EARLY;  after its end -> TOO LATE
+// The verdict of a press is taken inside the chain check itself (the motion time and window of the element it tested), so it is exactly what
+// the game compared. Works for every Jecht move incl. the air ones. Presses are the host pad's (psp_ctrl_last_sample): Circle, Square, Triangle.
+constexpr int JECHT_CHAR = 20;
+constexpr uint32_t CMB_BUTTONS = 0x2000u | 0x8000u;   // Circle (Brave), Square (HP): the attack buttons (Triangle is the dash with R, Cross the dodge with R)
+FuncPtr g_orig_chain_check = nullptr;
+uint32_t g_chain_table = 0;               // chain table pointer (a0), cached from the last call
+struct CmbVerdict { uint64_t tick = ~0ull; int kind = 0; int start = 0, end = 0; float mt = 0; uint32_t id = 0; };   // kind 1 GOOD, 2 EARLY, 3 LATE
+CmbVerdict g_cmb_verdict;                 // best verdict of the update (GOOD beats the others)
+struct CmbElem { uint32_t id; int start, end; };
+int16_t rs16(uint32_t a) { int16_t v; std::memcpy(&v, g_ram + (a & 0x07FFFFFFu), 2); return v; }
+// elements reachable from action `cur` in the table: calls f(next id, start, end)
+template <class F> void chain_next(uint32_t table, uint32_t cur, F f) {
+    const uint32_t base = r32(table);
+    if (!ok(base)) return;
+    const int groups = rs16(base + 2);
+    for (int g = 0; g < groups && g < 256; g++) {
+        if (!(r32(table + 36u + 4u * static_cast<uint32_t>(g >> 5)) & (1u << (g & 31)))) continue;   // group enabled for this fighter
+        const uint32_t grp = base + r32(base + 4u + 4u * static_cast<uint32_t>(g));
+        if (!ok(grp)) continue;
+        const int count = rs16(grp + 2);
+        for (int j = 1; j < count && j < 64; j++) {
+            const uint32_t prev = grp + 8u + 8u * static_cast<uint32_t>(j - 1), el = prev + 8u;
+            if (rs16(el) == -1) break;
+            if (static_cast<uint16_t>(rs16(prev)) == cur) f(static_cast<uint32_t>(static_cast<uint16_t>(rs16(el))), static_cast<int>(rs16(el + 2)), static_cast<int>(rs16(el + 4)));
+        }
+    }
+}
+bool in_action(uint32_t a) { const uint32_t scr = r32(a + 0x540u) & 0xFFFFu; return scr >= 10000u && scr < 10200u; }   // in one of Jecht's own attack moves (the dodge, dash, guard... have timeline windows of their own and other script ids)   // the fighter is in an action (the "current action" fields keep the last move once it is over)
+bool human_jecht(uint32_t a) {
+    if (!a || !ok(a) || fighter_char(a) != JECHT_CHAR) return false;
+    const uint32_t brain = r32(a + 0x5C4u);
+    return ok(brain) && static_cast<int32_t>(r32(brain + 0x54u)) != 0;   // CPU brains have +0x54 == 0 (see cpu_tick_noai_hook)
+}
+// 30 Hz input grid for Jecht (see the g_jecht_grid comment at the top): the Circle / Square the game is handed change only on every P-th update (the
+// grid: g_tick % P == 0), and a tap that came and went between two grid updates is latched, so it is seen once, as a 33 ms PSP frame would show it.
+// Only while the human player is Jecht; the other buttons and the stick pass through.
+constexpr uint32_t GRID_MASK = 0x2000u | 0x8000u;
+uint32_t jecht_grid_filter(uint32_t raw) {
+    static uint32_t held = 0, pend = 0;
+    static uint64_t decided = ~0ull;
+    bool jecht = false;
+    if (g_jecht_grid && g_ticks < 2.0f && overlay_id() == 1) for (uint32_t f : g_fighters) if (f && human_jecht(f)) jecht = true;
+    if (!jecht) { held = raw & GRID_MASK; pend = 0; return raw; }
+    pend |= raw & GRID_MASK;
+    if ((g_tick - g_grid_anchor) % static_cast<uint64_t>(grid_period()) == 0 && decided != g_tick) { decided = g_tick; held = pend; pend = 0; }
+    return (raw & ~GRID_MASK) | held;
+}
+
+// The timed window of the fighter's current action `cur`: the ticks (motion time) in which the chain move is the one that gets played. The table
+// lists, for Jecht's Rush for example, 1629 [8,20) (the repeat move: an early press), 1664 [18,28) (Neutral 2), 1665 [18,28) (Up 2) and 1629 [26,38) (the
+// repeat again: a late press); where the repeat move's window overlaps, it wins (measured: presses at motion time 18-19 and 26-27 start the repeat), so
+// the real window is [20,26). The repeat move is the id that appears with more than one window; the rest are the chain moves.
+bool chain_window(uint32_t table, uint32_t cur, int* lo, int* hi) {
+    CmbElem els[64];
+    int n = 0;
+    chain_next(table, cur, [&](uint32_t id, int st, int en) { if (en >= 0 && n < 64) els[n++] = {id, st, en}; });
+    auto is_rep = [&](uint32_t id) { for (int i = 0; i < n; i++) if (els[i].id == id) for (int j = 0; j < n; j++) if (els[j].id == id && (els[j].start != els[i].start || els[j].end != els[i].end)) return true; return false; };
+    int gs = 1 << 30, ge = -1;
+    for (int i = 0; i < n; i++) if (!is_rep(els[i].id)) { gs = std::min(gs, els[i].start); ge = std::max(ge, els[i].end); }
+    if (ge <= gs) return false;
+    int first = -1, last = -1;
+    for (int t = gs; t < ge; t++) {
+        bool good = false, repeat = false;
+        for (int i = 0; i < n; i++) if (t >= els[i].start && t < els[i].end) (is_rep(els[i].id) ? repeat : good) = true;
+        if (good && !repeat) { if (first < 0) first = t; last = t; }
+    }
+    if (first < 0) return false;
+    *lo = first; *hi = last + 1;
+    return true;
+}
+void chain_check_hook(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t table = static_cast<uint32_t>(ctx->r[4]), actor = static_cast<uint32_t>(ctx->r[5]);
+    {
+        static const bool dump = std::getenv("PSPRECOMP_PRESS_LOG") != nullptr;
+        static uint64_t dumped = ~0ull;
+        if (dump && dumped != g_tick && ok(actor) && human_jecht(actor) && ok(r32(actor + 0x101Cu))) {
+            dumped = g_tick;
+            const uint32_t cur = static_cast<uint16_t>(rs16(r32(actor + 0x101Cu)));
+            std::fprintf(stderr, "[CHAIN] gt=%.0f current action %u motion time %.1f requested %u reachable:", g_gt_ms, cur, rdf(actor + 0x1A8u), static_cast<uint16_t>(rs16(static_cast<uint32_t>(ctx->r[6]))));
+            chain_next(table, cur, [&](uint32_t id, int st, int en) { std::fprintf(stderr, " %u[%d,%d)", id, st, en); });
+            std::fprintf(stderr, "\n");
+        }
+    }
+    if (g_dbg_combo && ok(table) && ok(actor) && g_cmb_verdict.tick != g_tick && human_jecht(actor) && in_action(actor)) {   // once per update: the first candidate tested for a press, in a move (from neutral the "current action" is the last move's)
+        const uint32_t cur_p = r32(actor + 0x101Cu);
+        int lo = 0, hi = 0;
+        if (ok(cur_p) && chain_window(table, static_cast<uint16_t>(rs16(cur_p)), &lo, &hi)) {
+            const float mt = rdf(actor + 0x1A8u);
+            const int kind = static_cast<float>(lo) > mt ? 2 : (static_cast<float>(hi) <= mt ? 3 : 1);
+            g_cmb_verdict = CmbVerdict{g_tick, kind, lo, hi, mt, static_cast<uint32_t>(static_cast<uint16_t>(rs16(cur_p)))};
+        }
+    }
+    g_orig_chain_check(rdram, ctx);
+}
+// The timed button windows that are not chain-table elements (the HP finishers after Neutral 3 / Up 3 / Down 3, ...) are timeline flags: op 0x004C
+// holds +0x196 bit 0x04 (lockout range) and a command press in it latches +0x5B4 bit 2; ops 0x36 / 0x37 / 0x3A set +0x194 bit 7, +0x195 bits 0 / 1 (the window).
+// The input code asks three tiny gate functions, which answer 0 while the latch is set. Their answers are taken as the game gave them.
+struct GateSeen { uint64_t tick = ~0ull; bool open = false, lock = false, latched = false; };
+GateSeen g_gate;
+FuncPtr g_orig_gate_37 = nullptr, g_orig_gate_36 = nullptr, g_orig_gate_3a = nullptr;
+void gate_note(uint32_t actor, uint32_t result) {
+    if (!g_dbg_combo || !ok(actor) || !human_jecht(actor)) return;
+    if (g_gate.tick != g_tick) g_gate = GateSeen{g_tick, false, false, false};
+    g_gate.open |= (result & 1) != 0;
+    g_gate.lock = (g_ram[(actor + 0x196u) & 0x07FFFFFFu] & 4) != 0;
+    g_gate.latched = (g_ram[(actor + 0x5B4u) & 0x07FFFFFFu] & 2) != 0;
+}
+void gate_37_hook(uint8_t* rdram, recomp_context* ctx) { const uint32_t a = static_cast<uint32_t>(ctx->r[4]); g_orig_gate_37(rdram, ctx); gate_note(a, static_cast<uint32_t>(ctx->r[2])); }
+void gate_36_hook(uint8_t* rdram, recomp_context* ctx) { const uint32_t a = static_cast<uint32_t>(ctx->r[4]); g_orig_gate_36(rdram, ctx); gate_note(a, static_cast<uint32_t>(ctx->r[2])); }
+void gate_3a_hook(uint8_t* rdram, recomp_context* ctx) { const uint32_t a = static_cast<uint32_t>(ctx->r[4]); g_orig_gate_3a(rdram, ctx); gate_note(a, static_cast<uint32_t>(ctx->r[2])); }
+bool flag_window(uint32_t a) { return (g_ram[(a + 0x195u) & 0x07FFFFFFu] & 3) != 0 || (g_ram[(a + 0x194u) & 0x07FFFFFFu] & 0x80) != 0; }
+uint32_t g_cmb_scr[4] = {0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu};
+bool g_cmb_seen_win[4] = {};
+bool g_cmb_flag_open[4] = {};
+bool g_cmb_was_in_action[4] = {};   // the fighter was in an action at the start of the update that just ended (a press from neutral starts a move, it is not a chain press)
+bool g_cmb_in_action_now[4] = {};
+float g_cmb_prev_mt[4] = {}, g_cmb_mt_now[4] = {};   // motion time at the end of the previous update (= at the start of the update that just ended) / now
+
+uint32_t g_cmb_prev_buttons = 0;
+bool g_cmb_open[4] = {};
+uint64_t g_cmb_open_scr[4] = {};
+// once per update, before g_action_new is recomputed
+void combo_frame() {
+    if (!g_dbg_combo) return;
+    uint32_t buttons = 0, stick = 0;
+    psp_ctrl_last_sample(&buttons, &stick);
+    const uint32_t edge = (buttons & 0x300u) ? 0u : (buttons & ~g_cmb_prev_buttons & CMB_BUTTONS);   // pressed in the update that just ended; not with L / R held (dodge, dash, dodge cancel)
+    g_cmb_prev_buttons = buttons;
+    if (const uint32_t t0 = r32(CHAIN_TABLE_PTR); ok(t0)) g_chain_table = t0;   // the table the move picker reads (a global; the same one the chain check gets inside a move)
+    for (int i = 0; i < 4; i++) { g_cmb_prev_mt[i] = g_cmb_mt_now[i]; g_cmb_was_in_action[i] = g_cmb_in_action_now[i]; }
+    for (int i = 0; i < 4; i++) {
+        const uint32_t a = g_fighters[i];
+        if (!human_jecht(a) || !g_chain_table) { g_cmb_open[i] = false; continue; }
+        {
+            static const bool flog = std::getenv("PSPRECOMP_PRESS_LOG") != nullptr;
+            static uint8_t last[4][16] = {};
+            if (flog) {   // the per-update flag bytes +0x190..+0x19B, the follow-up list count (+0x1068) and the lockout latch, whenever they change or a button is pressed
+                uint8_t cur[16];
+                for (int k = 0; k < 12; k++) cur[k] = g_ram[(a + 0x190u + k) & 0x07FFFFFFu];
+                cur[12] = static_cast<uint8_t>(r32(a + 0x1068u) & 0xFFu); cur[13] = g_ram[(a + 0x5B4u) & 0x07FFFFFFu]; cur[14] = cur[15] = 0;
+                if (std::memcmp(cur, last[i], 16) != 0 || edge) {
+                    std::memcpy(last[i], cur, 16);
+                    std::fprintf(stderr, "[FLAGS] gt=%.0f scr=%u mt=%.1f edge=%04X b190=", g_gt_ms, r32(a + 0x540u) & 0xFFFFu, rdf(a + 0x1A8u), edge);
+                    for (int k = 0; k < 12; k++) std::fprintf(stderr, "%02X", cur[k]);
+                    std::fprintf(stderr, " list=%d 5B4=%02X\n", cur[12], cur[13]);
+                }
+            }
+        }
+        const uint32_t cur_p = r32(a + 0x101Cu);
+        bool open = false;
+        if (ok(cur_p) && in_action(a)) {   // (out of a move the "current action" and its motion time stay at the last move's, frozen inside its window)
+            int lo = 0, hi = 0;
+            const float mt = rdf(a + 0x1A8u);
+            if (chain_window(g_chain_table, static_cast<uint16_t>(rs16(cur_p)), &lo, &hi) && static_cast<float>(lo) <= mt && mt < static_cast<float>(hi)) open = true;
+        }
+        const uint32_t scr_now = r32(a + 0x540u) & 0xFFFFu;
+        const bool same_move = scr_now == g_cmb_scr[i] && in_action(a);   // (a press that starts the next move, or the move ending, is not a window closing)
+        if (g_cmb_open[i] && !open && same_move) { ge_draw_flash(0xFF8A30, 160); static const bool lg2 = std::getenv("PSPRECOMP_PRESS_LOG") != nullptr; if (lg2) std::fprintf(stderr, "[COMBO] gt=%.0f window closes (motion time %.1f)\n", g_gt_ms, rdf(a + 0x1A8u)); }
+        if (g_cmb_flag_open[i] && !(in_action(a) && flag_window(a)) && same_move) ge_draw_flash(0xFF8A30, 160);
+        if (open && !g_cmb_open[i]) {
+            ge_draw_flash(0x40FF70, 160);
+            static const bool log = std::getenv("PSPRECOMP_PRESS_LOG") != nullptr;
+            if (log) std::fprintf(stderr, "[COMBO] gt=%.0f window opens (motion time %.1f)\n", g_gt_ms, rdf(a + 0x1A8u));
+        }
+        g_cmb_open[i] = open;
+        const uint32_t scr = r32(a + 0x540u) & 0xFFFFu;
+        if (scr != g_cmb_scr[i]) { g_cmb_scr[i] = scr; g_cmb_seen_win[i] = false; g_cmb_flag_open[i] = false; }
+        const bool fw = in_action(a) && flag_window(a);
+        if (fw && !g_cmb_flag_open[i]) { ge_draw_flash(0x40FF70, 160); static const bool lg = std::getenv("PSPRECOMP_PRESS_LOG") != nullptr; if (lg) std::fprintf(stderr, "[COMBO] gt=%.0f flag window opens (motion time %.1f)\n", g_gt_ms, rdf(a + 0x1A8u)); }
+        g_cmb_flag_open[i] = fw;
+        if (fw) g_cmb_seen_win[i] = true;
+        g_cmb_mt_now[i] = rdf(a + 0x1A8u);
+        g_cmb_in_action_now[i] = in_action(a);
+    }
+    bool was_in_move = false;   // a press from neutral starts a move: it is not a chain press, whatever the chain check was asked
+    for (int i = 0; i < 4; i++) if (human_jecht(g_fighters[i]) && g_cmb_was_in_action[i]) was_in_move = true;
+    if (!was_in_move) g_cmb_verdict.kind = 0;
+    bool shown = edge && g_cmb_verdict.kind && g_cmb_verdict.tick + 1 == g_tick;   // (the chain verdict is shown below)
+    if (edge && !shown) {   // not a chain-table press: the flag windows (HP finishers)
+        for (int i = 0; i < 4; i++) {
+            if (!human_jecht(g_fighters[i]) || !g_cmb_was_in_action[i]) continue;
+            int kind = 0;
+            if (g_gate.tick + 1 == g_tick) kind = g_gate.open ? 1 : (g_gate.lock || g_gate.latched) ? 2 : (g_cmb_seen_win[i] ? 3 : 0);
+            else if (g_cmb_seen_win[i] && !g_cmb_flag_open[i]) kind = 3;
+            if (!kind) break;
+            const char* msg = kind == 1 ? "GOOD" : kind == 2 ? "TOO EARLY" : "TOO LATE";
+            char buf[64]; std::snprintf(buf, sizeof buf, "Jecht combo: %s", msg);
+            ge_draw_toast(buf, 900, 28);
+            ge_draw_flash(kind == 1 ? 0x40FF70 : 0xFF3030, 220);
+            std::fprintf(stderr, "[COMBO] gt=%.0f %s (flag window; open=%d lock=%d latched=%d)\n", g_gt_ms, buf, g_gate.open, g_gate.lock, g_gate.latched);
+            shown = true;
+            break;
+        }
+    }
+    if (edge & 0x2000u && !shown) {   // a Circle the chain check never saw (pressed before the move accepts any input): judged against the table with the motion time at the start of the update
+        for (int i = 0; i < 4; i++) {
+            const uint32_t a = g_fighters[i];
+            if (!human_jecht(a) || !g_chain_table || !ok(r32(a + 0x101Cu)) || !g_cmb_was_in_action[i]) continue;
+            int lo = 0, hi = 0;
+            static const bool dbg = std::getenv("PSPRECOMP_PRESS_LOG") != nullptr;
+            if (dbg) std::fprintf(stderr, "[COMBO] gt=%.0f unseen Circle: current action %u prev mt %.1f window %s\n", g_gt_ms, static_cast<uint16_t>(rs16(r32(a + 0x101Cu))), g_cmb_prev_mt[i], chain_window(g_chain_table, static_cast<uint16_t>(rs16(r32(a + 0x101Cu))), &lo, &hi) ? "found" : "none");
+            if (!chain_window(g_chain_table, static_cast<uint16_t>(rs16(r32(a + 0x101Cu))), &lo, &hi)) continue;
+            const float mt = g_cmb_prev_mt[i];
+            if (static_cast<float>(lo) <= mt && mt < static_cast<float>(hi)) continue;   // inside the window yet unseen by the check: say nothing
+            const bool early = mt < static_cast<float>(lo);
+            const int ms = static_cast<int>(((early ? static_cast<float>(lo) - mt : mt - static_cast<float>(hi)) * 1000.f / 60.f) + 0.5f);
+            char buf[96];
+            if (ms < 8) std::snprintf(buf, sizeof buf, "Jecht combo: %s (just)", early ? "TOO EARLY" : "TOO LATE");
+            else std::snprintf(buf, sizeof buf, "Jecht combo: %s (%d ms)", early ? "TOO EARLY" : "TOO LATE", ms);
+            ge_draw_toast(buf, 900, 28);
+            ge_draw_flash(0xFF3030, 220);
+            std::fprintf(stderr, "[COMBO] gt=%.0f %s (unseen by the chain check; motion time %.1f window %d..%d)\n", g_gt_ms, buf, mt, lo, hi);
+            break;
+        }
+    }
+    if (edge && g_cmb_verdict.kind && g_cmb_verdict.tick + 1 == g_tick) {   // the verdict of the update that just ended (g_tick was advanced at the start of this frame end)
+        const CmbVerdict& v = g_cmb_verdict;
+        const char* msg = v.kind == 1 ? "GOOD" : v.kind == 2 ? "TOO EARLY" : "TOO LATE";
+        const float ms = (v.kind == 2 ? (static_cast<float>(v.start) - v.mt) : (v.mt - static_cast<float>(v.end))) * 1000.f / 60.f;
+        char buf[96];
+        if (v.kind == 1) std::snprintf(buf, sizeof buf, "Jecht combo: GOOD");
+        else if (ms < 8.f) std::snprintf(buf, sizeof buf, "Jecht combo: %s (just)", msg);
+        else std::snprintf(buf, sizeof buf, "Jecht combo: %s (%d ms)", msg, static_cast<int>(ms + 0.5f));
+        ge_draw_toast(buf, 900, 28);
+        ge_draw_flash(v.kind == 1 ? 0x40FF70 : 0xFF3030, 220);
+        std::fprintf(stderr, "[COMBO] gt=%.0f %s action=%u motion time %.1f window %d..%d\n", g_gt_ms, buf, v.id, v.mt, v.start, v.end);
+        g_cmb_verdict.kind = 0;
+    }
+}
+
 void testdrive_install() {
 #ifdef __linux__
     // PSPRECOMP_ALLOW_PTRACE=1: let any process of this user attach a debugger (Yama ptrace_scope 1 only allows a parent); for
     // `gdb -p` write traces ("which function stores this guest word") on an unstripped build
     if (const char* ap = std::getenv("PSPRECOMP_ALLOW_PTRACE"); ap && ap[0] && ap[0] != '0') prctl(PR_SET_PTRACER, (unsigned long)-1 /* PR_SET_PTRACER_ANY */, 0, 0, 0);
 #endif
+    if (const char* ao = std::getenv("PSPRECOMP_TEST_AI_OFF"); ao && ao[0] && ao[0] != '0') g_test_ai_off = true;
     if (const char* fz = std::getenv("PSPRECOMP_TEST_FREEZE_CPU"); fz && fz[0] && fz[0] != '0') g_test_freeze_cpu = true;
     if (const char* pc = std::getenv("PSPRECOMP_TEST_PLAYER_CHAR"); pc && pc[0]) g_player_char = std::atoi(pc);
     g_test_go = std::getenv("PSPRECOMP_TEST_GO");
@@ -525,6 +932,14 @@ void frame_end_hook(uint8_t* rdram, recomp_context* ctx) {
     testdrive_frame(rdram, ctx);
     if (battle_running()) g_battle_age += g_ticks; else g_battle_age = 0.f;
     fighter_log_frame();
+    combo_frame();
+    if (battle_running()) g_battle_age += g_ticks; else g_battle_age = 0.f;
+    for (int i = 0; i < 4; i++) {
+        const uint32_t scr = (g_fighters[i] && ok(g_fighters[i])) ? (r32(g_fighters[i] + 0x540u) & 0xFFFFu) : 0xFFFFu;
+        g_action_new[i] = scr != 0xFFFFu && scr != g_prev_scr[i];
+        if (scr != g_prev_scr[i] && g_fighters[i] && human_jecht(g_fighters[i])) g_grid_anchor = g_tick;   // the next update is the first read of the new move's grid
+        g_prev_scr[i] = scr;
+    }
     if (g_rate > 60 && ok(timer)) wrf(timer + 0x18u, g_ticks);   // the frame waited for one (short) vblank: dt = 60 / rate
     if (g_log && ok(timer)) {
         const int64_t t = now_ms();
@@ -669,6 +1084,24 @@ uint32_t actor_of_pad(uint32_t pad) {   // the fighter whose controller (actor+0
     }
     return 0;
 }
+// AI off (PSPRECOMP_TEST_AI_OFF=1): the virtual pad (obj: +4 state, +8 pending, +12 previous) is fed by the human's pad and by the CPU's
+// AI through the same bit setters, FUN_08AB387C (state) and FUN_08AB38C4 (pending). For the CPU fighter's pad they do nothing.
+constexpr uint32_t PAD_SET_STATE = 0x08AB387Cu, PAD_SET_PENDING = 0x08AB38C4u;
+FuncPtr g_orig_pad_set_state = nullptr, g_orig_pad_set_pending = nullptr;
+bool ai_off_blocks(uint32_t pad) {
+    if (!g_test_ai_off || !g_gt_started) return false;
+    const uint32_t a = actor_of_pad(pad);
+    return a && a != test_player();
+}
+void pad_set_state_hook(uint8_t* rdram, recomp_context* ctx) {
+    if (ai_off_blocks(static_cast<uint32_t>(ctx->r[4]))) { ctx->r[2] = 0; return; }
+    g_orig_pad_set_state(rdram, ctx);
+}
+void pad_set_pending_hook(uint8_t* rdram, recomp_context* ctx) {
+    if (ai_off_blocks(static_cast<uint32_t>(ctx->r[4]))) { ctx->r[2] = 0; return; }
+    g_orig_pad_set_pending(rdram, ctx);
+}
+
 void pressed_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t obj = static_cast<uint32_t>(ctx->r[4]), bit = static_cast<uint32_t>(ctx->r[5]);
     g_orig_pressed(rdram, ctx);
@@ -813,6 +1246,11 @@ void fighter_log_frame() {
                      rdf(a + 0xE8u));
     }
 }
+// Action start step (PSPRECOMP_ACTION_START_STEP=0 turns it off for A/B). On the PSP a move's first update advances its clock by one whole 30 Hz
+// frame (2 ticks), so what the player sees as the move's first frame is already 33 ms into it, and the chain windows (Jecht's 3 frame
+// presses, measured from the first visible frame of the move) open after (a - 2) ticks. At 120 Hz the first update advanced it by 0.5 ticks: every
+// window sat 25 ms (1.5 ticks) later than at 30 Hz, at both edges, for every Jecht chain step (tools/combo_timing.py combos, 11 Nov). The first update
+// after a fighter's script id changed therefore runs with a 30 Hz sized step (the same as at 30 Hz), the rest as before.
 int g_actor_log_left = 4000;
 struct ActorSeen { uint32_t actor; float res; int own; };
 ActorSeen g_actor_seen[24];
@@ -838,6 +1276,13 @@ void actor_dt_hook(uint8_t* rdram, recomp_context* ctx) {
     const float before = ctx->f[0];
     if (g_test_freeze_cpu && g_gt_started && ok(actor) && g_ram[(actor + 0x542u) & 0x07FFFFFFu] == 0 && actor != test_player()) { ctx->f[0] = 0.f; return; }
     if (g_ticks != 2.0f && ok(actor) && own) ctx->f[0] *= g_ticks * 0.5f;   // own clock: a fixed 2.0 per frame
+    if (g_action_start_step && g_ticks < 2.0f && ok(actor) && g_ram[(actor + 0x542u) & 0x07FFFFFFu] == 0) {
+        for (int i = 0; i < 4; i++) {
+            if (g_fighters[i] != actor) continue;
+            if (g_action_new[i]) ctx->f[0] *= first_step() / g_ticks;
+            break;
+        }
+    }
     if (g_actor_log && g_actor_log_left > 0 && ok(actor)) {
         ActorSeen* slot = nullptr;
         for (auto& a : g_actor_seen) if (a.actor == actor) { slot = &a; break; }
@@ -1432,7 +1877,6 @@ float dissidia_own_clock_scale() { return g_ticks * 0.5f; }
 // The debug menu's Enemy AI option (Settings > Debug) does the same live: Off skips the CPU brains once the fight has been running 7 s (the intro waits for them).
 // PSPRECOMP_DBG_NOAI=1 starts with it off.
 FuncPtr g_orig_cpu_tick = nullptr;
-bool g_env_no_ai = false;
 void cpu_tick_noai_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t brain = static_cast<uint32_t>(ctx->r[4]);
     const bool off = (g_env_no_ai && g_gt_started) || (g_dbg_no_ai && g_battle_age > 420.f);
@@ -1450,6 +1894,7 @@ void dissidia_framerate_install(uint8_t* rdram) {
     g_fighter_log = (e = std::getenv("PSPRECOMP_FIGHTER_LOG")) && e[0] && e[0] != '0';
     if ((e = std::getenv("PSPRECOMP_PRESS_LATCH")) && e[0]) { g_press_ms = float(std::atof(e)); if (g_press_ms == 1.0f) g_press_ms = 33.4f; }
     g_press_latch = g_press_ms > 0.5f;
+    if ((e = std::getenv("PSPRECOMP_ACTION_START_STEP")) && e[0] == '0') g_action_start_step = false;
     testdrive_install();
     if (const char* id = std::getenv("PSPRECOMP_INPUT_DEBUG"); id && id[0] && id[0] != '0') { g_input_dbg = true; std::fprintf(stderr, "[FPS] input debug on (buttons on screen, [INPUT] log)\n"); }
     g_fighter_dump = g_fighter_log && (e = std::getenv("PSPRECOMP_FIGHTER_DUMP")) && e[0] && e[0] != '0';
@@ -1490,13 +1935,27 @@ void dissidia_framerate_install(uint8_t* rdram) {
     if (const char* x = std::getenv("PSPRECOMP_GAUGE30"); x && x[0] == '0') g_gauge30 = false;
     if ((g_orig_gauge_sm = ovl_battle_lookup(GAUGE_SM))) psp_dispatch_register(GAUGE_SM, gauge_sm_hook);
     if (g_orig_pressed) psp_dispatch_register(PRESSED, pressed_hook);
-    if (const char* na = std::getenv("PSPRECOMP_TEST_NO_AI"); na && na[0] && na[0] != '0') g_env_no_ai = true;
+    if (const char* g = std::getenv("PSPRECOMP_JECHT_GRID"); g && g[0] == '0') g_jecht_grid = false;
+    psp_ctrl_set_filter(jecht_grid_filter);
+    if ((g_orig_chain_check = ovl_battle_lookup(CHAIN_CHECK))) psp_dispatch_register(CHAIN_CHECK, chain_check_hook);
+    if ((g_orig_gate_37 = ovl_battle_lookup(GATE_37))) psp_dispatch_register(GATE_37, gate_37_hook);
+    if ((g_orig_gate_36 = ovl_battle_lookup(GATE_36))) psp_dispatch_register(GATE_36, gate_36_hook);
+    if ((g_orig_gate_3a = ovl_battle_lookup(GATE_3A))) psp_dispatch_register(GATE_3A, gate_3a_hook);
+    if (const char* d = std::getenv("PSPRECOMP_DBG_COMBO"); d && d[0] && d[0] != '0') g_dbg_combo = true;   // start with the debug options on (tests)
     if (const char* d = std::getenv("PSPRECOMP_DBG_NOAI"); d && d[0] && d[0] != '0') g_dbg_no_ai = true;
-    if ((g_orig_cpu_tick = ovl_battle_lookup(CPU_TICK))) {   // always: the debug menu switches it live (a pass-through while on)
-        psp_dispatch_register(CPU_TICK, cpu_tick_noai_hook);
+    if (const char* na = std::getenv("PSPRECOMP_TEST_NO_AI"); na && na[0] && na[0] != '0') g_env_no_ai = true;
+    if ((g_orig_cpu_tick = ovl_battle_lookup(CPU_TICK))) psp_dispatch_register(CPU_TICK, cpu_tick_noai_hook);   // always: the debug menu switches it live
+    else std::fprintf(stderr, "[FPS] CPU brain tick not found: no Enemy AI option\n");
+    if (g_orig_cpu_tick) {
         psp_settings_add_debug_toggle({"Enemy AI", "Enemy AI (debug)\nOff: the CPU fighter never chooses an action; it stands and takes hits. Starts to apply about 7 s into a fight. This session only.",
                                        +[]() { return !g_dbg_no_ai; }, +[](bool on) { g_dbg_no_ai = !on; }});
-    } else std::fprintf(stderr, "[FPS] CPU brain tick not found: no Enemy AI option\n");
+    }
+    psp_settings_add_debug_toggle({"Jecht Combo Timing", "Jecht combo helper (debug)\nThe screen edge flashes green when the window for his next chain press opens, and a press says GOOD, TOO EARLY or TOO LATE with the milliseconds off. Rush, Neutral / Up 2 and 3, HP. This session only.",
+                                   +[]() { return g_dbg_combo; }, +[](bool on) { g_dbg_combo = on; }});
+    if (g_test_ai_off && (g_orig_pad_set_state = ovl_battle_lookup(PAD_SET_STATE)) && (g_orig_pad_set_pending = ovl_battle_lookup(PAD_SET_PENDING))) {
+        psp_dispatch_register(PAD_SET_STATE, pad_set_state_hook); psp_dispatch_register(PAD_SET_PENDING, pad_set_pending_hook);
+        std::fprintf(stderr, "[FPS] test: CPU AI input off\n");
+    }
     std::fprintf(stderr, "[FPS] press latch %s (pressed-test hook %s)\n", g_press_latch ? "on" : "off", g_orig_pressed ? "installed" : "NOT FOUND");
     if ((g_orig_rootmotion = psp_dispatch_probe_lookup(ROOT_MOTION))) psp_dispatch_register(ROOT_MOTION, root_motion_hook);
     else std::fprintf(stderr, "[FPS] root motion hook NOT installed (no function at %08X)\n", ROOT_MOTION);
