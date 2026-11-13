@@ -1867,6 +1867,20 @@ bool dissidia_nearest_fighter(const float eye[3], float pos[3]) {
     return found;
 }
 
+float dissidia_battle_age() { return g_battle_age; }   // ticks (1/60 s) since the battle started running (camera.cpp)
+
+// The fighter a person controls (its brain, actor +0x5C4, is in human mode: brain +0x54 != 0), 0 if none is known (camera.cpp).
+uint32_t dissidia_player_actor() {
+    static uint32_t last = 0;   // sticky: a lookup that fails for a frame keeps the last answer
+    for (int i = 0; i < 4; i++) {
+        const uint32_t a = g_fighters[i];
+        if (!a || !ok(a) || g_tick - g_fighter_seen[i] > 120) continue;
+        const uint32_t brain = r32(a + 0x5C4u);
+        if (ok(brain) && r32(brain + 0x54u) != 0) return last = a;
+    }
+    return last && ok(last) && g_ram[(last + 0x542u) & 0x07FFFFFFu] == 0 ? last : 0u;
+}
+
 // Ticks (1/60 s) one game frame advances: 2 at 30 Hz, 1 at 60 Hz, 2/3 at 90 Hz, 0.5 at 120 Hz.
 float dissidia_frame_ticks() { return g_ticks; }
 // Factor for a value the game keeps as "ticks per 30 Hz frame" (the actor own clock): 1 at 30 Hz, 0.5 at 60 Hz.
