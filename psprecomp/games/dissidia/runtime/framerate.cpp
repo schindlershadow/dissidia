@@ -125,6 +125,7 @@ uint64_t g_grid_anchor = 0;   // g_tick of the first update after Jecht's last m
 bool g_dbg_no_ai = false;      // debug menu: Enemy AI off (the CPU brain tick is skipped once the fight has been running a while)
 bool g_dbg_combo = false;      // debug menu: Jecht combo timing helper (flash when a chain window opens, messages for early / late presses)
 bool g_env_no_ai = false;      // PSPRECOMP_TEST_NO_AI (the test harnesses)
+bool g_ai_armed = false;       // the fight has run long enough for the Enemy AI option to apply; kept across a pause (the age resets then), cleared when the battle is left or new fighters appear
 float g_battle_age = 0.f;      // ticks (1/60 s) the battle has been running
 bool g_action_start_step = true;   // see actor_dt_hook (PSPRECOMP_ACTION_START_STEP=0 turns it off for A/B)
 uint32_t g_press_calls = 0, g_press_edges = 0, g_press_latched = 0, g_press_dropped = 0;   // press latch counters for the [FPS] log
@@ -934,6 +935,7 @@ void frame_end_hook(uint8_t* rdram, recomp_context* ctx) {
     fighter_log_frame();
     combo_frame();
     if (battle_running()) g_battle_age += g_ticks; else g_battle_age = 0.f;
+    if (g_battle_age > 420.f) g_ai_armed = true; else if (overlay_id() != 1) g_ai_armed = false;
     for (int i = 0; i < 4; i++) {
         const uint32_t scr = (g_fighters[i] && ok(g_fighters[i])) ? (r32(g_fighters[i] + 0x540u) & 0xFFFFu) : 0xFFFFu;
         g_action_new[i] = scr != 0xFFFFu && scr != g_prev_scr[i];
@@ -1266,6 +1268,7 @@ void actor_dt_hook(uint8_t* rdram, recomp_context* ctx) {
             int slot = -1;
             for (int i = 0; i < 4; i++) if (g_fighters[i] == actor) slot = i;
             if (slot < 0) for (int i = 0; i < 4 && slot < 0; i++) if (!g_fighters[i] || g_tick - g_fighter_seen[i] > 120) slot = i;   // free or stale
+            if (slot >= 0 && g_fighters[slot] != actor) g_ai_armed = false;   // a new fighter: a new fight (its intro waits for the brains)
             if (slot >= 0) { g_fighters[slot] = actor; g_fighter_seen[slot] = g_tick; }
         } else if (g_fighter_log) {
             bool known = false;
@@ -1893,7 +1896,7 @@ float dissidia_own_clock_scale() { return g_ticks * 0.5f; }
 FuncPtr g_orig_cpu_tick = nullptr;
 void cpu_tick_noai_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t brain = static_cast<uint32_t>(ctx->r[4]);
-    const bool off = (g_env_no_ai && g_gt_started) || (g_dbg_no_ai && g_battle_age > 420.f);
+    const bool off = (g_env_no_ai && g_gt_started) || (g_dbg_no_ai && g_ai_armed);
     if (off && ok(brain) && static_cast<int32_t>(r32(brain + 0x54u)) == 0) return;   // only once the fight runs: the intro waits for the brains
     g_orig_cpu_tick(rdram, ctx);
 }

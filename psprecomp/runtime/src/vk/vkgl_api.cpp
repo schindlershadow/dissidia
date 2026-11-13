@@ -58,7 +58,7 @@ static GLboolean APIENTRY f_IsEnabled(GLenum cap) {
     }
 }
 static void APIENTRY f_Viewport(GLint x, GLint y, GLsizei w, GLsizei h) { GLState& s = st(); s.vp[0] = x; s.vp[1] = y; s.vp[2] = w; s.vp[3] = h; }
-static void APIENTRY f_Scissor(GLint, GLint, GLsizei, GLsizei) {}   // the runtime never sets a rectangle; the scissor is the whole target
+static void APIENTRY f_Scissor(GLint x, GLint y, GLsizei w, GLsizei h) { int* r = st().sc_rect; r[0] = x; r[1] = y; r[2] = w; r[3] = h; }   // draws ignore it (the runtime disables the test); glClear honours it
 #ifndef PSP_GLES
 static void APIENTRY f_DepthRange(GLdouble n, GLdouble f) { st().depth_range[0] = n; st().depth_range[1] = f; }
 #endif

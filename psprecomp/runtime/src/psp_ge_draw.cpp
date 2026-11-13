@@ -3673,6 +3673,8 @@ void ge_draw_flash(uint32_t rgb, int ms) {
 }
 
 static void present_flash(const PresentRect& pr) {
+    static const bool test_flash = std::getenv("PSPRECOMP_TEST_FLASH") != nullptr;   // tests: a green flash for 400 ms every 2 s
+    if (test_flash && steady_ms() % 2000 < 40) ge_draw_flash(0x40FF70, 400);
     if (steady_ms() >= g_flash_until_ms.load(std::memory_order_relaxed)) return;
     const uint32_t c = g_flash_rgb.load(std::memory_order_relaxed);
     const int left = std::min(pr.x0, pr.x1), right = std::max(pr.x0, pr.x1), bottom = std::min(pr.y0, pr.y1), top = std::max(pr.y0, pr.y1);

@@ -1296,7 +1296,17 @@ void clear(GLbitfield mask) {
     if (!t.color) return;
     if (s.color_mask != 15 && (mask & GL_COLOR_BUFFER_BIT) && !g().warned_mask) { g().warned_mask = true; std::fprintf(stderr, "[VKGL] glClear with a partial colour mask is cleared in full\n"); }
     const bool clr_depth = (mask & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) != 0;
-    if (!pass_matches(s.draw_fbo, t, clr_depth)) {
+    // A scissored clear (the flash bars along the screen edge) covers only the rectangle: no load-op folding, a clear inside a pass.
+    VkClearRect cr{{{0, 0}, {(uint32_t)t.w, (uint32_t)t.h}}, 0, 1};
+    bool partial = false;
+    if (s.scissor && s.sc_rect[2] > 0 && s.sc_rect[3] > 0) {
+        const int x0 = std::clamp(s.sc_rect[0], 0, t.w), y0 = std::clamp(s.sc_rect[1], 0, t.h);
+        const int x1 = std::clamp(s.sc_rect[0] + s.sc_rect[2], 0, t.w), y1 = std::clamp(s.sc_rect[1] + s.sc_rect[3], 0, t.h);
+        if (x1 <= x0 || y1 <= y0) return;
+        if (x0 > 0 || y0 > 0 || x1 < t.w || y1 < t.h) { cr.rect = {{x0, y0}, {(uint32_t)(x1 - x0), (uint32_t)(y1 - y0)}}; partial = true; }
+    }
+    if (partial && !pass_matches(s.draw_fbo, t, clr_depth)) begin_pass(s.draw_fbo, t, nullptr, clr_depth);
+    if (!partial && !pass_matches(s.draw_fbo, t, clr_depth)) {
         // Starting a pass on this target: fold the clear into the load op. Aspects not cleared keep LOAD.
         ClearReq c{};
         c.flags = ((mask & GL_COLOR_BUFFER_BIT) ? 1u : 0u) | ((mask & GL_DEPTH_BUFFER_BIT) ? 2u : 0u) | ((mask & GL_STENCIL_BUFFER_BIT) ? 4u : 0u);
@@ -1321,7 +1331,6 @@ void clear(GLbitfield mask) {
         n++;
     }
     if (!n) return;
-    VkClearRect cr{{{0, 0}, {(uint32_t)t.w, (uint32_t)t.h}}, 0, 1};
     vkCmdClearAttachments(fr().main, n, ca, 1, &cr);
 }
 
