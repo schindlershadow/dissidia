@@ -63,6 +63,7 @@ float g_sens = 1.0f, g_pitch_min = -5.f, g_pitch_max = 80.f, g_recenter = 1.0f, 
 float g_yaw = 0.f, g_pitch = 0.f;   // accumulated offsets (radians)
 double g_last_t = 0;
 int g_log_left = 0;
+bool g_blocker_on = true;   // PSPRECOMP_CAM_BLOCKER_FADE=0: no fade of walls that block our own camera
 bool g_pivot_on = true, g_invert_x = false;   // orbit the fighter (PSPRECOMP_CAM_PIVOT=0: orbit the game's look-at point, the old way)
 // hitcam= framing (roster.cpp posts the request when a hitact= action starts)
 bool g_cine_on = true;
@@ -243,6 +244,13 @@ void dissidia_cam_update(uint8_t* rdram, recomp_context* ctx) {
             if (std::fabs(g_pitch) < 0.002f) g_pitch = 0.f;
         }
     }
+    { static const char* ty = std::getenv("PSPRECOMP_CAM_TEST_YAW");   // tests: hold the view turned by this many degrees (pitch: PSPRECOMP_CAM_TEST_PITCH)
+      static const char* tp = std::getenv("PSPRECOMP_CAM_TEST_PITCH");
+      static const char* sp = std::getenv("PSPRECOMP_CAM_TEST_SPIN");   // tests: turn the view this many degrees a second and log how many draws fade
+      if (sp && dissidia_battle_age() > 120.f) { g_yaw += static_cast<float>(std::atof(sp)) * 3.14159265f / 180.f * static_cast<float>(dt); if (g_yaw > 3.14159265f) g_yaw -= 6.2831853f;
+          static int fr = 0; if (++fr % 30 == 0) std::fprintf(stderr, "[BLOCKER] yaw %.0f faded draws in the last 30 frames %d\n", g_yaw * 57.29578f, ge_draw_view_blocker_count()); }
+      if (ty && dissidia_battle_age() > 120.f) g_yaw = static_cast<float>(std::atof(ty)) * 3.14159265f / 180.f;
+      if (tp && dissidia_battle_age() > 120.f) g_pitch = static_cast<float>(std::atof(tp)) * 3.14159265f / 180.f; }
     // Yaw is unbounded but kept in (-pi, pi].
     const float PI = 3.14159265f;
     if (g_yaw > PI) g_yaw -= 2 * PI; else if (g_yaw < -PI) g_yaw += 2 * PI;
@@ -253,6 +261,14 @@ void dissidia_cam_update(uint8_t* rdram, recomp_context* ctx) {
     g_in_update = true; g_eye_calls = 0;
     g_orig_update(rdram, ctx);
     g_in_update = false;
+    {   // our own camera (turned view or hold): the game's wall fade used its eye, so fade what blocks ours
+        float P[3];
+        static const char* tg = std::getenv("PSPRECOMP_CAM_BLOCKER_TOGGLE");   // tests: fade on / off alternately every N seconds (same scene, A/B)
+        const bool phase = !tg || std::fmod(t, 2.0 * std::atof(tg)) < std::atof(tg);
+        const bool ours = (g_yaw != 0.f || g_pitch != 0.f || g_holding) && g_blocker_on && phase && pl_pos(P);
+        if (ours) P[1] += 1.0f;
+        ge_draw_set_view_blocker(ours, P);
+    }
     if (set_wide) set_aspect(static_cast<float>(ge_draw_widescreen_width()) / 272.0f);
 }
 
@@ -385,6 +401,7 @@ void dissidia_camera_install(uint8_t* rdram) {
     g_invert = (e = std::getenv("PSPRECOMP_CAM_INVERT_Y")) && e[0] && e[0] != '0';
     if ((e = std::getenv("PSPRECOMP_CAM_PITCH_MIN"))) g_pitch_min = static_cast<float>(std::atof(e));
     if ((e = std::getenv("PSPRECOMP_CAM_PITCH_MAX"))) g_pitch_max = static_cast<float>(std::atof(e));
+    if ((e = std::getenv("PSPRECOMP_CAM_BLOCKER_FADE"))) g_blocker_on = e[0] != '0';
     if ((e = std::getenv("PSPRECOMP_CAM_PIVOT"))) g_pivot_on = e[0] != '0';
     g_invert_x = (e = std::getenv("PSPRECOMP_CAM_INVERT_X")) && e[0] && e[0] != '0';
     if ((e = std::getenv("PSPRECOMP_CAM_RECENTER"))) g_recenter = static_cast<float>(std::atof(e));
