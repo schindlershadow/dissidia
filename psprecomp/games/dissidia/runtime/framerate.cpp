@@ -934,7 +934,6 @@ void frame_end_hook(uint8_t* rdram, recomp_context* ctx) {
     if (battle_running()) g_battle_age += g_ticks; else g_battle_age = 0.f;
     fighter_log_frame();
     combo_frame();
-    if (battle_running()) g_battle_age += g_ticks; else g_battle_age = 0.f;
     if (g_battle_age > 420.f) g_ai_armed = true; else if (overlay_id() != 1) g_ai_armed = false;
     for (int i = 0; i < 4; i++) {
         const uint32_t scr = (g_fighters[i] && ok(g_fighters[i])) ? (r32(g_fighters[i] + 0x540u) & 0xFFFFu) : 0xFFFFu;
