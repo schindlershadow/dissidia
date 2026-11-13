@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <thread>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -287,6 +288,10 @@ const GlyphInfo* glyph_get(FT_Face f, unsigned px, uint32_t cp) {
     return &g_glyphs.emplace(key, std::move(gi)).first->second;
 }
 
+// The rows [tl_band_y0, tl_band_y1) this thread may draw: the settings screen is drawn in horizontal bands on several
+// threads at once (every pixel writer checks it). The default is the whole canvas.
+thread_local int tl_band_y0 = 0, tl_band_y1 = 1 << 30;
+
 struct Painter {
     Canvas& c;
     float s;
@@ -299,7 +304,7 @@ struct Painter {
 
     inline void put(int x, int y, const Col& k, float cov) {
         float a = k.a * cov * ga;
-        if (a <= 0.f || x < 0 || y < 0 || x >= c.w || y >= c.h || y < clip_y0 || y >= clip_y1) return;
+        if (a <= 0.f || x < 0 || y < 0 || x >= c.w || y >= c.h || y < clip_y0 || y >= clip_y1 || y < tl_band_y0 || y >= tl_band_y1) return;
         uint32_t& p = c.px[size_t(y) * size_t(c.w) + size_t(x)];
         float r = float(p & 255), g = float((p >> 8) & 255), b = float((p >> 16) & 255);
         r = lerpf(r, k.r * 255.f, a); g = lerpf(g, k.g * 255.f, a); b = lerpf(b, k.b * 255.f, a);
@@ -312,6 +317,7 @@ struct Painter {
     void shape(float x0, float y0, float x1, float y1, SDF sdf, COL col) {
         int ix0 = std::max(0, int(std::floor(x0 * s)) - 2), iy0 = std::max(0, int(std::floor(y0 * s)) - 2);
         int ix1 = std::min(c.w, int(std::ceil(x1 * s)) + 2), iy1 = std::min(c.h, int(std::ceil(y1 * s)) + 2);
+        iy0 = std::max({iy0, clip_y0, tl_band_y0}); iy1 = std::min({iy1, clip_y1, tl_band_y1});   // rows that cannot be drawn are not evaluated
         for (int y = iy0; y < iy1; ++y)
             for (int x = ix0; x < ix1; ++x) {
                 float d = sdf(x + 0.5f, y + 0.5f);
@@ -617,7 +623,7 @@ void draw_icon(Painter& P, const SaveEntry& e, bool is_new, float x, float y, fl
 // ===========================================================================
 
 inline void blend_px(Canvas& c, int x, int y, float r, float g, float b, float a) {
-    if (a <= 0.f || x < 0 || y < 0 || x >= c.w || y >= c.h) return;
+    if (a <= 0.f || x < 0 || y < 0 || x >= c.w || y >= c.h || y < tl_band_y0 || y >= tl_band_y1) return;
     uint32_t& p = c.px[size_t(y) * size_t(c.w) + size_t(x)];
     a = std::min(a, 1.f);
     float dr = float(p & 255), dg = float((p >> 8) & 255), db = float((p >> 16) & 255);
@@ -661,6 +667,7 @@ void draw_sprite(Canvas& c, const SdSprite& sp, float dx, float dy, float dw, fl
     const float s = float(c.scale);
     int ix0 = std::max(0, int(std::floor(dx * s))), iy0 = std::max(0, int(std::floor(dy * s)));
     int ix1 = std::min(c.w, int(std::ceil((dx + dw) * s))), iy1 = std::min(c.h, int(std::ceil((dy + dh) * s)));
+    iy0 = std::max(iy0, tl_band_y0); iy1 = std::min(iy1, tl_band_y1);
     const bool mL = sp.mirror == SdMirror::LeftFromRight, mR = sp.mirror == SdMirror::RightFromLeft;
     const float capl = mL ? float(sp.r) : float(sp.l), capr = mR ? float(sp.l) : float(sp.r);
     const bool slice_x = (sp.l | sp.r) != 0, slice_y = (sp.t | sp.b) != 0;

@@ -92,6 +92,12 @@ void draw_icon(Painter& P, int icon, float cx, float cy, Col k) {
             P.segment(cx + 3.8f, cy + float(i) * 2.6f, cx + 6.f, cy + float(i) * 2.6f, 0.45f, k);
         }
         break;
+    case 10:  // mods: building blocks, one lifted out
+        P.rrect(cx - 6.f, cy - 1.f, 5.6f, 5.6f, 0.9f, k);
+        P.rrect(cx - 0.2f, cy - 1.f, 5.6f, 5.6f, 0.9f, k);
+        P.rrect(cx - 6.f, cy + 4.9f - 0.6f, 5.6f, 2.2f, 0.9f, Col{k.r, k.g, k.b, k.a * 0.55f});
+        P.rrect(cx - 3.2f, cy - 6.6f, 5.6f, 5.0f, 0.9f, k);
+        break;
     default:  // debug: a bug
         P.rrect(cx - 2.8f, cy - 3.2f, 5.6f, 8.f, 2.8f, k);
         P.rrect(cx - 1.8f, cy - 5.6f, 3.6f, 3.f, 1.6f, k);
@@ -205,7 +211,7 @@ void blit_panel(Canvas& c, const PanelImg& im, int dx, int dy, float ga) {
     if (g256 <= 0) return;
     for (int y = 0; y < im.h; ++y) {
         const int yy = im.y0 + y + dy;
-        if (yy < 0 || yy >= c.h) continue;
+        if (yy < 0 || yy >= c.h || yy < tl_band_y0 || yy >= tl_band_y1) continue;
         const uint32_t* src = &im.px[size_t(y) * size_t(im.w)];
         for (int x = 0; x < im.w; ++x) {
             const uint32_t sp = src[x];
@@ -307,9 +313,10 @@ struct SettingsDraw {
     // -- state that moves ----------------------------------------------------------------------------------------------
     void step(float dt) {
         SettingsView& v = V;
-        const float open_rate = v.open_ ? 1.f / 0.80f : 1.f / 0.45f;
+        const float open_rate = v.open_ ? 1.f / 1.20f : 1.f / 0.70f;
         v.p_open_ = clamp01(v.p_open_ + (v.open_ ? 1.f : -1.f) * dt * open_rate);
-        const float p = v.p_open_;
+        // the iris opens first (p 0 .. 0.4); only then do the panels slide in one after the other (p 0.4 .. 1)
+        const float p = clamp01((v.p_open_ - 0.40f) / 0.60f);
         e_hdr = seg(p, 0.00f, 0.55f); e_side = seg(p, 0.10f, 0.65f); e_list = seg(p, 0.20f, 0.80f);
         e_detail = seg(p, 0.30f, 0.90f); e_foot = seg(p, 0.35f, 1.00f);
         v.page_p_ = clamp01(v.page_p_ + dt / 0.45f);
@@ -348,6 +355,22 @@ struct SettingsDraw {
         const float hl = n > 0 ? ry[size_t(sel)] : 0.f;
         if (v.rows_reset_ || !v.glide_init_) v.sel_y_ = hl;
         else v.sel_y_ += (hl - v.sel_y_) * (1.f - std::exp(-dt * 22.f));
+        {   // the category list scrolls like the rows when there are more categories than fit
+            const float cp = 24.f, vis = R_SIDE.h - 8.f;
+            v.cat_scroll_max_ = std::max(0.f, float(S.cats.size()) * cp - vis);
+            if (S.cat != v.cat_follow_) { v.cat_follow_ = S.cat; v.cat_manual_ = false; }
+            if (!v.cat_manual_) {
+                float t = v.cat_scroll_t_;
+                const float top = float(S.cat) * cp, bot = top + cp;
+                if (top - 2.f < t) t = top - 2.f;
+                if (bot + 2.f > t + vis) t = bot + 2.f - vis;
+                v.cat_scroll_t_ = t;
+            }
+            v.cat_scroll_t_ = std::clamp(v.cat_scroll_t_, 0.f, v.cat_scroll_max_);
+            if (!v.glide_init_) v.cat_scroll_ = v.cat_scroll_t_;
+            else v.cat_scroll_ += (v.cat_scroll_t_ - v.cat_scroll_) * (1.f - std::exp(-dt * 16.f));
+        }
+        v.dlg_p_ = clamp01(v.dlg_p_ + (S.dlg.active ? 1.f : -1.f) * dt / 0.16f);
         v.tab_focus_ += ((S.focus_tabs ? 1.f : 0.f) - v.tab_focus_) * (1.f - std::exp(-dt * 18.f));
         const float cat_t = float(S.cat);
         if (!v.glide_init_) v.cat_y_ = cat_t;
@@ -390,9 +413,18 @@ struct SettingsDraw {
                 c.clear(Canvas::rgba(200, 204, 232));
                 draw_sprite(c, T->background, 0, 0, float(SCREEN_W), float(SCREEN_H), 1.f, true);
                 cb = c.px;
-            } else c.px = cb;
-        } else {
-            c.px = background(c.scale);
+            } else {
+                const int y0 = std::max(0, tl_band_y0), y1 = std::min(c.h, tl_band_y1);
+                if (y1 > y0) std::memcpy(&c.px[size_t(y0) * size_t(c.w)], &cb[size_t(y0) * size_t(c.w)], size_t(y1 - y0) * size_t(c.w) * 4);
+            }
+        } else {   // no game theme (a host test): the painted background, built once per scale
+            static std::vector<uint32_t> plain[MAX_SCALE + 1];
+            std::vector<uint32_t>& pb = plain[std::clamp(c.scale, 0, int(MAX_SCALE))];
+            if (pb.size() != c.px.size()) { pb = background(c.scale); c.px = pb; }
+            else {
+                const int y0 = std::max(0, tl_band_y0), y1 = std::min(c.h, tl_band_y1);
+                if (y1 > y0) std::memcpy(&c.px[size_t(y0) * size_t(c.w)], &pb[size_t(y0) * size_t(c.w)], size_t(y1 - y0) * size_t(c.w) * 4);
+            }
         }
         const float t = float(V.t_);
         // a slow diagonal sheen crossing the screen (a soft white band, added per pixel)
@@ -469,7 +501,7 @@ struct SettingsDraw {
         float lx = bk.x + 14.f;
         if (S.device == 0) {   // the pad button that does it
             const SdSprite& g = (S.confirm_cross ? (T ? T->glyph_circle : SdSprite{}) : (T ? T->glyph_cross : SdSprite{}));
-            if (g.valid()) { draw_sprite(c, g, lx, bk.y + (bk.h - float(g.h)) / 2, float(g.w), float(g.h), e_hdr); lx += float(g.w) + 3.f; }
+            if (false) { (void)g; }
             else { draw_btn_glyph(P, !S.confirm_cross, lx + 5.5f, bk.y + bk.h / 2, C_WHITE); lx += 14.f; }
         } else {   // a cross to tap
             draw_cross(P, lx + 3.f, bk.y + bk.h / 2, 2.4f, 1.2f, C_WHITE);
@@ -490,8 +522,10 @@ struct SettingsDraw {
         const int n = int(S.cats.size());
         V.g_.cats.assign(size_t(n), SetRect{});
         if (n == 0) { P.ga = 1.f; return; }
-        const float pitch = std::min(24.f, (side.h - 8.f) / float(n));
-        const float ix = side.x + 4.f, iw = side.w - 8.f, ih = pitch - 2.5f, y0 = side.y + 4.f;
+        const float pitch = 24.f;
+        const float ix = side.x + 4.f, iw = side.w - 8.f, ih = pitch - 2.5f, y0 = side.y + 4.f - V.cat_scroll_;
+        V.g_.side = side;
+        P.clip(side.y + 2.f, side.y + side.h - 2.f);
         // the selection bar glides between categories
         const float hy = y0 + V.cat_y_ * pitch;
         {
@@ -515,6 +549,12 @@ struct SettingsDraw {
             const Col fg = col_mix(C_INK, C_WHITE, sf * (0.7f + 0.3f * V.tab_focus_));
             draw_icon(P, S.cats[size_t(i)].icon, r.x + 17.f, r.y + r.h / 2.f, fg);
             P.text(bodyb, 9.2f * fs, r.x + 28.f, r.y + r.h / 2.f + 3.3f, S.cats[size_t(i)].name, fg, r.w - 32.f);
+        }
+        P.unclip();
+        if (V.cat_scroll_max_ > 0.5f) {   // more categories above / below
+            const float bl = 0.5f + 0.5f * std::sin(float(V.t_) * 5.f), cxm = side.x + side.w / 2.f;
+            if (V.cat_scroll_ > 1.f) { Poly t; t.add(cxm, side.y + 3.f); t.add(cxm + 4.f, side.y + 8.f); t.add(cxm - 4.f, side.y + 8.f); P.poly(t, 0.f, [&](float, float) { return rgb(226, 160, 40, 0.4f + 0.6f * bl); }); }
+            if (V.cat_scroll_ < V.cat_scroll_max_ - 1.f) { Poly t; t.add(cxm, side.y + side.h - 3.f); t.add(cxm + 4.f, side.y + side.h - 8.f); t.add(cxm - 4.f, side.y + side.h - 8.f); P.poly(t, 0.f, [&](float, float) { return rgb(226, 160, 40, 0.4f + 0.6f * bl); }); }
         }
         P.ga = 1.f;
     }
@@ -818,8 +858,7 @@ struct SettingsDraw {
         P.text(bodyb, 6.8f * fs, x + w / 2.f, cy + 2.4f, t, C_WHITE, 0, 2);
     }
     float glyph_btn(float x, float cy, bool cross) {
-        const SdSprite* g = T ? (cross ? &T->glyph_cross : &T->glyph_circle) : nullptr;
-        if (g && g->valid()) { draw_sprite(c, *g, x, cy - float(g->h) / 2.f, float(g->w), float(g->h), e_foot); return float(g->w); }
+        // drawn as vectors: the game's own button sprites are only ~20 px and look soft scaled up
         draw_btn_glyph(P, cross, x + 5.5f, cy, C_WHITE);
         return 11.f;
     }
@@ -856,7 +895,7 @@ struct SettingsDraw {
             keycap(x, cy, "L", w); x += w + 2.f; keycap(x, cy, "R", w); x += w + 3.f; label("Category");
             // right: d-pad glyphs
             const float dk = 0.78f;
-            if (T && T->dpad_left.valid() && T->dpad_right.valid() && T->dpad_up.valid() && T->dpad_down.valid()) {
+            if (false) {
                 auto pad = [&](const SdSprite& g, float gx) {
                     draw_sprite(c, g, gx, cy - dk * float(g.h) / 2.f, dk * float(g.w), dk * float(g.h), e_foot);
                     return dk * float(g.w);
@@ -895,6 +934,52 @@ struct SettingsDraw {
             label("Tap to choose");
             label("Drag to scroll");
             label("Slide a bar to adjust");
+        }
+        P.ga = 1.f;
+    }
+
+    // -- question dialog (restart now / later) -----------------------------------------------------------------------------
+    void draw_dialog() {
+        const float p = ease_out(V.dlg_p_);
+        V.g_.dlg_btns.clear();
+        if (p <= 0.001f) return;
+        const SetDialog& D = S.dlg;
+        P.ga = 1.f;
+        P.rrect(0, 0, float(SCREEN_W), float(SCREEN_H), 0.f, rgb(12, 14, 46, 0.55f * p));
+        P.ga = p;
+        const float w = 300.f, h = 124.f, x = (float(SCREEN_W) - w) / 2.f, y = (float(SCREEN_H) - h) / 2.f + (1.f - p) * 12.f;
+        P.shadow(x, y, w, h, 8.f, 6.f, 0.35f);
+        P.rrect(x, y, w, h, 8.f, rgb(236, 238, 252));
+        P.rrect(x + 1.f, y + 1.f, w - 2.f, h - 2.f, 7.f, Ramp(rgb(248, 249, 255), rgb(222, 226, 246), y, y + h));
+        navy_plate(P, x + 24.f, y - 10.f, w - 48.f, 22.f, 11.f, 0.f);
+        P.text(bodyb, 9.6f * fs, x + w / 2.f, y + 5.2f, D.title, C_WHITE, 0, 2);
+        float ly = y + 34.f;
+        size_t a = 0;
+        while (a <= D.text.size()) {
+            size_t b = D.text.find('\n', a);
+            if (b == std::string::npos) b = D.text.size();
+            P.text(body, 8.8f * fs, x + w / 2.f, ly, D.text.substr(a, b - a), C_INK, w - 24.f, 2);
+            ly += 13.f;
+            a = b + 1;
+        }
+        const int n = int(D.buttons.size());
+        const float bw = 118.f, gap = 14.f, bh = 22.f, by = y + h - bh - 12.f;
+        float bx = x + (w - (float(n) * bw + float(n - 1) * gap)) / 2.f;
+        for (int i = 0; i < n; ++i) {
+            const SetRect r{bx, by, bw, bh};
+            V.g_.dlg_btns.push_back(r);
+            const bool sel = i == D.sel, hov = i == D.hover;
+            if (sel) {
+                chev(P, r.x, r.y, r.w, r.h, 6.f, 0.9f, [](float, float) { return rgb(214, 218, 240); });
+                Ramp rp(rgb(104, 118, 255), rgb(40, 48, 222), rgb(20, 22, 150), r.y, r.y + r.h);
+                chev(P, r.x, r.y, r.w, r.h, 6.f, 0.f, [&](float yy, float) { return rp.at(yy); });
+                chev(P, r.x + 2.f, r.y + 1.f, r.w - 4.f, r.h * 0.42f, 4.f, 0.f, [](float, float) { return rgb(255, 255, 255, 0.24f); });
+            } else {
+                chev(P, r.x, r.y, r.w, r.h, 6.f, 0.9f, [](float, float) { return rgb(190, 196, 228); });
+                chev(P, r.x + 0.8f, r.y + 0.8f, r.w - 1.6f, r.h - 1.6f, 5.f, 0.f, [&](float, float) { return hov ? rgb(206, 212, 250) : rgb(232, 235, 250); });
+            }
+            P.text(bodyb, 9.2f * fs, r.x + r.w / 2.f, r.y + r.h / 2.f + 3.3f, D.buttons[size_t(i)], sel ? C_WHITE : C_INK, r.w - 8.f, 2);
+            bx += bw + gap;
         }
         P.ga = 1.f;
     }
@@ -983,22 +1068,34 @@ struct SettingsDraw {
 
     // -- open / close ---------------------------------------------------------------------------------------------------------
     void draw_iris() {
-        const float p = V.p_open_;
+        const float p = clamp01(V.p_open_ / 0.42f);
         if (p >= 0.999f) return;
         const float e = ease_io(p);
         const float cx = float(SCREEN_W) / 2.f, cy = float(SCREEN_H) / 2.f, R = e * 310.f;
         const float s = float(c.scale);
         const float edge = 14.f;
-        for (int y = 0; y < c.h; ++y) {
-            const float dy = (float(y) + 0.5f) / s - cy;
+        const int ya = std::max(0, tl_band_y0), yb = std::min(c.h, tl_band_y1);
+        const float R2 = R * R, Re2 = (R + edge) * (R + edge);
+        auto shade = [&](uint32_t& px, float a) {
+            const float r = float(px & 255), g = float((px >> 8) & 255), b = float((px >> 16) & 255);
+            px = Canvas::rgba(uint8_t(lerpf(r, 16.f, a)), uint8_t(lerpf(g, 18.f, a)), uint8_t(lerpf(b, 58.f, a)));
+        };
+        for (int y = ya; y < yb; ++y) {
+            const float dy = (float(y) + 0.5f) / s - cy, dy2 = dy * dy * 1.6f;
+            uint32_t* row = &c.px[size_t(y) * size_t(c.w)];
+            // columns inside the opening are skipped, columns beyond the soft edge get the flat veil: no sqrt for either
+            const int xin0 = dy2 >= R2 ? c.w : int(std::ceil((cx - std::sqrt(R2 - dy2)) * s - 0.5f));
+            const int xin1 = dy2 >= R2 ? c.w : int(std::floor((cx + std::sqrt(R2 - dy2)) * s - 0.5f));
+            const bool flat_all = dy2 >= Re2;
+            const int xf0 = flat_all ? c.w : int(std::floor((cx - std::sqrt(Re2 - dy2)) * s - 0.5f));
+            const int xf1 = flat_all ? 0 : int(std::ceil((cx + std::sqrt(Re2 - dy2)) * s - 0.5f));
             for (int x = 0; x < c.w; ++x) {
+                if (x >= xin0 && x <= xin1) { x = xin1; continue; }
+                if (flat_all || x <= xf0 || x >= xf1) { shade(row[x], 0.98f); continue; }
                 const float dxp = (float(x) + 0.5f) / s - cx;
-                const float d = std::sqrt(dxp * dxp + dy * dy * 1.6f);
+                const float d = std::sqrt(dxp * dxp + dy2);
                 if (d <= R) continue;
-                const float a = clamp01((d - R) / edge) * 0.96f + 0.02f;
-                uint32_t& px = c.px[size_t(y) * size_t(c.w) + size_t(x)];
-                const float r = float(px & 255), g = float((px >> 8) & 255), b = float((px >> 16) & 255);
-                px = Canvas::rgba(uint8_t(lerpf(r, 16.f, a)), uint8_t(lerpf(g, 18.f, a)), uint8_t(lerpf(b, 58.f, a)));
+                shade(row[x], clamp01((d - R) / edge) * 0.96f + 0.02f);
             }
         }
         // a gold ring riding the rim of the opening
@@ -1009,7 +1106,7 @@ struct SettingsDraw {
     float lastdt = 0.016f;
     void draw_all() {
         using Clk = std::chrono::steady_clock;
-        static double acc[8] = {}; static int cnt = 0;
+        static thread_local double acc[8] = {}; static thread_local int cnt = 0;
         auto tick = [&](int i, Clk::time_point& t0) { const auto t1 = Clk::now(); acc[i] += std::chrono::duration<double, std::milli>(t1 - t0).count(); t0 = t1; };
         auto t0 = Clk::now();
         V.g_.back = SetRect{};
@@ -1021,6 +1118,7 @@ struct SettingsDraw {
         draw_detail(); tick(4, t0);
         draw_footer(); tick(5, t0);
         draw_keyboard();
+        draw_dialog();
         draw_iris(); tick(6, t0);
         if (std::getenv("PSPRECOMP_SETTINGS_PROFILE") && ++cnt == 120) {
             std::fprintf(stderr, "[SETTINGS] draw ms: bg %.1f header %.1f side %.1f list %.1f detail %.1f footer %.1f kb+iris %.1f\n", acc[0]/cnt, acc[1]/cnt, acc[2]/cnt, acc[3]/cnt, acc[4]/cnt, acc[5]/cnt, acc[6]/cnt);
@@ -1040,5 +1138,31 @@ void SettingsView::render(Canvas& c, const SetScene& s, double now_ms) {
     SettingsDraw D(*this, s, c);
     D.lastdt = dt;
     D.step(dt);
-    D.draw_all();
+    // The canvas is drawn in horizontal bands on several threads (a CPU-drawn 1440 x 816 picture is the whole cost of this
+    // screen). Each band runs the complete drawing with every pixel write limited to its rows. The first picture of a
+    // size is drawn on one thread: it builds the scaled artwork the others copy.
+    static unsigned primed = 0;
+    static const int cfg = [] { const char* e = std::getenv("PSPRECOMP_SETTINGS_THREADS"); return e ? std::atoi(e) : 0; }();
+    int nt = cfg > 0 ? cfg : int(std::min(8u, std::max(1u, std::thread::hardware_concurrency() > 1 ? std::thread::hardware_concurrency() - 1 : 1u)));
+    const unsigned bit = 1u << std::clamp(c.scale, 0, 31);
+    if (!(primed & bit) || nt <= 1) { primed |= bit; D.draw_all(); return; }
+    const int nbands = nt * 3;
+    std::atomic<int> next{0};
+    auto run = [&](SettingsView& view) {
+        for (int b; (b = next.fetch_add(1)) < nbands;) {
+            tl_band_y0 = c.h * b / nbands; tl_band_y1 = c.h * (b + 1) / nbands;
+            SettingsDraw Db(view, s, c);
+            Db.lastdt = dt;
+            Db.compute_rows();
+            Db.e_hdr = D.e_hdr; Db.e_side = D.e_side; Db.e_list = D.e_list; Db.e_detail = D.e_detail; Db.e_foot = D.e_foot;
+            Db.list_scroll = D.list_scroll;
+            Db.draw_all();
+        }
+        tl_band_y0 = 0; tl_band_y1 = 1 << 30;
+    };
+    std::vector<SettingsView> copies(size_t(nt - 1), *this);   // the other threads draw into throw-away geometry
+    std::vector<std::thread> th;
+    for (int i = 0; i < nt - 1; ++i) th.emplace_back([&run, &copies, i] { run(copies[size_t(i)]); });
+    run(*this);
+    for (auto& t : th) t.join();
 }

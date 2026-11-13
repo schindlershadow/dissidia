@@ -217,6 +217,13 @@ struct SetKeyboardState {    // the text-entry modal
     bool secret = false, shift = false, symbols = false;
     int row = 0, col = 0;    // focused key (pad / keyboard)
 };
+struct SetDialog {                            // a question over the settings screen (e.g. restart now / later)
+    bool active = false;
+    std::string title, text;                  // text: lines separated by \n
+    std::vector<std::string> buttons;
+    int sel = 0;
+    int hover = -1;
+};
 struct SetScene {
     std::string title = "Settings";
     std::vector<std::string> crumbs;          // breadcrumb after the title, e.g. {"Image", "HDR"}
@@ -234,6 +241,7 @@ struct SetScene {
     bool focus_tabs = false;                  // the category list (left) has the focus; Back there closes
     std::string brand = "Dissidia 012 Recompiled";   // the plate in the top right corner (a Back button inside a sub-menu)
     SetKeyboardState kb;
+    SetDialog dlg;
 };
 struct SetRect {
     float x = 0, y = 0, w = 0, h = 0;
@@ -241,7 +249,8 @@ struct SetRect {
 };
 struct SetKey { std::string label; int kind = 0; char ch = 0; SetRect r; };   // kind: 0 character, 1 shift, 2 symbols, 3 space, 4 delete, 5 done, 6 cancel
 struct SetGeom {
-    SetRect back, list, scroll_track, scroll_thumb, detail;
+    SetRect back, list, scroll_track, scroll_thumb, detail, side;
+    std::vector<SetRect> dlg_btns;            // the dialog's buttons while it is open
     std::vector<SetRect> cats;
     struct Row { int idx = 0; SetRect r, dec, inc, track; };
     std::vector<Row> rows;                    // the rows at least partly inside the list
@@ -266,6 +275,7 @@ public:
     void scroll_by(float dy) { scroll_target_ += dy; manual_scroll_ = true; }
     void fling(float v) { fling_v_ = v; }
     void follow_selection() { manual_scroll_ = false; }
+    void scroll_cats(float dy) { cat_scroll_t_ += dy; cat_manual_ = true; }   // the category list (left)
     float scroll_max() const { return scroll_max_; }
     float scroll_pos() const { return scroll_; }
     void set_scroll_pos(float p) { scroll_ = scroll_target_ = p; manual_scroll_ = true; }
@@ -275,6 +285,8 @@ public:
     float p_open_ = 0.f;
     double last_ms_ = -1, t_ = 0;
     float scroll_ = 0, scroll_target_ = 0, scroll_max_ = 0, fling_v_ = 0;
+    float cat_scroll_ = 0, cat_scroll_t_ = 0, cat_scroll_max_ = 0; bool cat_manual_ = false; int cat_follow_ = -1;   // category list scrolling
+    float dlg_p_ = 0.f;                       // dialog fade
     float tab_focus_ = 1.f;                   // eases to 1 while the category list has the focus
     float sel_y_ = 0, cat_y_ = 0;             // gliding highlight positions (design units)
     bool glide_init_ = false;

@@ -25,7 +25,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
+#include <sstream>
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
 #include <map>
 #include <memory>
 #include <string>
@@ -43,6 +48,12 @@ int64_t now_ms() {
 std::string settings_path() {
     const char* p = std::getenv("PSPRECOMP_SETTINGS");
     return (p && p[0]) ? p : "settings.ini";
+}
+std::string mods_dir_path() {
+    if (const char* m = std::getenv("PSPRECOMP_MODS")) if (m[0]) return m;
+    const std::string sp = settings_path();
+    const size_t sl = sp.find_last_of("/\\");
+    return (sl == std::string::npos ? std::string(".") : sp.substr(0, sl)) + "/mods";
 }
 std::map<std::string, std::string> g_saved;   // what settings.ini holds (keys the user changed in the menu)
 
@@ -152,17 +163,18 @@ enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_FPSCOUNT, ROW_WIDE, ROW
            ROW_DBG0, ROW_DBG1, ROW_DBG2, ROW_DBG3, ROW_DBG4, ROW_DBG5,   // Debug page rows a game module adds (psp_settings_add_debug_toggle)
            ROW_GPU, ROW_GPU_GET, ROW_GPU_DEL,   // custom GPU drivers (Android, Adreno): Drivers page
            ROW_SUB_HDR, ROW_SUB_RT,             // rows that open a sub-menu
+           ROW_MOD0, ROW_MOD_END = ROW_MOD0 + 31, ROW_MODS_NONE,   // Mods page: one toggle per mod folder, or a note when there are none
            ROW_SEC_WINDOW, ROW_SEC_PERF, ROW_SEC_QUALITY, ROW_SEC_AA, ROW_SEC_TEX, ROW_SEC_ENGINE, ROW_SEC_COLOUR, ROW_SEC_HDR, ROW_SEC_LIGHT,
-           ROW_SEC_RT, ROW_SEC_TOUCH, ROW_SEC_GAME, ROW_SEC_SESSION, ROW_SEC_REFL, ROW_SEC_SERVER, ROW_SEC_SYNC, ROW_SEC_DRIVER,   // section captions (not selectable)
+           ROW_SEC_RT, ROW_SEC_TOUCH, ROW_SEC_GAME, ROW_SEC_SESSION, ROW_SEC_REFL, ROW_SEC_SERVER, ROW_SEC_SYNC, ROW_SEC_DRIVER, ROW_SEC_MODS,   // section captions (not selectable)
            ROW_COUNT };
 static_assert(ROW_COUNT < psp_sddialog::SET_MAX_IDS, "row ids are animation slots");
 bool is_section(Row r) { return r >= ROW_SEC_WINDOW && r < ROW_COUNT; }
 std::vector<Row> g_rows;
 int g_sel = 0;
 // Pages: the categories shown in the sidebar, and the sub-menus a row can open (PAGE_HDR under Image, PAGE_RT under Effects).
-enum Page { PAGE_DISPLAY, PAGE_GRAPHICS, PAGE_IMAGE, PAGE_EFFECTS, PAGE_CONTROLS, PAGE_NETWORK, PAGE_CLOUD, PAGE_SYSTEM, PAGE_GPU, PAGE_DEBUG,
+enum Page { PAGE_DISPLAY, PAGE_GRAPHICS, PAGE_IMAGE, PAGE_EFFECTS, PAGE_CONTROLS, PAGE_NETWORK, PAGE_CLOUD, PAGE_SYSTEM, PAGE_GPU, PAGE_DEBUG, PAGE_MODS,
             PAGE_HDR, PAGE_RT, PAGES };
-const char* const k_page_names[PAGES] = {"Display", "Graphics", "Image", "Effects", "Controls", "Network", "Cloud", "System", "Drivers", "Debug",
+const char* const k_page_names[PAGES] = {"Display", "Graphics", "Image", "Effects", "Controls", "Network", "Cloud", "System", "Drivers", "Debug", "Mods",
                                          "HDR", "Ray Tracing"};
 int g_page = 0;                        // the category (an index into page_list()): L / R, Q / E or Tab, the sidebar
 int g_sub = -1;                        // the open sub-menu page, -1 = none
@@ -175,7 +187,7 @@ const std::vector<int>& page_list() {
     if (g_pages.empty()) {
         g_pages = {PAGE_DISPLAY, PAGE_GRAPHICS, PAGE_IMAGE, PAGE_EFFECTS};
         if (g_touch_ui) g_pages.push_back(PAGE_CONTROLS);
-        g_pages.push_back(PAGE_NETWORK); g_pages.push_back(PAGE_CLOUD); g_pages.push_back(PAGE_SYSTEM);
+        g_pages.push_back(PAGE_NETWORK); g_pages.push_back(PAGE_CLOUD); g_pages.push_back(PAGE_MODS); g_pages.push_back(PAGE_SYSTEM);
         if (psp_gpu::supported(nullptr)) g_pages.push_back(PAGE_GPU);
         g_pages.push_back(PAGE_DEBUG);
     }
@@ -183,7 +195,7 @@ const std::vector<int>& page_list() {
 }
 int page_id() { return g_sub >= 0 ? g_sub : page_list()[size_t(g_page)]; }
 // Sidebar icon of a page (settings_render.inc draw_icon).
-int page_icon(int page) { return page <= PAGE_DEBUG ? page : (page == PAGE_HDR ? PAGE_IMAGE : PAGE_EFFECTS); }
+int page_icon(int page) { return page <= PAGE_MODS ? page : (page == PAGE_HDR ? PAGE_IMAGE : PAGE_EFFECTS); }
 int g_ring_next = -1;                  // vertex upload mode saved for the next launch (-1 = unchanged)
 bool g_quit_armed = false;
 bool g_dirty = true;
@@ -415,12 +427,99 @@ void edit_move(int dr, int dc, const psp_sddialog::SetGeom* geom) {
     g_dirty = true;
 }
 
+// ---- Mods: one toggle per mod folder -----------------------------------------------------------------------------------
+// A mod folder has a mod.json; "enabled": false in it keeps the mod out of the game. Folders are looked for in the mods source
+// (PSPRECOMP_MODS_SRC, set by run.sh: mods/ in the repository) and in the game's mods directory (PSPRECOMP_MODS, else <work>/mods).
+// The mods are built into the game when it starts, so a change applies at the next start.
+struct ModEntry { std::string dir, name, where; bool on = true; };
+std::vector<ModEntry> g_mods;
+bool g_restart_pending = false;        // something was changed that only applies at the next start
+std::string read_text_file(const std::string& p) { std::ifstream f(p, std::ios::binary); std::stringstream ss; ss << f.rdbuf(); return ss.str(); }
+size_t json_key_value(const std::string& js, const char* key, size_t from = 0) {   // index of the value after "key":, or npos
+    const std::string k = std::string("\"") + key + "\"";
+    size_t at = js.find(k, from);
+    if (at == std::string::npos) return at;
+    at = js.find(':', at + k.size());
+    if (at == std::string::npos) return at;
+    ++at;
+    while (at < js.size() && (js[at] == ' ' || js[at] == '\t' || js[at] == '\n' || js[at] == '\r')) ++at;
+    return at;
+}
+bool mod_json_enabled(const std::string& js) { const size_t v = json_key_value(js, "enabled"); return !(v != std::string::npos && js.compare(v, 5, "false") == 0); }
+std::string mod_json_display(const std::string& js) {
+    size_t v = json_key_value(js, "display");
+    if (v == std::string::npos) v = json_key_value(js, "name");
+    if (v == std::string::npos || v >= js.size() || js[v] != '"') return {};
+    const size_t e = js.find('"', v + 1);
+    return e == std::string::npos ? std::string() : js.substr(v + 1, e - v - 1);
+}
+void mods_scan(const std::string& root, const char* where) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (root.empty() || !fs::is_directory(root, ec)) return;
+    std::vector<std::string> names;
+    for (const auto& de : fs::directory_iterator(root, ec)) {
+        const std::string n = de.path().filename().string();
+        if (n.empty() || n[0] == '_' || n[0] == '.') continue;
+        if (de.is_directory(ec) && fs::exists(de.path() / "mod.json", ec)) names.push_back(n);
+    }
+    std::sort(names.begin(), names.end());
+    for (const std::string& n : names) {
+        if (g_mods.size() >= size_t(ROW_MOD_END - ROW_MOD0 + 1)) return;
+        ModEntry m;
+        m.dir = root + "/" + n;
+        const std::string js = read_text_file(m.dir + "/mod.json");
+        m.on = mod_json_enabled(js);
+        const std::string disp = mod_json_display(js);
+        m.name = disp.empty() ? n : disp;
+        m.where = where;
+        g_mods.push_back(std::move(m));
+    }
+}
+void mods_load() {
+    g_mods.clear();
+    if (const char* src = std::getenv("PSPRECOMP_MODS_SRC")) mods_scan(src, "mods");
+    mods_scan(mods_dir_path(), "the game's mods folder");
+}
+bool mod_set_enabled(size_t i, bool on) {
+    if (i >= g_mods.size()) return false;
+    const std::string p = g_mods[i].dir + "/mod.json";
+    std::string js = read_text_file(p);
+    if (js.empty()) return false;
+    const size_t v = json_key_value(js, "enabled");
+    if (v != std::string::npos && (js.compare(v, 4, "true") == 0 || js.compare(v, 5, "false") == 0)) js.replace(v, js[v] == 't' ? 4 : 5, on ? "true" : "false");
+    else { const size_t b = js.find('{'); if (b == std::string::npos) return false; js.insert(b + 1, std::string("\n  \"enabled\": ") + (on ? "true" : "false") + (js.find('"', b) != std::string::npos ? "," : "")); }
+    std::ofstream f(p, std::ios::binary | std::ios::trunc);
+    if (!f) return false;
+    f << js;
+    g_mods[i].on = on;
+    g_restart_pending = true;
+    std::fprintf(stderr, "[SETTINGS] mod %s %s (next start)\n", g_mods[i].dir.c_str(), on ? "enabled" : "disabled");
+    return true;
+}
+bool is_mod_row(Row r) { return r >= ROW_MOD0 && r <= ROW_MOD_END; }
+
 std::vector<psp_sddialog::MenuRow> make_rows() {
     std::vector<psp_sddialog::MenuRow> out;
     char buf[96];
     for (Row r : g_rows) {
         psp_sddialog::MenuRow m;
+        if (is_mod_row(r)) {
+            const size_t i = size_t(r - ROW_MOD0);
+            if (i < g_mods.size()) {
+                m.label = g_mods[i].name;
+                m.value = g_mods[i].on ? "On" : "Off";
+                m.help = g_mods[i].name + "\nTurn this mod on or off. Folder: " + g_mods[i].dir + ". Takes effect the next time the game starts.";
+            }
+            out.push_back(std::move(m));
+            continue;
+        }
         switch (r) {
+        case ROW_SEC_MODS: m.label = "Installed mods"; break;
+        case ROW_MODS_NONE:
+            m.label = "No mods found";
+            m.help = "No mods\nPut a mod folder (it has a mod.json) in the mods folder: " + mods_dir_path() + ". It shows up here, where it can be turned on and off.";
+            break;
         case ROW_DISPLAY: {
             const bool fs = is_fullscreen();
             m.label = "Display";
@@ -459,7 +558,9 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.value = buf;
             m.can_dec = n > 1;
             m.can_inc = n < k_max_rs;
-            m.help = "Internal 3D resolution\nHigher is sharper and costs more GPU time (Steam Deck: 2x or 3x).";
+            char hb[256];
+            std::snprintf(hb, sizeof hb, "Internal 3D resolution\nCurrently %d x %d (%dx the PSP's 480 x 272). Higher is sharper and costs more GPU time (Steam Deck: 2x or 3x).", 480 * n, 272 * n, n);
+            m.help = hb;
             break;
         }
         case ROW_WIDE: {
@@ -1003,6 +1104,7 @@ bool slider_of(Row r, int* steps, int* cur) {
 }
 psp_sddialog::SetKind row_kind(Row r) {
     using K = psp_sddialog::SetKind;
+    if (is_mod_row(r)) return K::Toggle;
     switch (r) {
     case ROW_FPSCOUNT: case ROW_WIDE: case ROW_SOFT: case ROW_TEXPACK: case ROW_UPDATES: case ROW_HDR: case ROW_HDR_SCENE: case ROW_CLOUD_AUTO:
     case ROW_CLOUD_REPLAYS: case ROW_PERF: case ROW_FX: case ROW_GLOWSOFT: case ROW_GLOWPASS:
@@ -1012,7 +1114,7 @@ psp_sddialog::SetKind row_kind(Row r) {
     case ROW_QUIT: return K::Danger;
     case ROW_SUB_HDR: case ROW_SUB_RT: return K::Submenu;
     case ROW_NET_SERVER: case ROW_NET_ROOM: case ROW_NET_PEERS: case ROW_CLOUD_FOLDER: case ROW_CLOUD_URL: case ROW_CLOUD_USER: case ROW_CLOUD_PASS: return K::Text;
-    case ROW_NET_STATUS: case ROW_CLOUD_STATUS: return K::Info;
+    case ROW_NET_STATUS: case ROW_CLOUD_STATUS: case ROW_MODS_NONE: return K::Info;
     default: return is_section(r) ? K::Header : K::Choice;
     }
 }
@@ -1084,6 +1186,17 @@ std::vector<psp_sddialog::SetRow> make_set_rows() {
 }
 
 // ---- applying --------------------------------------------------------------
+// After the user changed the highlighted row: remember that the game has to restart for it to apply.
+void note_next_start() {
+    if (g_sel < 0 || g_sel >= int(g_rows.size())) return;
+    const Row r = g_rows[size_t(g_sel)];
+    if (is_mod_row(r)) return;   // mod_set_enabled notes it
+    if (row_kind(r) == psp_sddialog::SetKind::Text) return;
+    const std::vector<psp_sddialog::SetRow> rows = make_set_rows();
+    if (g_sel < int(rows.size()) && rows[size_t(g_sel)].badge == "Next start") g_restart_pending = true;
+}
+struct NextStartNote { ~NextStartNote() { note_next_start(); } };
+
 void size_window(const ResOpt& o) {
     SDL_Window* w = win();
     if (!w) return;
@@ -1172,6 +1285,8 @@ void build_rows();
 
 void change(int d) {   // left / right on the selected row
     if (g_sel < 0 || g_sel >= int(g_rows.size())) return;
+    NextStartNote note_;
+    if (is_mod_row(g_rows[size_t(g_sel)])) { const size_t i = size_t(g_rows[size_t(g_sel)] - ROW_MOD0); if (i < g_mods.size() && g_mods[i].on != (d > 0)) mod_set_enabled(i, d > 0); return; }
     switch (g_rows[size_t(g_sel)]) {
     case ROW_DISPLAY:
         apply_display(d > 0);
@@ -1428,7 +1543,7 @@ void build_rows() {
     auto add = [&](Row r) { g_rows.push_back(r); };
     switch (page_id()) {
     case PAGE_DISPLAY:
-        add(ROW_SEC_WINDOW); add(ROW_DISPLAY); add(ROW_RES); add(ROW_WIDE); add(ROW_UPSCALE);
+        add(ROW_SEC_WINDOW); add(ROW_DISPLAY); if (!is_fullscreen()) add(ROW_RES); add(ROW_WIDE); add(ROW_UPSCALE);
         add(ROW_SEC_PERF);
         if (g_fps.get && g_fps.count > 1) add(ROW_FPS);
         add(ROW_FPSCOUNT);
@@ -1480,6 +1595,12 @@ void build_rows() {
             add(ROW_CLOUD_STATUS);
         } else add(ROW_CLOUD_STATUS);     // cloud sync is not running in this session (PSPRECOMP_CLOUD=0)
         break;
+    case PAGE_MODS:
+        mods_load();
+        add(ROW_SEC_MODS);
+        if (g_mods.empty()) add(ROW_MODS_NONE);
+        for (size_t i = 0; i < g_mods.size(); i++) g_rows.push_back(Row(ROW_MOD0 + int(i)));
+        break;
     case PAGE_DEBUG:
         add(ROW_PERF); add(ROW_FX); add(ROW_SYNC); add(ROW_RING); add(ROW_GLOWSOFT); add(ROW_GLOWPASS);
         for (size_t i = 0; i < g_dbg_toggles.size(); i++) g_rows.push_back(Row(ROW_DBG0 + int(i)));
@@ -1504,12 +1625,54 @@ int64_t g_rows_next = 0;
 int g_device = 0;                      // 0 pad, 1 keyboard / mouse, 2 touch: what the hints show
 int g_hover_row = -1, g_hover_cat = -1, g_hover_part = 0, g_press_row = -1;
 bool g_hover_back = false;
+bool g_dlg_open = false;               // the "restart now?" question is showing
+int g_dlg_sel = 0, g_dlg_hover = -1;
 bool g_focus_tabs = true;              // the category list (left) has the focus; Confirm / Right open the category, Back returns here
 bool g_closing = false;                // the close animation is running (the game stays paused until it ends)
 std::atomic<bool> g_request_open{false};
 std::atomic<bool> g_gate_dirty{false};
 
 void set_open(bool open);
+bool restart_supported() {
+#if defined(_WIN32) || defined(__ANDROID__)
+    return false;
+#else
+    return true;
+#endif
+}
+// Starts the game again the way it was started (run.sh exports the command; without it the same program and arguments).
+void restart_now() {
+#if !defined(_WIN32) && !defined(__ANDROID__)
+    std::fprintf(stderr, "[SETTINGS] restarting the game\n");
+    std::fflush(stderr);
+    if (const char* cmd = std::getenv("PSPRECOMP_RESTART_CMD")) { if (cmd[0]) execl("/bin/sh", "sh", "-c", cmd, static_cast<char*>(nullptr)); }
+    else {
+        std::ifstream f("/proc/self/cmdline", std::ios::binary);
+        std::string all((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        std::vector<std::string> args;
+        for (size_t a = 0; a < all.size();) { const size_t z = all.find('\0', a); args.push_back(all.substr(a, z == std::string::npos ? std::string::npos : z - a)); if (z == std::string::npos) break; a = z + 1; }
+        std::vector<char*> av;
+        for (std::string& a : args) av.push_back(a.data());
+        av.push_back(nullptr);
+        if (!av.empty() && av[0]) execv("/proc/self/exe", av.data());
+    }
+    std::fprintf(stderr, "[SETTINGS] restart failed\n");
+    ge_draw_toast("Could not restart: start the game again by hand", 3500);
+#endif
+}
+std::vector<std::string> dialog_buttons() {
+    if (restart_supported()) return {"Restart now", "Later"};
+    return {"OK"};
+}
+void dialog_choose(int i) {
+    const std::vector<std::string> b = dialog_buttons();
+    g_dlg_open = false;
+    g_dlg_hover = -1;
+    if (restart_supported() && i == 0) { restart_now(); return; }   // only returns when it failed
+    (void)b;
+    g_restart_pending = false;   // asked once
+    set_open(false);
+}
 void enter_sub(int page);
 void go_back();
 
@@ -1548,6 +1711,7 @@ void leave_sub() {
     rebuild(-1);
 }
 void go_back() {   // Back: cancel a text entry, else up one sub-menu level, else close
+    if (g_dlg_open) { dialog_choose(int(dialog_buttons().size()) - 1); return; }
     if (g_edit.active) { edit_end(); return; }
     if (g_sub >= 0) { leave_sub(); return; }
     if (!g_focus_tabs) { g_focus_tabs = true; g_dirty = true; return; }   // from a category's rows back to the category list
@@ -1572,6 +1736,7 @@ void set_open(bool open) {
         g_page = std::clamp(g_page, 0, int(page_list().size()) - 1);
         g_sub = -1;
         g_focus_tabs = true;
+        g_dlg_open = false;
         g_built_page = -1;
         build_rows();
         g_view = psp_sddialog::SettingsView();
@@ -1585,6 +1750,11 @@ void set_open(bool open) {
         std::fprintf(stderr, "[SETTINGS] menu open (game paused)\n");
     } else {
         if (!g_open.load() || g_closing) return;
+        if (g_dlg_open) { dialog_choose(int(dialog_buttons().size()) - 1); return; }   // Back / Esc on the question = Later
+        if (g_restart_pending && !g_should_exit.load() && !g_edit.active) {   // changes that need a restart: ask before closing
+            g_dlg_open = true; g_dlg_sel = 0; g_dlg_hover = -1;
+            return;
+        }
         g_sel_page[page_id()] = g_sel;
         if (g_edit.active) edit_end();
         g_closing = true;
@@ -1617,6 +1787,8 @@ void move_sel(int d) {
 
 void confirm_row() {
     if (g_sel < 0 || g_sel >= int(g_rows.size())) return;
+    NextStartNote note_;
+    if (is_mod_row(g_rows[size_t(g_sel)])) { const size_t i = size_t(g_rows[size_t(g_sel)] - ROW_MOD0); if (i < g_mods.size()) mod_set_enabled(i, !g_mods[i].on); g_dirty = true; return; }
     switch (g_rows[size_t(g_sel)]) {
     case ROW_SUB_HDR: enter_sub(PAGE_HDR); return;
     case ROW_SUB_RT: enter_sub(PAGE_RT); return;
@@ -1729,12 +1901,19 @@ void confirm_row() {
 
 
 void confirm() {   // Confirm: open the highlighted category, or act on the highlighted row
+    if (g_dlg_open) { dialog_choose(g_dlg_sel); return; }
     if (g_focus_tabs && g_sub < 0) { g_focus_tabs = false; g_dirty = true; return; }
     confirm_row();
 }
 
 void nav(uint32_t dir) {
     g_device = 0;
+    if (g_dlg_open) {
+        const int n = int(dialog_buttons().size());
+        if (dir & (1 | 4)) g_dlg_sel = std::max(0, g_dlg_sel - 1);
+        else if (dir & (2 | 8)) g_dlg_sel = std::min(n - 1, g_dlg_sel + 1);
+        return;
+    }
     if (g_edit.active) {
         const psp_sddialog::SetGeom* g = &g_view.geom();
         if (dir & 1) edit_move(-1, 0, g);
@@ -1842,10 +2021,11 @@ void row_tap(int idx) {   // a click / tap on a row's body
 
 void pointer_hover(float ux, float uy) {
     const auto& G = g_view.geom();
+    if (g_dlg_open) { g_dlg_hover = -1; for (size_t i = 0; i < G.dlg_btns.size(); ++i) if (G.dlg_btns[i].has(ux, uy)) g_dlg_hover = int(i); return; }
     int row = -1, part = 0, cat = -1;
     bool back = G.back.has(ux, uy);
     if (!g_edit.active) {
-        for (size_t i = 0; i < G.cats.size(); ++i) if (G.cats[i].has(ux, uy)) cat = int(i);
+        for (size_t i = 0; i < G.cats.size(); ++i) if (G.cats[i].has(ux, uy) && G.side.has(ux, uy)) cat = int(i);
         if (G.list.has(ux, uy))
             for (const auto& r : G.rows)
                 if (r.r.has(ux, uy) && r.idx < int(g_set_rows.size()) && g_set_rows[size_t(r.idx)].kind != psp_sddialog::SetKind::Header) {
@@ -1862,6 +2042,10 @@ void pointer_press(float ux, float uy, bool touch) {
     g_device = touch ? 2 : 1;
     pointer_hover(ux, uy);
     const auto& G = g_view.geom();
+    if (g_dlg_open) {
+        for (size_t i = 0; i < G.dlg_btns.size(); ++i) if (G.dlg_btns[i].has(ux, uy)) { g_dlg_sel = int(i); g_ptr = Pointer{}; dialog_choose(int(i)); return; }
+        return;
+    }
     g_ptr = Pointer{};
     g_ptr.touch = touch; g_ptr.x0 = ux; g_ptr.y0 = uy; g_ptr.last_y = uy; g_ptr.last_t = now_ms();
     if (g_edit.active) {
@@ -1872,7 +2056,7 @@ void pointer_press(float ux, float uy, bool touch) {
     }
     if (G.back.has(ux, uy)) { go_back(); return; }
     for (size_t i = 0; i < G.cats.size(); ++i)
-        if (G.cats[i].has(ux, uy)) { goto_category(int(i)); g_focus_tabs = false; g_dirty = true; return; }
+        if (G.cats[i].has(ux, uy) && G.side.has(ux, uy)) { goto_category(int(i)); g_focus_tabs = false; g_dirty = true; return; }
     if (G.scroll_thumb.w > 0 && G.scroll_thumb.has(ux, uy)) { g_ptr.mode = 4; g_ptr.scroll0 = g_view.scroll_pos(); return; }
     if (G.scroll_track.w > 0 && G.scroll_track.has(ux, uy)) {   // jump to that part of the list, then drag
         const float f = std::clamp((uy - G.scroll_track.y) / std::max(1.f, G.scroll_track.h), 0.f, 1.f);
@@ -2127,6 +2311,10 @@ bool psp_settings_handle_event(const SDL_Event& ev) {
         if (ev.type == SDL_MOUSEWHEEL) {
             if (ev.wheel.which == SDL_TOUCH_MOUSEID || g_edit.active) return false;
             g_device = 1;
+            if (g_dlg_open) return false;
+            int mx = 0, my = 0; float wx = 0, wy = 0;
+            SDL_GetMouseState(&mx, &my);
+            if (mouse_to_canvas(mx, my, &wx, &wy) && g_view.geom().side.has(wx, wy)) { g_view.scroll_cats(-float(ev.wheel.preciseY) * 22.f); return false; }   // over the category list
             g_view.fling(0.f);
             g_view.scroll_by(-float(ev.wheel.preciseY) * 22.f);
             return false;
@@ -2227,6 +2415,10 @@ void psp_settings_tick() {
     // ~60 frames a second: the screen is animated. The picture is rendered at a lower scale when the CPU cannot keep up.
     if (t - g_last_present < g_ui_interval) return;
     g_last_present = t;
+    if ((g_dirty || t >= g_rows_next) && page_id() == PAGE_DISPLAY && g_sub < 0) {   // Window Size only shows while windowed
+        const bool has_res = std::find(g_rows.begin(), g_rows.end(), ROW_RES) != g_rows.end();
+        if (has_res == is_fullscreen()) build_rows();
+    }
     if (g_dirty || t >= g_rows_next) {
         g_set_rows = make_set_rows();
         g_rows_next = t + 250;
@@ -2240,6 +2432,14 @@ void psp_settings_tick() {
     if (g_sub >= 0) sc.crumbs.push_back(k_page_names[g_sub]);
     sc.in_sub = g_sub >= 0;
     sc.focus_tabs = g_focus_tabs && g_sub < 0;
+    sc.dlg.active = g_dlg_open;
+    if (g_dlg_open) {
+        sc.dlg.title = "Restart required";
+        sc.dlg.text = restart_supported() ? "Some of the changes only apply the next time the game starts.\nRestart now? Anything not saved in the game is lost."
+                                          : "Some of the changes only apply the next time the game starts.\nStart the game again to use them.";
+        sc.dlg.buttons = dialog_buttons();
+        sc.dlg.sel = g_dlg_sel; sc.dlg.hover = g_dlg_hover;
+    }
     sc.rows = g_set_rows;
     sc.sel = g_sel;
     sc.hover_row = g_hover_row; sc.hover_cat = g_hover_cat; sc.hover_part = g_hover_part; sc.hover_back = g_hover_back;
@@ -2259,22 +2459,28 @@ void psp_settings_tick() {
     if (!canvas || canvas->scale != scale) canvas = std::make_unique<psp_sddialog::Canvas>(scale);
     const auto r0 = Clock::now();
     g_view.render(*canvas, sc, double(t));
+    const auto r1 = Clock::now();
     psp_sddialog::menu_overlay_publish(*canvas);
+    const double pub_ms = std::chrono::duration<double, std::milli>(Clock::now() - r1).count();
     const double ms = std::chrono::duration<double, std::milli>(Clock::now() - r0).count();
-    g_ui_ms = g_ui_ms * 0.85 + ms * 0.15;
-    // Sharpness first: a slow CPU (Steam Deck) redraws less often (down to ~15 fps) at the full canvas scale. Only a
-    // hopeless draw time (over 60 ms even then) lowers the scale, and never below 2.
-    const int want_iv = g_ui_ms > 11.0 ? std::min(66, int(g_ui_ms * 1.5)) : 15;
-    if (want_iv > g_ui_interval) g_ui_interval = want_iv;
-    else if (want_iv < g_ui_interval && ++g_ui_calm > 90) { g_ui_interval = std::max(want_iv, g_ui_interval - 8); g_ui_calm = 0; }
+    g_ui_ms = g_ui_ms * 0.6 + ms * 0.4;
+    // Sharpness first: a slow CPU redraws less often (down to ~15 fps) at the full canvas scale; the interval follows the
+    // draw time directly. Only a hopeless draw time lowers the scale, and never below 2.
+    g_ui_interval = g_ui_ms > 12.0 ? std::min(66, int(g_ui_ms * 1.15) + 1) : 7;   // 7 ms between redraws at best: the picture follows the display
     if (g_ui_ms > 60.0 && g_ui_cap > 2) { --g_ui_cap; g_ui_ms = 30.0; }
-    else if (g_ui_ms < 20.0 && g_ui_cap < psp_sddialog::MAX_SCALE && g_ui_interval <= 15 && ++g_ui_up > 300) { ++g_ui_cap; g_ui_up = 0; }
+    else if (g_ui_ms < 20.0 && g_ui_cap < psp_sddialog::MAX_SCALE && ++g_ui_up > 300) { ++g_ui_cap; g_ui_up = 0; }
     static int s_log_iv = 0, s_log_scale = 0;
-    if (g_ui_interval != s_log_iv || scale != s_log_scale) {
+    if (std::abs(g_ui_interval - s_log_iv) >= 10 || scale != s_log_scale) {
         s_log_iv = g_ui_interval; s_log_scale = scale;
         std::fprintf(stderr, "[SETTINGS] ui canvas scale %d (output %d, cap %d), redraw every %d ms, draw %.1f ms\n", scale, psp_sddialog::output_scale(), g_ui_cap, g_ui_interval, g_ui_ms);
     }
+    const auto r2 = Clock::now();
     ge_draw_present_overlay_now();
+    if (std::getenv("PSPRECOMP_SETTINGS_PROFILE")) {
+        static double a_r = 0, a_p = 0, a_v = 0; static int n = 0;
+        a_r += ms; a_p += pub_ms; a_v += std::chrono::duration<double, std::milli>(Clock::now() - r2).count();
+        if (++n == 120) { std::fprintf(stderr, "[SETTINGS] per frame: draw %.1f ms, publish %.1f ms, present %.1f ms (interval %d)\n", a_r / n, a_p / n, a_v / n, g_ui_interval); a_r = a_p = a_v = 0; n = 0; }
+    }
     if (g_closing && g_view.closed()) finish_close();
 }
 

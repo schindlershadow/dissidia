@@ -4284,7 +4284,7 @@ static void present_blend_hud(HudBlend& st, const std::string& text, bool& text_
 static void present_fps_counter(const PresentRect& pr) {
     static HudBlend st;
     if (!g_fps_counter.load(std::memory_order_relaxed)) return;
-    present_blend_hud(st, g_perf.fps_text, g_perf.fps_dirty, false, 0.5f, pr);
+    present_blend_hud(st, g_perf.fps_text, g_perf.fps_dirty, false, 0.95f, pr);
 }
 static void present_perf_hud(const PresentRect& pr) {
     static HudBlend st;

@@ -60,7 +60,7 @@ int main() {
     dump(dir, "open0", c);
     for (int i = 0; i < 8; ++i) { t += 16; v.render(c, s, t); }
     dump(dir, "open_mid", c);
-    for (int i = 0; i < 40; ++i) { t += 16; v.render(c, s, t); }
+    for (int i = 0; i < 100; ++i) { t += 16; v.render(c, s, t); }   // the open animation takes 1.2 s
     dump(dir, "settled", c);
     CHECK(!v.opening_or_closing());
     const SetGeom& g = v.geom();
@@ -105,7 +105,7 @@ int main() {
     v.set_open(false);
     for (int i = 0; i < 6; ++i) { t += 16; v.render(c, s, t); }
     dump(dir, "closing", c);
-    for (int i = 0; i < 30; ++i) { t += 16; v.render(c, s, t); }
+    for (int i = 0; i < 60; ++i) { t += 16; v.render(c, s, t); }
     CHECK(v.closed());
     // all frame times (informational)
     {
