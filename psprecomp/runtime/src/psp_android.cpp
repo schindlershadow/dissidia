@@ -126,8 +126,7 @@ void psp_android_init() {
     bool have = false;
     if (d0) { DIR* dir = opendir(d0); if (dir) { while (dirent* e = readdir(dir)) if (std::strcmp(e->d_name, ".") && std::strcmp(e->d_name, "..")) { have = true; break; } closedir(dir); } }
     if (!have) {
-        const std::string msg = std::string("The game's files were not found.\n\nCopy the game's work folder (disc0, ms0, ...) to:\n") + wd +
-            "\n\nEvery Android user (profile) needs its own copy: the files are stored per user.";
+        const std::string msg = std::string("The game's files were not found.\n\nReinstall the game with the installer to copy them to:\n") + wd;
         std::fprintf(stderr, "[ANDROID] ERROR: %s\n", msg.c_str());
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Dissidia Recomp", msg.c_str(), nullptr);
         std::_Exit(1);
