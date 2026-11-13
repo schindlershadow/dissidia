@@ -1548,11 +1548,13 @@ void psp_settings_load_early() {
     if ((it = g_saved.find("hdr_paper")) != g_saved.end()) put("PSPRECOMP_HDR_PAPER", it->second);
     if ((it = g_saved.find("ssao")) != g_saved.end()) put("PSPRECOMP_SSAO", it->second);
     if ((it = g_saved.find("contact_shadows")) != g_saved.end()) put("PSPRECOMP_CONTACT_SHADOWS", it->second);
-    if ((it = g_saved.find("rt_shadow_level")) != g_saved.end()) put("PSPRECOMP_VK_RT", it->second);
+    // A saved level of 0 is the default: exporting PSPRECOMP_VK_RT=0 / PSPRECOMP_VK_RT_REFL=0 would leave ray query out of the Vulkan
+    // device (see vkgl_core.cpp want_ray_query), and the settings rows then say "Turned off for this run" with no way to switch RT back on.
     if ((it = g_saved.find("rt_soft")) != g_saved.end()) psp_rt_set_softness(std::atoi(it->second.c_str()));
-    else if ((it = g_saved.find("rt_shadows")) != g_saved.end()) put("PSPRECOMP_VK_RT", it->second == "1" ? "2" : "0");   // before the levels: on = Medium
-    if ((it = g_saved.find("rt_refl_level")) != g_saved.end()) put("PSPRECOMP_VK_RT_REFL", it->second);
-    else if ((it = g_saved.find("rt_reflections")) != g_saved.end()) put("PSPRECOMP_VK_RT_REFL", it->second == "1" ? "2" : "0");   // before the levels: on = Medium
+    if ((it = g_saved.find("rt_shadow_level")) != g_saved.end()) { if (it->second != "0") put("PSPRECOMP_VK_RT", it->second); }
+    else if ((it = g_saved.find("rt_shadows")) != g_saved.end() && it->second == "1") put("PSPRECOMP_VK_RT", "2");   // before the levels: on = Medium
+    if ((it = g_saved.find("rt_refl_level")) != g_saved.end()) { if (it->second != "0") put("PSPRECOMP_VK_RT_REFL", it->second); }
+    else if ((it = g_saved.find("rt_reflections")) != g_saved.end() && it->second == "1") put("PSPRECOMP_VK_RT_REFL", "2");   // before the levels: on = Medium
     if ((it = g_saved.find("ssr")) != g_saved.end()) put("PSPRECOMP_SSR", it->second);
     if ((it = g_saved.find("upscale")) != g_saved.end() && (it->second == "bilinear" || it->second == "sharp" || it->second == "bicubic"))
         put("PSPRECOMP_UPSCALE", it->second);
