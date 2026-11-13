@@ -422,6 +422,7 @@ static void handle_sdl_event(const SDL_Event& ev) {
                 case SDLK_PERIOD: what = PSP_LIGHT_RAD_UP; break;
                 case SDLK_MINUS: what = PSP_LIGHT_INT_DOWN; break;
                 case SDLK_EQUALS: what = PSP_LIGHT_INT_UP; break;
+                case SDLK_p: what = PSP_LIGHT_NEAREST; break;
                 case SDLK_LEFTBRACKET: what = PSP_LIGHT_PREV; break;
                 case SDLK_RIGHTBRACKET: what = PSP_LIGHT_NEXT; break;
                 default: break;

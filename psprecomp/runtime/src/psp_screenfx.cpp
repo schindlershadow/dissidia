@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <iterator>
 #include <cstring>
 #include <cmath>
 #include <cstdio>
@@ -106,7 +107,8 @@ static void lights_save_file() {
         "#   F7  remove the selected light\n"
         "#   In edit mode (hold Shift for 4x speed):\n"
         "#     J / L  left / right     I / K  forward / back     U / O  down / up      (camera relative, kept level)\n"
-        "#     , / .  radius - / +     - / =  intensity - / +     [ / ]  select previous / next light\n"
+        "#     , / .  radius - / +     - / =  intensity - / +     [ / ]  select previous / next light     P  select the light closest to the player\n"
+        "#   The same edit mode can be switched on in Settings > Debug > Light Editor.\n"
         "#\n", f);
     for (const auto& kv : g_light_file) {
         std::fprintf(f, "stage %d\n", kv.first);
@@ -115,6 +117,21 @@ static void lights_save_file() {
     std::fclose(f);
 }
 static long file_mtime(const char* p) { struct stat st; return stat(p, &st) == 0 ? (long)st.st_mtime : -1; }
+// Lights that ship with the game (from stage_lights.txt files authored in game with the edit mode); a stage_lights.txt entry for the stage
+// replaces them (the first edit of a stage copies them into the file).
+static const StageLight k_builtin_stage1[] = {   // Pandaemonium
+    {{3.79f, 5.97f, 2.03f}, {1.00f, 0.40f, 0.90f}, 80.0f, 1.50f},
+    {{-14.73f, 11.33f, 1.16f}, {1.00f, 0.40f, 0.90f}, 17.1f, 1.50f},
+    {{-18.59f, 14.88f, -18.47f}, {0.40f, 0.37f, 0.50f}, 48.2f, 1.50f},
+    {{-35.07f, 15.00f, -46.99f}, {1.00f, 0.40f, 0.90f}, 34.8f, 1.50f},
+    {{-3.92f, 11.06f, -57.27f}, {1.00f, 0.40f, 0.90f}, 37.9f, 1.50f},
+    {{3.55f, 2.28f, -28.05f}, {0.40f, 0.37f, 0.50f}, 24.6f, 1.50f},
+    {{11.13f, 11.19f, -39.38f}, {1.00f, 0.40f, 0.90f}, 31.4f, 1.50f},
+};
+static const std::vector<StageLight>* builtin_lights(int id) {
+    static const std::vector<StageLight> s1(std::begin(k_builtin_stage1), std::end(k_builtin_stage1));
+    return id == 1 ? &s1 : nullptr;
+}
 // The stage's lights now (file entries, re-read about once a second when the file changed).
 static const std::vector<StageLight>& stage_lights(int id) {
     static const std::vector<StageLight> none;
@@ -125,8 +142,15 @@ static const std::vector<StageLight>& stage_lights(int id) {
         if (m != g_light_mtime && !g_light_dirty) { g_light_mtime = m; lights_load_file(); }
     }
     auto it = g_light_file.find(id);
-    return it == g_light_file.end() ? none : it->second;
+    if (it != g_light_file.end() && !it->second.empty()) return it->second;
+    const std::vector<StageLight>* b = builtin_lights(id);
+    return b ? *b : none;
 }
+static bool (*g_player_pos_fn)(float*) = nullptr;
+void psp_set_player_pos_provider(bool (*fn)(float*)) { g_player_pos_fn = fn; }
+bool psp_stage_light_edit_get() { return g_light_edit.load(); }
+void psp_stage_light_edit_set(bool on) { g_light_edit.store(on); std::fprintf(stderr, "[LIGHT] edit mode %s\n", on ? "ON" : "off"); }
+static std::atomic<bool> g_light_nearest{false};
 bool psp_stage_light_input(int what, bool down) {
     if (what == PSP_LIGHT_TOGGLE_EDIT) { if (down) { const bool v = !g_light_edit.load(); g_light_edit.store(v); std::fprintf(stderr, "[LIGHT] edit mode %s\n", v ? "ON" : "off"); } return true; }
     if (what == PSP_LIGHT_DROP) { if (down) { g_light_req.store(1); g_light_edit.store(true); } return true; }
@@ -137,6 +161,7 @@ bool psp_stage_light_input(int what, bool down) {
     }
     if (what == PSP_LIGHT_FAST) { if (down) g_light_keys.fetch_or(1u << 31); else g_light_keys.fetch_and(~(1u << 31)); return false; }
     if (!g_light_edit.load()) return false;                    // the other keys only act in edit mode
+    if (what == PSP_LIGHT_NEAREST) { if (down) g_light_nearest.store(true); return true; }
     if (what == PSP_LIGHT_PREV || what == PSP_LIGHT_NEXT) { if (down) g_light_nav.store(what == PSP_LIGHT_NEXT ? 1 : -1); return true; }
     if (what >= PSP_LIGHT_LEFT && what <= PSP_LIGHT_INT_UP) { if (down) g_light_keys.fetch_or(1u << what); else g_light_keys.fetch_and(~(1u << what)); return true; }
     return false;
@@ -149,6 +174,8 @@ static void lights_service(int id, const float* v) {
     const float dt = last > 0 ? float(std::min(0.1, now - last)) : 0.f;
     last = now;
     std::vector<StageLight>& L = g_light_file[id];
+    static std::map<int, bool> seeded;
+    if (!seeded[id]) { seeded[id] = true; if (L.empty()) if (const std::vector<StageLight>* b = builtin_lights(id)) L = *b; }   // edits start from the shipped lights
     const int req = g_light_req.exchange(0);
     const float tx = v[9], ty = v[10], tz = v[11];
     const float cam[3] = {-(v[0] * tx + v[1] * ty + v[2] * tz), -(v[3] * tx + v[4] * ty + v[5] * tz), -(v[6] * tx + v[7] * ty + v[8] * tz)};
@@ -162,6 +189,15 @@ static void lights_service(int id, const float* v) {
         g_light_sel = std::min(g_light_sel, (int)L.size() - 1);
         L.erase(L.begin() + g_light_sel); g_light_sel = std::max(0, g_light_sel - 1); g_light_dirty = true; g_light_last_change = now;
         std::fprintf(stderr, "[LIGHT] stage %d: removed, %d left\n", id, (int)L.size());
+    }
+    if (g_light_nearest.exchange(false) && !L.empty()) {   // the light closest to the player (horizontal distance)
+        float P[3];
+        if (g_player_pos_fn && g_player_pos_fn(P)) {
+            int best = 0; float bd = 1e30f;
+            for (int i = 0; i < (int)L.size(); ++i) { const float dx = L[i].p[0] - P[0], dz = L[i].p[2] - P[2], d = dx * dx + dz * dz; if (d < bd) { bd = d; best = i; } }
+            g_light_sel = best;
+            std::fprintf(stderr, "[LIGHT] selected light %d of %d, the closest to the player (%.1f away)\n", best + 1, (int)L.size(), std::sqrt(bd));
+        } else std::fprintf(stderr, "[LIGHT] no player position available\n");
     }
     if (const int nav = g_light_nav.exchange(0); nav && !L.empty()) { g_light_sel = (g_light_sel + nav + (int)L.size()) % (int)L.size(); std::fprintf(stderr, "[LIGHT] selected light %d of %d\n", g_light_sel + 1, (int)L.size()); }
     if (g_light_edit.load() && !L.empty() && dt > 0.f) {
