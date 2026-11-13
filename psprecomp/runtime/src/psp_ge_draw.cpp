@@ -3753,7 +3753,8 @@ static float vb_fade_factor(uint8_t* rdram, const GeState& st, int n, int prim) 
             const float tmax = std::max(0.f, 1.f - 1.2f / len);   // stop short of the player: whatever he stands against does not fade
             float t0 = 0.f, t1 = tmax;
             for (int k = 0; k < 3 && t0 <= t1; ++k) {
-                const float a2 = wlo[k] + 0.05f, b2 = whi[k] - 0.05f;
+                const bool thin = whi[k] - wlo[k] < 0.3f;   // a wall is often a flat sheet: shrinking it would invert the box, so widen it a little instead
+                const float a2 = wlo[k] + (thin ? -0.05f : 0.05f), b2 = whi[k] - (thin ? -0.05f : 0.05f);
                 if (std::fabs(d[k]) < 1e-6f) { if (o[k] < a2 || o[k] > b2) t0 = 2.f; }
                 else { float u0 = (a2 - o[k]) / d[k], u1 = (b2 - o[k]) / d[k]; if (u0 > u1) std::swap(u0, u1); t0 = std::max(t0, u0); t1 = std::min(t1, u1); }
             }
