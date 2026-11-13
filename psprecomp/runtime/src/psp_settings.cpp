@@ -431,7 +431,7 @@ void edit_move(int dr, int dc, const psp_sddialog::SetGeom* geom) {
 // A mod folder has a mod.json; "enabled": false in it keeps the mod out of the game. Folders are looked for in the mods source
 // (PSPRECOMP_MODS_SRC, set by run.sh: mods/ in the repository) and in the game's mods directory (PSPRECOMP_MODS, else <work>/mods).
 // The mods are built into the game when it starts, so a change applies at the next start.
-struct ModEntry { std::string dir, name, where; bool on = true; };
+struct ModEntry { std::string dir, name, where; bool on = true; int roster_line = -1; };   // roster_line >= 0: a character line of <mods>/roster.txt (dir = that file)
 std::vector<ModEntry> g_mods;
 bool g_restart_pending = false;        // something was changed that only applies at the next start
 std::string read_text_file(const std::string& p) { std::ifstream f(p, std::ios::binary); std::stringstream ss; ss << f.rdbuf(); return ss.str(); }
@@ -476,13 +476,52 @@ void mods_scan(const std::string& root, const char* where) {
         g_mods.push_back(std::move(m));
     }
 }
+// Extra characters installed into the mods folder (e.g. Playable Chaos) are lines of roster.txt; a line starting "#off# " is switched off.
+void mods_scan_roster(const std::string& root) {
+    std::ifstream f(root + "/roster.txt");
+    std::string line;
+    for (int n = 0; std::getline(f, line); ++n) {
+        if (g_mods.size() >= size_t(ROW_MOD_END - ROW_MOD0 + 1)) return;
+        bool on = true;
+        std::string spec = line;
+        if (spec.compare(0, 6, "#off# ") == 0) { on = false; spec = spec.substr(6); }
+        else if (spec.empty() || spec[0] == '#') continue;
+        std::istringstream is(spec);
+        std::string slot, code, tok, nm;
+        if (!(is >> slot >> code) || slot.find_first_not_of("0123456789") != std::string::npos) continue;
+        while (is >> tok) if (tok.compare(0, 3, "nm=") == 0) nm = tok.substr(3);
+        for (char& ch : nm) if (ch == '_') ch = ' ';
+        ModEntry m;
+        m.dir = root + "/roster.txt"; m.roster_line = n; m.on = on;
+        m.name = nm.empty() ? code : nm;
+        m.where = "character";
+        g_mods.push_back(std::move(m));
+    }
+}
 void mods_load() {
     g_mods.clear();
     if (const char* src = std::getenv("PSPRECOMP_MODS_SRC")) mods_scan(src, "mods");
     mods_scan(mods_dir_path(), "the game's mods folder");
+    mods_scan_roster(mods_dir_path());
 }
 bool mod_set_enabled(size_t i, bool on) {
     if (i >= g_mods.size()) return false;
+    if (g_mods[i].roster_line >= 0) {   // a roster.txt line: comment it out / back in
+        std::vector<std::string> lines;
+        { std::ifstream f(g_mods[i].dir); std::string l; while (std::getline(f, l)) lines.push_back(l); }
+        std::string& l = lines[size_t(g_mods[i].roster_line) < lines.size() ? size_t(g_mods[i].roster_line) : 0];
+        if (size_t(g_mods[i].roster_line) >= lines.size()) return false;
+        const bool off = l.compare(0, 6, "#off# ") == 0;
+        if (on && off) l = l.substr(6);
+        else if (!on && !off) l = "#off# " + l;
+        std::ofstream o(g_mods[i].dir, std::ios::trunc);
+        if (!o) return false;
+        for (const std::string& x : lines) o << x << "\n";
+        g_mods[i].on = on;
+        g_restart_pending = true;
+        std::fprintf(stderr, "[SETTINGS] character %s %s (next start)\n", g_mods[i].name.c_str(), on ? "enabled" : "disabled");
+        return true;
+    }
     const std::string p = g_mods[i].dir + "/mod.json";
     std::string js = read_text_file(p);
     if (js.empty()) return false;
@@ -509,7 +548,8 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             if (i < g_mods.size()) {
                 m.label = g_mods[i].name;
                 m.value = g_mods[i].on ? "On" : "Off";
-                m.help = g_mods[i].name + "\nTurn this mod on or off. Folder: " + g_mods[i].dir + ". Takes effect the next time the game starts.";
+                m.help = g_mods[i].name + (g_mods[i].roster_line >= 0 ? "\nTurn this extra character on or off (its line in roster.txt). Its files stay in the mods folder. Takes effect the next time the game starts."
+                                                               : "\nTurn this mod on or off. Folder: " + g_mods[i].dir + ". Takes effect the next time the game starts.");
             }
             out.push_back(std::move(m));
             continue;
