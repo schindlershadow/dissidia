@@ -2463,7 +2463,7 @@ static std::vector<uint32_t> g_rt_cols[GE_MAX_TARGETS];   // one RGBA8 per captu
 // The game skips draws it culls (objects outside the camera), so a shadow caster just off screen would drop out of the ray-traced
 // scene and its shadow would pop away as the camera moves. Keep settled geometry (the same draw, byte for byte, in 3 frames in a
 // row) while it is outside the view frustum; it is dropped as soon as it is inside the view and no longer drawn (destroyed).
-struct RtPersist { std::vector<float> tris; std::vector<uint32_t> cols; uint32_t last_frame = 0; int streak = 0; float bmin[3], bmax[3]; };
+struct RtPersist { std::vector<float> tris; std::vector<uint32_t> cols; uint32_t last_frame = 0; int streak = 0; bool settled = false; float bmin[3], bmax[3]; };
 static std::unordered_map<uint64_t, RtPersist> g_rt_persist[GE_MAX_TARGETS];
 static uint32_t g_rt_frame[GE_MAX_TARGETS];
 // Some draws (the broken-block debris) use their own view matrix. Their world matrix then is not a world position: the game's position is
@@ -2476,7 +2476,10 @@ static void rt_fix_view(std::vector<float>& tr, size_t t0, const float* vd, cons
         tr[i] = vm[0] * px + vm[1] * py + vm[2] * pz; tr[i + 1] = vm[3] * px + vm[4] * py + vm[5] * pz; tr[i + 2] = vm[6] * px + vm[7] * py + vm[8] * pz;
     }
 }
-static void rt_persist_note(int target, size_t t0, size_t c0) {
+// Only baked stage geometry / props (vertex type 0x11a) persist: skinned models and debris move, repeat poses and would leave ghosts.
+// An entry becomes settled after 8 frames in a row and stays settled however often the game hides and shows it (walls toggle with the camera).
+static void rt_persist_note(int target, size_t t0, size_t c0, uint32_t vt) {
+    if (vt != 0x11au) return;
     const std::vector<float>& tr = g_rt_tris[target]; const std::vector<uint32_t>& co = g_rt_cols[target];
     if (tr.size() <= t0 || co.size() <= c0) return;
     uint64_t h = 1469598103934665603ull;
@@ -2485,6 +2488,7 @@ static void rt_persist_note(int target, size_t t0, size_t c0) {
     RtPersist& e = g_rt_persist[target][h];
     if (e.last_frame == g_rt_frame[target]) return;                       // the same draw twice in a frame
     e.streak = e.last_frame + 1 == g_rt_frame[target] ? e.streak + 1 : 1;
+    if (e.streak >= 8) e.settled = true;
     e.last_frame = g_rt_frame[target];
     if (e.tris.empty()) {
         e.tris.assign(tr.begin() + t0, tr.end()); e.cols.assign(co.begin() + c0, co.end());
@@ -2493,12 +2497,14 @@ static void rt_persist_note(int target, size_t t0, size_t c0) {
     }
 }
 // Adds the settled draws that were not drawn this frame and are outside the frustum (proj 4x4, view 4x3 as in the GE state).
+struct RtFrameTick { int t; ~RtFrameTick() { ++g_rt_frame[t]; } };   // the persistence "frame" is one completed scene (clear events come 1.5 per scene)
 static void rt_persist_merge(int target, const float* proj, const float* view) {
+    RtFrameTick tick{target};
     auto& map = g_rt_persist[target];
     const uint32_t now = g_rt_frame[target];
-    static int last_stage[GE_MAX_TARGETS] = {};
+    static int last_stage[GE_MAX_TARGETS] = {-1, -1, -1, -1, -1, -1, -1, -1};
     const int stage = psp_stage_id();
-    if (stage != last_stage[target]) { last_stage[target] = stage; map.clear(); }   // a new stage: forget the old geometry
+    if (stage >= 0 && stage != last_stage[target]) { if (last_stage[target] >= 0) map.clear(); last_stage[target] = stage; }   // a new stage: forget the old geometry (-1 = battle overlay briefly not loaded: ignored)
     const bool keep_all = psp_stage_keeps_geometry();
     static const bool off = std::getenv("PSPRECOMP_RT_NO_PERSIST") != nullptr;
     if (off) return;
@@ -2507,8 +2513,8 @@ static void rt_persist_merge(int target, const float* proj, const float* view) {
         RtPersist& e = it->second;
         if (e.last_frame == now) { ++it; continue; }
         bool keep = false;
-        if (keep_all && e.streak >= 3) keep = true;
-        else if (e.streak >= 3 && now - e.last_frame < 100000) {
+        if (keep_all && e.settled) keep = true;
+        else if (e.settled && now - e.last_frame < 100000) {
             int lo[2] = {0, 0}, hi[2] = {0, 0}, behind = 0;
             for (int c = 0; c < 8; ++c) {
                 const float x = (c & 1) ? e.bmax[0] : e.bmin[0], y = (c & 2) ? e.bmax[1] : e.bmin[1], z = (c & 4) ? e.bmax[2] : e.bmin[2];
@@ -2522,15 +2528,15 @@ static void rt_persist_merge(int target, const float* proj, const float* view) {
             keep = behind == 8 || lo[0] == vis || hi[0] == vis || lo[1] == vis || hi[1] == vis;   // wholly off one side of the view
             if (behind > 0 && behind < 8) keep = false;   // straddles the camera plane: could be on screen
         }
-        if (e.streak < 3) ++n_unsettled;
-        if (!keep) { if (e.streak >= 3) ++n_drop; it = map.erase(it); continue; }
+        if (!e.settled) ++n_unsettled;
+        if (!keep) { if (e.settled) ++n_drop; it = map.erase(it); continue; }
         ++n_keep;
         g_rt_tris[target].insert(g_rt_tris[target].end(), e.tris.begin(), e.tris.end());
         g_rt_cols[target].insert(g_rt_cols[target].end(), e.cols.begin(), e.cols.end());
         ++it;
     }
     static int lg = 0;
-    if ((n_keep || n_drop) && lg++ % 240 == 0) std::fprintf(stderr, "[RTP] persisted %d, dropped %d (inside the view, not drawn), unsettled %d, map %zu\n", n_keep, n_drop, n_unsettled, map.size());
+    if (lg++ % 240 == 0 && std::getenv("PSPRECOMP_RT_PERSIST_LOG")) { int st = 0, mx = 0; for (auto& kv : map) { st += kv.second.settled; mx = std::max(mx, kv.second.streak); } std::fprintf(stderr, "[RTP] target %d frame %u: map %zu, settled %d, max streak %d; kept %d, dropped %d, unsettled %d\n", target, now, map.size(), st, mx, n_keep, n_drop, n_unsettled); }
 }
 // Effects (blended, depth-tested, not depth-writing: orbs, auras, glass): a second set for the reflection's effects layer; alpha = coverage.
 static std::vector<float> g_rt_fx_tris[GE_MAX_TARGETS];
@@ -2626,7 +2632,7 @@ static void fx_track(const GeState& st, uint8_t* rdram, int prim_type, int count
     if (g_current_target < 0 || g_ab_shadow) return;
     const int cur = g_current_target;
     if (st.clear_mode) {
-        if (st.clear_flags == 0 || (st.clear_flags & 4)) { g_fx_n[cur] = 0; g_fx_done[cur] = false; g_fx_vote[cur].n = 0; g_rt_tris[cur].clear(); g_rt_cols[cur].clear(); g_rt_fx_tris[cur].clear(); g_rt_fx_cols[cur].clear(); ++g_rt_frame[cur]; }
+        if (st.clear_flags == 0 || (st.clear_flags & 4)) { g_fx_n[cur] = 0; g_fx_done[cur] = false; g_fx_vote[cur].n = 0; g_rt_tris[cur].clear(); g_rt_cols[cur].clear(); g_rt_fx_tris[cur].clear(); g_rt_fx_cols[cur].clear(); }
         { static const int every = std::getenv("PSPRECOMP_RT_DUMP_EVERY") ? std::atoi(std::getenv("PSPRECOMP_RT_DUMP_EVERY")) : 0; static int fr = 0;
           if (every > 0 && g_rtdump.load() == 0 && (st.clear_flags == 0 || (st.clear_flags & 4)) && ++fr % every == 0) g_rtdump.store(1); }   // automated runs: one dump every N frames
         if (g_rtdump.load() == 1) { g_rtdump.store(2); rtdump_printf("[RTDUMP] begin target %d\n", cur); }
@@ -2642,7 +2648,7 @@ static void fx_track(const GeState& st, uint8_t* rdram, int prim_type, int count
         if (st.depth_test_enable && !st.depth_write_disable) {
             g_fx_n[cur]++;
             const size_t dump_t0 = g_rt_tris[cur].size();
-            if (psp_rt_scene_wanted()) { const size_t t0 = g_rt_tris[cur].size(), c0 = g_rt_cols[cur].size(); rt_capture(st, rdram, prim_type, count, cur); if (g_fx_vote[cur].n > 0 && !g_rt_nofix) rt_fix_view(g_rt_tris[cur], t0, st.view_matrix, g_fx_vote[cur].view); rt_persist_note(cur, t0, c0); }
+            if (psp_rt_scene_wanted()) { const size_t t0 = g_rt_tris[cur].size(), c0 = g_rt_cols[cur].size(); rt_capture(st, rdram, prim_type, count, cur); if (g_fx_vote[cur].n > 0 && !g_rt_nofix) rt_fix_view(g_rt_tris[cur], t0, st.view_matrix, g_fx_vote[cur].view); rt_persist_note(cur, t0, c0, st.vertex_type); }
             if (g_rtdump.load() == 2) rtdump_printf("[RTDUMP] draw prim %d n %d  %s: blend %d atest %d tex %d texalpha %u rgba %d lit %d mask %06x/%02x bm %03x fa %06x fb %06x zw %d  pos %.1f %.1f %.1f  vt %08x\n", prim_type, count, g_rt_why, st.alpha_blend_enable, st.alpha_test_enable, st.texture_enable, (unsigned)(st.texture_enable ? ge_texture_bound_avg_color() >> 24 : 255u), st.tex_func_rgba, st.lighting_enable, (unsigned)st.mask_rgb, (unsigned)(st.mask_alpha & 0xFF), (unsigned)st.blend_mode, (unsigned)st.blend_fix_a & 0xFFFFFFu, (unsigned)st.blend_fix_b & 0xFFFFFFu, st.depth_write_disable ? 0 : 1, st.world_matrix[9], st.world_matrix[10], st.world_matrix[11], (unsigned)st.vertex_type);
             if (g_rtdump.load() == 2 && g_rt_tris[cur].size() > dump_t0) { float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f}; const std::vector<float>& tv = g_rt_tris[cur];
                 for (size_t q = dump_t0; q + 2 < tv.size(); q += 3) for (int k = 0; k < 3; ++k) { lo[k] = std::min(lo[k], tv[q + k]); hi[k] = std::max(hi[k], tv[q + k]); }
