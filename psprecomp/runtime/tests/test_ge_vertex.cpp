@@ -16,6 +16,9 @@
 #include <cstdio>
 #include <vector>
 
+// psp_ge_vertex.cpp asks the draw module whether a frame trace is armed; the test links only the vertex decoder.
+bool ge_draw_frame_trace_on() { return false; }
+
 static int failures = 0;
 static int tests_run = 0;
 
