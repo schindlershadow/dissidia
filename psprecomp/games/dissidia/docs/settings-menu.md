@@ -38,3 +38,8 @@ The in-game entry points (title screen, main menu Options, battle pause) are not
 (0, 1, 2; heap object, address may move), written by EBOOT code under 0x088DA0A8 (the generic data-driven list engine, shared with
 other menus), and the labels are game art, so a fourth row needs a new sprite and layout plus the engine's item table, not just a
 hook.
+More detail (run with `PSPRECOMP_TRACE_CALLS=088DA0A8`): the title's three rows are static sprite objects in the overlay data area
+(object list at 0x08B8C1C8..0x08B8C360, a0 = 0x08B8C31C for the menu), queried once per row and frame as `FUN_088DA0A8(menu, index,
+...)` with index 0, 1, 2. Next step for a Settings row: add a fourth object (clone of the EXTRAS sprite plus a "SETTINGS" label drawn
+by the runtime), raise the row count and intercept the confirm for index 3 to call `psp_settings_request_open()`. The title idles into
+the attract movie after about 60 s, so probe in one scripted pass.
