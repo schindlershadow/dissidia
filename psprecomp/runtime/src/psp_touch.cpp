@@ -204,10 +204,10 @@ void load_layout() {
 // ===================================================================================================================
 // State and events
 // ===================================================================================================================
-struct Finger { float x, y, ox, oy; bool stick; int dpad = -1; };   // dpad: the d-pad control this finger went down on (it stays captured)   // ox,oy: where the finger went down (the centre of a floating stick)
+struct Finger { float x, y, ox, oy; bool stick; int dpad = -1; bool rstick = false; };   // rstick: the right (camera) stick, always floating on the right half of the screen   // dpad: the d-pad control this finger went down on (it stays captured)   // ox,oy: where the finger went down (the centre of a floating stick)
 std::map<SDL_FingerID, Finger> g_fingers;
 bool g_btn_state[SDL_CONTROLLER_BUTTON_MAX] = {};
-int16_t g_ax = 0, g_ay = 0;
+int16_t g_ax = 0, g_ay = 0, g_rax = 0, g_ray = 0;   // left / right stick axes as last pushed
 float g_knob_x = 0, g_knob_y = 0;
 bool g_dpad_dir[4] = {};          // up right down left, for drawing
 bool g_visible = false;
@@ -215,6 +215,8 @@ int g_mode = -1;                  // 0 auto, 1 on, 2 off
 bool g_edit = false;
 bool g_fl_active = false;         // drawing: a floating stick is being used
 float g_fl_cx = 0, g_fl_cy = 0;
+bool g_rfl_active = false;        // drawing: the right (camera) stick is being used
+float g_rfl_cx = 0, g_rfl_cy = 0, g_rknob_x = 0, g_rknob_y = 0;
 
 int resolve_mode() {
     if (g_mode >= 0) return g_mode;
@@ -262,9 +264,20 @@ void recompute() {
     g_fl_active = false;
     g_dpad_dir[0] = g_dpad_dir[1] = g_dpad_dir[2] = g_dpad_dir[3] = false;
     for (auto& c : g_ctl) c.pressed = false;
+    float rx = 0, ry = 0;
+    g_rfl_active = false;
     if (!g_edit) {
         for (auto& kv : g_fingers) {
             const Finger& f = kv.second;
+            if (f.rstick) {   // the right stick: centred where the finger went down, the same size as the left one
+                const float r = 0.17f * (float)g_win_h;
+                float dx = (f.x - f.ox) / r, dy = (f.y - f.oy) / r;
+                const float len = std::sqrt(dx * dx + dy * dy);
+                if (len > 1.0f) { dx /= len; dy /= len; }
+                rx = dx; ry = dy;
+                g_rfl_active = true; g_rfl_cx = f.ox; g_rfl_cy = f.oy;
+                continue;
+            }
             if (f.stick) {
                 for (auto& c : g_ctl) {
                     if (c.type != T_STICK || (!c.on && !g_float)) continue;
@@ -324,6 +337,16 @@ void recompute() {
     }
     if (ax != g_ax) { g_ax = ax; push_axis(SDL_CONTROLLER_AXIS_LEFTX, ax); }
     if (ay != g_ay) { g_ay = ay; push_axis(SDL_CONTROLLER_AXIS_LEFTY, ay); }
+    g_rknob_x = rx; g_rknob_y = ry;
+    const float rmag = std::sqrt(rx * rx + ry * ry);
+    int16_t rax = 0, ray = 0;
+    if (rmag > 0.12f) {
+        const float k = (rmag - 0.12f) / (1.0f - 0.12f) / rmag;
+        rax = (int16_t)std::lround(std::clamp(rx * k, -1.0f, 1.0f) * 32767.0f);
+        ray = (int16_t)std::lround(std::clamp(ry * k, -1.0f, 1.0f) * 32767.0f);
+    }
+    if (rax != g_rax) { g_rax = rax; push_axis(SDL_CONTROLLER_AXIS_RIGHTX, rax); }
+    if (ray != g_ray) { g_ray = ray; push_axis(SDL_CONTROLLER_AXIS_RIGHTY, ray); }
 }
 
 void release_all() {
@@ -523,23 +546,27 @@ void psp_touch_event(const SDL_Event& ev) {
         }
         auto it = g_fingers.find(id);
         if (it == g_fingers.end()) {
-            bool is_stick = false;
-            if (g_float) {   // floating stick: a touch that is on no control starts the stick there (one at a time)
-                bool on_ctl = false, have = false;
-                for (auto& c : g_ctl) if (c.on && c.type != T_STICK && hit(c, x, y)) on_ctl = true;
-                for (auto& kv : g_fingers) if (kv.second.stick) have = true;
-                is_stick = !on_ctl && !have;
+            bool is_stick = false, is_rstick = false;
+            bool on_ctl = false, have_l = false, have_r = false;
+            for (auto& c : g_ctl) if (c.on && c.type != T_STICK && hit(c, x, y)) on_ctl = true;
+            for (auto& kv : g_fingers) { if (kv.second.stick) have_l = true; if (kv.second.rstick) have_r = true; }
+            const bool right_half = x >= 0.5f * (float)g_win_w;
+            if (g_float) {   // floating stick: a touch that is on no control, on the LEFT half, starts the left stick there (one at a time)
+                is_stick = !on_ctl && !have_l && !right_half;
             } else {
                 for (auto& c : g_ctl) if (c.type == T_STICK && c.on && hit(c, x, y)) is_stick = true;
             }
+            // The right (camera) stick: always floating, on the right half: a touch on no control starts it right there
+            is_rstick = !is_stick && !on_ctl && !have_r && right_half;
             g_fingers[id] = {x, y, x, y, is_stick};
-            if (!is_stick)
+            g_fingers[id].rstick = is_rstick;
+            if (!is_stick && !is_rstick)
                 for (size_t ci = 0; ci < g_ctl.size(); ci++)
                     if (g_ctl[ci].on && g_ctl[ci].type == T_DPAD && hit(g_ctl[ci], x, y)) g_fingers[id].dpad = (int)ci;
             static const bool tlog = std::getenv("PSPRECOMP_TOUCH_LOG") != nullptr;
-            if (tlog) std::fprintf(stderr, "[TOUCH] finger down %.0f,%.0f stick=%d float=%d\n", x, y, (int)is_stick, (int)g_float);
+            if (tlog) std::fprintf(stderr, "[TOUCH] finger down %.0f,%.0f stick=%d rstick=%d float=%d\n", x, y, (int)is_stick, (int)is_rstick, (int)g_float);
             for (auto& c : g_ctl)   // a tap on a toggle-hold button flips it
-                if (c.on && c.latch && !is_stick && hit(c, x, y)) c.latched = !c.latched;
+                if (c.on && c.latch && !is_stick && !is_rstick && hit(c, x, y)) c.latched = !c.latched;
         } else {
             it->second.x = x; it->second.y = y;
         }
@@ -773,6 +800,16 @@ void draw_combo_icons(const std::vector<Btn>& btns, float cx, float cy, float r,
     }
 }
 
+void draw_stick(float cx, float cy, float r, float knob_x, float knob_y, float am, float lw) {
+    fill_circle(cx, cy, r, fill_col(false, 1, 1, 1, am));
+    ring(cx, cy, r, lw, g_white);
+    const bool act = knob_x != 0 || knob_y != 0;
+    const float kr = r * 0.42f * (act ? 1.2f : 1.0f);
+    const float kx = cx + knob_x * (r - kr), ky = cy + knob_y * (r - kr);
+    fill_circle(kx, ky, kr, fill_col(act, 1, 1, 1, am));
+    ring(kx, ky, kr, lw, g_white);
+}
+
 void draw_control(const Ctl& c, float lw) {
     if (c.type == T_STICK && g_float && !g_edit && !g_fl_active) return;   // floating stick: only drawn while in use
     const float am = c.on ? c.a : c.a * 0.55f;   // disabled controls (editor only) are drawn faint
@@ -785,13 +822,7 @@ void draw_control(const Ctl& c, float lw) {
     if (c.type == T_STICK) {
         Circle b = circle_of(c);
         if (g_float && !g_edit) { b.x = g_fl_cx; b.y = g_fl_cy; }
-        fill_circle(b.x, b.y, b.r, fill_col(false, 1, 1, 1, am));
-        ring(b.x, b.y, b.r, lw, g_white);
-        const bool act = g_knob_x != 0 || g_knob_y != 0;
-        const float kr = b.r * 0.42f * (act ? 1.2f : 1.0f);
-        const float kx = b.x + g_knob_x * (b.r - kr), ky = b.y + g_knob_y * (b.r - kr);
-        fill_circle(kx, ky, kr, fill_col(act, 1, 1, 1, am));
-        ring(kx, ky, kr, lw, g_white);
+        draw_stick(b.x, b.y, b.r, g_knob_x, g_knob_y, am, lw);
     } else if (c.type == T_DPAD) {
         // one cross: filled body, an outline with a dark halo, an arrow in every arm; a pressed arm is brighter and drawn larger
         const Rect r = rect_of(c);
@@ -939,6 +970,11 @@ void psp_touch_draw(int w, int h) {
     for (const Ctl& c : g_ctl) {
         if (!c.on && !g_edit) continue;
         draw_control(c, lw);
+    }
+    if (g_rfl_active && !g_edit) {   // the right (camera) stick, only while in use
+        const float* wl = g_white; (void)wl;
+        g_white[3] = 0.6f;
+        draw_stick(g_rfl_cx, g_rfl_cy, 0.17f * (float)h, g_rknob_x, g_rknob_y, 1.0f, lw);
     }
     if (g_edit) draw_editor_ui(lw);
 
