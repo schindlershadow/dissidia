@@ -21,6 +21,20 @@ A long description scrolls by itself. The chip next to a description's title say
 
 Text fields (server, room, sync folder, WebDAV) open an on-screen keyboard: pad, mouse or touch, or just type on a keyboard.
 
+## Categories, restart and mods
+
+The menu opens on the category list (left): Up / Down choose, Confirm or Right go in, Back returns (Back on the list closes). L / R and Q / E
+still switch category from anywhere. The list scrolls when there are more categories than fit.
+
+Changes marked **Next start** ask "Restart now / Later" when the menu is closed. Restart runs the launch command `run.sh` exports in
+`PSPRECOMP_RESTART_CMD` (so mods are built again); without it the same program and arguments start again. Not on Android / Windows (OK only).
+
+The **Mods** category lists mod folders with a `mod.json` (the repo's `mods/`, `PSPRECOMP_MODS_SRC`, and the game's mods folder) and extra
+characters from the mods folder's `roster.txt`. A switch writes `"enabled"` into `mod.json`, or puts `#off# ` in front of the roster line.
+
+The screen is drawn by up to 8 threads in horizontal bands (`PSPRECOMP_SETTINGS_THREADS=N` to change, 1 = one thread);
+`PSPRECOMP_SETTINGS_PROFILE=1` logs the drawing time per part.
+
 ## For game modules
 
 - `psp_settings_request_open()` (any thread) opens the menu from a game's own menu entry.
