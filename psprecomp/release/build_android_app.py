@@ -43,14 +43,22 @@ def load_bundle_module():
 
 
 def untar(archive, dest, strip=0):
-    os.makedirs(dest, exist_ok=True)
+    """Unpack a pinned (sha256-checked) archive. strip=1 drops the top folder: unpacked whole first, then moved, so links inside keep working."""
+    shutil.rmtree(dest, ignore_errors=True)
+    tmp = dest + ".unpack"
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp)
     with tarfile.open(archive) as t:
-        members = t.getmembers()
-        if strip:
-            for m in members:
-                m.name = m.name.split("/", strip)[-1] if "/" in m.name else m.name
-            members = [m for m in members if m.name and m.name != "."]
-        t.extractall(dest, members=members, filter="data")
+        try:
+            t.extractall(tmp, filter="fully_trusted")
+        except TypeError:   # tarfile without extraction filters
+            t.extractall(tmp)
+    if strip:
+        (top,) = os.listdir(tmp)
+        os.rename(os.path.join(tmp, top), dest)
+        shutil.rmtree(tmp, ignore_errors=True)
+    else:
+        os.rename(tmp, dest)
 
 
 def main():
