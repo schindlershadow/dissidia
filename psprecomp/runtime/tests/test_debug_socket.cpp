@@ -25,6 +25,10 @@
 #include "psp_ge.h"
 const GeState& ge_get_state() { static GeState g{}; return g; }
 void ge_draw_dyn_trace(int) {}
+void ge_draw_frame_trace(int) {}
+void psp_fx_set_ssao(int) {}
+void psp_fx_set_contact(int) {}
+void psp_fx_set_ssr(int) {}
 void psp_dump_func_counts(const char*) {}
 void psp_mem_watch_set(uint32_t) {}
 void ge_draw_set_fast(bool) {}
