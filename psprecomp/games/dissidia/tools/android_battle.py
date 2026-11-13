@@ -26,7 +26,14 @@ class AndroidGame(bt.Game):
         self.go_file = DEV + '/bt_go'
 
     def adb(self, *a, check=True, text=True, **kw):
-        return subprocess.run(['adb', '-s', self.serial] + list(a), capture_output=True, text=text, check=check, **kw)
+        for attempt in range(3):   # wireless adb drops a pull now and then (the adb client aborts): try again
+            r = subprocess.run(['adb', '-s', self.serial] + list(a), capture_output=True, text=text, check=False, **kw)
+            if r.returncode == 0 or attempt == 2:
+                break
+            time.sleep(1.5)
+        if check and r.returncode != 0:
+            raise subprocess.CalledProcessError(r.returncode, r.args, output=r.stdout, stderr=r.stderr)
+        return r
 
     def sh(self, cmd):
         return self.adb('shell', cmd, check=False).stdout
@@ -84,7 +91,7 @@ class AndroidGame(bt.Game):
         self.adb('shell', 'am force-stop ' + PKG, check=False)
 
     def touch_go(self):
-        self.adb('shell', 'touch ' + self.go_file)
+        self.adb('shell', 'touch %s; chmod 666 %s' % (self.go_file, self.go_file))   # world-readable: the app is another uid than the shell
 
     def lines(self):
         r = self.adb('exec-out', 'tail -c +%d %s' % (self.pos + 1, self.log), check=False, text=False)
@@ -106,6 +113,19 @@ class AndroidGame(bt.Game):
         self.adb('pull', DEV + '/bt_keep.tga', os.path.join(self.out, name + '.tga'))
 
 
+def hdr_summary(log, scene):
+    import re
+    txt = open(log, errors='replace').read()
+    st = [(float(m[0]), int(m[1]), int(m[2]), int(m[3])) for m in re.findall(r'\[HDRSTATS\] max=([\d.]+) above1=(\d+) above1\.5=(\d+) of (\d+)', txt)]
+    print('[hdr] HDR Scene=%s: scene targets %s; HDR swapchain %s' % (scene, ','.join(re.findall(r'scene targets: (\S+)', txt)) or '?',
+          'live' if 'HDR scRGB' in txt or 'HDR10' in txt else 'NOT live'))
+    if st:
+        print('[hdr] %d samples: max channel %.2f, peak pixels above 1.0: %d (above 1.5: %d) of %d' %
+              (len(st), max(x[0] for x in st), max(x[1] for x in st), max(x[2] for x in st), st[0][3]))
+    else:
+        print('[hdr] no [HDRSTATS] samples (expected with HDR Scene off: the targets are 8-bit and cannot exceed 1.0)')
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--serial', required=True)
@@ -125,6 +145,8 @@ def main():
     ap.add_argument('--ai', action='store_true', help='let the CPU fighter act (default: PSPRECOMP_TEST_NO_AI=1, it stands still)')
     ap.add_argument('--env', action='append', default=[], metavar='KEY=VALUE', help='extra PSPRECOMP_* variable for the run')
     ap.add_argument('--wait-script', action='store_true', help='wait for the script to quit the game before finishing')
+    ap.add_argument('--hdr-scene', choices=['0', '1'], help='HDR output on with HDR Scene off/on; logs [HDRSTATS] (pixels above 1.0 in the scene target) '
+                    'and prints a summary. Use with --script tests/hdr_scene_spells.txt --char lightning --wait-script')
     ap.add_argument('--port', type=int, default=19999)
     ap.add_argument('--timeout', type=int, default=120)
     ap.add_argument('--out', required=True)
@@ -136,6 +158,8 @@ def main():
     extra = {'PSPRECOMP_TEST_PLAYER_CHAR': str(bt.CHAR_ID[a.char.lower()])}
     if not a.ai:
         extra['PSPRECOMP_TEST_NO_AI'] = '1'      # the CPU fighter does nothing (like the desktop harness's dummy, but from the first frame)
+    if a.hdr_scene is not None:
+        extra.update({'PSPRECOMP_HDR': '1', 'PSPRECOMP_HDR_SCENE': a.hdr_scene, 'PSPRECOMP_HDR_STATS': '1'})
     extra.update(kv.split('=', 1) for kv in a.env)
     g = AndroidGame(a.serial, a.out, a, extra)
     try:
@@ -154,6 +178,8 @@ def main():
         log = os.path.join(a.out, 'run.log')
         g.adb('pull', DEV + '/last_run.log', log, check=False)
         print(log)
+        if a.hdr_scene is not None:
+            hdr_summary(log, a.hdr_scene)
     finally:
         g.stop()
         g.restore()

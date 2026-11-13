@@ -1,0 +1,5 @@
+1000 mark start
+3000 action 2293 player
+7000 action 2294 player
+11000 action 2303 player
+16000 quit

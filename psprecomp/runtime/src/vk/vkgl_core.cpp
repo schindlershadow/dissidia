@@ -1371,6 +1371,13 @@ void blit(int sx0, int sy0, int sx1, int sy1, int dx0, int dy0, int dx1, int dy1
     }
 }
 
+// IEEE half -> float (the fp16 scene targets of HDR Scene are read back as 8-bit screenshots: clamped to 0..1).
+static float half_to_float(uint16_t h) {
+    const uint32_t e = (h >> 10) & 31, m = h & 1023;
+    float v = e == 0 ? std::ldexp((float)m, -24) : e == 31 ? (m ? 0.f : 65504.f) : std::ldexp((float)(m | 1024), (int)e - 25);
+    return (h & 0x8000) ? -v : v;
+}
+
 bool read_pixels(int x, int y, int w, int h, GLenum fmt, GLenum type, void* out) {
     Target src = resolve(st().read_fbo);
     if (!src.color || w <= 0 || h <= 0) return false;
@@ -1379,7 +1386,8 @@ bool read_pixels(int x, int y, int w, int h, GLenum fmt, GLenum type, void* out)
     barrier(cb, *src.color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     src.color->used_serial = g().serial;
     Buffer rb;
-    const size_t bytes = (size_t)w * h * 4;
+    const bool f16 = src.color->fmt == VK_FORMAT_R16G16B16A16_SFLOAT;
+    const size_t bytes = (size_t)w * h * (f16 ? 8 : 4);
     if (!alloc_buffer(rb, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true)) return false;
     VkBufferImageCopy rg{};
     rg.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; rg.imageOffset = {x, y, 0}; rg.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
@@ -1388,7 +1396,24 @@ bool read_pixels(int x, int y, int w, int h, GLenum fmt, GLenum type, void* out)
     vmaInvalidateAllocation(g().vma, rb.alloc, 0, VK_WHOLE_SIZE);
     const uint8_t* p = (const uint8_t*)rb.map;
     uint8_t* o = (uint8_t*)out;
-    if (fmt == GL_BGRA) for (size_t i = 0; i < (size_t)w * h; i++) { o[i*4+0] = p[i*4+2]; o[i*4+1] = p[i*4+1]; o[i*4+2] = p[i*4+0]; o[i*4+3] = p[i*4+3]; }
+    const size_t npx = (size_t)w * h;
+    if (f16 && type == GL_FLOAT) {   // raw values (HDR Scene statistics): fp16 -> float, not clamped
+        const uint16_t* hp = (const uint16_t*)rb.map;
+        float* of = (float*)out;
+        for (size_t i = 0; i < npx * 4; i++) of[i] = half_to_float(hp[i]);
+        destroy_buffer_now(rb);
+        return true;
+    }
+    if (f16) {
+        const uint16_t* hp = (const uint16_t*)rb.map;
+        const bool bgra = fmt == GL_BGRA;
+        for (size_t i = 0; i < npx; i++)
+            for (int c = 0; c < 4; c++) {
+                float v = half_to_float(hp[i * 4 + c]);
+                v = v < 0.f ? 0.f : v > 1.f ? 1.f : v;
+                o[i * 4 + (bgra && c < 3 ? 2 - c : c)] = (uint8_t)(v * 255.f + 0.5f);
+            }
+    } else if (fmt == GL_BGRA) for (size_t i = 0; i < npx; i++) { o[i*4+0] = p[i*4+2]; o[i*4+1] = p[i*4+1]; o[i*4+2] = p[i*4+0]; o[i*4+3] = p[i*4+3]; }
     else std::memcpy(o, p, bytes);
     destroy_buffer_now(rb);
     (void)type;

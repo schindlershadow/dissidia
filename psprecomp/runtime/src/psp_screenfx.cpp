@@ -10,6 +10,7 @@
 //   3. composite: AO * (1 - shadow) multiplied into the scene (depth-aware 2x2 upsample), then the reflection blended
 //      over the result (so a shadow darkens the floor but not the reflection in it).
 // RGB only: the buffer's alpha is the GE stencil.
+#include "psp_post.h"
 #include "psp_screenfx.h"
 #include "psp_rt.h"
 #include <algorithm>
@@ -871,30 +872,34 @@ void free_targets() {
     g_depth_tex = g_color_tex = g_fx_tex[0] = g_fx_tex[1] = g_refl_tex = 0;
 }
 
+bool g_fp16 = false;
+
 bool complete() { return glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE; }
 
 bool ensure_targets(int w, int h) {
-    if (g_w == w && g_h == h && g_depth_fbo) return true;
+    const bool fp16 = psp_hdr_scene_live();   // HDR Scene: the colour copies / effect buffers are fp16 so values above 1.0 survive
+    if (g_w == w && g_h == h && g_depth_fbo && g_fp16 == fp16) return true;
     free_targets();
+    g_fp16 = fp16;
     g_w = w; g_h = h; g_hw = (w + 1) / 2; g_hh = (h + 1) / 2;
     g_depth_tex = make_tex(GL_DEPTH24_STENCIL8, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, w, h, GL_NEAREST);
     glGenFramebuffers(1, &g_depth_fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, g_depth_fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, g_depth_tex, 0);
     bool ok = complete();
-    g_color_tex = make_tex(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, g_hw, g_hh, GL_LINEAR);
+    g_color_tex = make_tex(g_fp16 ? GL_RGBA16F : GL_RGBA8, GL_RGBA, g_fp16 ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE, g_hw, g_hh, GL_LINEAR);
     glGenFramebuffers(1, &g_color_fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, g_color_fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_color_tex, 0);
     ok = ok && complete();
     for (int i = 0; i < 2; ++i) {
-        g_fx_tex[i] = make_tex(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, g_hw, g_hh, GL_LINEAR);
+        g_fx_tex[i] = make_tex(g_fp16 ? GL_RGBA16F : GL_RGBA8, GL_RGBA, g_fp16 ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE, g_hw, g_hh, GL_LINEAR);
         glGenFramebuffers(1, &g_fx_fbo[i]);
         glBindFramebuffer(GL_FRAMEBUFFER, g_fx_fbo[i]);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_fx_tex[i], 0);
         ok = ok && complete();
     }
-    g_refl_tex = make_tex(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, g_hw, g_hh, GL_LINEAR);
+    g_refl_tex = make_tex(g_fp16 ? GL_RGBA16F : GL_RGBA8, GL_RGBA, g_fp16 ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE, g_hw, g_hh, GL_LINEAR);
     glGenFramebuffers(1, &g_main_fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, g_main_fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_fx_tex[0], 0);

@@ -403,6 +403,7 @@ and writes the result back into the default framebuffer. It runs only when a gra
 | HDR Highlights | `PSPRECOMP_HDR_BOOST` | 0 off, 1 low (default), 2 medium, 3 high |
 | HDR Peak Brightness | `PSPRECOMP_HDR_PEAK` | 400..4000 nits, default 1000 |
 | HDR Paper White | `PSPRECOMP_HDR_PAPER` | 80..400 nits, default 203 (BT.2408 reference white) |
+| HDR Scene | `PSPRECOMP_HDR_SCENE` | 0 / 1 (default off, saved `hdr_scene`). Needs HDR Output live (Vulkan); greyed out otherwise |
 | (debug) | `PSPRECOMP_HDR_FORMAT=hdr10` | prefer HDR10 over scRGB when the surface offers both |
 
 HDR: the game is SDR, so this is an inverse tone map, not native HDR. The picture is linearised and SDR white is placed at paper
@@ -415,6 +416,18 @@ scene snapshot and is left at paper white. The Vulkan swapchain asks for
 shader) second; the default framebuffer becomes fp16 while HDR is live. Toggling the row rebuilds the swapchain at the next present.
 HDR needs the system's HDR mode on and a compositor that exposes it (Windows, Wayland compositors with HDR, gamescope, Android
 panels); X11 offers none, and the row then reads Unavailable with the reason.
+
+**HDR Scene (native HDR, opt-in).** With it on (and an HDR swapchain live, so the Vulkan renderer only) the scene targets
+(`make_target`, the render-scale resize, the feedback / fx scratch copies, the screen-fx colour and effect buffers, the SMAA
+intermediates and the final pass's scene / window copies) are `RGBA16F` instead of `RGBA8`. The game and the GE emulation assume
+8-bit clamping, so the uber shader now ends with `frag_color = clamp(color, 0, 1)`: an un-blended draw writes exactly what it did
+before, and only the blend unit (additive glows, spell flashes, beams) can take a pixel past 1.0. The final pass keeps those values
+(extended-sRGB EOTF, no clamp in the grade) on top of the local-contrast highlight lift and stops at the peak. Turning it off, or HDR
+Output off, reallocates the targets back to `RGBA8` (`ge_draw_sync_scene_format`, run from the settings tick once the game has
+parked) and SDR output is unchanged by the shader clamp (RGBA8 targets clamp the same way). Screenshots / `S` captures convert
+fp16 to 8 bit (clamped) in the Vulkan layer's `read_pixels`. Known limits: destination alpha (GE stencil) also accumulates past 1 in an
+additive blend; subtractive blends can store negatives (the final pass clamps them to 0). `[DRAW] HDR Scene on: N target(s) now RGBA16F`
+in the log confirms the switch.
 
 ### Anisotropic filtering
 

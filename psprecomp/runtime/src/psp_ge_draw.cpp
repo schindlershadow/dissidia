@@ -59,6 +59,11 @@ struct GeTarget {
 
 // Render scale (PSPRECOMP_RENDER_SCALE, 1..16 or auto): targets are 480*g_rs x 272*g_rs.
 static int g_rs = 1;
+// HDR Scene (psp_post.h): the scene targets are fp16 while it is live, so additive effects keep values above 1.0.
+// g_scene_fp16 is the format the targets currently have; ge_draw_sync_scene_format() reallocates them when it changes.
+static bool g_scene_fp16 = false, g_scene_inited = false;
+static GLint scene_ifmt() { return g_scene_fp16 ? GL_RGBA16F : GL_RGBA8; }
+static GLenum scene_type() { return g_scene_fp16 ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE; }
 static GeTarget g_targets[GE_MAX_TARGETS];
 // Only the buffers that reach the screen are rendered at the render scale. Every other target the game draws into
 // (the chain of smaller buffers it blurs for glow / bloom) stays at the PSP's own resolution, as in PPSSPP: games
@@ -174,7 +179,7 @@ static GLuint feedback_snapshot(int* w, int* h) {
         se->w = W; se->h = H;
         glGenTextures(1, &se->tex);
         glBindTexture(GL_TEXTURE_2D, se->tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, scene_ifmt(), W, H, 0, GL_RGBA, scene_type(), nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glGenFramebuffers(1, &se->fbo);
@@ -773,6 +778,7 @@ static int g_ab_dumped = 0;
 // 480x272, NEAREST) for the given normalized key. Clears it to black. The
 // pool owns the GL objects; ge_draw_shutdown deletes them.
 static GeTarget make_target(uint32_t key, int rs, int w480) {
+    if (!g_scene_inited) { g_scene_inited = true; g_scene_fp16 = psp_hdr_scene_live(); std::fprintf(stderr, "[DRAW] scene targets: %s\n", g_scene_fp16 ? "RGBA16F (HDR Scene)" : "RGBA8"); }
     GeTarget t;
     t.key = key;
     t.rs = rs;
@@ -782,8 +788,8 @@ static GeTarget make_target(uint32_t key, int rs, int w480) {
 
     glGenTextures(1, &t.color_tex);
     glBindTexture(GL_TEXTURE_2D, t.color_tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w480 * rs, 272 * rs, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, scene_ifmt(), w480 * rs, 272 * rs, 0,
+                 GL_RGBA, scene_type(), nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
@@ -1544,7 +1550,7 @@ static bool fxl_bind(int ti) {
         L.w = w; L.h = h;
         glGenTextures(1, &L.color);
         glBindTexture(GL_TEXTURE_2D, L.color);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, scene_ifmt(), w, h, 0, GL_RGBA, scene_type(), nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glGenTextures(1, &L.depth);
@@ -1779,7 +1785,7 @@ static unsigned fx_screen_copy(int* w, int* h) {
     if (!g_fx_screen_tex || g_fx_screen_w != W || g_fx_screen_h != H) {
         if (!g_fx_screen_tex) glGenTextures(1, &g_fx_screen_tex);
         glBindTexture(GL_TEXTURE_2D, g_fx_screen_tex);   // caller's unit (not unit 0)
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, scene_ifmt(), W, H, 0, GL_RGBA, scene_type(), nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -4018,6 +4024,26 @@ static void present_blit(GLuint fbo, const char* why = "flip") {
     } else if (srs > 1 && pf == GL_NEAREST && (pr.x1 - pr.x0) != spw * srs) {
         if (!(fl && (!std::strcmp(fl, "nearest") || !std::strcmp(fl, "integer")))) pf = GL_LINEAR;
     }
+    {   // How much of the scene is above 1.0 while HDR Scene is on: one [HDRSTATS] line every 15 presents with PSPRECOMP_HDR_STATS=1,
+        // every 120 otherwise (cheap; lets a plain play session on a device without env access be checked from the log).
+        static const char* e = std::getenv("PSPRECOMP_HDR_STATS");
+        static const int every = (e && e[0] == '1') ? 15 : (e && e[0] == '0') ? 0 : 120;
+        static int n = 0;
+        if (every && g_scene_fp16 && (++n % every) == 0) {
+            const int fw = spw * srs, fh = 272 * srs;
+            std::vector<float> px(size_t(fw) * fh * 4);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+            glReadPixels(0, 0, fw, fh, GL_RGBA, GL_FLOAT, px.data());
+            float mx = 0.f; size_t above = 0, bright = 0;
+            for (size_t i = 0; i < size_t(fw) * fh; i++) {
+                const float m = std::max(px[i * 4], std::max(px[i * 4 + 1], px[i * 4 + 2]));
+                if (m > mx) mx = m;
+                if (m > 1.001f) above++;
+                if (m > 1.5f) bright++;
+            }
+            std::fprintf(stderr, "[HDRSTATS] max=%.3f above1=%zu above1.5=%zu of %zu\n", mx, above, bright, size_t(fw) * fh);
+        }
+    }
     bool post_done = false;
     if (psp_post_active()) {   // FXAA / sharpen / smooth upscale (psp_post.cpp) instead of the plain blit
         GLuint src_tex = 0;
@@ -4295,7 +4321,7 @@ bool ge_draw_set_render_scale(int n) {
         GLuint tex = 0, rb = 0;
         glGenTextures(1, &tex);
         glBindTexture(GL_TEXTURE_2D, tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, nw, nh, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, scene_ifmt(), nw, nh, 0, GL_RGBA, scene_type(), nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glBindFramebuffer(GL_FRAMEBUFFER, tmp);
@@ -4328,6 +4354,57 @@ bool ge_draw_set_render_scale(int n) {
     glc::invalidate();
     ge_texture_invalidate_bind_cache();
     std::fprintf(stderr, "[DRAW] render scale %dx (targets %dx%d), %d target(s) resized\n", g_rs, g_wide_px * g_rs, nh, resized);
+    return true;
+}
+
+// HDR Scene toggle (or the HDR output going live / off): give every scene target the right colour format, carrying the
+// picture over. Same constraints as ge_draw_set_render_scale (game parked, no display list in flight). Cheap no-op when
+// nothing changed. Returns true when the targets were reallocated.
+bool ge_draw_scene_format_stale() { return !g_ab && psp_hdr_scene_live() != g_scene_fp16; }
+
+bool ge_draw_sync_scene_format() {
+    const bool want = psp_hdr_scene_live();
+    if (want == g_scene_fp16 || g_ab) return false;
+    flush_batch();
+    const GLboolean sc = glIsEnabled(GL_SCISSOR_TEST);
+    if (sc) glDisable(GL_SCISSOR_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    g_scene_fp16 = want;
+    GLuint tmp = 0;
+    glGenFramebuffers(1, &tmp);
+    int n = 0;
+    for (int i = 0; i < GE_MAX_TARGETS; ++i) {
+        GeTarget& t = g_targets[i];
+        if (!t.fbo) continue;
+        const int w = t.w480 * t.rs, h = 272 * t.rs;
+        GLuint tex = 0;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, scene_ifmt(), w, h, 0, GL_RGBA, scene_type(), nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glBindFramebuffer(GL_FRAMEBUFFER, tmp);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, t.fbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, tmp);
+        glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer(GL_FRAMEBUFFER, t.fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        glDeleteTextures(1, &t.color_tex);
+        t.color_tex = tex;
+        t.mip_dirty = true;
+        n++;
+    }
+    glDeleteFramebuffers(1, &tmp);
+    delete_scratch();
+    for (int i = 0; i < GE_MAX_TARGETS; ++i) fxl_free(g_fxl[i]);
+    g_fx_screen_w = 0;   // recreated in the new format on next use
+    while (glGetError() != GL_NO_ERROR) {}
+    if (sc) glEnable(GL_SCISSOR_TEST);
+    glBindFramebuffer(GL_FRAMEBUFFER, g_current_target >= 0 ? g_targets[g_current_target].fbo : 0);
+    glc::invalidate();
+    ge_texture_invalidate_bind_cache();
+    std::fprintf(stderr, "[DRAW] HDR Scene %s: %d target(s) now %s\n", want ? "on" : "off", n, want ? "RGBA16F" : "RGBA8");
     return true;
 }
 

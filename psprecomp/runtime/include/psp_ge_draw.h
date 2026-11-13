@@ -36,6 +36,8 @@ int ge_draw_widescreen_width();
 /// Change the render scale live (settings menu): resizes every render target,
 /// keeping its picture. Main (GL) thread, game paused. False if refused.
 bool ge_draw_set_render_scale(int n);
+bool ge_draw_scene_format_stale();  // the targets' format no longer matches psp_hdr_scene_live()
+bool ge_draw_sync_scene_format();   // HDR Scene on/off (psp_post.h): reallocate the scene targets in fp16 / RGBA8. Game parked.
 
 /// Settings menu, Debug page (main/GL thread, game paused; not saved).
 /// GPU sync mode, as PSPRECOMP_GE_SYNC: 0 off, 1 glFinish per batch, 2 per
