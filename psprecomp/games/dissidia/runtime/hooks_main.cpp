@@ -1,3 +1,5 @@
+#include "psp_screenfx.h"
+#include "psp_settings.h"
 #include "psp_app_icon_dissidia.h"
 #include "psp_event_loop.h"
 #include <cmath>
@@ -59,6 +61,8 @@ extern void dissidia_camera_install(uint8_t* rdram);
 extern void dissidia_input_install(uint8_t* rdram);
 // framerate.cpp: native 60 Hz battle logic (PSPRECOMP_FPS / settings menu).
 extern void dissidia_framerate_install(uint8_t* rdram);
+
+bool dissidia_player_pos(float* P);   // camera.cpp
 
 namespace {
 
@@ -279,7 +283,19 @@ void dissidia_menu_flag_cb(uint8_t* rdram, recomp_context* ctx) {
 }
 
 extern "C" void psp_savedata_set_shared_ids(const char* const* ids, int n);
+static uint8_t* g_stage_ram = nullptr;
+// The battle overlay is loaded (OVL_BASE word == 1) and the stage id word of the battle setup is valid; found by diffing RAM across stages.
+static int dissidia_stage_id() {
+    if (!g_stage_ram) return -1;
+    if (psp_mem_read<uint32_t>(g_stage_ram, 0x089DD4C0u) != 1u) return -1;
+    return int(psp_mem_read<uint32_t>(g_stage_ram, 0x08B98854u));
+}
 void dissidia_register_hooks(uint8_t* rdram) {
+    g_stage_ram = rdram;
+    psp_set_stage_id_provider(dissidia_stage_id);
+    psp_set_player_pos_provider(dissidia_player_pos);
+    psp_settings_add_debug_toggle({"Light Editor", "Stage light editor (debug)\nShows a marker at every light of the stage and turns on the keys: F6 drop a light, F7 remove the selected one, J/L I/K U/O move it, , . radius, - = intensity, [ ] or P select (P = the one closest to you), Shift = faster. Needs Ray-Traced Shadows on. The lights are saved in stage_lights.txt in the game folder (the file has the full key list). This session only.",
+                                   +[]() { return psp_stage_light_edit_get(); }, +[](bool on) { psp_stage_light_edit_set(on); }});
     // One save set for every region: US, EU, JP.
     static const char* const kIds[] = {"ULUS10566", "ULES01505", "ULJM05681"};
     psp_savedata_set_shared_ids(kIds, 3);

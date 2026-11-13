@@ -13,6 +13,23 @@ void psp_fx_set_ssr(int level);
 
 /// True when any of the effects is on.
 bool psp_screenfx_active();
+/// The game module reports the stage being fought (-1 = unknown / no battle); used for per-stage lighting looks.
+void psp_set_stage_id_provider(int (*fn)());
+int psp_stage_id();
+/// Keep the stage's settled geometry in the ray-traced scene for the whole battle (true unless the stage is on the destructible-objects blacklist).
+bool psp_stage_keeps_geometry();
+/// Stage light editing (see psp_screenfx.cpp "Stage lights"). Returns true when the key was consumed.
+enum {
+    PSP_LIGHT_LEFT = 0, PSP_LIGHT_RIGHT, PSP_LIGHT_FWD, PSP_LIGHT_BACK, PSP_LIGHT_DOWN, PSP_LIGHT_UP,   // held: move the selected light (camera relative)
+    PSP_LIGHT_RAD_DOWN, PSP_LIGHT_RAD_UP, PSP_LIGHT_INT_DOWN, PSP_LIGHT_INT_UP,                       // held: radius / intensity
+    PSP_LIGHT_FAST,                                                                                  // held: 4x speed (not an action itself)
+    PSP_LIGHT_NEAREST,
+    PSP_LIGHT_DROP, PSP_LIGHT_REMOVE, PSP_LIGHT_TOGGLE_EDIT, PSP_LIGHT_PREV, PSP_LIGHT_NEXT, PSP_LIGHT_DIST_UP, PSP_LIGHT_DIST_DOWN,
+};
+bool psp_stage_light_input(int what, bool down);
+bool psp_stage_light_edit_get();             // edit mode (the Debug > Light Editor row)
+void psp_stage_light_edit_set(bool on);
+void psp_set_player_pos_provider(bool (*fn)(float* xyz));   // world position of the human fighter (for "select the nearest light")
 
 /// What the scene was drawn with (the last 3D draw of the buffer).
 struct ScreenFxScene {

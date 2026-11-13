@@ -1,4 +1,5 @@
 #include "psp_rt.h"
+#include "psp_screenfx.h"
 #include "psp_gl_window.h"
 #include "psp_event_loop.h"
 #include "psp_runtime.h"
@@ -401,6 +402,32 @@ static void handle_sdl_event(const SDL_Event& ev) {
                      ((k == SDLK_RETURN || k == SDLK_KP_ENTER) && (ev.key.keysym.mod & KMOD_ALT)))) {
             toggle_fullscreen(SDL_GetWindowFromID(ev.key.windowID));
             return;
+        }
+        {   // stage light editing (psp_screenfx.cpp): F6 drop, F7 remove, F8 edit mode; in edit mode J/L I/K U/O move, , . radius, - = intensity, [ ] select
+            int what = -1;
+            switch (k) {
+                case SDLK_F6: what = PSP_LIGHT_DROP; break;
+                case SDLK_F7: what = PSP_LIGHT_REMOVE; break;
+                case SDLK_F8: what = PSP_LIGHT_TOGGLE_EDIT; break;
+                case SDLK_PAGEUP: what = PSP_LIGHT_DIST_UP; break;
+                case SDLK_PAGEDOWN: what = PSP_LIGHT_DIST_DOWN; break;
+                case SDLK_LSHIFT: case SDLK_RSHIFT: what = PSP_LIGHT_FAST; break;
+                case SDLK_j: what = PSP_LIGHT_LEFT; break;
+                case SDLK_l: what = PSP_LIGHT_RIGHT; break;
+                case SDLK_i: what = PSP_LIGHT_FWD; break;
+                case SDLK_k: what = PSP_LIGHT_BACK; break;
+                case SDLK_u: what = PSP_LIGHT_DOWN; break;
+                case SDLK_o: what = PSP_LIGHT_UP; break;
+                case SDLK_COMMA: what = PSP_LIGHT_RAD_DOWN; break;
+                case SDLK_PERIOD: what = PSP_LIGHT_RAD_UP; break;
+                case SDLK_MINUS: what = PSP_LIGHT_INT_DOWN; break;
+                case SDLK_EQUALS: what = PSP_LIGHT_INT_UP; break;
+                case SDLK_p: what = PSP_LIGHT_NEAREST; break;
+                case SDLK_LEFTBRACKET: what = PSP_LIGHT_PREV; break;
+                case SDLK_RIGHTBRACKET: what = PSP_LIGHT_NEXT; break;
+                default: break;
+            }
+            if (what >= 0 && !psp_settings_menu_open() && psp_stage_light_input(what, down)) return;
         }
         if (down && k == SDLK_F9) {
             // RT scene debugging: log the next frame's draws and save a full-resolution screenshot of the same moment (rtdump_N.tga)

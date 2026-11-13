@@ -374,6 +374,8 @@ void dissidia_cam_seteye(uint8_t* rdram, recomp_context* ctx) {
 
 }  // namespace
 
+bool dissidia_player_pos(float* P) { return pl_pos(P); }   // for the stage light editor (runtime/src/psp_screenfx.cpp)
+
 void dissidia_camera_install(uint8_t* rdram) {
     const char* e = std::getenv("PSPRECOMP_HITCAM");
     g_cine_on = !(e && e[0] == '0');
