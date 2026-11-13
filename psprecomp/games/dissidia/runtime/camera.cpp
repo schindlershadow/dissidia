@@ -268,6 +268,8 @@ void dissidia_cam_update(uint8_t* rdram, recomp_context* ctx) {
         const bool ours = (g_yaw != 0.f || g_pitch != 0.f || g_holding) && g_blocker_on && phase && pl_pos(P);
         if (ours) P[1] += 1.0f;
         ge_draw_set_view_blocker(ours, P);
+        static int fr = 0;
+        if (++fr % 60 == 0 && ge_draw_blocker_log_on()) std::fprintf(stderr, "[BLOCKER] state active=%d yaw=%.0f pitch=%.0f holding=%d locked=%d known=%d\n", (int)ours, g_yaw * 57.29578f, g_pitch * 57.29578f, (int)g_holding, (int)g_locked, (int)g_lock_known);
     }
     if (set_wide) set_aspect(static_cast<float>(ge_draw_widescreen_width()) / 272.0f);
 }

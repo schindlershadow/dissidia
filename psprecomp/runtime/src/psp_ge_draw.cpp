@@ -1,3 +1,6 @@
+#ifdef __ANDROID__
+#include <sys/system_properties.h>
+#endif
 #include "psp_gl_window.h"
 #include "hle/psp_savedata_dialog.h"
 #include "psp_ge_draw.h"
@@ -1263,6 +1266,9 @@ static std::atomic<bool> g_perf_hud{false};   // settings menu Debug page / PSPR
 static Stream g_s2d, g_s3d;
 static std::atomic<bool> g_vb_active{false};   // view blocker fade (ge_draw_set_view_blocker)
 static float vb_fade_factor(uint8_t* rdram, const GeState& st, int n, int prim);
+static bool vb_log_on();
+bool ge_draw_blocker_log_on() { return vb_log_on(); }
+static void vb_probe(uint8_t* rdram, const GeState& st, int n, int prim, int path, float f);
 int g_vb_count = 0;   // draws faded since the last read (the game module's test log)
 int ge_draw_view_blocker_count() { const int c = g_vb_count; g_vb_count = 0; return c; }
 // Ring size in vertices. 3D vertices are 68 bytes, 2D 28: 8.9 MB + 3.6 MB.
@@ -1989,8 +1995,10 @@ static void fast_prim(uint8_t* rdram, const GeState& state, int prim_type, int c
         const int path = kc.path;
         const KeyBuf& key = kc.key;
         float vb_f = 1.f;
-        if (g_vb_active.load(std::memory_order_relaxed) && path == 1 && state.depth_test_enable && !state.depth_write_disable)
+        const bool vb_active = g_vb_active.load(std::memory_order_relaxed);
+        if (vb_active && path == 1 && state.depth_test_enable && !state.depth_write_disable)
             vb_f = vb_fade_factor(rdram, state, n, prim_type);
+        if (vb_active && vb_log_on()) vb_probe(rdram, state, n, prim_type, path, vb_f);
         GeState vb_state; KeyBuf vb_key;
         const bool vb_on = vb_f < 0.999f;
         if (vb_on) {   // drawn blended with no depth writes (the game's own fade does the same), so the player behind it stays visible
@@ -3777,6 +3785,52 @@ static float vb_fade_factor(uint8_t* rdram, const GeState& st, int n, int prim) 
     f += (target - f) * (hit ? 0.5f : 0.2f);   // fades out fast (the fighter must not stay hidden), back in gently
     if (std::fabs(f - target) < 0.01f) f = target;
     return f;
+}
+
+// Diagnostics (PSPRECOMP_CAM_BLOCKER_LOG=1, or on Android: adb shell setprop debug.psprecomp.blocker_log 1): every 3D draw within 2 units of the camera
+// (a wall pressed against the lens), with why it was or was not faded. At most 30 lines a second.
+static bool vb_log_on() {
+    static int cached = -1; static uint64_t last = 0;
+    const uint64_t now = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (cached >= 0 && now - last < 2000) return cached != 0;
+    last = now; cached = std::getenv("PSPRECOMP_CAM_BLOCKER_LOG") ? 1 : 0;
+#ifdef __ANDROID__
+    char v[PROP_VALUE_MAX] = {0}; __system_property_get("debug.psprecomp.blocker_log", v); if (v[0] == '1') cached = 1;
+#endif
+    return cached != 0;
+}
+static void vb_probe(uint8_t* rdram, const GeState& st, int n, int prim, int path, float f) {
+    if (n < 3) return;
+    static thread_local std::vector<GeGpuVertex> tmp2;
+    const uint64_t key = (uint64_t)st.vertex_addr << 20 ^ (uint64_t)n;
+    auto bi = g_vb_box.find(key);
+    if (bi == g_vb_box.end()) {
+        VbBox bx{{1e30f, 1e30f, 1e30f}, {-1e30f, -1e30f, -1e30f}};
+        tmp2.resize((size_t)n);
+        if (ge_decode_vertices_gpu(rdram, st, n, tmp2.data()))
+            for (int i = 0; i < n; ++i) for (int k = 0; k < 3; ++k) { bx.lo[k] = std::min(bx.lo[k], tmp2[i].pos[k]); bx.hi[k] = std::max(bx.hi[k], tmp2[i].pos[k]); }
+        bi = g_vb_box.emplace(key, bx).first;
+    }
+    const float* lo = bi->second.lo; const float* hi = bi->second.hi;
+    if (lo[0] > hi[0]) return;
+    const float* m = st.world_matrix;
+    float wlo[3] = {1e30f, 1e30f, 1e30f}, whi[3] = {-1e30f, -1e30f, -1e30f};
+    for (int c = 0; c < 8; ++c) {
+        const float x = (c & 1) ? hi[0] : lo[0], y = (c & 2) ? hi[1] : lo[1], z = (c & 4) ? hi[2] : lo[2];
+        const float w[3] = {m[0] * x + m[3] * y + m[6] * z + m[9], m[1] * x + m[4] * y + m[7] * z + m[10], m[2] * x + m[5] * y + m[8] * z + m[11]};
+        for (int k = 0; k < 3; ++k) { wlo[k] = std::min(wlo[k], w[k]); whi[k] = std::max(whi[k], w[k]); }
+    }
+    const float* V = st.view_matrix;
+    const float eye[3] = {-(V[0] * V[9] + V[1] * V[10] + V[2] * V[11]), -(V[3] * V[9] + V[4] * V[10] + V[5] * V[11]), -(V[6] * V[9] + V[7] * V[10] + V[8] * V[11])};
+    float d2 = 0; for (int k = 0; k < 3; ++k) { const float o = std::max(0.f, std::max(wlo[k] - eye[k], eye[k] - whi[k])); d2 += o * o; }
+    if (d2 > 4.f) return;
+    static int per_sec = 0; static uint64_t sec = 0;
+    const uint64_t now = (uint64_t)std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (now != sec) { sec = now; per_sec = 0; }
+    if (per_sec++ >= 30) return;
+    std::fprintf(stderr, "[BLOCKER] near draw: dist %.2f bbox %.1f %.1f %.1f .. %.1f %.1f %.1f eye %.1f %.1f %.1f n %d prim %d vt %08x path %d blend %d zw %d test %d tgt %.1f %.1f %.1f fade %.2f\n",
+                 std::sqrt(d2), wlo[0], wlo[1], wlo[2], whi[0], whi[1], whi[2], eye[0], eye[1], eye[2], n, prim, (unsigned)st.vertex_type, path,
+                 (int)st.alpha_blend_enable, st.depth_write_disable ? 0 : 1, (int)st.depth_test_enable, g_vb_target[0], g_vb_target[1], g_vb_target[2], f);
 }
 
 // Flash: four bars along the edges of the picture, cleared to one colour through the scissor box (no shader needed), for a short time.
