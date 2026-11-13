@@ -3933,16 +3933,18 @@ static void present_toast(const PresentRect& pr) {
     if (sc) glEnable(GL_SCISSOR_TEST);
 }
 
-// Simple fps counter: the number alone, white with a soft shadow and partly transparent, top-right corner. Unlike the
-// opaque boxes this one has to blend, so it is drawn as a textured quad with its own tiny program (GL state saved and
-// restored, like the touch controls).
-static void present_fps_counter(const PresentRect& pr) {
-    if (!g_fps_counter.load(std::memory_order_relaxed) || g_perf.fps_text.empty()) return;
-    static GLuint tex = 0, prog = 0, vao = 0, vbo = 0;
+// Translucent HUD text (the fps counter and the performance overlay): a textured quad blended over the picture with its
+// own tiny program (GL state saved and restored, like the touch controls). `box` = the performance overlay's dark box
+// (top-left), otherwise the bare number with a soft shadow (top-right). `alpha` is the overall opacity.
+struct HudBlend { GLuint tex = 0; int tw = 0, th = 0, tscale = 0, alloc_w = 0, alloc_h = 0; std::vector<uint32_t> px; };
+static void present_blend_hud(HudBlend& st, const std::string& text, bool& text_dirty, bool box, float alpha, const PresentRect& pr) {
+    if (text.empty()) return;
+    static GLuint prog = 0, vao = 0, vbo = 0;
     static GLint u_tex = -1, u_alpha = -1;
-    static int tw = 0, th = 0, tscale = 0, alloc_w = 0, alloc_h = 0;
     static bool failed = false;
-    static std::vector<uint32_t> px;
+    GLuint& tex = st.tex;
+    int &tw = st.tw, &th = st.th, &tscale = st.tscale, &alloc_w = st.alloc_w, &alloc_h = st.alloc_h;
+    std::vector<uint32_t>& px = st.px;
     if (failed) return;
     if (!prog) {
         const char* vs_body = "in vec2 a_pos; in vec2 a_uv; out vec2 v_uv;\n"
@@ -3993,9 +3995,11 @@ static void present_fps_counter(const PresentRect& pr) {
     glGetIntegerv(GL_ACTIVE_TEXTURE, &prev_active);
     glActiveTexture(GL_TEXTURE0);
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev_tex);
-    if (g_perf.fps_dirty || scale != tscale || !tex) {
+    if (text_dirty || scale != tscale || !tex) {
         int w = 0, h = 0;
-        if (!psp_sddialog::render_hud_text(g_perf.fps_text, scale, px, &w, &h) || w <= 0 || h <= 0) {
+        const bool ok = box ? psp_sddialog::render_hud_box(text, scale, px, &w, &h)
+                            : psp_sddialog::render_hud_text(text, scale, px, &w, &h);
+        if (!ok || w <= 0 || h <= 0) {
             glActiveTexture(GLenum(prev_active));
             return;
         }
@@ -4021,7 +4025,7 @@ static void present_fps_counter(const PresentRect& pr) {
         glPixelStorei(GL_UNPACK_ALIGNMENT, prev_align);
         glPixelStorei(GL_UNPACK_ROW_LENGTH, prev_row_len);
         tw = w; th = h; tscale = scale;
-        g_perf.fps_dirty = false;
+        text_dirty = false;
     } else {
         glBindTexture(GL_TEXTURE_2D, tex);
     }
@@ -4030,9 +4034,10 @@ static void present_fps_counter(const PresentRect& pr) {
     psp_gl_drawable_size(psp_get_sdl_window(), &dw, &dh);
     if (dw <= 0 || dh <= 0) { glBindTexture(GL_TEXTURE_2D, GLuint(prev_tex)); glActiveTexture(GLenum(prev_active)); return; }
     const float sx = float(pr.x1 - pr.x0) / 480.f, sy = float(std::abs(pr.y1 - pr.y0)) / 272.f;
-    const float right = float(std::max(pr.x0, pr.x1)) - 4.f * sx;
+    const float qw = float(tw) / float(tscale) * sx;
+    const float right = box ? float(std::min(pr.x0, pr.x1)) + 4.f * sx + qw : float(std::max(pr.x0, pr.x1)) - 4.f * sx;
     const float top = float(std::max(pr.y0, pr.y1)) - 4.f * sy;   // GL origin is bottom-left
-    const float qw = float(tw) / float(tscale) * sx, qh = float(th) / float(tscale) * sy;
+    const float qh = float(th) / float(tscale) * sy;
     auto cx = [&](float x) { return x / float(dw) * 2.f - 1.f; };
     auto cy = [&](float y) { return y / float(dh) * 2.f - 1.f; };
     const float u1 = float(tw) / float(alloc_w), v1 = float(th) / float(alloc_h);
@@ -4065,7 +4070,7 @@ static void present_fps_counter(const PresentRect& pr) {
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glUseProgram(prog);
     glUniform1i(u_tex, 0);
-    glUniform1f(u_alpha, 0.65f);   // the transparency
+    glUniform1f(u_alpha, alpha);
     glBindVertexArray(vao);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof verts, verts, GL_STREAM_DRAW);
@@ -4088,56 +4093,17 @@ static void present_fps_counter(const PresentRect& pr) {
     ge_shader_note_external_program();
 }
 
-static void present_perf_hud(const PresentRect& pr) {
-    if (!g_perf_hud.load(std::memory_order_relaxed) || g_perf.text.empty()) return;
-    static GLuint tex = 0, fbo = 0;
-    static int tw = 0, th = 0, tscale = 0, alloc_w = 0, alloc_h = 0;
-    static std::vector<uint32_t> px;
-    const int scale = psp_sddialog::output_scale();
-    if (g_perf.dirty || scale != tscale || !tex) {
-        int w = 0, h = 0;
-        if (!psp_sddialog::render_hud_box(g_perf.text, scale, px, &w, &h) || w <= 0 || h <= 0) return;
-        GLint prev_tex = 0, prev_align = 4, prev_row_len = 0;
-        glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev_tex);
-        glGetIntegerv(GL_UNPACK_ALIGNMENT, &prev_align);
-        glGetIntegerv(GL_UNPACK_ROW_LENGTH, &prev_row_len);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-        if (!tex) {
-            glGenTextures(1, &tex);
-            glBindTexture(GL_TEXTURE_2D, tex);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glGenFramebuffers(1, &fbo);
-        }
-        glBindTexture(GL_TEXTURE_2D, tex);
-        if (w > alloc_w || h > alloc_h) {   // grow only; the box is blitted from its corner
-            alloc_w = std::max(w, alloc_w); alloc_h = std::max(h, alloc_h);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, alloc_w, alloc_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
-        }
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
-        glBindTexture(GL_TEXTURE_2D, GLuint(prev_tex));
-        glPixelStorei(GL_UNPACK_ALIGNMENT, prev_align);
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, prev_row_len);
-        tw = w; th = h; tscale = scale;
-        g_perf.dirty = false;
-    }
-    const float sx = float(pr.x1 - pr.x0) / 480.f, sy = float(std::abs(pr.y1 - pr.y0)) / 272.f;
-    const int top = std::max(pr.y0, pr.y1), left = std::min(pr.x0, pr.x1);
-    const int x0 = left + int(std::lround(4.f * sx));
-    const int x1 = x0 + int(std::lround(float(tw) / float(tscale) * sx));
-    const int y_top = top - int(std::lround(4.f * sy));
-    const int y_bot = y_top - int(std::lround(float(th) / float(tscale) * sy));
-    const GLboolean sc = glIsEnabled(GL_SCISSOR_TEST);
-    if (sc) glDisable(GL_SCISSOR_TEST);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    // Canvas row 0 is the top; GL texture row 0 is the bottom => flip Y.
-    glBlitFramebuffer(0, 0, tw, th, x0, y_top, x1, y_bot, GL_COLOR_BUFFER_BIT, GL_LINEAR);
-    if (sc) glEnable(GL_SCISSOR_TEST);
+static void present_fps_counter(const PresentRect& pr) {
+    static HudBlend st;
+    if (!g_fps_counter.load(std::memory_order_relaxed)) return;
+    present_blend_hud(st, g_perf.fps_text, g_perf.fps_dirty, false, 0.5f, pr);
 }
+static void present_perf_hud(const PresentRect& pr) {
+    static HudBlend st;
+    if (!g_perf_hud.load(std::memory_order_relaxed)) return;
+    present_blend_hud(st, g_perf.text, g_perf.dirty, true, 0.65f, pr);
+}
+
 
 // PSPRECOMP_FRAME_DUMP=<dir>,<n>: write the next n presented frames (every
 // present_blit, including liveness-net presents) as <dir>/f_<k>.tga, with the

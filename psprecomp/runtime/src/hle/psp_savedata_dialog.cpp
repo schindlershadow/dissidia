@@ -1737,10 +1737,10 @@ bool render_hud_text(const std::string& text, int scale, std::vector<uint32_t>& 
     Canvas c(scale);
     c.clear(Canvas::rgba(0, 0, 0));
     Painter P(c);
-    const float size = 11.f, pad = 2.f, bh = 15.f;
+    const float size = 15.f, pad = 2.f, bh = 20.f;
     const float tw = P.text_width(face, size, text);
     const float bw = std::min(float(SCREEN_W) - 8.f, std::ceil(tw + 2.f * pad + 1.f));
-    P.text(face, size, pad, 11.5f, text, rgb(255, 255, 255));
+    P.text(face, size, pad, 15.5f, text, rgb(255, 255, 255));
     const int pw = std::min(c.w, int(std::ceil(bw * float(c.scale)))), ph = std::min(c.h, int(std::ceil(bh * float(c.scale))));
     const int off = std::max(1, c.scale);   // shadow offset: 1 design pixel down and right
     out.assign(size_t(pw) * size_t(ph), 0);
