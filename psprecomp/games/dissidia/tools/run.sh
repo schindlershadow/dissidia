@@ -77,6 +77,9 @@ set -euo pipefail
 die()  { echo "error: $*" >&2; exit 1; }
 warn() { echo "warning: $*" >&2; }
 
+# How to start this same launch again: the settings menu uses it for "Restart now" (a restart has to go through here, which builds the
+# mods again, not straight into the game).
+export PSPRECOMP_RESTART_CMD="cd $(printf '%q' "$PWD") && exec $(printf '%q ' "$(cd "$(dirname "$0")" && pwd)/$(basename "$0")" "$@")"
 PRESET="${PSPRECOMP_PRESET:-}"; INTSCALE=0; TEXF=""
 GE_SYNC=""; WORK=""; QUICK=0; LEGACY_GE=0; SOFT=0; RSCALE=""; SCALE=""; WINSZ=""; FULL=0; STRETCH=0; FILTER=""; SWAP=0; PAD_DB=""; LOG=""
 while [ $# -gt 0 ]; do
@@ -128,6 +131,7 @@ BIN="$WORK/build/psprecomp_runtime"
 # Character mods: every folder in mods/ at the repo root (with a mod.json; not _template etc.) is built into the mods dir before the game
 # starts; a new folder is added to the roster (tools/charmod.py, mods/README.md). PSPRECOMP_CHARMOD=0 skips it.
 CHARMOD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[ -d "$CHARMOD_DIR/../../../../mods" ] && export PSPRECOMP_MODS_SRC="$(cd "$CHARMOD_DIR/../../../../mods" && pwd)"   # the Mods page of the settings menu turns folders there on / off
 if [ "${PSPRECOMP_CHARMOD:-1}" != 0 ] && ls "$CHARMOD_DIR"/../../../../mods/[!_.]*/mod.json >/dev/null 2>&1; then
   if command -v python3 >/dev/null; then
     mkdir -p "${PSPRECOMP_MODS:-$WORK/mods}"

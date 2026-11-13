@@ -190,6 +190,118 @@ void render_menu(Canvas& c, const std::string& title, const std::string& tab,
                  const std::vector<MenuRow>& rows, int sel, bool confirm_cross,
                  const std::vector<std::string>* tabs = nullptr, int tab_active = 0, const MenuAnim* anim = nullptr);
 
+// ---------------------------------------------------------------------------
+// Settings screen (driven by psp_settings.cpp): a category sidebar, a scrolling list of rows (toggles, choices, sliders, actions,
+// sub-menus, text fields), a description panel and a hint bar, with animation. It is drawn from a SetScene (what to show) by a
+// SettingsView (which owns the animation state and remembers where everything was drawn, so the mouse / touch code can hit-test
+// against the same geometry). All coordinates are design units (480x272).
+// ---------------------------------------------------------------------------
+enum class SetKind { Choice, Toggle, Slider, Action, Danger, Submenu, Text, Info, Header };
+struct SetRow {
+    SetKind kind = SetKind::Choice;
+    int id = 0;                 // stable per row (animation memory); < SET_MAX_IDS
+    std::string label, value;
+    std::string help;           // "Title\nBody": the description panel
+    std::string badge;          // small chip beside the title in the description panel ("Saved", "Next start", ...)
+    bool can_dec = false, can_inc = false;   // Choice / Slider: the arrows
+    bool disabled = false;      // greyed out (the help text says why); still selectable
+    bool on = false;            // Toggle
+    int steps = 0, cur = 0;     // Slider: number of positions (>= 2) and the current one
+    bool selectable() const { return kind != SetKind::Header; }
+};
+constexpr int SET_MAX_IDS = 192;
+struct SetCat { std::string name; int icon = 0; };   // icon: see settings_icon()
+struct SetKeyboardState {    // the text-entry modal
+    bool active = false;
+    std::string title, text;
+    bool secret = false, shift = false, symbols = false;
+    int row = 0, col = 0;    // focused key (pad / keyboard)
+};
+struct SetDialog {                            // a question over the settings screen (e.g. restart now / later)
+    bool active = false;
+    std::string title, text;                  // text: lines separated by \n
+    std::vector<std::string> buttons;
+    int sel = 0;
+    int hover = -1;
+};
+struct SetScene {
+    std::string title = "Settings";
+    std::vector<std::string> crumbs;          // breadcrumb after the title, e.g. {"Image", "HDR"}
+    std::vector<SetCat> cats;
+    int cat = 0;                              // the active category
+    std::vector<SetRow> rows;
+    int sel = 0;                              // the selected row (never a Header)
+    int hover_row = -1, hover_cat = -1;       // under the pointer, -1 = none
+    bool hover_back = false;
+    int hover_part = 0;                       // what of hover_row the pointer is on: 1 left arrow, 2 right arrow, 3 slider track
+    int press_row = -1;                       // a row held down by the pointer
+    int device = 0;                           // 0 pad, 1 keyboard / mouse, 2 touch: which hints and cursors to show
+    bool confirm_cross = true;
+    bool in_sub = false;                      // the page is a sub-menu: Back goes up one level instead of closing
+    bool focus_tabs = false;                  // the category list (left) has the focus; Back there closes
+    std::string brand = "Dissidia 012 Recompiled";   // the plate in the top right corner (a Back button inside a sub-menu)
+    SetKeyboardState kb;
+    SetDialog dlg;
+};
+struct SetRect {
+    float x = 0, y = 0, w = 0, h = 0;
+    bool has(float px, float py) const { return px >= x && py >= y && px < x + w && py < y + h; }
+};
+struct SetKey { std::string label; int kind = 0; char ch = 0; SetRect r; };   // kind: 0 character, 1 shift, 2 symbols, 3 space, 4 delete, 5 done, 6 cancel
+struct SetGeom {
+    SetRect back, list, scroll_track, scroll_thumb, detail, side;
+    std::vector<SetRect> dlg_btns;            // the dialog's buttons while it is open
+    std::vector<SetRect> cats;
+    struct Row { int idx = 0; SetRect r, dec, inc, track; };
+    std::vector<Row> rows;                    // the rows at least partly inside the list
+    std::vector<std::vector<SetKey>> keys;    // the keyboard modal's keys by row, while it is open
+    SetRect kb_field;
+};
+class SettingsView {
+public:
+    // The screen opens (open = true) or closes with an animation; closed() is true once a close has finished.
+    void set_open(bool open);
+    bool closed() const { return !open_ && p_open_ <= 0.001f; }
+    bool opening_or_closing() const { return (open_ && p_open_ < 0.999f) || (!open_ && p_open_ > 0.001f); }
+    void page_changed(int dir);               // the active category changed (dir +1 = to a later one, -1 = earlier, 0 = sub-menu level)
+    void rows_changed() { rows_reset_ = true; }   // a different list is shown: jump the scroll instead of gliding
+    void bump(int row_id);                    // a value was changed by the user: pulse that row
+    // Draws a frame (advances the animation by the time since the previous call).
+    void render(Canvas& c, const SetScene& s, double now_ms);
+    const SetGeom& geom() const { return g_; }
+    // True while something moves (the caller keeps drawing at the frame rate); false once everything has settled.
+    bool animating() const { return animating_; }
+    // Scrolling by hand (wheel, a dragged finger): pixels in design units, positive = down. `momentum` = a fling speed to coast on.
+    void scroll_by(float dy) { scroll_target_ += dy; manual_scroll_ = true; }
+    void fling(float v) { fling_v_ = v; }
+    void follow_selection() { manual_scroll_ = false; }
+    void scroll_cats(float dy) { cat_scroll_t_ += dy; cat_manual_ = true; }   // the category list (left)
+    float scroll_max() const { return scroll_max_; }
+    float scroll_pos() const { return scroll_; }
+    void set_scroll_pos(float p) { scroll_ = scroll_target_ = p; manual_scroll_ = true; }
+    // state; public only so the renderer (psp_settings_render.inc) can drive it
+    SetGeom g_;
+    bool open_ = false, animating_ = false, rows_reset_ = true, manual_scroll_ = false;
+    float p_open_ = 0.f;
+    double last_ms_ = -1, t_ = 0;
+    float scroll_ = 0, scroll_target_ = 0, scroll_max_ = 0, fling_v_ = 0;
+    float cat_scroll_ = 0, cat_scroll_t_ = 0, cat_scroll_max_ = 0; bool cat_manual_ = false; int cat_follow_ = -1;   // category list scrolling
+    float dlg_p_ = 0.f;                       // dialog fade
+    float tab_focus_ = 1.f;                   // eases to 1 while the category list has the focus
+    float sel_y_ = 0, cat_y_ = 0;             // gliding highlight positions (design units)
+    bool glide_init_ = false;
+    int last_cat_ = -1;
+    float page_p_ = 1.f; int page_dir_ = 0;
+    float knob_[SET_MAX_IDS] = {}, fill_[SET_MAX_IDS] = {}, pulse_[SET_MAX_IDS] = {};
+    bool knob_init_[SET_MAX_IDS] = {};
+    std::string last_val_[SET_MAX_IDS];
+    float help_t_ = 0; std::string help_key_; std::vector<std::string> help_lines_;   // description panel: auto-scroll and wrapped text
+    float kb_p_ = 0.f, kb_fx_ = 0, kb_fy_ = 0, kb_fw_ = 30.f;
+    int ring_ = 0;
+};
+// The keys of the text-entry modal (also used for navigation). Rect coordinates are filled in by SettingsView::render.
+std::vector<std::vector<SetKey>> settings_keyboard(bool shift, bool symbols);
+
 // Cross-thread overlay hand-off (game thread publishes, GL thread fetches).
 void overlay_publish(const Canvas& c);   // activates the overlay
 void overlay_clear();                    // deactivates it

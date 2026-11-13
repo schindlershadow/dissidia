@@ -113,7 +113,7 @@ Read by the runtime binary at start-up or during execution.
 
 ### `PSPRECOMP_RENDERER`
 `gl` (default) or `vulkan`. Vulkan runs the same renderer through a GL-on-Vulkan layer (`runtime/src/vk/`, [docs/VULKAN_PORT.md](VULKAN_PORT.md)); if the Vulkan
-backend is not built in or no device is usable the runtime stops at start-up (set it to `gl`). Also chosen in Settings > System > Graphics API (saved as
+backend is not built in or no device is usable the runtime stops at start-up (set it to `gl`). Also chosen in Settings > Graphics > Graphics API (saved as
 `renderer=gl|vulkan`, applied at the next start, and wins over this variable). Related, all Vulkan-only: `PSPRECOMP_VK_VALIDATION=1` (validation layer),
 `PSPRECOMP_VK_DEVICE=<index|name>` (GPU), `PSPRECOMP_VK_CACHE_DIR` (SPIR-V cache; default `~/.cache/dissidia-vk`, `<workdir>/vk_cache` on Android),
 `PSPRECOMP_VK_SUBMIT_EVERY=<draws>` (early GPU submits; 0 = only at sync points), `PSPRECOMP_VK_NO_PRESENT=1` (benchmark: never present),
@@ -322,7 +322,7 @@ Default values and semantics live next to the definitions; prefer those sources 
 
 | Variable | Where | Values | What |
 |---|---|---|---|
-| `PSPRECOMP_GPU_DRIVER` | `psp_gpu_driver.cpp`, `vk/psp_vk_loader.cpp` | package id (folder under the driver directory), empty = the phone's own | Vulkan driver to load through libadrenotools. Normally set from the saved `gpu_driver` setting (Settings > System > GPU Driver); needs `PSPRECOMP_RENDERER=vulkan` and an Adreno GPU. A driver that crashed during start-up is skipped until it is picked again. |
+| `PSPRECOMP_GPU_DRIVER` | `psp_gpu_driver.cpp`, `vk/psp_vk_loader.cpp` | package id (folder under the driver directory), empty = the phone's own | Vulkan driver to load through libadrenotools. Normally set from the saved `gpu_driver` setting (Settings > Drivers > GPU Driver); needs `PSPRECOMP_RENDERER=vulkan` and an Adreno GPU. A driver that crashed during start-up is skipped until it is picked again. |
 | `PSPRECOMP_GPU_DRIVER_DIR` | `psp_gpu_driver.cpp`, `psp_android.cpp` | path | Where drivers are installed (default `<app internal storage>/gpu_drivers`; it must not be on the sd card). |
 | `PSPRECOMP_GPU_DRIVER_FEEDS` | `psp_gpu_driver.cpp` | `owner/repo[,owner/repo...]` | GitHub repositories whose releases hold adrenotools driver zips (default `K11MCH1/AdrenoToolsDrivers`). |
 | `PSPRECOMP_VK_RECORD` | `vk/psp_vk_glsl.cpp` | `1` / `0` | Write every shader source handed to the SPIR-V cache to `<cache>/src/<hash>.<stage>.glsl` (default on for Android, off elsewhere): how `android/shaders/` is kept complete. |

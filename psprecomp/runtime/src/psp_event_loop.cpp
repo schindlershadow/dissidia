@@ -779,6 +779,7 @@ void psp_event_loop(uint8_t* rdram) {
 
         // 2c. Settings menu: input repeat, drawing and presenting while the game is paused.
         psp_settings_tick();
+        if (psp_settings_take_gate_dirty()) publish_input();   // the menu opened / closed from the tick: gate (or release) the game's input
         osk_tick();
         cloud_signin_assist();
 

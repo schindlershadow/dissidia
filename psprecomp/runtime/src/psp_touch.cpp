@@ -1,5 +1,6 @@
 // On-screen touch controls and their layout editor, see include/psp_touch.h.
 #include "psp_touch.h"
+#include "psp_settings.h"
 
 #include <algorithm>
 #include <cmath>
@@ -517,6 +518,15 @@ void psp_touch_edit_begin() {
 }
 
 void psp_touch_event(const SDL_Event& ev) {
+    // While the settings menu is open it takes the touches itself (tap, drag, sliders); the on-screen controls are hidden and let go.
+    {
+        static bool gated = false;
+        if (psp_settings_menu_open() && !g_edit) {
+            if (!gated) { gated = true; release_all(); }
+            return;
+        }
+        gated = false;
+    }
     switch (ev.type) {
     case SDL_CONTROLLERBUTTONDOWN:
         if (ev.cbutton.which != PSP_TOUCH_PAD_ID && !g_edit) g_visible = false;   // a real pad button: auto mode hides the controls

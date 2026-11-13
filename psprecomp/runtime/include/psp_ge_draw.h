@@ -85,6 +85,8 @@ void ge_draw_set_view_blocker(bool active, const float target[3], const float ey
 /// Present the last frame with the dialog/menu overlay now (game paused).
 /// Main (GL) thread.
 void ge_draw_present_overlay_now();
+/// Where the 480x272 overlay was last drawn, as fractions (0..1) of the window: lets the settings menu map a pointer to its canvas.
+void ge_draw_overlay_rect(float* fx0, float* fy0, float* fx1, float* fy1);
 
 /// Initialize the GE draw infrastructure: FBO, VAO/VBO, shader.
 /// Must be called after SDL/GL init and after ge_init()/ge_texture_init().

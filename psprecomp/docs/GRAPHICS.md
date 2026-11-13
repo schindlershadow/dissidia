@@ -368,7 +368,7 @@ Two consequences of how this is implemented:
 
 `runtime/src/psp_post.cpp` replaces the final `glBlitFramebuffer` in `present_blit` when any effect is on. It draws the shown
 render target's colour texture through one fragment shader into the window rectangle, so the game's own glow and blur chain is
-never touched and the effects work at every render scale. All three effects are Settings > System rows and are saved:
+never touched and the effects work at every render scale. All three effects are Settings > Effects rows and are saved:
 
 | Setting | Env | Values |
 |---|---|---|
@@ -381,7 +381,7 @@ blend-weight calculation with the area / search lookup textures, neighbourhood b
 The reference shaders and lookup tables (MIT licence) are embedded by `tools/gen_smaa.py` into `runtime/src/psp_smaa_data.cpp`.
 Unlike FXAA it leaves flat areas, textures and text untouched. A failed shader build falls back to FXAA.
 
-Ray-traced shadow softness (`PSPRECOMP_RT_SOFT`, Settings > System > Shadow Softness, saved as `rt_soft`): levels 0..4 = Sharp, Firm
+Ray-traced shadow softness (`PSPRECOMP_RT_SOFT`, Settings > Effects > Ray Tracing > Shadow Softness, saved as `rt_soft`): levels 0..4 = Sharp, Firm
 (default), Normal, Soft, Very Soft, i.e. a light-disc half-angle of 0.012, 0.025, 0.04, 0.075, 0.12 over which Medium / High spread their
 rays. `PSPRECOMP_RT_SOFT=<float>` sets the angle directly until a level is chosen in the menu.
 
@@ -431,7 +431,7 @@ in the log confirms the switch.
 
 ### Anisotropic filtering
 
-`PSPRECOMP_ANISO=1|2|4|8|16` (Settings > System > Anisotropic Filtering, saved as `aniso`; default off). Above 1, game textures
+`PSPRECOMP_ANISO=1|2|4|8|16` (Settings > Graphics > Anisotropic Filtering, saved as `aniso`; default off). Above 1, game textures
 are uploaded with a generated mip chain (`psp_ge_texture.cpp`, cache-miss uploads only; movies and render targets are not
 touched), textures the game samples with linear minification use `GL_LINEAR_MIPMAP_LINEAR`, and `GL_TEXTURE_MAX_ANISOTROPY_EXT`
 is set (clamped to the driver limit; drivers without the extension keep 1). Textures the game samples with nearest stay nearest.
