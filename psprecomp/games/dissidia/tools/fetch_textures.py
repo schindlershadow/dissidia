@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
-"""Download the community HD texture pack (Niosai's Dissidia Duodecim Retexture Project) into an installed game.
+"""Download an HD texture pack into an installed game. Two packs are offered (--pack):
 
-  fetch_textures.py <workdir> [--ref main|<commit>] [--zip FILE] [--keep-zip] [--no-ids] [--ids-zip FILE]
+  liink  LiinkPK's Dissidia 012 HD Project (https://github.com/LiinkPK/Dissidia-012-HD-Textures): hand-retouched textures, about 0.8 GB.
+         A PPSSPP texture pack (textures.ini with hash=quick + PNG files); unpacked into <workdir>/mods/textures as it is.
+  ai     (the default of older versions) the community pack below plus our own AI upscales, about 1.3 GB.
+
+  fetch_textures.py <workdir> [--pack liink|ai] [--ref main|<commit>] [--zip FILE] [--keep-zip] [--no-ids] [--ids-zip FILE]
+
+Both packs are credited in <workdir>/mods/textures/PACK_CREDITS.txt (and in the installer). The rest of this text is about the "ai" pack.
 
 The pack is Niosa/D012FFRT on GitHub (https://github.com/Niosa/D012FFRT, "HD Texture Mod for Dissidia 012", a PPSSPP texture pack:
 textures.ini + PNG files). It is NOT part of this project and is not bundled in releases: this script downloads it to the player's
@@ -27,6 +33,16 @@ import urllib.request
 import zipfile
 
 REPO = "Niosa/D012FFRT"
+LIINK_REPO = "LiinkPK/Dissidia-012-HD-Textures"   # default branch: master
+CREDITS = {
+    "liink": "HD textures: Dissidia 012 HD Project by LiinkPK (https://github.com/LiinkPK/Dissidia-012-HD-Textures), hand-retouched.\n"
+             "Further artwork credits are in Credits.txt and readme.md in this folder (ajb3art, unsplash.com).\n"
+             "The artwork belongs to Square Enix; this is an unofficial fan project.\n",
+    "ai": "HD textures: D012FFRT by Niosa (https://github.com/Niosa/D012FFRT), the community retexture project (Credits.txt in this folder),\n"
+          "plus AI upscales of the remaining textures by schindlershadow (https://github.com/schindlershadow/dissidia-hd-textures),\n"
+          "made with Real-ESRGAN by Xintao Wang et al. (BSD-3-Clause, https://github.com/xinntao/Real-ESRGAN).\n"
+          "The artwork belongs to Square Enix; this is an unofficial fan project.\n",
+}
 IDS_REPO = "schindlershadow/dissidia-hd-textures"   # our own upscales, <16 hex digit id>.png (see its README)
 ID_RE = re.compile(r"^[0-9a-f]{16}\.png$")
 UA = {"User-Agent": "psprecomp-fetch-textures/1"}
@@ -122,7 +138,8 @@ def fetch_id_textures(tmp, mods, a):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("workdir")
-    ap.add_argument("--ref", default="main")
+    ap.add_argument("--pack", choices=["liink", "ai"], default="ai", help="which pack (default ai, as before)")
+    ap.add_argument("--ref", default=None, help="branch or commit of the pack (default: main, master for liink)")
     ap.add_argument("--zip", help="use this archive instead of downloading")
     ap.add_argument("--keep-zip", action="store_true")
     ap.add_argument("--no-ids", action="store_true", help="skip the extra textures (%s)" % IDS_REPO)
@@ -138,18 +155,23 @@ def main():
     mods = os.path.join(work, "mods")
     dest = os.path.join(mods, "textures")
     os.makedirs(mods, exist_ok=True)
+    if a.pack == "liink":
+        a.no_ids = True
+    REPO_ = LIINK_REPO if a.pack == "liink" else REPO
+    if a.ref is None:
+        a.ref = "master" if a.pack == "liink" else "main"
     zpath = a.zip
     sha = a.ref
     if not zpath:
         say("[textures] STEP 1/3 Looking up the newest pack version")
         try:
-            with http("https://api.github.com/repos/%s/commits/%s" % (REPO, a.ref), 20) as r:
+            with http("https://api.github.com/repos/%s/commits/%s" % (REPO_, a.ref), 20) as r:
                 sha = json.loads(r.read().decode())["sha"]
         except Exception as e:  # noqa: BLE001 - rate limit / offline: fall back to the branch name
             say("could not resolve %s (%s); using the branch" % (a.ref, e))
-        url = "https://codeload.github.com/%s/zip/%s" % (REPO, sha)
+        url = "https://codeload.github.com/%s/zip/%s" % (REPO_, sha)
         zpath = os.path.join(mods, ".d012ffrt.zip")
-        say("[textures] STEP 2/3 Downloading %s (about 200 MB; our own upscales follow, about 1.1 GB)" % url)
+        say("[textures] STEP 2/3 Downloading %s (%s)" % (url, "about 0.8 GB" if a.pack == "liink" else "about 200 MB; our own upscales follow, about 1.1 GB"))
         try:
             with http(url, 120) as r, open(zpath + ".part", "wb") as f:
                 total = int(r.headers.get("Content-Length") or 0)
@@ -181,7 +203,7 @@ def main():
                 if len(parts) < 2 or ".." in parts:
                     continue
                 rel = parts[1:]                       # drop the "D012FFRT-<ref>/" top folder
-                if rel[-1].lower().endswith((".psd", ".lnk")):
+                if rel[-1].lower().endswith((".psd", ".lnk", ".svg")) or rel[0] in (".github", ".gitignore"):
                     continue                          # sources and shortcuts: not used by the game
                 t = os.path.join(tmp, *rel)
                 os.makedirs(os.path.dirname(t), exist_ok=True)
@@ -197,8 +219,10 @@ def main():
         shutil.rmtree(tmp, ignore_errors=True)
         die("the archive has no textures.ini: not the expected texture pack")
     n_ids, ids_sha = fetch_id_textures(tmp, mods, a)
+    with open(os.path.join(tmp, "PACK_CREDITS.txt"), "w") as f:
+        f.write(CREDITS[a.pack])
     with open(os.path.join(tmp, ".source.json"), "w") as f:
-        json.dump({"repo": REPO, "ref": sha, "files": n, "disc": did, "ids_repo": IDS_REPO, "ids_ref": ids_sha, "ids_files": n_ids}, f)
+        json.dump({"pack": a.pack, "repo": REPO_, "ref": sha, "files": n, "disc": did, "ids_repo": IDS_REPO, "ids_ref": ids_sha, "ids_files": n_ids}, f)
     shutil.rmtree(dest, ignore_errors=True)
     os.replace(tmp, dest)
     if not a.zip and not a.keep_zip:

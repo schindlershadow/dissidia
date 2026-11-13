@@ -67,7 +67,7 @@ def main():
     # The game's own entry symbol must not be duplicated by an overlay.
     for f in files + [d]:
         s = open(f).read()
-        s = re.sub(r'\bentry\b(?=\s*[(;])', f'{prefix}_entry', s)
+        s = re.sub(r'\bentry\b(?=\s*[(;])|(?<=, )entry(?=\))', f'{prefix}_entry', s)
         open(f, 'w').write(s)
     if module:
         ds = os.path.join(out, 'data_sections.cpp'); t = sym.sub(ren, open(ds).read())

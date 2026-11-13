@@ -26,6 +26,7 @@ int main() {
 
     Options o;
     CHECK(o.hd_textures);   // on by default
+    CHECK(o.texture_pack == "liink");   // LiinkPK's pack is the first choice
     o.hd_textures = false;
     auto plan = plan_install(l, "x.iso", "/w", o);
     CHECK(plan.size() == 2);
@@ -37,6 +38,14 @@ int main() {
     o.android = true;       // not available: no step
     plan = plan_install(l, "x.iso", "/w", o);
     CHECK(plan.size() == 3);
+    {
+        auto& a = plan.back().argv;
+        CHECK(a.size() >= 5 && a[a.size() - 2] == "--pack" && a.back() == "liink");
+        o.texture_pack = "ai";
+        auto p2 = plan_install(l, "x.iso", "/w", o);
+        CHECK(p2.back().argv.back() == "ai");
+        o.texture_pack = "liink";
+    }
     sum = 0;
     for (auto& s : plan) sum += s.weight;
     CHECK(std::fabs(sum - 1.0) < 1e-9);

@@ -479,7 +479,7 @@ uint32_t psp_texpack_xxh32(const uint8_t* p, size_t len, uint32_t seed) {
 namespace {
 struct Pp {
     bool tried = false, on = false, ignore_addr = false, log = false;
-    int kind = 2;                                  // hash = xxh64 (2) | xxh32 (1)
+    int kind = 2;                                  // hash = xxh64 (2) | xxh32 (1) | quick (3)
     std::unordered_map<std::string, std::string> files;   // 24 hex chars (lowercase) -> path relative to the pack folder
     std::unordered_multimap<std::string, std::string> by_content, by_key;   // diagnostics only: last 8 / first 16 hex chars -> name
     uint64_t lookups = 0, hits = 0, logged = 0;
@@ -513,7 +513,7 @@ void pp_init() {
         if (eq == std::string::npos) continue;
         std::string k = lower(trim(l.substr(0, eq))), v = trim(l.substr(eq + 1));
         if (section == "[options]") {
-            if (k == "hash") { std::string hv = lower(v); pp.kind = hv == "xxh32" ? 1 : hv == "xxh64" ? 2 : 0; }
+            if (k == "hash") { std::string hv = lower(v); pp.kind = hv == "xxh32" ? 1 : hv == "xxh64" ? 2 : hv == "quick" ? 3 : 0; }
             else if (k == "ignoreaddress") pp.ignore_addr = lower(v) == "true" || v == "1";
         } else if (section == "[hashes]") {
             if (k.size() != 24 && !(k.size() > 24 && k[24] == '_')) continue;   // level>0 (mip) entries are not used
@@ -525,9 +525,10 @@ void pp_init() {
     }
     std::fclose(f);
     if (pp.kind == 0) {
-        std::fprintf(stderr, "[TEXPACK] %s/textures.ini uses hash=quick, which is not supported: PPSSPP compatibility off\n", g.dir.c_str());
+        std::fprintf(stderr, "[TEXPACK] %s/textures.ini uses an unknown hash: PPSSPP compatibility off\n", g.dir.c_str());
         return;
     }
+    if (pp.kind == 3) pp.ignore_addr = false;   // PPSSPP refuses ignoreAddress with the quick hash; the wildcard keys do the job
     // Packs list textures they do not ship (Niosa's lists ~220 such entries): drop them now so a lookup does not
     // report a hit and then fail to load the file.
     size_t dangling = 0;
@@ -544,7 +545,7 @@ void pp_init() {
     }
     if (pp.on)
         std::fprintf(stderr, "[TEXPACK] PPSSPP-style pack %s: %zu texture(s), hash=%s%s\n", g.dir.c_str(), pp.files.size(),
-                     pp.kind == 2 ? "xxh64" : "xxh32", pp.ignore_addr ? ", ignoreAddress" : "");
+                     pp.kind == 2 ? "xxh64" : pp.kind == 3 ? "quick" : "xxh32", pp.ignore_addr ? ", ignoreAddress" : "");
 }
 
 int fmt_bpp(int fmt) {
@@ -558,10 +559,39 @@ int fmt_bpp(int fmt) {
 }
 }  // namespace
 
-uint32_t psp_texpack_ppsspp_content_hash(const uint8_t* mem, size_t mem_len, int fmt, int w, int h, int bufw, int kind) {
+// PPSSPP's StableQuickTexHash (the SSE2 / NEON path): 16-byte aligned data whose size is a multiple of 64 goes through a
+// 8 x u16 / 4 x u32 lane mixer, anything else through a plain add/xor over 32-bit words. `aligned` = the guest address is 16-aligned.
+uint32_t psp_texpack_quick_hash(const uint8_t* p, size_t size, bool aligned) {
+    uint32_t check = 0;
+    if (aligned && (size & 0x3f) == 0) {
+        uint16_t cur[8] = {}, cur2[8] = {0xc00b, 0x9bd9, 0x4b73, 0xb651, 0x4d9b, 0x4309, 0x0083, 0x0001};
+        auto ld16 = [](const uint8_t* q, int j) { return (uint16_t)(q[2 * j] | (q[2 * j + 1] << 8)); };
+        auto ld32 = [](const uint8_t* q, int j) { uint32_t v; std::memcpy(&v, q + 4 * j, 4); return v; };
+        auto st32 = [](uint16_t* c, int j, uint32_t v) { c[2 * j] = (uint16_t)v; c[2 * j + 1] = (uint16_t)(v >> 16); };
+        auto ld32c = [](const uint16_t* c, int j) { return (uint32_t)c[2 * j] | ((uint32_t)c[2 * j + 1] << 16); };
+        for (size_t i = 0; i < size; i += 64) {
+            const uint8_t *p0 = p + i, *p1 = p + i + 16, *p2 = p + i + 32, *p3 = p + i + 48;
+            for (int j = 0; j < 8; j++) cur[j] = (uint16_t)(cur[j] + (uint16_t)(ld16(p0, j) * cur2[j]));
+            for (int j = 0; j < 4; j++) st32(cur, j, ld32c(cur, j) ^ ld32(p1, j));
+            for (int j = 0; j < 4; j++) st32(cur, j, ld32c(cur, j) + ld32(p2, j));
+            for (int j = 0; j < 8; j++) cur[j] = (uint16_t)(cur[j] ^ (uint16_t)(ld16(p3, j) * cur2[j]));
+            for (int j = 0; j < 8; j++) cur2[j] = (uint16_t)(cur2[j] + 0x2455);
+        }
+        for (int j = 0; j < 4; j++) check += ld32c(cur, j) + ld32c(cur2, j);
+    } else {
+        for (size_t i = 0; i < size / 8; i++) {
+            uint32_t a, b; std::memcpy(&a, p + 8 * i, 4); std::memcpy(&b, p + 8 * i + 4, 4);
+            check += a; check ^= b;
+        }
+    }
+    return check;
+}
+
+uint32_t psp_texpack_ppsspp_content_hash(const uint8_t* mem, size_t mem_len, int fmt, int w, int h, int bufw, int kind, uint32_t guest_addr) {
     const int bpp = fmt_bpp(fmt);
     if (!bpp || w <= 0 || h <= 0 || bufw <= 0) return 0;
     auto hash = [&](const uint8_t* p, size_t n) -> uint32_t {
+        if (kind == 3) return psp_texpack_quick_hash(p, n, (((uintptr_t)(p - mem) + guest_addr) & 0xf) == 0);
         return kind == 1 ? psp_texpack_xxh32(p, n, 0xBACD7814u) : (uint32_t)xxh64(p, n, 0xBACD7814ull);
     };
     if (bufw <= w) {
@@ -584,13 +614,20 @@ bool psp_texpack_ppsspp_lookup(const PspPpssppTex& t, std::vector<uint8_t>& rgba
     const uint32_t dim = t.size_reg & 0xF0F;
     uint64_t cachekey = ((uint64_t)(t.addr & 0x3FFFFFFF) << 32) | dim;
     if (t.has_clut) cachekey ^= (uint64_t)(psp_texpack_xxh32(t.clut, t.clut_len, 0xC0108888u) ^ (t.clut_format | 0xC5000000u));   // PPSSPP XORs the raw register word, which carries the GE command byte 0xC5
-    const uint32_t chash = psp_texpack_ppsspp_content_hash(t.mem, t.mem_len, t.fmt, t.width, t.height, t.bufw, pp.kind);
+    const uint32_t chash = psp_texpack_ppsspp_content_hash(t.mem, t.mem_len, t.fmt, t.width, t.height, t.bufw, pp.kind, t.addr);
     char full[40], noaddr[40];
     std::snprintf(full, sizeof full, "%016llx%08x", (unsigned long long)cachekey, chash);
     std::snprintf(noaddr, sizeof noaddr, "%016llx%08x", (unsigned long long)(cachekey & 0xFFFFFFFFull), chash);
     pp.lookups++;
     auto it = pp.files.find(full);
-    if (it == pp.files.end() && pp.ignore_addr) it = pp.files.find(noaddr);
+    if (it == pp.files.end()) {
+        // PPSSPP's LookupWildcard: progressively zeroed keys (palette only; address only; no address; anything with this content)
+        auto key = [&](uint64_t ck, uint32_t hh) { char b[40]; std::snprintf(b, sizeof b, "%016llx%08x", (unsigned long long)ck, hh); return pp.files.find(b); };
+        const uint64_t lo = cachekey & 0xFFFFFFFFull, hi = cachekey & ~0xFFFFFFFFull;
+        if ((it = key(lo, 0)) == pp.files.end() && (pp.ignore_addr || (it = key(cachekey, 0)) == pp.files.end()) &&
+            (it = key(lo, chash)) == pp.files.end() && (pp.ignore_addr || ((it = key(hi, chash)) == pp.files.end() && (it = key(hi, 0)) == pp.files.end())))
+            it = key(0, chash);
+    }
     const bool hit = it != pp.files.end();
     // The first lookups are always logged (so a log tells whether the pack matches); PSPRECOMP_TEXPACK_LOG=1 logs more.
     static const unsigned log_max = [] { const char* v = std::getenv("PSPRECOMP_TEXPACK_LOG_MAX"); return v ? (unsigned)std::strtoul(v, nullptr, 10) : 0u; }();

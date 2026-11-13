@@ -70,6 +70,18 @@ int main() {
     t.size_reg = 0x0505;                                      // another size: other key: miss
     CHECK(!psp_texpack_ppsspp_lookup(t, px, w, h));
     (void)key_addr;
+    // hash = quick: the unaligned path is add/xor over 32-bit words; entries keyed 0000000000000000<hash> match any address/size
+    {
+        std::vector<uint8_t> q(128);
+        for (size_t i = 0; i < q.size(); i++) q[i] = (uint8_t)(i * 7 + 3);
+        uint32_t chk = 0;
+        for (size_t i = 0; i < 8; i++) { uint32_t a, b; std::memcpy(&a, &q[8 * i], 4); std::memcpy(&b, &q[8 * i + 4], 4); chk += a; chk ^= b; }
+        CHECK(psp_texpack_quick_hash(q.data(), 64, false) == chk);
+        const uint32_t a1 = psp_texpack_quick_hash(q.data(), 64, true);
+        q[40] ^= 1;
+        CHECK(psp_texpack_quick_hash(q.data(), 64, true) != a1);
+        q[40] ^= 1;
+    }
     std::system(("rm -rf " + dir).c_str());
     std::printf(failures ? "%d FAILED\n" : "all PPSSPP texture pack tests passed\n", failures);
     return failures ? 1 : 0;

@@ -124,3 +124,16 @@ produced the current pack. Known limits: outlined or glowing lettering becomes p
 
 The 480x272 images (tutorial slides, story and event art, 77 textures) are run with `texpack_upscale.py --max4x 480`, i.e. 1920x1088, so they fill a
 1080p screen without being stretched; every other texture above 256 px stays at 2x to keep the pack small.
+
+
+## LiinkPK's Dissidia 012 HD Project (second pack, installer default)
+
+https://github.com/LiinkPK/Dissidia-012-HD-Textures (about 0.8 GB, 2,300 PNGs, hand-retouched: redrawn faces and text). A PPSSPP pack with
+`hash=quick` and mostly wildcard keys (`0000000000000000<hash>`: "any texture with this content hash"), so the runtime implements PPSSPP's
+`StableQuickTexHash` (`psp_texpack_quick_hash`: the SSE2 lane mixer for 16-byte aligned data with a size multiple of 64, add/xor over 32-bit
+words otherwise; alignment comes from the guest address) and PPSSPP's `LookupWildcard` chain (palette-only, no address, address-only, content-only keys).
+`ignoreAddress` is ignored with `hash=quick`, as in PPSSPP. Verified in the real game (title logo, credits, title screen hit).
+
+The wizard offers it first, next to the AI upscaled pack (Niosa + ours): `fetch_textures.py <work> --pack liink|ai`. Either pack lands in
+`mods/textures`, and `PACK_CREDITS.txt` there names the authors (both packs are also credited on the installer's options page and in the download step).
+Switching packs = running the installer step again; the pack folder is replaced, not merged.

@@ -306,6 +306,24 @@ struct App {
         return r;
     }
 
+    // HD textures: Off / LiinkPK's hand-retouched pack (first) / the AI upscaled pack. The help text credits the pack that is selected.
+    MenuRow tex_row(bool available) {
+        MenuRow r = row("HD textures", "", "Not yet");
+        if (!available) { r.help = "Higher resolution textures for the whole game. (Not in this release yet.)"; return r; }
+        r.can_dec = r.can_inc = true;
+        if (!opt.hd_textures) {
+            r.value = "Off";
+            r.help = "No HD textures: the game looks like the PSP original. Left/Right picks a pack: LiinkPK's hand-retouched HD Project (about 0.8 GB) or the AI upscaled pack (about 1.3 GB).";
+        } else if (opt.texture_pack == "ai") {
+            r.value = "AI upscaled";
+            r.help = std::string("D012FFRT plus our own AI upscales of the other textures (about 1.3 GB). ") + setup::texture_pack_credit("ai");
+        } else {
+            r.value = "LiinkPK's HD Project";
+            r.help = std::string("Hand-retouched HD textures, redrawn faces and text (about 0.8 GB). Still a work in progress, so some textures stay original. ") + setup::texture_pack_credit("liink");
+        }
+        return r;
+    }
+
     Page page() {
         Page p;
         switch (screen) {
@@ -453,7 +471,7 @@ struct App {
                 sv.can_dec = sv.can_inc = true;
             } else sv.help = "No PPSSPP or memory stick saves of Dissidia 012 were found. You can import saves later in the game (Triangle in the save list).";
             p.rows = {u,
-                      toggle_row("HD texture pack", "Download the community HD texture pack and our upscales for textures it lacks (about 1.3 GB).", opt.hd_textures, tex),
+                      tex_row(tex),
                       toggle_row("Japanese voices (undub)", jpHelp, opt.jp_audio, jp),
                       toggle_row("Android version", "Also builds the Android version (an APK for phones and handhelds, 64-bit ARM). Needs a one-time download of Google's Android NDK (about 0.7 GB; by turning this on you accept its license, developer.android.com/studio/terms) and some extra minutes. Afterwards you can install it on a connected device from the last page.", opt.android, an),
                       sv,
@@ -895,10 +913,17 @@ struct App {
         start_plan(false);
     }
 
-    void toggle_option(int row_idx) {
+    void toggle_option(int row_idx, int dir = 1) {
         switch (row_idx) {
         case 0: opt.check_updates = !opt.check_updates; break;
-        case 1: if (setup::feature_available(layout, "hd_textures")) opt.hd_textures = !opt.hd_textures; break;
+        case 1:   // cycle (Right / select): LiinkPK -> AI upscaled -> Off -> LiinkPK; Left goes the other way
+            if (setup::feature_available(layout, "hd_textures")) {
+                int cur = !opt.hd_textures ? 2 : opt.texture_pack == "ai" ? 1 : 0;
+                cur = (cur + (dir < 0 ? 2 : 1)) % 3;
+                opt.hd_textures = cur != 2;
+                if (cur != 2) opt.texture_pack = cur == 1 ? "ai" : "liink";
+            }
+            break;
         case 2:
             if (setup::feature_available(layout, "jp_audio")) { opt.jp_audio = !opt.jp_audio; if (!opt.jp_audio) opt.undub_iso.clear(); }
             break;
@@ -1117,8 +1142,7 @@ struct App {
     }
 
     void adjust(int dir) {
-        (void)dir;
-        if (screen == Screen::Options && sel <= 4) toggle_option(sel);
+        if (screen == Screen::Options && sel <= 4) toggle_option(sel, dir);
     }
 
     // ---- touch (Android): a tap on a row picks it, a tap on the title bar goes back, a vertical drag moves the selection ----

@@ -69,13 +69,13 @@ of the fork.
    - **Progress page**: stage name and step count, a bar, a detail line (ninja's "Compiled 183 of 474: file"), elapsed time, an ETA
      ("About 6 minutes left", from ninja's file counter during the compile, from the overall fraction elsewhere) and an explanation
      of what the current stage does in the information panel. The step weights live in `setup/install.cpp`.
-   - **Options**: check for updates; HD texture pack; Japanese voices (undub; asks for the undub disc image first); Android
+   - **Options**: check for updates; HD textures (LiinkPK's hand-retouched pack, listed first, or the AI upscaled pack; Left/Right cycles, the help line credits the selected pack); Japanese voices (undub; asks for the undub disc image first); Android
      version; **Import saves** (cycles Off / each PPSSPP or memory-stick SAVEDATA folder found with Dissidia 012 saves, found by
      `psp_savemgr::detect_sources`; it adds the last install step, `DissidiaRecomp --import-saves FROM --dir WORK`, which copies the
      saves under the installed game's disc ID, re-signed, and never replaces a save that already exists in the install; verified
      2026-11-10 with a headless install from the US ISO, `--headless ... --saves DIR`). A release declares which of the optional features it implements in `game/features.ini` (`hd_textures=1`,
      `jp_audio=1`, `android=1`); until a feature exists its row shows "Not yet" and cannot be switched on. The commands the
-     wizard runs for them are fixed in `install.cpp` (`tools/fetch_textures.py <work>`, `tools/jp_audio.py --iso <undub>
+     wizard runs for them are fixed in `install.cpp` (`tools/fetch_textures.py <work> --pack liink|ai`, `tools/jp_audio.py --iso <undub>
      --work <work>`, `psp_build.py ... --android`), so those tasks only have to provide the scripts and flip the line.
    - Release layout the wizard expects (see `setup/install.h`): `DissidiaRecomp`, `bin/psprecomp`, `toolchain/`, `sdk/`,
      `game/` (= `games/dissidia`), `python/` on Windows. It remembers the install in the user's pref dir (`install.ini`).
