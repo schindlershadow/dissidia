@@ -546,6 +546,9 @@ TokenResult google_poll_device_flow(const GoogleConfig& cfg, const std::string& 
                                                      {"grant_type", "urn:ietf:params:oauth:grant-type:device_code"}});
     r.body.assign(form.begin(), form.end());
     const Response res = psp_http::perform(r);
+    // No answer at all (no DNS, no connection) is not a failed sign-in: while the browser is in front, Android (the Pixel at least) cuts the game's
+    // network, so the poll cannot reach Google until the game is back. Keep polling; the code's own expiry ends the wait.
+    if (res.status == 0) { t.state = TokenResult::Pending; return t; }
     Json j;
     if (!parse_json(res.text(), &j)) { t.error = http_error(res, "Google sign-in"); return t; }
     if (!j.str("refresh_token").empty()) {

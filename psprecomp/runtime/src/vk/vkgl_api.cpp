@@ -401,10 +401,16 @@ bool available(std::string* why) {
 
 bool requested() {
     const char* r = std::getenv("PSPRECOMP_RENDERER");
-    if (!(r && (!std::strcmp(r, "vulkan") || !std::strcmp(r, "vk")))) return false;
+#ifdef __ANDROID__
+    const bool by_default = true;    // phones: Vulkan whenever the GPU/driver supports it (PSPRECOMP_RENDERER=gl or the Settings row picks OpenGL)
+#else
+    const bool by_default = false;
+#endif
+    const bool want = r && r[0] ? (!std::strcmp(r, "vulkan") || !std::strcmp(r, "vk")) : by_default;
+    if (!want) return false;
     std::string why;
     if (available(&why)) return true;
-    std::fprintf(stderr, "[VKGL] Vulkan requested but unavailable (%s); using OpenGL\n", why.c_str());
+    std::fprintf(stderr, "[VKGL] Vulkan %s but unavailable (%s); using OpenGL\n", r && r[0] ? "requested" : "is the default here", why.c_str());
     return false;
 }
 bool active() { return g_active; }

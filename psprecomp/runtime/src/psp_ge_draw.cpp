@@ -1261,6 +1261,8 @@ static bool g_sync_each = false;
 static std::atomic<bool> g_fx_live{true};     // settings menu Debug page: FX shaders on/off (this session)
 static std::atomic<bool> g_perf_hud{false};   // settings menu Debug page / PSPRECOMP_PERF_HUD=1
 static Stream g_s2d, g_s3d;
+static std::atomic<bool> g_vb_active{false};   // view blocker fade (ge_draw_set_view_blocker)
+static float vb_fade_factor(uint8_t* rdram, const GeState& st, int n, int prim);
 // Ring size in vertices. 3D vertices are 68 bytes, 2D 28: 8.9 MB + 3.6 MB.
 // Sized for several frames of high-poly characters; small enough for an APU
 // (Steam Deck) where it is carved from shared system memory. A single batch
@@ -1984,8 +1986,21 @@ static void fast_prim(uint8_t* rdram, const GeState& state, int prim_type, int c
         const Xf3D& xf = kc.xf;
         const int path = kc.path;
         const KeyBuf& key = kc.key;
-        ensure_batch(key, g_s3d, path == 2 ? g_s3d.vao : g_s3d.vao_plain, mode, (size_t)n,
-                     rdram, state, prim_type, fbo_tex, &xf);
+        float vb_f = 1.f;
+        if (g_vb_active.load(std::memory_order_relaxed) && path == 1 && state.depth_test_enable && !state.depth_write_disable)
+            vb_f = vb_fade_factor(rdram, state, n, prim_type);
+        GeState vb_state; KeyBuf vb_key;
+        const bool vb_on = vb_f < 0.999f;
+        if (vb_on) {   // drawn blended with no depth writes (the game's own fade does the same), so the player behind it stays visible
+            // out = src * f + dst * (1 - f) with constant factors: it does not depend on how the wall gets its alpha (vertex colour, material, texture)
+            const uint32_t v8 = std::min<uint32_t>(255u, (uint32_t)std::lround(vb_f * 15.f) * 17u);   // 16 steps: few state variants
+            vb_state = state; vb_state.alpha_blend_enable = true; vb_state.blend_mode = GE_SRCBLEND_FIXA | (GE_DSTBLEND_FIXB << 4); vb_state.depth_write_disable = true; vb_state.alpha_test_enable = false;
+            vb_state.blend_fix_a = v8 * 0x010101u; vb_state.blend_fix_b = (255u - v8) * 0x010101u;
+            build_key(vb_key, vb_state, mode, path, prim_type, fbo_tex, &xf);
+            vb_key.id = key.id ^ 0x40000000u;
+        }
+        ensure_batch(vb_on ? vb_key : key, g_s3d, path == 2 ? g_s3d.vao : g_s3d.vao_plain, mode, (size_t)n,
+                     rdram, vb_on ? vb_state : state, prim_type, fbo_tex, &xf);
         // PSPRECOMP_FEP_LOG (psp_fep_log.h): the size / position this draw really has in the world; the batch's
         // texture is bound now, so its pack id is this draw's.
         static const bool fep_log = psp_fep_log_on();
@@ -3673,6 +3688,110 @@ void ge_draw_toast(const char* text, int ms, int y_px) {
     g_toast_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
     g_toast_dirty = true;
 }
+
+
+// ---- View blocker fade (ge_draw_set_view_blocker) ----------------------------------------------------------------------------------
+static float g_vb_target[3] = {0, 0, 0};
+static float g_vb_eye[3] = {0, 0, 0};   // the game camera's eye (the draws of the main view have this eye; screen-space effects use another view and are left alone)
+void ge_draw_set_view_blocker(bool active, const float target[3], const float eye[3]) {
+    if (active) for (int i = 0; i < 3; i++) { g_vb_target[i] = target[i]; g_vb_eye[i] = eye[i]; }
+    g_vb_active.store(active, std::memory_order_relaxed);
+}
+// Fade factor of a draw (1 = opaque), eased per draw so blocks fade in and out instead of popping. Keyed by the vertex data address and count.
+static std::unordered_map<uint64_t, float> g_vb_fade;
+static bool vb_main_view(const GeState& st, float eye[3]) {
+    const float* V = st.view_matrix;
+    eye[0] = -(V[0] * V[9] + V[1] * V[10] + V[2] * V[11]); eye[1] = -(V[3] * V[9] + V[4] * V[10] + V[5] * V[11]); eye[2] = -(V[6] * V[9] + V[7] * V[10] + V[8] * V[11]);
+    const float dx = eye[0] - g_vb_eye[0], dy = eye[1] - g_vb_eye[1], dz = eye[2] - g_vb_eye[2];
+    return dx * dx + dy * dy + dz * dz < 0.25f;
+}
+struct VbBox { float lo[3], hi[3]; };
+static std::unordered_map<uint64_t, VbBox> g_vb_box;   // model-space box of a draw's vertices, by vertex address and count (static geometry: decoded once)
+static float vb_fade_factor(uint8_t* rdram, const GeState& st, int n, int prim) {
+    if (n < 3) return 1.f;
+    const float* m = st.world_matrix;
+    static thread_local std::vector<GeGpuVertex> tmp;
+    const uint64_t key = (uint64_t)st.vertex_addr << 20 ^ (uint64_t)n;
+    auto bi = g_vb_box.find(key);
+    if (bi == g_vb_box.end()) {
+        VbBox bx{{1e30f, 1e30f, 1e30f}, {-1e30f, -1e30f, -1e30f}};
+        tmp.resize((size_t)n);
+        if (ge_decode_vertices_gpu(rdram, st, n, tmp.data()))
+            for (int i = 0; i < n; ++i) for (int k = 0; k < 3; ++k) { bx.lo[k] = std::min(bx.lo[k], tmp[i].pos[k]); bx.hi[k] = std::max(bx.hi[k], tmp[i].pos[k]); }
+        bi = g_vb_box.emplace(key, bx).first;
+    }
+    const float* lo = bi->second.lo; const float* hi = bi->second.hi;
+    if (lo[0] > hi[0]) return 1.f;
+    float wlo[3] = {1e30f, 1e30f, 1e30f}, whi[3] = {-1e30f, -1e30f, -1e30f};
+    for (int c = 0; c < 8; ++c) {
+        const float x = (c & 1) ? hi[0] : lo[0], y = (c & 2) ? hi[1] : lo[1], z = (c & 4) ? hi[2] : lo[2];
+        const float w[3] = {m[0] * x + m[3] * y + m[6] * z + m[9], m[1] * x + m[4] * y + m[7] * z + m[10], m[2] * x + m[5] * y + m[8] * z + m[11]};
+        for (int k = 0; k < 3; ++k) { wlo[k] = std::min(wlo[k], w[k]); whi[k] = std::max(whi[k], w[k]); }
+    }
+    float eye[3];
+    if (!vb_main_view(st, eye)) return 1.f;   // not drawn from the game camera (screen-space effects, shadow maps, ...)
+    const float* T = g_vb_target;   // the player's chest
+    bool hit = false;
+    float hx = T[0] - eye[0], hz = T[2] - eye[2];
+    const float hl = std::sqrt(hx * hx + hz * hz);
+    if (hl > 1e-3f) { hx /= hl; hz /= hl; } else { hx = 0; hz = 1; }
+    // Rays to the whole body (feet, knee, chest, head, both shoulders), each starting a little behind the eye so a wall the camera touches or sits in
+    // still counts: the fighter has to stay visible, not just his chest.
+    const float aim[6][3] = {{0, -0.9f, 0}, {0, -0.4f, 0}, {0, 0, 0}, {0, 0.8f, 0}, {-hz * 0.5f, 0.2f, hx * 0.5f}, {hz * 0.5f, 0.2f, -hx * 0.5f}};
+    bool decoded = false;
+    if (n <= 1500) {   // (a block or a wall, not the whole stage: a single mesh of the floor or the sky would fade as one; Pandaemonium's walls are long slabs of a few triangles)
+        for (int ri = 0; ri < 6 && !hit; ++ri) {
+            const float tg[3] = {T[0] + aim[ri][0], T[1] + aim[ri][1], T[2] + aim[ri][2]};
+            float dir[3] = {tg[0] - eye[0], tg[1] - eye[1], tg[2] - eye[2]};
+            const float dl = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+            if (dl < 1e-3f) continue;
+            const float back = 2.0f;   // start behind the eye
+            const float o[3] = {eye[0] - dir[0] / dl * back, eye[1] - dir[1] / dl * back, eye[2] - dir[2] / dl * back};
+            const float d[3] = {tg[0] - o[0], tg[1] - o[1], tg[2] - o[2]};
+            const float len = dl + back;
+            const float tmax = std::max(0.f, 1.f - 0.5f / len);   // stop a body's width short of the player: only what he is touching does not fade (a wall a step in front of him must)
+            float t0 = 0.f, t1 = tmax;
+            for (int k = 0; k < 3 && t0 <= t1; ++k) {
+                const bool thin = whi[k] - wlo[k] < 0.3f;   // a wall is often a flat sheet: shrinking it would invert the box, so widen it a little instead
+                const float a2 = wlo[k] + (thin ? -0.05f : 0.05f), b2 = whi[k] - (thin ? -0.05f : 0.05f);
+                if (std::fabs(d[k]) < 1e-6f) { if (o[k] < a2 || o[k] > b2) t0 = 2.f; }
+                else { float u0 = (a2 - o[k]) / d[k], u1 = (b2 - o[k]) / d[k]; if (u0 > u1) std::swap(u0, u1); t0 = std::max(t0, u0); t1 = std::min(t1, u1); }
+            }
+            if (t0 > t1) continue;
+            if (!decoded) {
+                tmp.resize((size_t)n);
+                if (!ge_decode_vertices_gpu(rdram, st, n, tmp.data())) return 1.f;
+                decoded = true;
+            }
+            const GeGpuVertex* v = tmp.data();
+            auto W = [&](int i, float out[3]) { const float* q = v[i].pos; for (int r = 0; r < 3; ++r) out[r] = m[r] * q[0] + m[3 + r] * q[1] + m[6 + r] * q[2] + m[9 + r]; };
+            auto tri = [&](int ia, int ib, int ic) {
+                float a[3], b[3], c[3]; W(ia, a); W(ib, b); W(ic, c);
+                const float e1[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]}, e2[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+                const float pv[3] = {d[1] * e2[2] - d[2] * e2[1], d[2] * e2[0] - d[0] * e2[2], d[0] * e2[1] - d[1] * e2[0]};
+                const float det = e1[0] * pv[0] + e1[1] * pv[1] + e1[2] * pv[2];
+                if (std::fabs(det) < 1e-9f) return false;
+                const float inv = 1.f / det, tv[3] = {o[0] - a[0], o[1] - a[1], o[2] - a[2]};
+                const float u = (tv[0] * pv[0] + tv[1] * pv[1] + tv[2] * pv[2]) * inv;
+                if (u < 0.f || u > 1.f) return false;
+                const float qv[3] = {tv[1] * e1[2] - tv[2] * e1[1], tv[2] * e1[0] - tv[0] * e1[2], tv[0] * e1[1] - tv[1] * e1[0]};
+                const float w = (d[0] * qv[0] + d[1] * qv[1] + d[2] * qv[2]) * inv;
+                if (w < 0.f || u + w > 1.f) return false;
+                const float t = (e2[0] * qv[0] + e2[1] * qv[1] + e2[2] * qv[2]) * inv;
+                return t > 0.f && t < tmax;
+            };
+            if (prim == GE_PRIM_TRIANGLES) { for (int i = 0; i + 2 < n && !hit; i += 3) hit = tri(i, i + 1, i + 2); }
+            else if (prim == GE_PRIM_TRIANGLE_STRIP) { for (int i = 0; i + 2 < n && !hit; ++i) hit = tri(i, i + 1, i + 2); }
+            else if (prim == GE_PRIM_TRIANGLE_FAN) { for (int i = 1; i + 1 < n && !hit; ++i) hit = tri(0, i, i + 1); }
+        }
+    }
+    float& f = g_vb_fade.try_emplace(key, 1.f).first->second;
+    const float target = hit ? 0.12f : 1.f;
+    f += (target - f) * (hit ? 0.5f : 0.2f);   // fades out fast (the fighter must not stay hidden), back in gently
+    if (std::fabs(f - target) < 0.01f) f = target;
+    return f;
+}
+
 
 // Flash: four bars along the edges of the picture, cleared to one colour through the scissor box (no shader needed), for a short time.
 static std::atomic<int64_t> g_flash_until_ms{0};

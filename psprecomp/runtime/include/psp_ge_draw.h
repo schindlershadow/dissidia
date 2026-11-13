@@ -71,6 +71,11 @@ void ge_draw_toast(const char* text, int ms, int y_px = 10);   // y_px: distance
 /// Any thread. Debug aid (the game module's timing helpers).
 void ge_draw_flash(uint32_t rgb, int ms);
 
+/// View blocker fade: while `active`, static scene geometry (not skinned) that lies between the camera and `target` (world space, the
+/// player's chest) fades out to a see-through alpha, like the game's own wall fade does for its camera (the game computes that from its
+/// own eye, so a camera we move ourselves needs it done here). Call once per camera update (game thread).
+void ge_draw_set_view_blocker(bool active, const float target[3], const float eye[3]);   // eye: the game camera's eye this update; only draws made from that view fade
+
 /// Present the last frame with the dialog/menu overlay now (game paused).
 /// Main (GL) thread.
 void ge_draw_present_overlay_now();

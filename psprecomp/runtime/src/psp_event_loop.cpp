@@ -576,6 +576,9 @@ int psp_runtime_init_sdl() {
         }
     }
 
+#ifdef __ANDROID__
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");   // the game is landscape: a foldable (or a sensor) must not turn it to portrait, where the picture and the touch layout break
+#endif
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");   // touch drives the on-screen controls, not a fake mouse
     SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
 
