@@ -293,6 +293,20 @@ endif()
 # The runtime proper is a static library (psprecomp_core); the executable is src/main.cpp (the only file that needs the
 # game's funcs.h) linked against it, the recompiled code and the overlay libraries. A release ships libpsprecomp_core.a
 # prebuilt (cmake --install, see runtime/sdk/CMakeLists.txt): the player's machine then compiles only the generated code.
+# Release version shown in the performance overlay: -DPSPRECOMP_RELEASE_VERSION=<x.y.z> (release builds), else the git
+# description of the checkout (a tag like v0.1.8, or tag-N-gabcdef), else "dev". Only psp_ge_draw.cpp sees it, so a new
+# version recompiles one file.
+set(PSPRECOMP_RELEASE_VERSION "" CACHE STRING "Release version shown in the performance overlay (default: git describe)")
+if(NOT PSPRECOMP_RELEASE_VERSION)
+    execute_process(COMMAND git describe --tags --always --dirty WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                    OUTPUT_VARIABLE PSP_GIT_DESC OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET RESULT_VARIABLE PSP_GIT_RC)
+    if(PSP_GIT_RC EQUAL 0 AND PSP_GIT_DESC)
+        set(PSPRECOMP_RELEASE_VERSION "${PSP_GIT_DESC}")
+    else()
+        set(PSPRECOMP_RELEASE_VERSION "dev")
+    endif()
+endif()
+set_source_files_properties(src/psp_ge_draw.cpp PROPERTIES COMPILE_DEFINITIONS "PSPRECOMP_RELEASE_VERSION=\"${PSPRECOMP_RELEASE_VERSION}\"")
 add_library(psprecomp_core STATIC ${RUNTIME_SOURCES})
 add_executable(psprecomp_runtime src/main.cpp)
 target_link_libraries(psprecomp_runtime PRIVATE psprecomp_core)

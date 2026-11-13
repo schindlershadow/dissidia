@@ -3684,11 +3684,16 @@ static int perf_rss_mb() {
 #endif
 }
 
+#ifndef PSPRECOMP_RELEASE_VERSION
+#define PSPRECOMP_RELEASE_VERSION "dev"
+#endif
+static std::string psp_release_version() { return PSPRECOMP_RELEASE_VERSION; }
+
 // ---- system information for the performance overlay (Linux; elsewhere the fields read "n/a") ----
 struct SysInfo {
-    std::string cpu_model, gpu_model, gl_version;
+    std::string cpu_model, gpu_model, gl_version, api_name, release;   // api_name: "OpenGL" / "Vulkan 1.2.x"
     int cpu_threads = 0;
-    bool have_nvx = false, have_ati = false, init = false;
+    bool have_nvx = false, have_ati = false, init = false, vulkan = false;
     unsigned long long last_idle = 0, last_total = 0, last_proc = 0;   // /proc/stat jiffies, process utime+stime
     std::chrono::steady_clock::time_point last_t{};
     double cpu_sys = -1, cpu_proc = -1;          // percent; proc is of one core (can exceed 100)
@@ -3744,14 +3749,30 @@ static bool gl_has_ext(const char* name) {
 static void sys_info_init() {
     SysInfo& s = g_sys;
     s.init = true;
-    auto gs = [](GLenum e) { const GLubyte* p = glGetString(e); return p ? std::string(reinterpret_cast<const char*>(p)) : std::string(); };
-    s.gpu_model = gs(GL_RENDERER);
-    s.gl_version = gs(GL_VERSION);
-    const std::string vendor = gs(GL_VENDOR);
-    if (!vendor.empty() && s.gpu_model.find(vendor) == std::string::npos && vendor.size() < 24) s.gpu_model = vendor + " " + s.gpu_model;
-    s.have_nvx = gl_has_ext("GL_NVX_gpu_memory_info");
-    s.have_ati = gl_has_ext("GL_ATI_meminfo");
-    glGetError();
+    s.release = psp_release_version();
+#if defined(PSPRECOMP_HAVE_VKGL)
+    {
+        vkgl::DeviceInfo di;
+        if (vkgl::device_info(&di)) {   // GL-on-Vulkan: the GL strings are placeholders, ask the Vulkan device
+            s.api_name = "Vulkan (" + di.api + ")";
+            s.gpu_model = di.name;
+            s.gl_version = di.driver;
+            s.vram_total_gb = di.vram_total_gb;   // used: filled in by sysfs below where available
+            s.vulkan = true;
+        }
+    }
+#endif
+    if (!s.vulkan) s.api_name = "OpenGL";
+    if (!s.vulkan) {
+        auto gs = [](GLenum e) { const GLubyte* p = glGetString(e); return p ? std::string(reinterpret_cast<const char*>(p)) : std::string(); };
+        s.gpu_model = gs(GL_RENDERER);
+        s.gl_version = gs(GL_VERSION);
+        const std::string vendor = gs(GL_VENDOR);
+        if (!vendor.empty() && s.gpu_model.find(vendor) == std::string::npos && vendor.size() < 24) s.gpu_model = vendor + " " + s.gpu_model;
+        s.have_nvx = gl_has_ext("GL_NVX_gpu_memory_info");
+        s.have_ati = gl_has_ext("GL_ATI_meminfo");
+        glGetError();
+    }
 #ifdef __linux__
     s.cpu_model = sys_read_line("/proc/cpuinfo", "model name");
     if (s.cpu_model.empty()) s.cpu_model = sys_read_line("/proc/cpuinfo", "Hardware");
@@ -3820,14 +3841,16 @@ static std::string sys_info_text() {
     std::string r;
     auto clip = [](std::string v, size_t n) { if (v.size() > n) v.resize(n); return v; };
     auto pct = [&](double v) { if (v < 0) return std::string("n/a"); std::snprintf(b, sizeof b, "%.0f%%", v); return std::string(b); };
+    r += "Release: " + (s.release.empty() ? std::string("dev") : s.release) + "  |  API: " + s.api_name + "\n";
     r += "CPU: " + clip(s.cpu_model.empty() ? "n/a" : s.cpu_model, 48);
     if (s.cpu_threads) r += " (" + std::to_string(s.cpu_threads) + " threads)";
     r += "  |  system " + pct(s.cpu_sys) + "  game " + pct(s.cpu_proc) + " of one core\n";
     r += "GPU: " + clip(s.gpu_model.empty() ? "n/a" : s.gpu_model, 56) + "  |  load " + (s.gpu_busy >= 0 ? pct(double(s.gpu_busy)) : std::string("n/a"));
     if (s.vram_total_gb > 0 && s.vram_used_gb >= 0) { std::snprintf(b, sizeof b, "  |  VRAM %.1f / %.1f GB", s.vram_used_gb, s.vram_total_gb); r += b; }
     else if (s.vram_used_gb == -2) { std::snprintf(b, sizeof b, "  |  VRAM %.1f GB free", s.vram_total_gb); r += b; }
+    else if (s.vram_total_gb > 0) { std::snprintf(b, sizeof b, "  |  VRAM %.1f GB", s.vram_total_gb); r += b; }
     else r += "  |  VRAM n/a";
-    r += "\nDriver: " + clip(s.gl_version.empty() ? "n/a" : s.gl_version, 80) + "\n";
+    r += std::string("\n") + (s.vulkan ? "Driver: " : "GL driver: ") + clip(s.gl_version.empty() ? "n/a" : s.gl_version, 80) + "\n";
     const int mb = perf_rss_mb();
     if (mb >= 0) r += "RAM: game " + std::to_string(mb) + " MB";
     else r += "RAM: game n/a";

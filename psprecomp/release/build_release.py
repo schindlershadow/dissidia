@@ -102,7 +102,7 @@ def main():
     shutil.rmtree(sdk, ignore_errors=True)
     run(["cmake", "-S", os.path.join(REPO, "runtime"), "-B", core, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
          "-DCMAKE_TOOLCHAIN_FILE=" + tcfile, "-DPSPRECOMP_OUTPUT_DIR=" + os.path.join(stub, "out"),
-         "-DPSPRECOMP_REQUIRE_VULKAN=ON"], env=env)   # fail instead of shipping an OpenGL-only release (v0.1.10 did)
+         "-DPSPRECOMP_REQUIRE_VULKAN=ON", "-DPSPRECOMP_RELEASE_VERSION=" + a.version], env=env)   # fail instead of shipping an OpenGL-only release (v0.1.10 did)
     run(["cmake", "--build", core, "-j", j, "--target", "psprecomp_core"], env=env)
     run(["cmake", "--install", core, "--component", "sdk", "--prefix", sdk], env=env)
 

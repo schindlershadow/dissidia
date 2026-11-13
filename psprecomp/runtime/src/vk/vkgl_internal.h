@@ -159,6 +159,7 @@ bool rt_set_scene(const float* xyz, uint32_t tri_count, const uint32_t* tri_cols
 bool rt_available();
 void core_set_hdr(bool on);
 bool core_hdr_supported();
+bool core_device_info(DeviceInfo* out);
 int core_hdr_encoding();
 const char* core_hdr_reason();
 const char* rt_unavailable_reason();

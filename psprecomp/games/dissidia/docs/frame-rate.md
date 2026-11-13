@@ -11,7 +11,7 @@
 - **Debug page**: L / R (shoulder buttons), or Q / E / Tab on a keyboard, switches between System and Debug:
   - Performance Overlay: for debugging. Frames per second, average and worst frame time over the last half second,
     presents per second (a gap to the fps means the presenter runs without new game frames), render scale and process
-    system info (CPU model, system and game CPU load, GPU model, GPU load and VRAM where the driver exposes them
+    release version and graphics API (OpenGL, or Vulkan with its API version, device and driver), system info (CPU model, system and game CPU load, GPU model, GPU load and VRAM where the driver exposes them
     (amdgpu sysfs, NVIDIA / ATI GL extensions), GL driver version, game and system RAM; "n/a" where unavailable),
     top-left, with a frame-time graph under it (last 120 frames, green up to 16.7 ms, yellow up to
     33.3 ms, red above).

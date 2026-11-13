@@ -1718,6 +1718,26 @@ static void log_stats() {
 static bool g_hdr_dirty = false;
 void core_set_hdr(bool on) { if (!G) return; G->ctx.set_hdr_wanted(on); g_hdr_dirty = true; }
 bool core_hdr_supported() { return G && G->ctx.hdr_supported(); }
+bool core_device_info(DeviceInfo* out) {
+    if (!G || !out) return false;
+    const VkPhysicalDeviceProperties& p = G->ctx.props();
+    char b[96];
+    out->name = G->ctx.device_name();
+    std::snprintf(b, sizeof b, "Vulkan %u.%u.%u", VK_VERSION_MAJOR(p.apiVersion), VK_VERSION_MINOR(p.apiVersion), VK_VERSION_PATCH(p.apiVersion));
+    out->api = b;
+    const uint32_t v = p.driverVersion;
+    if (p.vendorID == 0x10DE) std::snprintf(b, sizeof b, "%u.%u.%u.%u", (v >> 22) & 0x3ff, (v >> 14) & 0xff, (v >> 6) & 0xff, v & 0x3f);   // NVIDIA packs it differently
+    else std::snprintf(b, sizeof b, "%u.%u.%u", VK_VERSION_MAJOR(v), VK_VERSION_MINOR(v), VK_VERSION_PATCH(v));
+    out->driver = b;
+    out->vendor = p.vendorID;
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(G->ctx.physical(), &mp);
+    uint64_t best = 0;
+    for (uint32_t i = 0; i < mp.memoryHeapCount; ++i)
+        if ((mp.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) && mp.memoryHeaps[i].size > best) best = mp.memoryHeaps[i].size;
+    out->vram_total_gb = best ? double(best) / 1073741824.0 : -1;
+    return true;
+}
 int core_hdr_encoding() { return G ? G->ctx.swapchain().hdr : 0; }
 const char* core_hdr_reason() { return G ? G->ctx.hdr_reason().c_str() : "The Vulkan renderer is not running."; }
 
