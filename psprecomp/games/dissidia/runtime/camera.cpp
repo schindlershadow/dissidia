@@ -245,13 +245,6 @@ void dissidia_cam_update(uint8_t* rdram, recomp_context* ctx) {
             if (std::fabs(g_pitch) < 0.002f) g_pitch = 0.f;
         }
     }
-    { static const char* ty = std::getenv("PSPRECOMP_CAM_TEST_YAW");   // tests: hold the view turned by this many degrees (pitch: PSPRECOMP_CAM_TEST_PITCH)
-      static const char* tp = std::getenv("PSPRECOMP_CAM_TEST_PITCH");
-      static const char* sp = std::getenv("PSPRECOMP_CAM_TEST_SPIN");   // tests: turn the view this many degrees a second and log how many draws fade
-      if (sp && dissidia_battle_age() > 120.f) { g_yaw += static_cast<float>(std::atof(sp)) * 3.14159265f / 180.f * static_cast<float>(dt); if (g_yaw > 3.14159265f) g_yaw -= 6.2831853f;
-          static int fr = 0; if (++fr % 30 == 0) std::fprintf(stderr, "[BLOCKER] yaw %.0f faded draws in the last 30 frames %d\n", g_yaw * 57.29578f, ge_draw_view_blocker_count()); }
-      if (ty && dissidia_battle_age() > 120.f) g_yaw = static_cast<float>(std::atof(ty)) * 3.14159265f / 180.f;
-      if (tp && dissidia_battle_age() > 120.f) g_pitch = static_cast<float>(std::atof(tp)) * 3.14159265f / 180.f; }
     // Yaw is unbounded but kept in (-pi, pi].
     const float PI = 3.14159265f;
     if (g_yaw > PI) g_yaw -= 2 * PI; else if (g_yaw < -PI) g_yaw += 2 * PI;
@@ -264,13 +257,9 @@ void dissidia_cam_update(uint8_t* rdram, recomp_context* ctx) {
     g_in_update = false;
     {   // our own camera (turned view or hold): the game's wall fade used its eye, so fade what blocks ours
         float P[3];
-        static const char* tg = std::getenv("PSPRECOMP_CAM_BLOCKER_TOGGLE");   // tests: fade on / off alternately every N seconds (same scene, A/B)
-        const bool phase = !tg || std::fmod(t, 2.0 * std::atof(tg)) < std::atof(tg);
-        const bool ours = (g_yaw != 0.f || g_pitch != 0.f || g_holding) && g_blocker_on && phase && pl_pos(P);
+        const bool ours = (g_yaw != 0.f || g_pitch != 0.f || g_holding) && g_blocker_on && pl_pos(P);
         if (ours) P[1] += 1.0f;
         ge_draw_set_view_blocker(ours, P, g_final_eye);
-        static int fr = 0;
-        if (++fr % 60 == 0 && ge_draw_blocker_log_on()) std::fprintf(stderr, "[BLOCKER] state active=%d yaw=%.0f pitch=%.0f holding=%d locked=%d known=%d eye %.1f %.1f %.1f player %.1f %.1f %.1f\n", (int)ours, g_yaw * 57.29578f, g_pitch * 57.29578f, (int)g_holding, (int)g_locked, (int)g_lock_known, g_final_eye[0], g_final_eye[1], g_final_eye[2], P[0], P[1], P[2]);
     }
     if (set_wide) set_aspect(static_cast<float>(ge_draw_widescreen_width()) / 272.0f);
 }
