@@ -3726,7 +3726,7 @@ static float vb_fade_factor(uint8_t* rdram, const GeState& st, int n, int prim) 
     // still counts: the fighter has to stay visible, not just his chest.
     const float aim[6][3] = {{0, -0.9f, 0}, {0, -0.4f, 0}, {0, 0, 0}, {0, 0.8f, 0}, {-hz * 0.5f, 0.2f, hx * 0.5f}, {hz * 0.5f, 0.2f, -hx * 0.5f}};
     bool decoded = false;
-    if (big < 45.f) {   // (a block, not the whole stage: a single mesh of the floor or the sky would fade as one)
+    if (n <= 1500) {   // (a block or a wall, not the whole stage: a single mesh of the floor or the sky would fade as one; Pandaemonium's walls are long slabs of a few triangles)
         for (int ri = 0; ri < 6 && !hit; ++ri) {
             const float tg[3] = {T[0] + aim[ri][0], T[1] + aim[ri][1], T[2] + aim[ri][2]};
             float dir[3] = {tg[0] - eye[0], tg[1] - eye[1], tg[2] - eye[2]};
