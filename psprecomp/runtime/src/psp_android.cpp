@@ -130,6 +130,7 @@ static bool import_from_host(const std::string& wd) {
     if (fd < 0 || connect(fd, reinterpret_cast<sockaddr*>(&sa), sizeof sa) != 0) { std::fprintf(stderr, "[ANDROID] side-load: nothing listening on 127.0.0.1:%d\n", port); if (fd >= 0) close(fd); return false; }
     std::fprintf(stderr, "[ANDROID] side-load: receiving the game's files into %s\n", wd.c_str());
     mkdirs(wd);
+    if (FILE* mk = std::fopen((wd + "/.importing").c_str(), "w")) std::fclose(mk);   // removed when the transfer is complete: a leftover marker means a partial copy
     std::string line; std::vector<char> buf(1 << 20);
     long long total = 0, next_log = 100ll << 20; int files = 0;
     bool ok = false;
@@ -155,6 +156,7 @@ static bool import_from_host(const std::string& wd) {
         ++files;
     }
     close(fd);
+    if (ok) std::remove((wd + "/.importing").c_str());
     std::fprintf(stderr, "[ANDROID] side-load: %s (%d files, %lld MB)\n", ok ? "done" : "FAILED", files, total >> 20);
     return ok;
 }
@@ -184,7 +186,8 @@ void psp_android_init() {
     // No game data (a user that never had the files copied, a wrong folder): say so, instead of a black screen.
     const char* d0 = std::getenv("PSPRECOMP_DISC0");
     auto has_files = [&]() { bool h = false; DIR* dir = d0 ? opendir(d0) : nullptr; if (dir) { while (dirent* e = readdir(dir)) if (std::strcmp(e->d_name, ".") && std::strcmp(e->d_name, "..")) { h = true; break; } closedir(dir); } return h; };
-    bool have = has_files();
+    const bool partial = access((wd + "/.importing").c_str(), F_OK) == 0;   // an earlier side-load was cut short
+    bool have = has_files() && !partial;
     if (!have && import_from_host(wd)) have = has_files();
     if (!have) {
         const std::string msg = std::string("The game's files were not found.\n\nCopy the game's work folder (disc0, ms0, ...) to:\n") + wd +
