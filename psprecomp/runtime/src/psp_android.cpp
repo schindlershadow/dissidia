@@ -4,6 +4,7 @@
 // data (disc0/, ms0/, mods, voice_jp ...: the same work folder the desktop uses) is copied by the player to the app's external
 // storage folder, <ExternalStorage>/Android/data/org.psprecomp.game/files/game, with adb or a file manager. Nothing of the game is in the APK.
 #ifdef __ANDROID__
+#include <dirent.h>
 #include "psp_android.h"
 
 #include <SDL.h>
@@ -120,5 +121,15 @@ void psp_android_init() {
     setenv("PSPRECOMP_FULLSCREEN", "1", 0);
     setenv("PSPRECOMP_VSYNC", "1", 0);
     std::fprintf(stderr, "[ANDROID] work folder %s\n", wd.c_str());
+    // No game data (a user that never had the files copied, a wrong folder): say so, instead of a black screen.
+    const char* d0 = std::getenv("PSPRECOMP_DISC0");
+    bool have = false;
+    if (d0) { DIR* dir = opendir(d0); if (dir) { while (dirent* e = readdir(dir)) if (std::strcmp(e->d_name, ".") && std::strcmp(e->d_name, "..")) { have = true; break; } closedir(dir); } }
+    if (!have) {
+        const std::string msg = std::string("The game's files were not found.\n\nReinstall the game with the installer to copy them to:\n") + wd;
+        std::fprintf(stderr, "[ANDROID] ERROR: %s\n", msg.c_str());
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Dissidia Recomp", msg.c_str(), nullptr);
+        std::_Exit(1);
+    }
 }
 #endif
