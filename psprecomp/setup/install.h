@@ -37,12 +37,16 @@ struct Step {
 // What the player chose besides the game file and folder.
 struct Options {
     bool check_updates = true;
-    bool hd_textures = true;            // pull the HD texture pack
+    bool hd_textures = true;            // pull an HD texture pack (which one: texture_pack)
+    std::string texture_pack = "liink"; // "liink" = LiinkPK's hand-retouched pack, "ai" = Niosa's D012FFRT + our AI upscales
     bool jp_audio = false;              // undub (Japanese voices); needs undub_iso
     bool android = false;               // also build the Android version
     std::string undub_iso;
     std::string import_saves;           // a SAVEDATA folder to copy the player's Dissidia 012 saves from (empty = none)
 };
+// Names and credits of the two texture packs the wizard offers (shown on the options page and in the download step).
+const char* texture_pack_title(const std::string& pack);
+const char* texture_pack_credit(const std::string& pack);
 // Optional features a release can offer: game/features.ini has one "name=1" line per implemented feature
 // (hd_textures, jp_audio, android). A missing file or line = not in this release yet (the wizard shows the option but
 // does not let it be turned on).

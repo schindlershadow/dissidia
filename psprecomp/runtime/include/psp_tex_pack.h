@@ -75,9 +75,11 @@ struct PspPpssppTex {
 };
 bool psp_texpack_ppsspp_active();
 bool psp_texpack_ppsspp_lookup(const PspPpssppTex& t, std::vector<uint8_t>& rgba, int& w, int& h);
-/// The two hashes, exposed for tests: XXH32 and the PPSSPP content hash of a texture's raw bytes (kind 2 = xxh64, 1 = xxh32).
+/// The two hashes, exposed for tests: XXH32 and the PPSSPP content hash of a texture's raw bytes (kind 3 = quick, 2 = xxh64, 1 = xxh32).
 uint32_t psp_texpack_xxh32(const uint8_t* p, size_t len, uint32_t seed);
-uint32_t psp_texpack_ppsspp_content_hash(const uint8_t* mem, size_t mem_len, int fmt, int w, int h, int bufw, int kind);
+uint32_t psp_texpack_ppsspp_content_hash(const uint8_t* mem, size_t mem_len, int fmt, int w, int h, int bufw, int kind, uint32_t guest_addr = 0);
+/// PPSSPP's StableQuickTexHash (kind 3 = hash=quick); `aligned` = guest address is 16-byte aligned.
+uint32_t psp_texpack_quick_hash(const uint8_t* p, size_t size, bool aligned);
 
 /// Write textures.txt now (also called periodically and at shutdown).
 void psp_texpack_flush();

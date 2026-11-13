@@ -90,6 +90,14 @@ std::string Layout::problem() const {
     return "";
 }
 
+const char* texture_pack_title(const std::string& pack) {
+    return pack == "ai" ? "AI upscaled (D012FFRT + upscales)" : "LiinkPK's HD Project (hand-retouched)";
+}
+const char* texture_pack_credit(const std::string& pack) {
+    return pack == "ai" ? "Credits: D012FFRT by Niosa (github.com/Niosa/D012FFRT); AI upscales by schindlershadow made with Real-ESRGAN (Xintao Wang et al.)."
+                        : "Credits: Dissidia 012 HD Project by LiinkPK (github.com/LiinkPK/Dissidia-012-HD-Textures); artwork also by ajb3art.";
+}
+
 bool feature_available(const Layout& l, const std::string& name) {
     std::ifstream f(join(l.game_dir, "features.ini"));
     std::string line;
@@ -155,9 +163,11 @@ std::vector<Step> plan_install(const Layout& l, const std::string& iso, const st
     for (size_t i = 1; i < p.size(); i++) p[i].weight = i == 1 ? 0.84 : 0.60;
     if (o.hd_textures && feature_available(l, "hd_textures")) {
         Step t;
-        t.label = "Downloading the HD texture pack";
-        t.explain = "Fetches the community HD texture pack and our own upscales (about 1.3 GB in all) into the game's mods folder.";
-        t.argv = {l.python, join(l.game_dir, "tools/fetch_textures.py"), workdir};
+        const bool ai = o.texture_pack == "ai";
+        t.label = ai ? "Downloading the AI upscaled textures" : "Downloading the HD textures";
+        t.explain = std::string(ai ? "Fetches the community HD texture pack and our own AI upscales (about 1.3 GB in all) into the game's mods folder. "
+                                   : "Fetches LiinkPK's hand-retouched HD texture pack (about 0.8 GB) into the game's mods folder. ") + texture_pack_credit(o.texture_pack);
+        t.argv = {l.python, join(l.game_dir, "tools/fetch_textures.py"), workdir, "--pack", ai ? "ai" : "liink"};
         t.env = {{"PYTHONUNBUFFERED", "1"}};
         t.weight = 0.06;
         p.push_back(t);
@@ -449,6 +459,7 @@ State load_state(const std::string& file) {
         else if (k == "built_fp") s.built_fp = v;
         else if (k == "check_updates") s.options.check_updates = v != "0";
         else if (k == "hd_textures") s.options.hd_textures = v == "1";
+        else if (k == "texture_pack") s.options.texture_pack = v == "ai" ? "ai" : "liink";
         else if (k == "jp_audio") s.options.jp_audio = v == "1";
         else if (k == "android") s.options.android = v == "1";
         else if (k == "undub_iso") s.options.undub_iso = v;
@@ -460,7 +471,7 @@ bool save_state(const std::string& file, const State& s) {
     std::ofstream f(file, std::ios::trunc);
     if (!f) return false;
     f << "workdir=" << s.workdir << "\niso=" << s.iso << "\nversion=" << s.version << "\n"
-      << "check_updates=" << s.options.check_updates << "\nhd_textures=" << s.options.hd_textures << "\njp_audio=" << s.options.jp_audio
+      << "check_updates=" << s.options.check_updates << "\nhd_textures=" << s.options.hd_textures << "\ntexture_pack=" << s.options.texture_pack << "\njp_audio=" << s.options.jp_audio
       << "\nandroid=" << s.options.android << "\nundub_iso=" << s.options.undub_iso << "\nbuilt_fp=" << s.built_fp << "\n";
     return (bool)f;
 }
