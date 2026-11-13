@@ -3716,34 +3716,48 @@ static float vb_fade_factor(uint8_t* rdram, const GeState& st, int n, int prim) 
     }
     const float* V = st.view_matrix;   // eye = -R^T t (4x3 column-major view)
     const float eye[3] = {-(V[0] * V[9] + V[1] * V[10] + V[2] * V[11]), -(V[3] * V[9] + V[4] * V[10] + V[5] * V[11]), -(V[6] * V[9] + V[7] * V[10] + V[8] * V[11])};
-    const float* T = g_vb_target;
-    float d[3] = {T[0] - eye[0], T[1] - eye[1], T[2] - eye[2]};
-    const float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    const float* T = g_vb_target;   // the player's chest
     bool hit = false;
     float big = 0; for (int k = 0; k < 3; ++k) big = std::max(big, whi[k] - wlo[k]);
-    if (len > 1e-3f && big < 30.f) {   // (a block, not the whole stage: a single mesh of the floor or the sky would fade as one)
-        const float shrink = 0.05f;
-        float t0 = 0.f, t1 = std::max(0.f, 1.f - 1.5f / len);   // stop short of the player: whatever he stands against does not fade
-        for (int k = 0; k < 3 && t0 <= t1; ++k) {
-            const float a = wlo[k] + shrink, b = whi[k] - shrink;
-            if (std::fabs(d[k]) < 1e-6f) { if (eye[k] < a || eye[k] > b) t0 = 2.f; }
-            else { float u0 = (a - eye[k]) / d[k], u1 = (b - eye[k]) / d[k]; if (u0 > u1) std::swap(u0, u1); t0 = std::max(t0, u0); t1 = std::min(t1, u1); }
-        }
-        hit = t0 <= t1;
-        if (hit) {   // the box is only a first filter: a draw can hold a whole floor and several blocks, so test the triangles themselves
-            hit = false;
-            tmp.resize((size_t)n);
-            if (!ge_decode_vertices_gpu(rdram, st, n, tmp.data())) return 1.f;
+    float hx = T[0] - eye[0], hz = T[2] - eye[2];
+    const float hl = std::sqrt(hx * hx + hz * hz);
+    if (hl > 1e-3f) { hx /= hl; hz /= hl; } else { hx = 0; hz = 1; }
+    // Rays to the whole body (feet, knee, chest, head, both shoulders), each starting a little behind the eye so a wall the camera touches or sits in
+    // still counts: the fighter has to stay visible, not just his chest.
+    const float aim[6][3] = {{0, -0.9f, 0}, {0, -0.4f, 0}, {0, 0, 0}, {0, 0.8f, 0}, {-hz * 0.5f, 0.2f, hx * 0.5f}, {hz * 0.5f, 0.2f, -hx * 0.5f}};
+    bool decoded = false;
+    if (big < 45.f) {   // (a block, not the whole stage: a single mesh of the floor or the sky would fade as one)
+        for (int ri = 0; ri < 6 && !hit; ++ri) {
+            const float tg[3] = {T[0] + aim[ri][0], T[1] + aim[ri][1], T[2] + aim[ri][2]};
+            float dir[3] = {tg[0] - eye[0], tg[1] - eye[1], tg[2] - eye[2]};
+            const float dl = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+            if (dl < 1e-3f) continue;
+            const float back = 2.0f;   // start behind the eye
+            const float o[3] = {eye[0] - dir[0] / dl * back, eye[1] - dir[1] / dl * back, eye[2] - dir[2] / dl * back};
+            const float d[3] = {tg[0] - o[0], tg[1] - o[1], tg[2] - o[2]};
+            const float len = dl + back;
+            const float tmax = std::max(0.f, 1.f - 1.2f / len);   // stop short of the player: whatever he stands against does not fade
+            float t0 = 0.f, t1 = tmax;
+            for (int k = 0; k < 3 && t0 <= t1; ++k) {
+                const float a2 = wlo[k] + 0.05f, b2 = whi[k] - 0.05f;
+                if (std::fabs(d[k]) < 1e-6f) { if (o[k] < a2 || o[k] > b2) t0 = 2.f; }
+                else { float u0 = (a2 - o[k]) / d[k], u1 = (b2 - o[k]) / d[k]; if (u0 > u1) std::swap(u0, u1); t0 = std::max(t0, u0); t1 = std::min(t1, u1); }
+            }
+            if (t0 > t1) continue;
+            if (!decoded) {
+                tmp.resize((size_t)n);
+                if (!ge_decode_vertices_gpu(rdram, st, n, tmp.data())) return 1.f;
+                decoded = true;
+            }
             const GeGpuVertex* v = tmp.data();
-            auto W = [&](int i, float o[3]) { const float* p = v[i].pos; for (int r = 0; r < 3; ++r) o[r] = m[r] * p[0] + m[3 + r] * p[1] + m[6 + r] * p[2] + m[9 + r]; };
-            const float tmax = std::max(0.f, 1.f - 1.5f / len);
+            auto W = [&](int i, float out[3]) { const float* q = v[i].pos; for (int r = 0; r < 3; ++r) out[r] = m[r] * q[0] + m[3 + r] * q[1] + m[6 + r] * q[2] + m[9 + r]; };
             auto tri = [&](int ia, int ib, int ic) {
                 float a[3], b[3], c[3]; W(ia, a); W(ib, b); W(ic, c);
                 const float e1[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]}, e2[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
                 const float pv[3] = {d[1] * e2[2] - d[2] * e2[1], d[2] * e2[0] - d[0] * e2[2], d[0] * e2[1] - d[1] * e2[0]};
                 const float det = e1[0] * pv[0] + e1[1] * pv[1] + e1[2] * pv[2];
                 if (std::fabs(det) < 1e-9f) return false;
-                const float inv = 1.f / det, tv[3] = {eye[0] - a[0], eye[1] - a[1], eye[2] - a[2]};
+                const float inv = 1.f / det, tv[3] = {o[0] - a[0], o[1] - a[1], o[2] - a[2]};
                 const float u = (tv[0] * pv[0] + tv[1] * pv[1] + tv[2] * pv[2]) * inv;
                 if (u < 0.f || u > 1.f) return false;
                 const float qv[3] = {tv[1] * e1[2] - tv[2] * e1[1], tv[2] * e1[0] - tv[0] * e1[2], tv[0] * e1[1] - tv[1] * e1[0]};
@@ -3758,10 +3772,10 @@ static float vb_fade_factor(uint8_t* rdram, const GeState& st, int n, int prim) 
         }
     }
     if (hit) { static const bool lg = std::getenv("PSPRECOMP_CAM_BLOCKER_LOG") != nullptr; static int c = 0;
-        if (lg && (c++ % 40) == 0) std::fprintf(stderr, "[BLOCKER] hit bbox %.1f %.1f %.1f .. %.1f %.1f %.1f  eye %.1f %.1f %.1f  target %.1f %.1f %.1f  n %d tex %d lit %d upd %x matA %02x\n", wlo[0], wlo[1], wlo[2], whi[0], whi[1], whi[2], eye[0], eye[1], eye[2], T[0], T[1], T[2], n, (int)st.texture_enable, (int)st.lighting_enable, (unsigned)st.material_update, (unsigned)(st.material_alpha & 0xFF)); }
+        if (lg && (c++ % 40) == 0) std::fprintf(stderr, "[BLOCKER] hit bbox %.1f %.1f %.1f .. %.1f %.1f %.1f  eye %.1f %.1f %.1f  target %.1f %.1f %.1f  n %d\n", wlo[0], wlo[1], wlo[2], whi[0], whi[1], whi[2], eye[0], eye[1], eye[2], T[0], T[1], T[2], n); }
     float& f = g_vb_fade.try_emplace(key, 1.f).first->second;
-    const float target = hit ? 0.25f : 1.f;
-    f += (target - f) * 0.25f;
+    const float target = hit ? 0.12f : 1.f;
+    f += (target - f) * (hit ? 0.5f : 0.2f);   // fades out fast (the fighter must not stay hidden), back in gently
     if (std::fabs(f - target) < 0.01f) f = target;
     return f;
 }
