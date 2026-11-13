@@ -48,7 +48,9 @@ class DeckGame(bt.Game):
         exports = ' '.join('%s=%s' % kv for kv in env.items())
         self.ssh('rm -rf /tmp/deck_bt_ms0 /tmp/deck_bt_go; cp -r %s/ms0 /tmp/deck_bt_ms0' % W)
         # the desktop session's display (Wayland; Xwayland as the fallback)
-        cmd = ('export XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 DISPLAY=:0 XAUTHORITY=$(ls /run/user/1000/xauth_* | head -1); %s; cd ~/dissidia/work; '
+        disp = ('export XDG_RUNTIME_DIR=/run/user/1000 GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 ENABLE_GAMESCOPE_WSI=1 DISPLAY=:1 SDL_VIDEODRIVER=x11'
+                if a.gamescope else 'export XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 DISPLAY=:0 XAUTHORITY=$(ls /run/user/1000/xauth_* | head -1)')
+        cmd = (disp + '; %s; cd ~/dissidia/work; '
                'nohup ~/dissidia/game_dissidia/tools/run.sh ~/dissidia/work %s --log %s </dev/null >/dev/null 2>&1 &' % (
                    ' '.join('export ' + e for e in exports.split(' ')) if False else ';'.join('export ' + e for e in exports.split(' ')), ('--ge-sync ' + a.ge_sync) if a.ge_sync else '', self.rlog))
         self.ssh('rm -f %s' % self.rlog)
@@ -113,6 +115,7 @@ def main():
     ap.add_argument('--ge-sync', default='', help='run.sh --ge-sync value (off|flush|1|2|3); default: run.sh decides (flush on a Deck)')
     ap.add_argument('--ff-menus', type=int, default=0, help='run the menu trip at this multiple of real time (-1 = as fast as frames render)')
     ap.add_argument('--series', type=int, default=0, help='after the measuring time, capture this many consecutive screenshots (flicker check)')
+    ap.add_argument('--gamescope', action='store_true', help='the Deck is in Game Mode: use the gamescope X11 display like a Steam launch')
     ap.add_argument('--perf-args', default='-F 1999')
     ap.add_argument('--port', type=int, default=29999)
     ap.add_argument('--stage', type=int, default=12)
