@@ -36,7 +36,7 @@ bool psp_hdr_available();
 int psp_hdr_encoding();
 int psp_hdr_peak();              // nits the brightest expanded highlight reaches, 400..4000; PSPRECOMP_HDR_PEAK (default 1000)
 void psp_hdr_set_peak(int nits);
-int psp_hdr_paper();             // nits SDR white is shown at, 80..400; PSPRECOMP_HDR_PAPER (default 203, the BT.2408 reference)
+int psp_hdr_paper();             // nits SDR white is shown at, 80..1000; PSPRECOMP_HDR_PAPER (default 203, the BT.2408 reference)
 void psp_hdr_set_paper(int nits);
 int psp_hdr_boost();             // 0 off, 1 low (default), 2 medium, 3 high: how far small bright features rise above paper white; PSPRECOMP_HDR_BOOST
 void psp_hdr_set_boost(int level);

@@ -724,15 +724,15 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             break;
         }
         case ROW_HDR_GAMUT: {
-            static const char* const k_names[4] = {"Off", "Low", "Medium", "High"};
+            static const char* const k_names[5] = {"Off", "Low", "Medium", "High", "Max"};
             const int v = psp_hdr_gamut();
             const bool live = psp_hdr_available() && psp_hdr_wanted();
             m.label = "HDR Colour";
             m.value = k_names[v];
             m.disabled = !live;
-            m.can_dec = live && v > 0; m.can_inc = live && v < 3;
+            m.can_dec = live && v > 0; m.can_inc = live && v < 4;
             m.help = !live ? "HDR colour only applies while HDR Output is on (see the HDR Output row for why it may be unavailable)."
-                           : "HDR colour (PSPRECOMP_HDR_GAMUT)\nA wide-gamut screen (OLED) stretches ordinary SDR colour to its own primaries, but shows HDR content as plain sRGB, which looks drained next to SDR. This stretches the colours towards Display-P3 by the chosen amount. Off is plain sRGB. Saved.";
+                           : "HDR colour (PSPRECOMP_HDR_GAMUT)\nA wide-gamut screen (OLED) stretches ordinary SDR colour to its own primaries, but shows HDR content as plain sRGB, which looks drained next to SDR. This stretches the colours towards Display-P3 by the chosen amount (Max goes past it, for phones whose SDR mode is very vivid). Off is plain sRGB. Saved.";
             break;
         }
         case ROW_HDR_BOOST: {
@@ -753,8 +753,9 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.label = pk ? "HDR Peak Brightness" : "HDR Paper White";
             m.value = std::to_string(v) + " nits";
             const bool live = psp_hdr_available() && psp_hdr_wanted();
-            m.disabled = !live;
-            m.can_dec = live && v > (pk ? 400 : 80); m.can_inc = live && v < (pk ? 4000 : 400);
+            const bool locked = false;
+            m.disabled = !live || locked;
+            m.can_dec = live && !locked && v > (pk ? 400 : 80); m.can_inc = live && !locked && v < (pk ? 4000 : 1000);
             m.help = !live ? "HDR peak brightness and paper white only apply while HDR Output is on (see the HDR Output row for why it may be unavailable)." : pk ? "HDR peak brightness (PSPRECOMP_HDR_PEAK)\nThe brightest level expanded highlights reach, in nits. Set it to about what your display can show (OLED 600 to 1000, mini-LED 1000 to 1600). Saved."
                         : "HDR paper white (PSPRECOMP_HDR_PAPER)\nHow bright ordinary white (the HUD, menus, a plain SDR picture) is shown, in nits. 203 is the broadcast reference; raise it in a bright room. Saved.";
             break;
@@ -1093,7 +1094,7 @@ void change(int d) {   // left / right on the selected row
         break;
     case ROW_HDR_GAMUT: {
         if (!psp_hdr_available() || !psp_hdr_wanted()) break;
-        const int v = std::min(3, std::max(0, psp_hdr_gamut() + d));
+        const int v = std::min(4, std::max(0, psp_hdr_gamut() + d));
         if (v != psp_hdr_gamut()) { psp_hdr_set_gamut(v); save("hdr_gamut", std::to_string(v)); }
         break;
     }
@@ -1111,7 +1112,8 @@ void change(int d) {   // left / right on the selected row
     }
     case ROW_HDR_PAPER: {
         if (!psp_hdr_available() || !psp_hdr_wanted()) break;
-        const int v = std::min(400, std::max(80, psp_hdr_paper() + d * 10));
+
+        const int v = std::min(1000, std::max(80, psp_hdr_paper() + d * 10));
         if (v != psp_hdr_paper()) { psp_hdr_set_paper(v); save("hdr_paper", std::to_string(v)); }
         break;
     }
