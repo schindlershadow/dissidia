@@ -284,9 +284,39 @@ def main():
         "-DBUILD_SHARED_LIBS=OFF", "-DFT_DISABLE_ZLIB=ON", "-DFT_DISABLE_BZIP2=ON", "-DFT_DISABLE_PNG=ON",
         "-DFT_DISABLE_HARFBUZZ=ON", "-DFT_DISABLE_BROTLI=ON"])
     log("building SDL2")
-    cmake_build("sdl2", src("sdl2"), [
-        "-DSDL_SHARED=OFF", "-DSDL_STATIC=ON", "-DSDL_TEST=OFF", "-DSDL_TESTS=OFF", "-DSDL_INSTALL_TESTS=OFF",
-        "-DSDL_ASSERTIONS=disabled", "-DSDL_LIBSAMPLERATE=OFF"])
+    sdl_opts = ["-DSDL_SHARED=OFF", "-DSDL_STATIC=ON", "-DSDL_TEST=OFF", "-DSDL_TESTS=OFF", "-DSDL_INSTALL_TESTS=OFF",
+                "-DSDL_ASSERTIONS=disabled", "-DSDL_LIBSAMPLERATE=OFF"]
+    if plat.startswith("linux"):
+        # SDL decides on its X11 backend by find_library()ing libX11, libXext, ... (it then loads them at run time; only the file names
+        # matter). Under the zig toolchain find_library does not search the multiarch directory (/usr/lib/x86_64-linux-gnu), so the
+        # X11 backend was silently left OUT: the runtime then had only Wayland (and "offscreen"), and on a Steam Deck in Game Mode,
+        # where gamescope shows only X11 windows, the game ran with sound and no picture. Hand SDL the libraries explicitly.
+        x11_libs = (("X11", "X11"), ("XEXT", "Xext"), ("XCURSOR", "Xcursor"), ("XI", "Xi"), ("XFIXES", "Xfixes"),
+                    ("XRANDR", "Xrandr"), ("XRENDER", "Xrender"), ("XSS", "Xss"))
+        libdirs = ["/usr/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/lib"]
+        for var, name in x11_libs:
+            for d in libdirs:
+                f = os.path.join(d, "lib%s.so" % name)
+                if os.path.exists(f):
+                    sdl_opts.append("-D%s_LIB=%s" % (var, f))
+                    break
+    cmake_build("sdl2", src("sdl2"), sdl_opts)
+    if plat.startswith("linux"):
+        # SDL_syswm.h (used by the runtime's Vulkan surface code) includes <X11/Xlib.h> once the X11 backend is on, and the
+        # bundle's compiler does not see the host's /usr/include: ship the few core X11 headers (the ones SDL_syswm.h pulls in) next to SDL's.
+        cfg = open(os.path.join(deps, "include", "SDL2", "SDL_config.h")).read()
+        if not re.search(r"#define\s+SDL_VIDEO_DRIVER_X11\s+1", cfg):
+            die("SDL was built without its X11 backend (install libx11-dev libxext-dev libxcursor-dev libxi-dev libxfixes-dev "
+                "libxrandr-dev libxss-dev on the build host): the runtime would show no picture in Steam Deck Game Mode")
+        xdst = os.path.join(deps, "include", "X11")
+        os.makedirs(xdst, exist_ok=True)
+        for hdr in ("Xlib.h", "X.h", "Xatom.h", "Xfuncproto.h", "Xosdefs.h"):
+            for d in ("/usr/include/X11", "/usr/local/include/X11"):
+                if os.path.exists(os.path.join(d, hdr)):
+                    shutil.copy2(os.path.join(d, hdr), xdst)
+                    break
+            else:
+                die("X11 header %s not found on the build host (libx11-dev)" % hdr)
 
     # Vulkan backend: the Vulkan headers (the loader is opened at run time through SDL, so there is nothing to link) and glslang,
     # which compiles the GLSL to SPIR-V inside the runtime. No optimizer (the code sets disableOptimizer; the driver optimises),
