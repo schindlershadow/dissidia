@@ -2,7 +2,7 @@
 
 Status (2026-11-12): **works on desktop (NVIDIA) and on the Retroid Pocket 6 (Adreno 740), opt-in.** The route taken is a GL-on-Vulkan layer
 (`runtime/src/vk/`), not a native rewrite of `psp_ge_draw`: the ~110 GL entry points the runtime uses are implemented on Vulkan and installed in glad's
-function pointers (an equivalent pointer table on Android), so the PSP logic exists once. In-game: Settings > System > Graphics API (next start).
+function pointers (an equivalent pointer table on Android), so the PSP logic exists once. In-game: Settings > Graphics > Graphics API (next start).
 Verified: title, menus, settings, 3D battle, render scale 3, screen-space effects, touch overlay, resize; static screens match GL to 2/255; zero validation
 errors on desktop. Measured on the GTX 1660 SUPER in a heavy fight (3.5k draws, render scale 3, no present): GPU about 2.2 ms/frame; render-thread CPU
 about 3.2 ms for Vulkan vs 2.65 ms for NVIDIA's GL, so **Vulkan is not faster yet**; the layer's own CPU cost is ~0.4 ms/frame. Retroid Pocket 6 (Adreno 740, 120 fps mode, render scale 4, widescreen, SSAO/contact shadows/SSR on, same verified stage and fighters, Order's

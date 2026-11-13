@@ -27,6 +27,7 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -149,29 +150,48 @@ enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_FPSCOUNT, ROW_WIDE, ROW
            ROW_CLOUD_AUTO, ROW_CLOUD_REPLAYS, ROW_CLOUD_NOW, ROW_CLOUD_STATUS,   // Cloud page
            ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS,   // Debug page
            ROW_DBG0, ROW_DBG1, ROW_DBG2, ROW_DBG3, ROW_DBG4, ROW_DBG5,   // Debug page rows a game module adds (psp_settings_add_debug_toggle)
-           ROW_GPU, ROW_GPU_GET, ROW_GPU_DEL };   // custom GPU drivers (Android, Adreno): System page
+           ROW_GPU, ROW_GPU_GET, ROW_GPU_DEL,   // custom GPU drivers (Android, Adreno): Drivers page
+           ROW_SUB_HDR, ROW_SUB_RT,             // rows that open a sub-menu
+           ROW_SEC_WINDOW, ROW_SEC_PERF, ROW_SEC_QUALITY, ROW_SEC_AA, ROW_SEC_TEX, ROW_SEC_ENGINE, ROW_SEC_COLOUR, ROW_SEC_HDR, ROW_SEC_LIGHT,
+           ROW_SEC_RT, ROW_SEC_TOUCH, ROW_SEC_GAME, ROW_SEC_SESSION, ROW_SEC_REFL, ROW_SEC_SERVER, ROW_SEC_SYNC, ROW_SEC_DRIVER,   // section captions (not selectable)
+           ROW_COUNT };
+static_assert(ROW_COUNT < psp_sddialog::SET_MAX_IDS, "row ids are animation slots");
+bool is_section(Row r) { return r >= ROW_SEC_WINDOW && r < ROW_COUNT; }
 std::vector<Row> g_rows;
 int g_sel = 0;
-constexpr int PAGE_SYSTEM = 0, PAGE_NETWORK = 1, PAGE_CLOUD = 2, PAGE_DEBUG = 3, PAGE_GPU = 4, PAGES = 5;   // page ids
-const char* const k_page_names[PAGES] = {"System", "Network", "Cloud", "Debug", "Drivers"};
-int g_page = 0;                        // L / R shoulder, Q / E or Tab: next page (an index into page_list())
-int g_sel_page[PAGES] = {0, 0, 0, 0, 0};
-// The tabs this device shows: Drivers (custom GPU drivers) only where they can be used (an Adreno phone with the Android build).
+// Pages: the categories shown in the sidebar, and the sub-menus a row can open (PAGE_HDR under Image, PAGE_RT under Effects).
+enum Page { PAGE_DISPLAY, PAGE_GRAPHICS, PAGE_IMAGE, PAGE_EFFECTS, PAGE_CONTROLS, PAGE_NETWORK, PAGE_CLOUD, PAGE_SYSTEM, PAGE_GPU, PAGE_DEBUG,
+            PAGE_HDR, PAGE_RT, PAGES };
+const char* const k_page_names[PAGES] = {"Display", "Graphics", "Image", "Effects", "Controls", "Network", "Cloud", "System", "Drivers", "Debug",
+                                         "HDR", "Ray Tracing"};
+int g_page = 0;                        // the category (an index into page_list()): L / R, Q / E or Tab, the sidebar
+int g_sub = -1;                        // the open sub-menu page, -1 = none
+int g_sel_page[PAGES] = {};
+bool g_touch_ui = false;               // a touch screen is present (or the on-screen controls are forced on): the Controls tab is shown
+// The categories this device shows: Drivers (custom GPU drivers) only where they can be used (an Adreno phone with the Android build),
+// Controls only with a touch screen.
+std::vector<int> g_pages;
 const std::vector<int>& page_list() {
-    static const std::vector<int> v = [] {
-        std::vector<int> l{PAGE_SYSTEM};
-        if (psp_gpu::supported(nullptr)) l.push_back(PAGE_GPU);
-        l.push_back(PAGE_NETWORK); l.push_back(PAGE_CLOUD); l.push_back(PAGE_DEBUG);
-        return l;
-    }();
-    return v;
+    if (g_pages.empty()) {
+        g_pages = {PAGE_DISPLAY, PAGE_GRAPHICS, PAGE_IMAGE, PAGE_EFFECTS};
+        if (g_touch_ui) g_pages.push_back(PAGE_CONTROLS);
+        g_pages.push_back(PAGE_NETWORK); g_pages.push_back(PAGE_CLOUD); g_pages.push_back(PAGE_SYSTEM);
+        if (psp_gpu::supported(nullptr)) g_pages.push_back(PAGE_GPU);
+        g_pages.push_back(PAGE_DEBUG);
+    }
+    return g_pages;
 }
-int page_id() { return page_list()[size_t(g_page)]; }
+int page_id() { return g_sub >= 0 ? g_sub : page_list()[size_t(g_page)]; }
+// Sidebar icon of a page (settings_render.inc draw_icon).
+int page_icon(int page) { return page <= PAGE_DEBUG ? page : (page == PAGE_HDR ? PAGE_IMAGE : PAGE_EFFECTS); }
 int g_ring_next = -1;                  // vertex upload mode saved for the next launch (-1 = unchanged)
 bool g_quit_armed = false;
 bool g_dirty = true;
 int g_drawn_scale = 0;
 int64_t g_last_present = 0;
+int g_ui_cap = 3;                      // the highest canvas scale the animated screen is drawn at (lowered when drawing is slow)
+double g_ui_ms = 5.0;
+int g_ui_calm = 0;
 int g_pending_rs = 0;                  // render scale waiting for the game to park
 bool g_pending_scene = false;         // HDR Scene toggled: reformat the scene targets once the game has parked
 int g_pending_wide = -1;               // widescreen (0 / 1) waiting for the game to park, -1 = none
@@ -262,17 +282,15 @@ std::string g_net_server = NET_DEFAULT_SERVER, g_net_room, g_net_peers, g_net_st
 bool g_net_loaded = false;
 int64_t g_status_next = 0;
 
-// Text entry for the server / room / peers rows: a keyboard types directly; a controller picks a letter
-// (left / right), adds it (Cross) and deletes (Circle), as on a console.
+// Text entry for the server / room / peers rows and the cloud fields: the host keyboard types directly; the on-screen keyboard (drawn by
+// the settings view) is driven by pad, mouse or touch.
 struct Edit {
     bool active = false;
     int field = 0;          // 0 server, 1 room, 2 peers, 3 sync folder, 4 WebDAV address, 5 WebDAV user, 6 WebDAV password
     std::string buf;
-    int ci = 0;             // index into the letter list
-    int sel = 1;            // selected row of the editor
+    int row = 1, col = 0;   // the focused key of the on-screen keyboard
+    bool shift = false, symbols = false;
 } g_edit;
-const char* const k_edit_chars = "abcdefghijklmnopqrstuvwxyz0123456789.-_:,ABCDEFGHIJKLMNOPQRSTUVWXYZ /@%?=&+#~!$*()[]\\";
-constexpr int EDIT_ROWS = 5;   // text, letter, delete, done, cancel
 const char* edit_label() {
     static const char* const n[] = {"Server", "Room", "Direct Peers", "Sync Folder", "WebDAV Address", "WebDAV User", "WebDAV Password"};
     return n[g_edit.field];
@@ -346,30 +364,57 @@ void edit_append(char c) {
     g_dirty = true;
 }
 void edit_backspace() { if (!g_edit.buf.empty()) { g_edit.buf.pop_back(); g_dirty = true; } }
-
-std::vector<psp_sddialog::MenuRow> make_edit_rows() {
-    std::vector<psp_sddialog::MenuRow> out(EDIT_ROWS);
-    std::string shown = g_edit.field == 6 ? std::string(g_edit.buf.size(), '*') + "_" : g_edit.buf + "_";   // a password is never shown
-    if (shown.size() > 30) shown = "..." + shown.substr(shown.size() - 27);
-    out[0].label = edit_label();
-    out[0].value = shown;
-    out[0].help = std::string(edit_label()) + "\nType on a keyboard, or pick letters below. Enter or Done saves; Esc or Cancel keeps the old value.";
-    const char c = k_edit_chars[g_edit.ci];
-    out[1].label = "Letter";
-    out[1].value = c == ' ' ? "Space" : std::string(1, c);
-    out[1].can_dec = out[1].can_inc = true;
-    out[1].help = "Letter\nLeft / right choose a character, Cross adds it.";
-    out[2].label = "Delete";
-    out[2].help = "Delete\nRemoves the last character. Circle does the same.";
-    out[3].label = "Done";
-    out[3].help = "Done\nSaves the new value and uses it at once.";
-    out[4].label = "Cancel";
-    out[4].help = "Cancel\nKeeps the old value.";
-    return out;
+// The on-screen keyboard's key `row`, `col` under the current layer (shift / symbols).
+void edit_clamp_focus() {
+    const auto keys = psp_sddialog::settings_keyboard(g_edit.shift, g_edit.symbols);
+    g_edit.row = std::clamp(g_edit.row, 0, int(keys.size()) - 1);
+    g_edit.col = std::clamp(g_edit.col, 0, int(keys[size_t(g_edit.row)].size()) - 1);
+}
+void edit_press(const psp_sddialog::SetKey& k) {
+    switch (k.kind) {
+    case 0: case 3: edit_append(k.ch); break;
+    case 1: if (g_edit.symbols) g_edit.symbols = false; else g_edit.shift = !g_edit.shift; break;   // (in the symbol layer this key is "abc")
+    case 2: g_edit.symbols = !g_edit.symbols; g_edit.shift = false; break;
+    case 4: edit_backspace(); break;
+    case 5: edit_commit(); return;
+    case 6: edit_end(); return;
+    default: break;
+    }
+    edit_clamp_focus();
+    g_dirty = true;
+}
+void edit_press_focus() {
+    const auto keys = psp_sddialog::settings_keyboard(g_edit.shift, g_edit.symbols);
+    edit_clamp_focus();
+    edit_press(keys[size_t(g_edit.row)][size_t(g_edit.col)]);
+}
+// Moves the key focus; vertical moves keep the x position (the bottom row's keys are wider than the others').
+void edit_move(int dr, int dc, const psp_sddialog::SetGeom* geom) {
+    const auto keys = psp_sddialog::settings_keyboard(g_edit.shift, g_edit.symbols);
+    edit_clamp_focus();
+    if (dc) {
+        const int n = int(keys[size_t(g_edit.row)].size());
+        g_edit.col = (g_edit.col + dc + n) % n;
+    }
+    if (dr) {
+        const int nr = int(keys.size());
+        float cx = -1.f;
+        if (geom && int(geom->keys.size()) == nr) cx = geom->keys[size_t(g_edit.row)][size_t(g_edit.col)].r.x + geom->keys[size_t(g_edit.row)][size_t(g_edit.col)].r.w / 2.f;
+        g_edit.row = (g_edit.row + dr + nr) % nr;
+        const int n = int(keys[size_t(g_edit.row)].size());
+        if (cx >= 0.f && geom) {
+            float best = 1e9f;
+            for (int i = 0; i < n; ++i) {
+                const auto& r = geom->keys[size_t(g_edit.row)][size_t(i)].r;
+                const float d = std::fabs(r.x + r.w / 2.f - cx);
+                if (d < best) { best = d; g_edit.col = i; }
+            }
+        } else g_edit.col = std::min(g_edit.col, n - 1);
+    }
+    g_dirty = true;
 }
 
 std::vector<psp_sddialog::MenuRow> make_rows() {
-    if (g_edit.active) return make_edit_rows();
     std::vector<psp_sddialog::MenuRow> out;
     char buf[96];
     for (Row r : g_rows) {
@@ -646,6 +691,40 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.help = "Delete the selected driver\nRemoves it from this phone and goes back to the system driver. Press Cross.";
             break;
         }
+        case ROW_SUB_HDR: {
+            const bool avail = psp_hdr_available(), on = psp_hdr_wanted();
+            m.label = "HDR Output";
+            m.value = !avail ? "Unavailable" : on ? "On" : "Off";
+            m.help = "HDR\nHDR output, highlight strength, wide-gamut colour, peak brightness and paper white, for HDR displays. Press Cross to open.";
+            break;
+        }
+        case ROW_SUB_RT: {
+            static const char* const k_rq[4] = {"Off", "Low", "Medium", "High"};
+            const bool avail = psp_rt_available();
+            m.label = "Ray Tracing";
+            m.value = !avail ? "Unavailable" : std::string("Shadows ") + k_rq[psp_rt_quality()];
+            m.help = avail ? "Ray tracing\nShadows and reflections traced against the scene's real geometry with the GPU's ray tracing hardware. Press Cross to open."
+                           : std::string("Ray tracing: unavailable\n") + psp_rt_unavailable_reason();
+            break;
+        }
+        case ROW_SEC_WINDOW: m.label = "Window"; break;
+        case ROW_SEC_PERF: m.label = "Performance"; break;
+        case ROW_SEC_QUALITY: m.label = "Image quality"; break;
+        case ROW_SEC_AA: m.label = "Edges and sharpness"; break;
+        case ROW_SEC_TEX: m.label = "Textures"; break;
+        case ROW_SEC_ENGINE: m.label = "Graphics engine"; break;
+        case ROW_SEC_COLOUR: m.label = "Colour"; break;
+        case ROW_SEC_HDR: m.label = "High dynamic range"; break;
+        case ROW_SEC_LIGHT: m.label = "Lighting"; break;
+        case ROW_SEC_RT: m.label = "Hardware"; break;
+        case ROW_SEC_TOUCH: m.label = "Touch screen"; break;
+        case ROW_SEC_GAME: m.label = "Game"; break;
+        case ROW_SEC_SESSION: m.label = "Session"; break;
+        case ROW_SEC_REFL: m.label = "Reflections"; break;
+        case ROW_SEC_SERVER: m.label = "Connection"; break;
+        case ROW_SEC_SYNC: m.label = "Sync"; break;
+        case ROW_SEC_DRIVER: m.label = "Driver"; break;
+        case ROW_COUNT: break;
         case ROW_QUIT:
             m.label = "Quit Game";
             m.value = g_quit_armed ? "Press again to quit" : "";
@@ -887,6 +966,122 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
     return out;
 }
 
+// ---- the rows as the settings view draws them ----------------------------------------------------------------------
+// Rows with a number of discrete positions are drawn as sliders (and can be dragged): steps / current position.
+bool slider_of(Row r, int* steps, int* cur) {
+    auto lin = [&](int lo, int hi, int step, int v) { *steps = (hi - lo) / step + 1; *cur = std::clamp((v - lo) / step, 0, *steps - 1); return true; };
+    switch (r) {
+    case ROW_SCALE: return lin(1, k_max_rs, 1, g_pending_rs ? g_pending_rs : ge_draw_render_scale());
+    case ROW_BRIGHT: return lin(50, 150, 5, psp_post_brightness());
+    case ROW_CONTRAST: return lin(50, 150, 5, psp_post_contrast());
+    case ROW_SAT: return lin(0, 200, 5, psp_post_saturation());
+    case ROW_HDR_PEAK: return lin(400, 4000, 100, psp_hdr_peak());
+    case ROW_HDR_PAPER: return lin(80, 1000, 10, psp_hdr_paper());
+    case ROW_ANISO: {
+        static const int lv[5] = {1, 2, 4, 8, 16};
+        *steps = 5; *cur = 0;
+        for (int i = 0; i < 5; ++i) if (lv[i] <= ge_texture_aniso()) *cur = i;
+        return true;
+    }
+    case ROW_SHARP: *steps = 5; *cur = std::clamp(psp_post_sharpen(), 0, 4); return true;
+    case ROW_AA: *steps = 3; *cur = std::clamp(psp_post_aa(), 0, 2); return true;
+    case ROW_SSAO: *steps = 4; *cur = std::clamp(psp_fx_ssao(), 0, 3); return true;
+    case ROW_CONTACT: *steps = 4; *cur = std::clamp(psp_fx_contact(), 0, 3); return true;
+    case ROW_SSR: *steps = 4; *cur = std::clamp(psp_fx_ssr(), 0, 3); return true;
+    case ROW_RT: *steps = 4; *cur = psp_rt_available() ? std::clamp(psp_rt_quality(), 0, 3) : 0; return true;
+    case ROW_RT_REFL: *steps = 4; *cur = psp_rt_available() ? std::clamp(psp_rt_refl_quality(), 0, 3) : 0; return true;
+    case ROW_RT_SOFT: *steps = 5; *cur = std::clamp(psp_rt_softness(), 0, 4); return true;
+    case ROW_HDR_BOOST: *steps = 4; *cur = std::clamp(psp_hdr_boost(), 0, 3); return true;
+    case ROW_HDR_GAMUT: *steps = 5; *cur = std::clamp(psp_hdr_gamut(), 0, 4); return true;
+    case ROW_UPSCALE: *steps = 3; *cur = std::clamp(psp_post_upscale(), 0, 2); return true;
+    case ROW_FPS: if (g_fps.get && g_fps.count > 1) { *steps = g_fps.count; *cur = fps_index(); return true; } return false;
+    case ROW_SYNC: *steps = 5; *cur = std::clamp(ge_draw_sync_mode(), 0, 4); return true;
+    case ROW_TOUCH: *steps = 3; *cur = std::clamp(psp_touch_mode(), 0, 2); return true;
+    default: return false;
+    }
+}
+psp_sddialog::SetKind row_kind(Row r) {
+    using K = psp_sddialog::SetKind;
+    switch (r) {
+    case ROW_FPSCOUNT: case ROW_WIDE: case ROW_SOFT: case ROW_TEXPACK: case ROW_UPDATES: case ROW_HDR: case ROW_HDR_SCENE: case ROW_CLOUD_AUTO:
+    case ROW_CLOUD_REPLAYS: case ROW_PERF: case ROW_FX: case ROW_GLOWSOFT: case ROW_GLOWPASS:
+    case ROW_DBG0: case ROW_DBG1: case ROW_DBG2: case ROW_DBG3: case ROW_DBG4: case ROW_DBG5:
+        return K::Toggle;
+    case ROW_TOUCH_EDIT: case ROW_CLOUD_NOW: case ROW_CLOUD_GOOGLE: case ROW_GPU_DEL: return K::Action;
+    case ROW_QUIT: return K::Danger;
+    case ROW_SUB_HDR: case ROW_SUB_RT: return K::Submenu;
+    case ROW_NET_SERVER: case ROW_NET_ROOM: case ROW_NET_PEERS: case ROW_CLOUD_FOLDER: case ROW_CLOUD_URL: case ROW_CLOUD_USER: case ROW_CLOUD_PASS: return K::Text;
+    case ROW_NET_STATUS: case ROW_CLOUD_STATUS: return K::Info;
+    default: return is_section(r) ? K::Header : K::Choice;
+    }
+}
+std::string trim_str(std::string v) {
+    while (!v.empty() && v.back() == ' ') v.pop_back();
+    size_t i = 0;
+    while (i < v.size() && v[i] == ' ') ++i;
+    return v.substr(i);
+}
+// Removes `phrase` from `text` (and the space before it); true when it was there.
+bool peel(std::string& text, const char* phrase) {
+    const size_t at = text.find(phrase);
+    if (at == std::string::npos) return false;
+    text.erase(at, std::strlen(phrase));
+    while (at < text.size() && text[at] == ' ' && (at == 0 || text[at - 1] == ' ' || text[at - 1] == '\n')) text.erase(at, 1);
+    while (!text.empty() && (text.back() == ' ' || text.back() == '\n')) text.pop_back();
+    return true;
+}
+// The description as the panel shows it: the environment variable names go from the title, and the "Saved." / "This session only." /
+// "Takes effect ..." sentences become a small chip next to it.
+void polish_help(std::string& help, std::string& badge) {
+    const size_t nl = help.find('\n');
+    std::string title = nl == std::string::npos ? std::string() : help.substr(0, nl);
+    std::string body = nl == std::string::npos ? help : help.substr(nl + 1);
+    const size_t env = title.find(" (PSPRECOMP_");
+    if (env != std::string::npos) { const size_t close = title.find(')', env); if (close != std::string::npos) title.erase(env, close - env + 1); }
+    if (peel(body, "Takes effect the next time the game starts.") | peel(body, "Takes effect the next time the game starts")) badge = "Next start";
+    else if (peel(body, "Applies when the game next starts.")) badge = "Next start";
+    peel(body, "Takes effect at once.");
+    if (peel(body, "This session only.")) { if (badge.empty()) badge = "This session"; }
+    if (peel(body, "Saved.")) { if (badge.empty()) badge = "Saved"; }
+    std::string o;   // collapse double spaces left behind
+    for (char ch : body) if (!(ch == ' ' && !o.empty() && o.back() == ' ')) o += ch;
+    help = nl == std::string::npos ? o : title + "\n" + o;
+}
+std::vector<psp_sddialog::SetRow> make_set_rows() {
+    using psp_sddialog::SetKind;
+    const std::vector<psp_sddialog::MenuRow> src = make_rows();
+    std::vector<psp_sddialog::SetRow> out;
+    for (size_t i = 0; i < src.size() && i < g_rows.size(); ++i) {
+        const Row r = g_rows[i];
+        const psp_sddialog::MenuRow& m = src[i];
+        psp_sddialog::SetRow o;
+        o.id = int(r);
+        o.kind = row_kind(r);
+        o.label = m.label;
+        o.value = m.value;
+        o.help = m.help;
+        o.can_dec = m.can_dec; o.can_inc = m.can_inc;
+        o.disabled = m.disabled;
+        int steps = 0, cur = 0;
+        if (o.kind == SetKind::Choice && slider_of(r, &steps, &cur) && steps > 1) { o.kind = SetKind::Slider; o.steps = steps; o.cur = cur; }
+        if (o.kind == SetKind::Toggle) {
+            const std::string v = m.value;
+            auto word = [&](const char* w) { const size_t n = std::strlen(w); return v.compare(0, n, w) == 0 && (v.size() == n || v[n] == ' '); };
+            if (word("On")) { o.on = true; o.value = trim_str(v.substr(2)); }
+            else if (word("Off")) { o.on = false; o.value = trim_str(v.substr(3)); }
+            else { o.on = false; o.value = v; }
+        }
+        if (o.kind == SetKind::Slider && (r == ROW_SCALE)) {   // "3x  1440 x 816" is a long value for a slider row: keep the multiplier
+            const size_t sp = o.value.find(' ');
+            if (sp != std::string::npos) o.value = o.value.substr(0, sp);
+        }
+        polish_help(o.help, o.badge);
+        if (m.value.find("next start") != std::string::npos || m.value.find("next launch") != std::string::npos) o.badge = "Next start";
+        out.push_back(std::move(o));
+    }
+    return out;
+}
+
 // ---- applying --------------------------------------------------------------
 void size_window(const ResOpt& o) {
     SDL_Window* w = win();
@@ -975,14 +1170,6 @@ void apply_updates(bool on) { save("check_updates", on ? "1" : "0"); }
 void build_rows();
 
 void change(int d) {   // left / right on the selected row
-    if (g_edit.active) {
-        if (g_edit.sel == 1) {
-            const int n = int(std::strlen(k_edit_chars));
-            g_edit.ci = (g_edit.ci + d + n) % n;
-            g_dirty = true;
-        }
-        return;
-    }
     if (g_sel < 0 || g_sel >= int(g_rows.size())) return;
     switch (g_rows[size_t(g_sel)]) {
     case ROW_DISPLAY:
@@ -1051,7 +1238,7 @@ void change(int d) {   // left / right on the selected row
         if (g_net_internet != (d < 0)) {   // left: Internet, right: LAN
             g_net_internet = d < 0;
             net_apply();
-            g_sel_page[g_page] = g_sel;
+            g_sel_page[page_id()] = g_sel;
             build_rows();   // the rows differ: server and room, or direct peers
         }
         break;
@@ -1061,7 +1248,7 @@ void change(int d) {   // left / right on the selected row
         if (nx != cur) {
             g_cloud.provider = psp_cloud_svc::Provider(nx);
             cloud_apply();
-            g_sel_page[g_page] = g_sel;
+            g_sel_page[page_id()] = g_sel;
             build_rows();   // the rows differ per provider
         }
         break;
@@ -1180,7 +1367,6 @@ void change(int d) {   // left / right on the selected row
             const int back = it != g_saved.end() ? std::atoi(it->second.c_str()) : 0;
             psp_fx_set_contact(back); save("contact_shadows", std::to_string(std::min(3, std::max(0, back))));
         }
-        g_sel_page[g_page] = std::max(0, g_sel + (on ? -1 : 1));   // the contact row above disappears / appears
         build_rows();
         break;
     }
@@ -1228,143 +1414,202 @@ void change(int d) {   // left / right on the selected row
         }
         break;
     }
+    default: break;
     }
     g_dirty = true;
 }
 
 void build_rows() {
-    if (page_id() == PAGE_GPU) {
-        g_rows = {ROW_GPU, ROW_GPU_GET, ROW_GPU_DEL};
-    } else if (page_id() == PAGE_NETWORK) {
+    g_rows.clear();
+    auto add = [&](Row r) { g_rows.push_back(r); };
+    switch (page_id()) {
+    case PAGE_DISPLAY:
+        add(ROW_SEC_WINDOW); add(ROW_DISPLAY); add(ROW_RES); add(ROW_WIDE); add(ROW_UPSCALE);
+        add(ROW_SEC_PERF);
+        if (g_fps.get && g_fps.count > 1) add(ROW_FPS);
+        add(ROW_FPSCOUNT);
+        break;
+    case PAGE_GRAPHICS:
+        add(ROW_SEC_QUALITY); add(ROW_SCALE); add(ROW_ANISO); add(ROW_SOFT);
+        add(ROW_SEC_AA); add(ROW_AA); add(ROW_SHARP);
+        if (texpack_row_wanted()) { add(ROW_SEC_TEX); add(ROW_TEXPACK); }
+        if (renderer_row_wanted()) { add(ROW_SEC_ENGINE); add(ROW_RENDERER); }
+        break;
+    case PAGE_IMAGE:
+        add(ROW_SEC_COLOUR); add(ROW_BRIGHT); add(ROW_CONTRAST); add(ROW_SAT);
+        add(ROW_SEC_HDR); add(ROW_SUB_HDR);
+        break;
+    case PAGE_HDR:
+        add(ROW_HDR); add(ROW_HDR_SCENE); add(ROW_HDR_BOOST); add(ROW_HDR_GAMUT); add(ROW_HDR_PEAK); add(ROW_HDR_PAPER);
+        break;
+    case PAGE_EFFECTS:
+        add(ROW_SEC_LIGHT); add(ROW_SSAO);
+        if (!psp_rt_active()) add(ROW_CONTACT);   // ray-traced shadows replace them
+        if (!psp_rt_refl_active()) add(ROW_SSR);  // ray-traced reflections replace them
+        add(ROW_SEC_RT); add(ROW_SUB_RT);
+        break;
+    case PAGE_RT:
+        add(ROW_RT); add(ROW_RT_SOFT); add(ROW_RT_REFL);
+        break;
+    case PAGE_CONTROLS:
+        add(ROW_SEC_TOUCH); add(ROW_TOUCH); add(ROW_TOUCH_EDIT);
+        break;
+    case PAGE_GPU:
+        add(ROW_SEC_DRIVER); add(ROW_GPU); add(ROW_GPU_GET); add(ROW_GPU_DEL);
+        break;
+    case PAGE_NETWORK:
         net_load();
-        g_rows = {ROW_NET_MODE};
-        if (g_net_internet) { g_rows.push_back(ROW_NET_SERVER); g_rows.push_back(ROW_NET_ROOM); }
-        else g_rows.push_back(ROW_NET_PEERS);
-        g_rows.push_back(ROW_NET_STATUS);
-    } else if (page_id() == PAGE_CLOUD) {
+        add(ROW_SEC_SERVER); add(ROW_NET_MODE);
+        if (g_net_internet) { add(ROW_NET_SERVER); add(ROW_NET_ROOM); }
+        else add(ROW_NET_PEERS);
+        add(ROW_NET_STATUS);
+        break;
+    case PAGE_CLOUD:
         cloud_load();
         if (psp_cloud_svc::initialised()) {
-            g_rows = {ROW_CLOUD_PROVIDER};
             using P = psp_cloud_svc::Provider;
-            if (g_cloud.provider == P::Folder) g_rows.push_back(ROW_CLOUD_FOLDER);
-            else if (g_cloud.provider == P::WebDav) { g_rows.push_back(ROW_CLOUD_URL); g_rows.push_back(ROW_CLOUD_USER); g_rows.push_back(ROW_CLOUD_PASS); }
-            else if (g_cloud.provider == P::Google) g_rows.push_back(ROW_CLOUD_GOOGLE);
-            if (g_cloud.provider != P::Off) {
-                g_rows.push_back(ROW_CLOUD_AUTO);
-                g_rows.push_back(ROW_CLOUD_REPLAYS);
-                g_rows.push_back(ROW_CLOUD_NOW);
-            }
-            g_rows.push_back(ROW_CLOUD_STATUS);
-        } else g_rows = {ROW_CLOUD_STATUS};     // cloud sync is not running in this session (PSPRECOMP_CLOUD=0)
-    } else if (page_id() == PAGE_DEBUG) {
-        g_rows = {ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS};
+            add(ROW_SEC_SYNC); add(ROW_CLOUD_PROVIDER);
+            if (g_cloud.provider == P::Folder) add(ROW_CLOUD_FOLDER);
+            else if (g_cloud.provider == P::WebDav) { add(ROW_CLOUD_URL); add(ROW_CLOUD_USER); add(ROW_CLOUD_PASS); }
+            else if (g_cloud.provider == P::Google) add(ROW_CLOUD_GOOGLE);
+            if (g_cloud.provider != P::Off) { add(ROW_CLOUD_AUTO); add(ROW_CLOUD_REPLAYS); add(ROW_CLOUD_NOW); }
+            add(ROW_CLOUD_STATUS);
+        } else add(ROW_CLOUD_STATUS);     // cloud sync is not running in this session (PSPRECOMP_CLOUD=0)
+        break;
+    case PAGE_DEBUG:
+        add(ROW_PERF); add(ROW_FX); add(ROW_SYNC); add(ROW_RING); add(ROW_GLOWSOFT); add(ROW_GLOWPASS);
         for (size_t i = 0; i < g_dbg_toggles.size(); i++) g_rows.push_back(Row(ROW_DBG0 + int(i)));
-    } else {
-        g_rows = {ROW_DISPLAY, ROW_RES, ROW_SCALE};
-        if (g_fps.get && g_fps.count > 1) g_rows.push_back(ROW_FPS);
-        g_rows.push_back(ROW_FPSCOUNT);
-        g_rows.push_back(ROW_WIDE);
-        g_rows.push_back(ROW_SOFT);
-        if (texpack_row_wanted()) g_rows.push_back(ROW_TEXPACK);
-        g_rows.push_back(ROW_AA);
-        g_rows.push_back(ROW_SHARP);
-        g_rows.push_back(ROW_BRIGHT);
-        g_rows.push_back(ROW_CONTRAST);
-        g_rows.push_back(ROW_SAT);
-        g_rows.push_back(ROW_HDR);
-        g_rows.push_back(ROW_HDR_BOOST);
-        g_rows.push_back(ROW_HDR_GAMUT);
-        g_rows.push_back(ROW_HDR_PEAK);
-        g_rows.push_back(ROW_HDR_PAPER);
-        g_rows.push_back(ROW_HDR_SCENE);
-        g_rows.push_back(ROW_SSAO);
-        if (!psp_rt_active()) g_rows.push_back(ROW_CONTACT);   // ray-traced shadows replace them
-        g_rows.push_back(ROW_RT);
-        g_rows.push_back(ROW_RT_SOFT);
-        g_rows.push_back(ROW_RT_REFL);
-        if (!psp_rt_refl_active()) g_rows.push_back(ROW_SSR);   // ray-traced reflections replace them
-        g_rows.push_back(ROW_ANISO);
-        g_rows.push_back(ROW_UPSCALE);
-        if (renderer_row_wanted()) g_rows.push_back(ROW_RENDERER);
-        if (voice_row_wanted()) g_rows.push_back(ROW_VOICE);
-#ifdef __ANDROID__   // the on-screen controls exist for Android only
-        g_rows.push_back(ROW_TOUCH);
-        g_rows.push_back(ROW_TOUCH_EDIT);
-#endif
-        g_rows.push_back(ROW_UPDATES);
-        g_rows.push_back(ROW_QUIT);
+        break;
+    default:   // PAGE_SYSTEM
+        add(ROW_SEC_GAME);
+        if (voice_row_wanted()) add(ROW_VOICE);
+        add(ROW_UPDATES);
+        add(ROW_SEC_SESSION); add(ROW_QUIT);
+        break;
     }
-    g_sel = std::min(std::max(g_sel_page[g_page], 0), int(g_rows.size()) - 1);
+    g_sel = std::clamp(g_sel_page[page_id()], 0, std::max(0, int(g_rows.size()) - 1));
+    while (g_sel + 1 < int(g_rows.size()) && is_section(g_rows[size_t(g_sel)])) ++g_sel;   // never rest on a caption
 }
 
-// Length of the tab switch animation; PSPRECOMP_TAB_ANIM_MS=<ms> overrides it (0 = no animation).
-int64_t tab_anim_ms() {
-    static const int64_t v = [] { const char* e = std::getenv("PSPRECOMP_TAB_ANIM_MS"); return e && e[0] ? int64_t(std::atoi(e)) : int64_t(200); }();
-    return v;
-}
-int g_anim_from = -1, g_anim_dir = 0;  // a tab switch in progress: the tab left, and the direction (+1 = R)
-int64_t g_anim_t0 = 0;
+// ---- the screen ------------------------------------------------------------------------------------------------
+psp_sddialog::SettingsView g_view;
+std::vector<psp_sddialog::SetRow> g_set_rows;   // the rows as drawn (rebuilt when something changes, and every 250 ms)
+int64_t g_rows_next = 0;
+int g_device = 0;                      // 0 pad, 1 keyboard / mouse, 2 touch: what the hints show
+int g_hover_row = -1, g_hover_cat = -1, g_hover_part = 0, g_press_row = -1;
+bool g_hover_back = false;
+bool g_closing = false;                // the close animation is running (the game stays paused until it ends)
+std::atomic<bool> g_request_open{false};
+std::atomic<bool> g_gate_dirty{false};
 
-void switch_page(int dir = 1) {   // dir +1 = the next tab (R), -1 = the previous one (L); wraps around
-    g_sel_page[g_page] = g_sel;
-    g_anim_from = g_page; g_anim_dir = dir; g_anim_t0 = now_ms();
-    const int n = int(page_list().size());
-    g_page = (g_page + dir + n) % n;
+void set_open(bool open);
+void enter_sub(int page);
+void go_back();
+
+void rebuild(int dir) {   // a different page is shown
+    if (g_edit.active) edit_end();
     build_rows();
+    g_view.page_changed(dir);
     g_quit_armed = false;
+    g_hover_row = -1; g_press_row = -1;
     g_dirty = true;
+    g_rows_next = 0;
+}
+void goto_category(int idx) {
+    const int n = int(page_list().size());
+    idx = std::clamp(idx, 0, n - 1);
+    if (idx == g_page && g_sub < 0) return;
+    g_sel_page[page_id()] = g_sel;
+    const int dir = idx > g_page ? 1 : idx < g_page ? -1 : 0;
+    g_page = idx;
+    g_sub = -1;
+    rebuild(dir);
+}
+void switch_page(int dir) {   // L / R: the next / previous category; wraps around
+    const int n = int(page_list().size());
+    goto_category((g_page + dir + n) % n);
+}
+void enter_sub(int page) {
+    g_sel_page[page_id()] = g_sel;
+    g_sub = page;
+    g_sel_page[page] = 0;
+    rebuild(1);
+}
+void leave_sub() {
+    g_sel_page[page_id()] = g_sel;
+    g_sub = -1;
+    rebuild(-1);
+}
+void go_back() {   // Back: cancel a text entry, else up one sub-menu level, else close
+    if (g_edit.active) { edit_end(); return; }
+    if (g_sub >= 0) { leave_sub(); return; }
+    set_open(false);
 }
 
 void set_open(bool open) {
-    if (open == g_open.load()) return;
-    if (open && psp_adhoc_in_session()) {   // opening pauses the game, which would stall the other players
-        ge_draw_toast("Settings are unavailable during multiplayer", 2500);
-        std::fprintf(stderr, "[SETTINGS] menu not opened: in a multiplayer session\n");
-        return;
-    }
     if (open) {
+        if (g_closing) { g_closing = false; g_view.set_open(true); return; }   // changed our mind during the close animation
+        if (open == g_open.load()) return;
+        if (psp_adhoc_in_session()) {   // opening pauses the game, which would stall the other players
+            ge_draw_toast("Settings are unavailable during multiplayer", 2500);
+            std::fprintf(stderr, "[SETTINGS] menu not opened: in a multiplayer session\n");
+            return;
+        }
         build_res_options();
         pick_window_size();
         net_load();
+        g_pages.clear();
+        const char* tm = std::getenv("PSPRECOMP_TOUCH");
+        g_touch_ui = SDL_GetNumTouchDevices() > 0 || psp_touch_enabled() || (tm && (!std::strcmp(tm, "on") || !std::strcmp(tm, "auto") || !std::strcmp(tm, "1")));
+        g_page = std::clamp(g_page, 0, int(page_list().size()) - 1);
+        g_sub = -1;
         build_rows();
+        g_view = psp_sddialog::SettingsView();
+        g_view.set_open(true);
         g_quit_armed = false;
         g_dirty = true;
+        g_rows_next = 0;
         g_dir_held = 0;
+        g_press_row = g_hover_row = g_hover_cat = -1; g_hover_back = false;
         g_open = true;
         std::fprintf(stderr, "[SETTINGS] menu open (game paused)\n");
     } else {
-        g_sel_page[g_page] = g_sel;
+        if (!g_open.load() || g_closing) return;
+        g_sel_page[page_id()] = g_sel;
         if (g_edit.active) edit_end();
-        g_open = false;
-        g_wait_release = true;
-        psp_sddialog::menu_overlay_clear();
-        ge_draw_present_overlay_now();
-        std::fprintf(stderr, "[SETTINGS] menu closed\n");
+        g_closing = true;
+        g_view.set_open(false);
+        std::fprintf(stderr, "[SETTINGS] menu closing\n");
     }
+}
+void finish_close() {   // the close animation has ended: give the game back
+    g_closing = false;
+    g_open = false;
+    g_wait_release = true;
+    psp_sddialog::menu_overlay_clear();
+    ge_draw_present_overlay_now();
+    g_gate_dirty.store(true);
+    std::fprintf(stderr, "[SETTINGS] menu closed\n");
 }
 
 void move_sel(int d) {
-    if (g_edit.active) { g_edit.sel = (g_edit.sel + d + EDIT_ROWS) % EDIT_ROWS; g_dirty = true; return; }
+    if (g_edit.active) { edit_move(d, 0, &g_view.geom()); return; }
     const int n = int(g_rows.size());
     if (!n) return;
-    g_sel = (g_sel + d + n) % n;
-    g_quit_armed = false;
-    g_dirty = true;
+    g_view.follow_selection();
+    int s = g_sel;
+    for (int i = 0; i < n; ++i) {   // skip captions
+        s = (s + d + n) % n;
+        if (!is_section(g_rows[size_t(s)])) break;
+    }
+    if (s != g_sel) { g_sel = s; g_quit_armed = false; g_dirty = true; }
 }
 
 void confirm() {
-    if (g_edit.active) {
-        switch (g_edit.sel) {
-        case 1: edit_append(k_edit_chars[g_edit.ci]); break;
-        case 2: edit_backspace(); break;
-        case 3: edit_commit(); break;
-        case 4: edit_end(); break;
-        default: break;
-        }
-        return;
-    }
     if (g_sel < 0 || g_sel >= int(g_rows.size())) return;
     switch (g_rows[size_t(g_sel)]) {
+    case ROW_SUB_HDR: enter_sub(PAGE_HDR); return;
+    case ROW_SUB_RT: enter_sub(PAGE_RT); return;
     case ROW_QUIT:
         if (!g_quit_armed) { g_quit_armed = true; g_dirty = true; return; }
         std::fprintf(stderr, "[SETTINGS] quit from the settings menu\n");
@@ -1434,7 +1679,7 @@ void confirm() {
     case ROW_CLOUD_GOOGLE:
         if (psp_cloud_svc::status().state == psp_cloud_svc::Status::SigningIn) psp_cloud_svc::signin_cancel();
         else if (g_cloud.google_refresh.empty()) psp_cloud_svc::signin_start();
-        else { psp_cloud_svc::signout(); cloud_load(); g_sel_page[g_page] = g_sel; build_rows(); }
+        else { psp_cloud_svc::signout(); cloud_load(); g_sel_page[page_id()] = g_sel; build_rows(); }
         break;
     case ROW_CLOUD_AUTO: change(g_cloud.auto_sync ? -1 : 1); return;
     case ROW_CLOUD_REPLAYS: change(g_cloud.replays ? -1 : 1); return;
@@ -1467,11 +1712,22 @@ void confirm() {
         if (i < g_dbg_toggles.size()) change(g_dbg_toggles[i].get() ? -1 : 1);
         return;
     }
+    default: break;
     }
     g_dirty = true;
 }
 
+
 void nav(uint32_t dir) {
+    g_device = 0;
+    if (g_edit.active) {
+        const psp_sddialog::SetGeom* g = &g_view.geom();
+        if (dir & 1) edit_move(-1, 0, g);
+        else if (dir & 2) edit_move(1, 0, g);
+        else if (dir & 4) edit_move(0, -1, g);
+        else if (dir & 8) edit_move(0, 1, g);
+        return;
+    }
     if (dir & 1) move_sel(-1);
     else if (dir & 2) move_sel(1);
     else if (dir & 4) change(-1);
@@ -1502,6 +1758,164 @@ uint32_t dpad_bit(uint8_t b) {
     case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: return 8;
     default: return 0;
     }
+}
+
+// ---- mouse and touch -----------------------------------------------------------------------------------------------
+// Pointer positions arrive as fractions of the window; the overlay occupies the picture's rectangle (ge_draw_overlay_rect), so they are
+// mapped to 480x272 canvas units, the space SettingsView's geometry is in.
+bool to_canvas(float fx, float fy, float* ux, float* uy) {
+    float a, b, c, d;
+    ge_draw_overlay_rect(&a, &b, &c, &d);
+    if (c <= a || d <= b) return false;
+    *ux = (fx - a) / (c - a) * float(psp_sddialog::SCREEN_W);
+    *uy = (fy - b) / (d - b) * float(psp_sddialog::SCREEN_H);
+    return true;
+}
+bool mouse_to_canvas(int mx, int my, float* ux, float* uy) {
+    int ww = 0, wh = 0;
+    if (!win()) return false;
+    SDL_GetWindowSize(win(), &ww, &wh);
+    if (ww <= 0 || wh <= 0) return false;
+    return to_canvas(float(mx) / float(ww), float(my) / float(wh), ux, uy);
+}
+
+struct Pointer {
+    int mode = 0;               // 0 idle, 1 a row is held, 2 dragging a slider, 3 dragging the list, 4 dragging the scroll bar
+    int row = -1;
+    float x0 = 0, y0 = 0, scroll0 = 0, last_y = 0, vy = 0;
+    int64_t last_t = 0;
+    bool moved = false, touch = false;
+    SDL_FingerID finger = 0;
+} g_ptr;
+
+const psp_sddialog::SetGeom::Row* geom_row(int idx) {
+    for (const auto& r : g_view.geom().rows) if (r.idx == idx) return &r;
+    return nullptr;
+}
+void slider_drag_to(int idx, float ux) {   // drag: set the slider's position from x
+    const auto* gr = geom_row(idx);
+    if (!gr || idx < 0 || idx >= int(g_rows.size()) || idx >= int(g_set_rows.size())) return;
+    int steps = 0, cur = 0;
+    const Row r = g_rows[size_t(idx)];
+    if (!slider_of(r, &steps, &cur) || steps < 2) return;
+    const float f = std::clamp((ux - gr->track.x - 3.f) / std::max(1.f, gr->track.w - 6.f), 0.f, 1.f);
+    const int target = int(std::lround(f * float(steps - 1)));
+    g_sel = idx;
+    for (int guard = 0; cur != target && guard < steps + 2; ++guard) {
+        const int before = cur;
+        change(target > cur ? 1 : -1);
+        slider_of(r, &steps, &cur);
+        if (cur == before) break;   // the row refused (disabled, at an end)
+    }
+}
+void row_tap(int idx) {   // a click / tap on a row's body
+    if (idx < 0 || idx >= int(g_rows.size()) || idx >= int(g_set_rows.size())) return;
+    using K = psp_sddialog::SetKind;
+    const K k = g_set_rows[size_t(idx)].kind;
+    g_sel = idx;
+    g_quit_armed = g_quit_armed && g_rows[size_t(idx)] == ROW_QUIT;
+    if (k == K::Header || k == K::Info || k == K::Slider) return;   // sliders are set by dragging or with their arrows
+    confirm();
+}
+
+void pointer_hover(float ux, float uy) {
+    const auto& G = g_view.geom();
+    int row = -1, part = 0, cat = -1;
+    bool back = G.back.has(ux, uy);
+    if (!g_edit.active) {
+        for (size_t i = 0; i < G.cats.size(); ++i) if (G.cats[i].has(ux, uy)) cat = int(i);
+        if (G.list.has(ux, uy))
+            for (const auto& r : G.rows)
+                if (r.r.has(ux, uy) && r.idx < int(g_set_rows.size()) && g_set_rows[size_t(r.idx)].kind != psp_sddialog::SetKind::Header) {
+                    row = r.idx;
+                    if (r.dec.has(ux, uy) && g_set_rows[size_t(r.idx)].kind != psp_sddialog::SetKind::Toggle) part = 1;
+                    if (r.inc.has(ux, uy) && g_set_rows[size_t(r.idx)].kind != psp_sddialog::SetKind::Toggle) part = 2;
+                    if (r.track.w > 0 && r.track.has(ux, uy)) part = 3;
+                }
+    }
+    g_hover_row = row; g_hover_part = part; g_hover_cat = cat; g_hover_back = back;
+}
+
+void pointer_press(float ux, float uy, bool touch) {
+    g_device = touch ? 2 : 1;
+    pointer_hover(ux, uy);
+    const auto& G = g_view.geom();
+    g_ptr = Pointer{};
+    g_ptr.touch = touch; g_ptr.x0 = ux; g_ptr.y0 = uy; g_ptr.last_y = uy; g_ptr.last_t = now_ms();
+    if (g_edit.active) {
+        for (size_t r = 0; r < G.keys.size(); ++r)
+            for (size_t k = 0; k < G.keys[r].size(); ++k)
+                if (G.keys[r][k].r.has(ux, uy)) { g_edit.row = int(r); g_edit.col = int(k); edit_press_focus(); return; }
+        return;
+    }
+    if (G.back.has(ux, uy)) { go_back(); return; }
+    for (size_t i = 0; i < G.cats.size(); ++i)
+        if (G.cats[i].has(ux, uy)) { goto_category(int(i)); return; }
+    if (G.scroll_thumb.w > 0 && G.scroll_thumb.has(ux, uy)) { g_ptr.mode = 4; g_ptr.scroll0 = g_view.scroll_pos(); return; }
+    if (G.scroll_track.w > 0 && G.scroll_track.has(ux, uy)) {   // jump to that part of the list, then drag
+        const float f = std::clamp((uy - G.scroll_track.y) / std::max(1.f, G.scroll_track.h), 0.f, 1.f);
+        g_view.set_scroll_pos(f * g_view.scroll_max());
+        g_ptr.mode = 4; g_ptr.scroll0 = g_view.scroll_pos();
+        return;
+    }
+    if (G.list.has(ux, uy)) {
+        for (const auto& r : G.rows) {
+            if (!r.r.has(ux, uy) || r.idx >= int(g_set_rows.size()) || r.idx >= int(g_rows.size())) continue;
+            const auto& row = g_set_rows[size_t(r.idx)];
+            if (row.kind == psp_sddialog::SetKind::Header) break;
+            g_sel = r.idx;
+            g_quit_armed = g_quit_armed && g_rows[size_t(r.idx)] == ROW_QUIT;
+            g_view.follow_selection();
+            const bool arrows = row.kind == psp_sddialog::SetKind::Choice || row.kind == psp_sddialog::SetKind::Slider;
+            if (arrows && r.dec.w > 0 && r.dec.has(ux, uy)) { change(-1); return; }
+            if (arrows && r.inc.w > 0 && r.inc.has(ux, uy)) { change(1); return; }
+            if (row.kind == psp_sddialog::SetKind::Slider && r.track.w > 0 && r.track.has(ux, uy)) {
+                g_ptr.mode = 2; g_ptr.row = r.idx;
+                slider_drag_to(r.idx, ux);
+                return;
+            }
+            g_ptr.mode = 1; g_ptr.row = r.idx; g_press_row = r.idx;
+            g_dirty = true;
+            return;
+        }
+        g_ptr.mode = 3; g_ptr.scroll0 = g_view.scroll_pos();   // empty space: drag the list
+        g_view.fling(0.f);
+    }
+}
+void pointer_move(float ux, float uy) {
+    if (!g_ptr.touch || g_ptr.mode == 0) pointer_hover(ux, uy);
+    if (g_ptr.mode == 0) return;
+    const int64_t t = now_ms();
+    const float dy = uy - g_ptr.y0, dx = ux - g_ptr.x0;
+    if (g_ptr.mode == 2) { slider_drag_to(g_ptr.row, ux); return; }
+    if (g_ptr.mode == 1) {   // a held row turns into a list drag once the pointer travels
+        if (std::fabs(dy) > 4.f || std::fabs(dx) > 8.f) {
+            if (std::fabs(dy) >= std::fabs(dx)) { g_ptr.mode = 3; g_ptr.scroll0 = g_view.scroll_pos(); g_press_row = -1; g_ptr.moved = true; }
+            else if (!g_ptr.touch) { g_press_row = -1; g_ptr.mode = 0; }
+        }
+        if (g_ptr.mode == 1) return;
+    }
+    if (g_ptr.mode == 3) {
+        if (std::fabs(dy) > 3.f) g_ptr.moved = true;
+        if (g_ptr.moved) {
+            g_view.set_scroll_pos(std::clamp(g_ptr.scroll0 - dy, 0.f, g_view.scroll_max()));
+            const float dt = float(t - g_ptr.last_t) / 1000.f;
+            if (dt > 0.001f) g_ptr.vy = 0.6f * g_ptr.vy + 0.4f * ((g_ptr.last_y - uy) / dt);
+        }
+        g_ptr.last_y = uy; g_ptr.last_t = t;
+    } else if (g_ptr.mode == 4) {
+        const auto& G = g_view.geom();
+        const float room = std::max(1.f, G.scroll_track.h - 8.f - (G.scroll_thumb.h - 4.f));
+        g_view.set_scroll_pos(std::clamp(g_ptr.scroll0 + dy * g_view.scroll_max() / room, 0.f, g_view.scroll_max()));
+    }
+}
+void pointer_release(float ux, float uy) {
+    (void)ux; (void)uy;
+    if (g_ptr.mode == 1 && !g_ptr.moved) row_tap(g_ptr.row);
+    else if (g_ptr.mode == 3 && g_ptr.touch && g_ptr.moved && std::fabs(g_ptr.vy) > 30.f && now_ms() - g_ptr.last_t < 120) g_view.fling(std::clamp(g_ptr.vy, -700.f, 700.f));
+    g_ptr = Pointer{};
+    g_press_row = -1;
+    g_dirty = true;
 }
 
 }  // namespace
@@ -1589,6 +2003,9 @@ void psp_settings_load_early() {
 
 bool psp_settings_menu_open() { return g_open.load(); }
 
+void psp_settings_request_open() { g_request_open.store(true); }
+bool psp_settings_take_gate_dirty() { return g_gate_dirty.exchange(false); }
+
 bool psp_settings_handle_event(const SDL_Event& ev) {
     if (!g_enabled) return false;
     const bool open = g_open.load();
@@ -1596,35 +2013,38 @@ bool psp_settings_handle_event(const SDL_Event& ev) {
     case SDL_KEYDOWN: {
         const SDL_Keycode k = ev.key.keysym.sym;
         if (k == SDLK_ESCAPE || k == SDLK_F1) {
-            if (open && g_edit.active) { if (!ev.key.repeat) edit_end(); return true; }   // cancel the edit only
-            if (!ev.key.repeat) set_open(!open);
+            if (ev.key.repeat) return true;
+            if (!open) { g_device = 1; set_open(true); return true; }
+            if (g_closing) { return true; }
+            if (g_edit.active) { edit_end(); return true; }   // cancel the text entry only
+            if (k == SDLK_F1) set_open(false); else go_back();
             return true;
         }
-        if (!open) return false;
-        if (g_edit.active) {   // letters arrive as SDL_TEXTINPUT; only navigation keys act here
+        if (!open || g_closing) return false;
+        g_device = 1;
+        if (g_edit.active) {   // text arrives as SDL_TEXTINPUT; only navigation keys act here
+            const psp_sddialog::SetGeom* g = &g_view.geom();
             switch (k) {
-            case SDLK_UP: move_sel(-1); break;
-            case SDLK_DOWN: move_sel(1); break;
-            case SDLK_LEFT: change(-1); break;
-            case SDLK_RIGHT: change(1); break;
+            case SDLK_UP: edit_move(-1, 0, g); break;
+            case SDLK_DOWN: edit_move(1, 0, g); break;
+            case SDLK_LEFT: edit_move(0, -1, g); break;
+            case SDLK_RIGHT: edit_move(0, 1, g); break;
             case SDLK_BACKSPACE: edit_backspace(); break;
-            case SDLK_RETURN: case SDLK_KP_ENTER:
-                if (!ev.key.repeat) { if (g_edit.sel == 1 || g_edit.sel == 2 || g_edit.sel == 4) confirm(); else edit_commit(); }
-                break;
+            case SDLK_RETURN: case SDLK_KP_ENTER: if (!ev.key.repeat) edit_commit(); break;
             default: break;
             }
             return false;
         }
         switch (k) {
-        case SDLK_UP: move_sel(-1); break;
-        case SDLK_DOWN: move_sel(1); break;
-        case SDLK_LEFT: change(-1); break;
-        case SDLK_RIGHT: change(1); break;
+        case SDLK_UP: nav(1); g_device = 1; break;
+        case SDLK_DOWN: nav(2); g_device = 1; break;
+        case SDLK_LEFT: nav(4); g_device = 1; break;
+        case SDLK_RIGHT: nav(8); g_device = 1; break;
         case SDLK_RETURN: case SDLK_KP_ENTER: case SDLK_x: case SDLK_SPACE:
             if (!ev.key.repeat) confirm();
             break;
         case SDLK_z: case SDLK_BACKSPACE:
-            if (!ev.key.repeat) set_open(false);
+            if (!ev.key.repeat) go_back();
             break;
         case SDLK_q: case SDLK_PAGEUP:
             if (!ev.key.repeat) switch_page(-1);
@@ -1644,23 +2064,27 @@ bool psp_settings_handle_event(const SDL_Event& ev) {
         if (b == SDL_CONTROLLER_BUTTON_RIGHTSTICK) g_r3 = down;
         if (down && (b == SDL_CONTROLLER_BUTTON_GUIDE ||
                      ((b == SDL_CONTROLLER_BUTTON_LEFTSTICK || b == SDL_CONTROLLER_BUTTON_RIGHTSTICK) && g_l3 && g_r3))) {
-            set_open(!open);
+            if (open && !g_closing) set_open(false); else { g_device = ev.cbutton.which == PSP_TOUCH_PAD_ID ? 2 : 0; set_open(true); }
             return true;
         }
         if (const uint32_t d = dpad_bit(b)) {
             if (down) g_pad_dpad = d; else if (g_pad_dpad == d) g_pad_dpad = 0;
         }
-        if (!open || !down) return false;
+        if (!open || g_closing || !down) return false;
+        g_device = ev.cbutton.which == PSP_TOUCH_PAD_ID ? 2 : 0;
         const uint8_t ok = g_confirm_cross ? SDL_CONTROLLER_BUTTON_A : SDL_CONTROLLER_BUTTON_B;
         const uint8_t back = g_confirm_cross ? SDL_CONTROLLER_BUTTON_B : SDL_CONTROLLER_BUTTON_A;
-        if (g_edit.active) {   // Circle deletes (or cancels when empty), Start saves
-            if (b == ok) confirm();
+        if (g_edit.active) {   // the on-screen keyboard: confirm presses a key, back deletes (cancels when empty), Start = done, shoulders = layers
+            if (b == ok) edit_press_focus();
             else if (b == back) { if (g_edit.buf.empty()) edit_end(); else edit_backspace(); }
             else if (b == SDL_CONTROLLER_BUTTON_START) edit_commit();
+            else if (b == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) { g_edit.shift = !g_edit.shift; g_edit.symbols = false; edit_clamp_focus(); }
+            else if (b == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) { g_edit.symbols = !g_edit.symbols; g_edit.shift = false; edit_clamp_focus(); }
             return false;
         }
         if (b == ok) confirm();
-        else if (b == back || b == SDL_CONTROLLER_BUTTON_START) set_open(false);
+        else if (b == back) go_back();
+        else if (b == SDL_CONTROLLER_BUTTON_START) set_open(false);
         else if (b == SDL_CONTROLLER_BUTTON_LEFTSHOULDER) switch_page(-1);
         else if (b == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) switch_page(1);
         return false;
@@ -1675,8 +2099,45 @@ bool psp_settings_handle_event(const SDL_Event& ev) {
         if (ev.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX) g_lx = ev.caxis.value;
         if (ev.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) g_ly = ev.caxis.value;
         return false;
+    case SDL_MOUSEMOTION: case SDL_MOUSEBUTTONDOWN: case SDL_MOUSEBUTTONUP: case SDL_MOUSEWHEEL: {
+        if (!open || g_closing) return false;
+        if (ev.type == SDL_MOUSEWHEEL) {
+            if (ev.wheel.which == SDL_TOUCH_MOUSEID || g_edit.active) return false;
+            g_device = 1;
+            g_view.fling(0.f);
+            g_view.scroll_by(-float(ev.wheel.preciseY) * 22.f);
+            return false;
+        }
+        if (ev.type == SDL_MOUSEMOTION ? ev.motion.which == SDL_TOUCH_MOUSEID : ev.button.which == SDL_TOUCH_MOUSEID) return false;
+        float ux = 0, uy = 0;
+        const int mx = ev.type == SDL_MOUSEMOTION ? ev.motion.x : ev.button.x, my = ev.type == SDL_MOUSEMOTION ? ev.motion.y : ev.button.y;
+        if (!mouse_to_canvas(mx, my, &ux, &uy)) return false;
+        if (ev.type == SDL_MOUSEMOTION) {
+            if (g_device != 1 && std::abs(ev.motion.xrel) + std::abs(ev.motion.yrel) < 2) return false;   // a settling cursor does not take over from the pad
+            g_device = 1;
+            pointer_move(ux, uy);
+        } else if (ev.type == SDL_MOUSEBUTTONDOWN) {
+            if (ev.button.button == SDL_BUTTON_LEFT) pointer_press(ux, uy, false);
+            else if (ev.button.button == SDL_BUTTON_RIGHT) { g_device = 1; go_back(); }
+        } else if (ev.button.button == SDL_BUTTON_LEFT) pointer_release(ux, uy);
+        return false;
+    }
+    case SDL_FINGERDOWN: case SDL_FINGERMOTION: case SDL_FINGERUP: {
+        if (!open || g_closing || psp_touch_editing()) return false;
+        float ux = 0, uy = 0;
+        if (!to_canvas(ev.tfinger.x, ev.tfinger.y, &ux, &uy)) return false;
+        if (ev.type == SDL_FINGERDOWN) {
+            if (g_ptr.mode != 0 && g_ptr.touch) return true;   // one finger drives the menu
+            pointer_press(ux, uy, true);
+            g_ptr.finger = ev.tfinger.fingerId;
+        } else if (g_ptr.touch && g_ptr.finger == ev.tfinger.fingerId) {
+            if (ev.type == SDL_FINGERMOTION) pointer_move(ux, uy);
+            else pointer_release(ux, uy);
+        }
+        return true;
+    }
     case SDL_WINDOWEVENT:
-        if (open) {   // size change (or F11): the overlay scale and the display rows follow
+        if (open) {   // size change (or F11): the display rows follow
             if (!is_fullscreen()) pick_window_size();
             g_dirty = true;
         }
@@ -1687,8 +2148,9 @@ bool psp_settings_handle_event(const SDL_Event& ev) {
 }
 
 void psp_settings_tick() {
+    if (g_request_open.exchange(false) && !g_open.load()) { set_open(true); g_gate_dirty.store(true); }
     if (!g_open.load()) return;
-    held_dir_update();
+    if (!g_closing) held_dir_update();
     // A render scale change waits until the game has parked (no display list in flight).
     if (g_pending_wide >= 0 && g_parked.load() > 0) {
         ge_draw_set_widescreen(g_pending_wide != 0);
@@ -1707,7 +2169,6 @@ void psp_settings_tick() {
         g_pending_rs = 0;
         g_dirty = true;
     }
-    const int scale = psp_sddialog::output_scale();
     const int64_t t = now_ms();
     if (page_id() == PAGE_NETWORK && !g_edit.active && t >= g_status_next) {   // keep the status line live
         g_status_next = t + 500;
@@ -1736,31 +2197,47 @@ void psp_settings_tick() {
             g_dirty = true;
         }
     }
-    if (g_dirty || scale != g_drawn_scale) {
+    // ~60 frames a second: the screen is animated. The picture is rendered at a lower scale when the CPU cannot keep up.
+    if (t - g_last_present < 15) return;
+    g_last_present = t;
+    if (g_dirty || t >= g_rows_next) {
+        g_set_rows = make_set_rows();
+        g_rows_next = t + 250;
         g_dirty = false;
-        g_drawn_scale = scale;
-        psp_sddialog::Canvas c(scale);
-        std::vector<std::string> page_tabs;
-        for (int id : page_list()) page_tabs.push_back(k_page_names[id]);
-        psp_sddialog::MenuAnim anim;
-        if (g_anim_from >= 0) {
-            const float u = tab_anim_ms() > 0 ? float(t - g_anim_t0) / float(tab_anim_ms()) : 1.f;
-            if (u >= 1.f) g_anim_from = -1;
-            else {
-                anim.from_tab = g_anim_from; anim.dir = g_anim_dir;
-                anim.p = 0.2f + 0.8f * (1.f - (1.f - u) * (1.f - u) * (1.f - u));   // ease out, starting a little in so no frame shows an empty list
-                g_dirty = true;                                       // keep drawing until it has settled
-            }
-        }
-        psp_sddialog::render_menu(c, "Settings", k_page_names[page_id()], make_rows(), g_edit.active ? g_edit.sel : g_sel, g_confirm_cross,
-                                  &page_tabs, g_page, g_anim_from >= 0 ? &anim : nullptr);
-        psp_sddialog::menu_overlay_publish(c);
-        ge_draw_present_overlay_now();
-        g_last_present = t;
-    } else if (t - g_last_present >= 100) {   // keep the window fresh while the game is paused
-        ge_draw_present_overlay_now();
-        g_last_present = t;
+        g_sel = std::clamp(g_sel, 0, std::max(0, int(g_set_rows.size()) - 1));
     }
+    psp_sddialog::SetScene sc;
+    for (int id : page_list()) sc.cats.push_back({k_page_names[id], page_icon(id)});
+    sc.cat = g_page;
+    sc.crumbs.push_back(k_page_names[page_list()[size_t(g_page)]]);
+    if (g_sub >= 0) sc.crumbs.push_back(k_page_names[g_sub]);
+    sc.in_sub = g_sub >= 0;
+    sc.rows = g_set_rows;
+    sc.sel = g_sel;
+    sc.hover_row = g_hover_row; sc.hover_cat = g_hover_cat; sc.hover_part = g_hover_part; sc.hover_back = g_hover_back;
+    sc.press_row = g_press_row;
+    sc.device = g_device;
+    sc.confirm_cross = g_confirm_cross;
+    if (g_edit.active) {
+        sc.kb.active = true;
+        sc.kb.title = edit_label();
+        sc.kb.text = g_edit.buf;
+        sc.kb.secret = g_edit.field == 6;
+        sc.kb.shift = g_edit.shift; sc.kb.symbols = g_edit.symbols;
+        sc.kb.row = g_edit.row; sc.kb.col = g_edit.col;
+    }
+    static std::unique_ptr<psp_sddialog::Canvas> canvas;
+    const int scale = std::max(1, std::min(psp_sddialog::output_scale(), g_ui_cap));
+    if (!canvas || canvas->scale != scale) canvas = std::make_unique<psp_sddialog::Canvas>(scale);
+    const auto r0 = Clock::now();
+    g_view.render(*canvas, sc, double(t));
+    psp_sddialog::menu_overlay_publish(*canvas);
+    const double ms = std::chrono::duration<double, std::milli>(Clock::now() - r0).count();
+    g_ui_ms = g_ui_ms * 0.85 + ms * 0.15;
+    if (g_ui_ms > 20.0 && g_ui_cap > 1) { --g_ui_cap; g_ui_ms = 8.0; g_ui_calm = 0; }
+    else if (g_ui_ms < 6.5 && g_ui_cap < psp_sddialog::MAX_SCALE && ++g_ui_calm > 150) { ++g_ui_cap; g_ui_calm = 0; }
+    ge_draw_present_overlay_now();
+    if (g_closing && g_view.closed()) finish_close();
 }
 
 bool psp_settings_block_input(uint32_t raw_buttons) {

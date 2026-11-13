@@ -18,6 +18,7 @@
 #include <SDL.h>
 #include "psp_gl.h"
 #include "psp_touch.h"
+#include "psp_settings.h"
 #include <atomic>
 #include <unordered_map>
 #include <cstdarg>
@@ -4326,6 +4327,20 @@ static void present_dump_frame(GLuint fbo, const char* why) {
     k++;
 }
 
+// Where the 480x272 overlay (settings menu, dialogs) was last drawn, as fractions of the drawable; the settings menu maps mouse and
+// touch positions through it (ge_draw_overlay_rect).
+static float g_ovl_fx0 = 0.f, g_ovl_fy0 = 0.f, g_ovl_fx1 = 1.f, g_ovl_fy1 = 1.f;
+static void note_overlay_rect(SDL_Window* window, const PresentRect& r) {
+    int dw = 0, dh = 0;
+    psp_gl_drawable_size(window, &dw, &dh);
+    if (dw <= 0 || dh <= 0) return;
+    g_ovl_fx0 = float(r.x0) / float(dw); g_ovl_fx1 = float(r.x1) / float(dw);
+    g_ovl_fy0 = float(r.y0) / float(dh); g_ovl_fy1 = float(r.y1) / float(dh);
+}
+void ge_draw_overlay_rect(float* fx0, float* fy0, float* fx1, float* fy1) {
+    *fx0 = g_ovl_fx0; *fy0 = g_ovl_fy0; *fx1 = g_ovl_fx1; *fy1 = g_ovl_fy1;
+}
+
 // Blit the given front FBO to the window and swap. Common to the routine
 // (page-flip) present and the liveness net.
 static void present_blit(GLuint fbo, const char* why = "flip") {
@@ -4345,6 +4360,7 @@ static void present_blit(GLuint fbo, const char* why = "flip") {
     // Tell the savedata-dialog renderer how big the output is so the overlay
     // is rendered at (at least) output resolution rather than upscaled.
     psp_sddialog::set_output_scale(std::max({g_rs, (cpr.x1 - cpr.x0 + 479) / 480, 1}));
+    note_overlay_rect(window, cpr);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     const int srs = rs_of_fbo(fbo), spw = w480_of_fbo(fbo);   // the shown buffer's scale and width
@@ -4425,7 +4441,7 @@ static void present_blit(GLuint fbo, const char* why = "flip") {
     }
     if (std::strcmp(why, "menu") != 0) { present_perf_hud(pr); present_fps_counter(pr); present_toast(pr); present_flash(pr); }
     present_dialog_overlay(cpr);
-    if (psp_touch_enabled()) {   // on-screen controls over the whole window (own program/VAO: the GE's cached GL state is reset after)
+    if (psp_touch_enabled() && (!psp_settings_menu_open() || psp_touch_editing())) {   // on-screen controls over the whole window (hidden while the settings menu is open: it takes touches itself) (own program/VAO: the GE's cached GL state is reset after)
         int tw = 0, th = 0;
         psp_gl_drawable_size(window, &tw, &th);
         psp_touch_draw(tw, th);
@@ -4767,6 +4783,7 @@ void ge_draw_present_overlay_now() {
     if (!window) return;
     const PresentRect pr = present_layout(window);
     psp_sddialog::set_output_scale(std::max({g_rs, (pr.x1 - pr.x0 + 479) / 480, 1}));
+    note_overlay_rect(window, pr);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     const GLboolean sc = glIsEnabled(GL_SCISSOR_TEST);
     if (sc) glDisable(GL_SCISSOR_TEST);

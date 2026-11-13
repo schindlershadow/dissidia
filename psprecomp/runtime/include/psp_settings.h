@@ -1,18 +1,18 @@
-// psp_settings.h — in-game settings menu (resolution, render scale, frame rate, quit).
+// psp_settings.h — in-game settings menu.
 //
-// The menu is drawn in the save dialog's style (psp_sddialog::render_menu, the
-// game's own theme when its module installed one) as an overlay over the last
-// game frame. While it is open the game is paused (guest threads wait at their
-// next vblank) and sees no input. Choices apply live and are saved to
-// settings.ini in the working directory (PSPRECOMP_SETTINGS overrides the
-// path); on the next start the saved values win over PSPRECOMP_FULLSCREEN /
-// PSPRECOMP_SCALE / PSPRECOMP_WINDOW / PSPRECOMP_RENDER_SCALE / PSPRECOMP_FPS.
+// An animated screen (SettingsView, drawn by psp_savedata_dialog.cpp / psp_settings_render.inc with the game's theme when its module
+// installed one) shown as an overlay over the last game frame: a category sidebar, a scrolling list of rows (toggles, choices, sliders,
+// actions, text fields, sub-menus) and a description panel. It works with a pad, the keyboard, a mouse and a touch screen. While it is
+// open the game is paused (guest threads wait at their next vblank) and sees no input, and the on-screen touch controls are hidden.
+// Choices apply live and are saved to settings.ini in the working directory (PSPRECOMP_SETTINGS overrides the path); on the next start
+// the saved values win over PSPRECOMP_FULLSCREEN / PSPRECOMP_SCALE / PSPRECOMP_WINDOW / PSPRECOMP_RENDER_SCALE / PSPRECOMP_FPS.
 //
-// Pages (L / R shoulder, Q / E or Tab): System (display, frame rate, quit), Network (LAN or
-// Internet, party server, room, direct peers - applied at once through psp_adhoc_configure), Debug.
+// Categories (L / R shoulder, Q / E or Tab, the sidebar): Display, Graphics, Image (colour; sub-menu HDR), Effects (lighting; sub-menu Ray
+// Tracing), Controls (touch screens only), Network (applied at once through psp_adhoc_configure), Cloud, System, Drivers (Android, Adreno)
+// and Debug.
 //
-// Open / close: Esc or F1 on the keyboard; Guide, or both stick buttons
-// (L3 + R3), on a game controller. PSPRECOMP_SETTINGS_MENU=0 disables it.
+// Open / close: Esc or F1 on the keyboard; Guide, or both stick buttons (L3 + R3), on a game controller; the touch controls' menu button;
+// psp_settings_request_open() from a game module's own menu entry. PSPRECOMP_SETTINGS_MENU=0 disables it.
 #pragma once
 
 #include <cstdint>
@@ -68,6 +68,14 @@ bool psp_settings_handle_event(const SDL_Event& ev);
 void psp_settings_tick();
 
 bool psp_settings_menu_open();
+
+/// Any thread: ask for the menu to open (the game's own menu entries - title screen, main menu, pause menu - call this). Takes effect
+/// on the main thread's next tick; does nothing while the menu is already open or in a multiplayer session.
+void psp_settings_request_open();
+
+/// Main thread: true once after the menu was opened or closed from inside psp_settings_tick (not by an event), so the event loop can
+/// re-publish the (now gated, or released) input state.
+bool psp_settings_take_gate_dirty();
 
 /// Input gate for the game: true while the menu is open, and after it closes
 /// until every button is released (`raw_buttons` = the host's PSP button bits).

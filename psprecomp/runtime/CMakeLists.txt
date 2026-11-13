@@ -472,6 +472,10 @@ target_include_directories(test_savedata_dialog PRIVATE ${CMAKE_CURRENT_SOURCE_D
 target_include_directories(test_savedata_dialog PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(test_savedata_dialog PRIVATE PkgConfig::FREETYPE)
 add_test(NAME savedata_dialog COMMAND test_savedata_dialog)
+add_executable(test_settings_ui tests/test_settings_ui.cpp src/hle/psp_savedata_dialog.cpp ${PSP_UI_FONTS_CPP})
+target_include_directories(test_settings_ui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(test_settings_ui PRIVATE PkgConfig::FREETYPE)
+add_test(NAME settings_ui COMMAND test_settings_ui)
 add_executable(test_savedata_hle tests/test_savedata_hle.cpp
     src/hle/psp_savedata_crypto.cpp src/hle/psp_savedata_dialog.cpp
     src/hle/psp_savemgr.cpp src/hle/psp_savemgr_ui.cpp ${PSP_CLOUD_SOURCES} ${PSP_UI_FONTS_CPP})

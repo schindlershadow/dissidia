@@ -66,9 +66,9 @@ Not yet run: the GitHub workflow, and an update against a real release.
 
 ## On the device
 
-- **Touch controls**: shown after the first touch (Auto), hidden when a controller button is pressed; Settings > System > Touch Controls
+- **Touch controls**: shown after the first touch (Auto), hidden when a controller button is pressed; Settings > Controls > Touch Controls
   (Auto / On / Off). The menu button at the top opens the Settings menu; a built-in or Bluetooth pad works as usual.
-- **Customising the touch controls**: Settings > System > Edit Touch Controls opens a layout editor drawn over the game. Drag any control (stick, d-pad,
+- **Customising the touch controls**: Settings > Controls > Edit Touch Controls opens a layout editor drawn over the game. Drag any control (stick, d-pad,
   Triangle / Circle / Cross / Square, L, R, Start, Select, menu) to move it; tap one to select it, then change its **size** and **opacity**, or
   **hide** it (a hidden control ignores touches). **Add combo** creates a round button that presses several PSP buttons at once (pick any of Up, Down,
   Left, Right, Triangle, Circle, Cross, Square, L, R, Start, Select: for example L+R, or R+Triangle); for a combo you can also choose
@@ -77,7 +77,7 @@ Not yet run: the GitHub workflow, and an update against a real release.
   **The right (camera) stick** is always floating: touch any empty part of the **right half** of the screen and it starts right there (drag to turn the camera; it disappears when you let go). A floating left stick only starts on the **left half**, so the two sticks never fight over a touch. A control under your finger (a face button, L / R, ...) always wins over a stick.
   **Reset** restores the default layout, **Done** saves. The layout is `touch_layout.txt` in the game folder (one line per control; positions are
   fractions of the window, so it survives a change of screen size).
-- **Frame rate / render scale**: Settings > System. 30 fps is the PSP's own rate; the 120 fps mode needs a fast device. Rooted devices can set the
+- **Frame rate / render scale**: Settings > Display (frame rate) and Settings > Graphics (render scale). 30 fps is the PSP's own rate; the 120 fps mode needs a fast device. Rooted devices can set the
   CPU governor to `performance` for steadier clocks.
 - **GPU drivers (Adreno phones)**: the Settings > Drivers tab (shown only on devices that can use it: an Adreno GPU). **GPU Driver** picks the Vulkan driver (System default, or a downloaded
   one); **Download Driver** loads a live list of community Mesa Turnip builds (GitHub releases of `K11MCH1/AdrenoToolsDrivers`), Cross downloads and
