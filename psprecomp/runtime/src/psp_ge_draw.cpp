@@ -1994,7 +1994,10 @@ static void fast_prim(uint8_t* rdram, const GeState& state, int prim_type, int c
         GeState vb_state; KeyBuf vb_key;
         const bool vb_on = vb_f < 0.999f;
         if (vb_on) {   // drawn blended with no depth writes (the game's own fade does the same), so the player behind it stays visible
-            vb_state = state; vb_state.alpha_blend_enable = true; vb_state.blend_mode = 0x32; vb_state.depth_write_disable = true; vb_state.alpha_test_enable = false;
+            // out = src * f + dst * (1 - f) with constant factors: it does not depend on how the wall gets its alpha (vertex colour, material, texture)
+            const uint32_t v8 = std::min<uint32_t>(255u, (uint32_t)std::lround(vb_f * 15.f) * 17u);   // 16 steps: few state variants
+            vb_state = state; vb_state.alpha_blend_enable = true; vb_state.blend_mode = GE_SRCBLEND_FIXA | (GE_DSTBLEND_FIXB << 4); vb_state.depth_write_disable = true; vb_state.alpha_test_enable = false;
+            vb_state.blend_fix_a = v8 * 0x010101u; vb_state.blend_fix_b = (255u - v8) * 0x010101u;
             build_key(vb_key, vb_state, mode, path, prim_type, fbo_tex, &xf);
             vb_key.id = key.id ^ 0x40000000u;
         }
@@ -2010,11 +2013,7 @@ static void fast_prim(uint8_t* rdram, const GeState& state, int prim_type, int c
             psp_prof::Scope ps(psp_prof::S_DECODE);
             ok = ge_decode_vertices_gpu(rdram, state, n, reinterpret_cast<GeGpuVertex*>(dst));
         }
-        if (ok && vb_f < 0.999f) {   // a wall between the camera and the player: see-through (alpha scaled in the vertex colour)
-            GeGpuVertex* gv = reinterpret_cast<GeGpuVertex*>(dst);
-            g_vb_count++;
-            for (int i = 0; i < n; ++i) gv[i].color[3] = (uint8_t)std::lround(gv[i].color[3] * vb_f);
-        }
+        if (ok && vb_on) g_vb_count++;
         if (ok && g_verify && (mode == GL_TRIANGLES || mode == GL_TRIANGLE_STRIP || mode == GL_TRIANGLE_FAN)) {
             static thread_local std::vector<DecodedVertex> ref;
             ge_decode_vertices(rdram, state, prim_type, n, ref);
