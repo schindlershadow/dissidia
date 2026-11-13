@@ -23,7 +23,10 @@ def main():
     ver = json.load(open(os.path.join(here, "..", "toolchain", "versions.json")))["sources"]
     sdk = os.path.abspath(a.sdk); out = os.path.abspath(a.out); deps = out + "/deps"
     os.makedirs(deps, exist_ok=True)
-    ndk = sorted(glob.glob(sdk + "/ndk/*"))[-1]
+    pinned = json.load(open(os.path.join(here, "versions.json")))["ndk"]["version"]   # NOT the newest NDK in the folder: a CI image carries a newer one, whose libc++ the phone's sysroot (r27c) does not match
+    ndk = os.path.join(sdk, "ndk", pinned)
+    if not os.path.isdir(ndk):
+        raise SystemExit("build_deps: NDK %s not found under %s/ndk" % (pinned, sdk))
     tc = ndk + "/build/cmake/android.toolchain.cmake"
     bin_ = ndk + "/toolchains/llvm/prebuilt/linux-x86_64/bin"
     cc = "%s/aarch64-linux-android%s-clang" % (bin_, a.api)
@@ -125,6 +128,16 @@ add_library(ZLIB::ZLIB INTERFACE IMPORTED GLOBAL)
 set_property(TARGET ZLIB::ZLIB PROPERTY INTERFACE_LINK_LIBRARIES "${_psp_z}")
 set(ZLIB_FOUND TRUE)
 ''' % (";".join("${_psp_deps}/lib/" + n for n in mbed), ver["mbedtls"]["version"]))
+    # The libraries the game links after the core, in link order (what deps.cmake's targets add: AVCODEC, GLSLANG, MBEDTLS, ADRENOTOOLS), for the
+    # on-device build (games/dissidia/tools/android_build.py device_build), which has no CMake: one entry per line, "-lname" = a system library.
+    link = ["libavcodec.a", "libavutil.a", "-lm"]
+    link += ["lib%s.a" % n for n in ("glslang", "SPIRV", "MachineIndependent", "GenericCodeGen", "glslang-default-resource-limits", "OSDependent")
+             if os.path.isfile(deps + "/lib/lib%s.a" % n)]
+    link += mbed
+    if os.path.isfile(deps + "/lib/libadrenotools.a"):
+        link += ["libadrenotools.a", "liblinkernsbypass.a", "-landroid", "-ldl", "-llog"]
+    with open(out + "/link.txt", "w") as f:
+        f.write("\n".join(link) + "\n")
     with open(out + "/toolchain.cmake", "w") as f:
         f.write('set(ANDROID_ABI arm64-v8a)\nset(ANDROID_PLATFORM android-%s)\ninclude("%s")\nset(PSPRECOMP_DEPS_CMAKE "%s/deps.cmake")\n' % (a.api, tc, out))
     print("deps ready in", out)

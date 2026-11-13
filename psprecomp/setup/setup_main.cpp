@@ -16,21 +16,28 @@
 //   psprecomp_setup --import-saves SAVEDATA --dir DIR  copy Dissidia 012 saves into an install (an install step; no window)
 //   psprecomp_setup --root DIR               use DIR as the release folder instead of this program's folder
 //   psprecomp_setup --screenshots OUTDIR     write PPM images of the pages (documentation / look checks) and exit
+#ifndef __ANDROID__
 #define SDL_MAIN_HANDLED   // keep the plain main() on Windows (see SDL_SetMainReady below)
+#endif
 #include <SDL.h>
 
+#ifdef __ANDROID__
+#include <fcntl.h>
+#endif
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "../runtime/src/hle/psp_savedata_dialog.h"
 #include "../runtime/src/hle/psp_savemgr.h"
+#include "android.h"
 #include "install.h"
 #include "../runtime/include/psp_app_icon_dissidia.h"
 #include "proc.h"
@@ -154,6 +161,9 @@ struct Browser {
             list.push_back(t);
         }
         fs::path parent = cur.parent_path();
+#ifdef __ANDROID__
+        if (cur == "/storage/emulated/0") parent = "/storage";   // /storage/emulated itself cannot be listed
+#endif
         if (!cur.empty() && parent != cur) { Entry u; u.up = true; u.dir = true; u.name = ".. (up)"; u.path = parent.string(); list.push_back(u); }
 #ifdef _WIN32
         else {   // at a drive root: offer the other drives
@@ -167,6 +177,16 @@ struct Browser {
         for (fs::directory_iterator it(cur, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec)) {
             std::string name = it->path().filename().string();
             if (name.empty() || name[0] == '.') continue;
+#ifdef __ANDROID__
+            if (cur == "/storage") {   // the volumes: internal storage ("emulated/0") and any SD card (named by its volume id)
+                if (name == "self") continue;
+                Entry e; e.dir = true;
+                if (name == "emulated") { e.name = "Internal storage/"; e.path = "/storage/emulated/0"; }
+                else { e.name = "SD card " + name + "/"; e.path = it->path().string(); }
+                dirs.push_back(e);
+                continue;
+            }
+#endif
             std::error_code e2;
             if (it->is_directory(e2)) {
                 Entry e; e.dir = true; e.name = name + "/"; e.path = it->path().string();
@@ -189,7 +209,7 @@ struct Browser {
 };
 
 // -------------------------------------------------------------------------------------------------------------- app
-enum class Screen { Welcome, PickIso, PickUndub, Waiting, InstallDir, BrowseDir, TypePath, Options, Build, Done, Failed, Checking, UpdateAvail, Message };
+enum class Screen { Welcome, PickIso, PickUndub, Waiting, InstallDir, BrowseDir, TypePath, Options, Build, Done, Failed, Checking, UpdateAvail, Message, Permission, AndroidInstall, Download };
 // What a file/folder pick is for.
 enum class Pick { Iso, Undub, Dir };
 
@@ -211,7 +231,7 @@ struct App {
     int sel = 0;
     Browser br;
     KeyboardDialog osk;
-    std::string iso, workdir;
+    std::string iso, workdir, iso_name;
     setup::Options opt;
     std::vector<psp_savemgr::Source> save_sources;   // PPSSPP / memory sticks that hold Dissidia 012 saves (found when Options opens)
     bool save_sources_scanned = false;
@@ -242,9 +262,27 @@ struct App {
     std::string fail_msg;
     int64_t last_draw = 0;
 
+#ifdef __ANDROID__
+    bool installed() const { return setup::android_build_exists(state.workdir); }
+    std::string install_note;   // the last result of the package installer
+    // updates (Android): the app downloads manifest.json + .sig + the APK itself (android.h download), update.py android-check / android-verify check them
+    int ustage = 0;   // 0 idle | 1 manifest | 2 signature | 3 check running | 4 downloading the APK | 5 verifying the APK
+    std::string ufiles, manifest_url;   // <files>/update
+    bool verify_ok = false;   // update.py android-verify printed OK (lines and the process end arrive in different frames)
+    int64_t ustart = 0;
+    bool need_rebuild() const {   // the app was updated since the game was built: the translation / core may differ
+        return installed() && !layout.android_dir.empty() && setup::android_payload_fingerprint(layout) != state.built_fp;
+    }
+#else
     bool installed() const { return setup::game_installed(state.workdir); }
+#endif
 
-    void go(Screen s, int select = 0) { screen = s; sel = select; dirty = true; }
+    void go(Screen s, int select = 0) {
+        screen = s; sel = select; dirty = true;
+#ifdef __ANDROID__
+        if (s == Screen::TypePath) SDL_StartTextInput(); else SDL_StopTextInput();   // the soft keyboard only for typing a path
+#endif
+    }
 
     // ---- page content ----
     struct Page {
@@ -256,7 +294,11 @@ struct App {
         MenuRow r; r.label = label; r.help = help; r.value = value; return r;
     }
 
+#ifdef __ANDROID__
+    bool native_ok() const { return false; }   // no system file dialog: the built-in browser
+#else
     bool native_ok() const { return pfd::settings::available(); }
+#endif
 
     MenuRow toggle_row(const std::string& label, const std::string& help, bool on, bool available) {
         MenuRow r = row(label, available ? help : help + " (Not in this release yet.)", available ? (on ? "On" : "Off") : "Not yet");
@@ -272,7 +314,26 @@ struct App {
             if (!layout_problem.empty()) {
                 p.tab = "Problem";
                 p.rows = {row("Quit", layout_problem)};
-            } else if (installed()) {
+            }
+#ifdef __ANDROID__
+            else if (installed()) {
+                p.tab = need_rebuild() ? "Update" : "Built";
+                if (need_rebuild())
+                    p.rows.push_back(row("Update the game", "This app was updated since the game was built. Builds the game again from the files already on this device (no game file needed), "
+                                                            "then installs it. About 5 minutes."));
+                p.rows.push_back(row("Install the game", "The game is built. This installs it as an app (Android asks you to confirm)."));
+                p.rows.push_back(row("Build it again", "Pick your game file and build from scratch (your saves are kept)."));
+                p.rows.push_back(row("Check for updates", "Looks for a newer version of this app (it contacts github.com; nothing about you or your game is sent)."));
+                p.rows.push_back(row("Quit"));
+            } else {
+                p.tab = "Welcome";
+                p.rows = {row("Build the game", "Builds the game on this device from your own copy of Dissidia 012 (EU or US, ISO or CSO) and installs it. "
+                                                "Nothing from the game is downloaded or shipped with this app. It takes about 10 to 20 minutes."),
+                          row("Check for updates", "Looks for a newer version of this app (it contacts github.com; nothing about you or your game is sent)."),
+                          row("Quit")};
+            }
+#else
+            else if (installed()) {
                 p.tab = "Installed";
                 p.rows = {row("Play", "Start the game."),
                           row("Check for updates", "Look for a newer release of the game files (not available yet)."),
@@ -286,13 +347,63 @@ struct App {
                               "Nothing from the game is downloaded or shipped with this program. It takes a while."),
                           row("Quit")};
             }
+#endif
+            break;
+        }
+        case Screen::Permission: {
+            p.title = "ALLOW ACCESS";
+            p.tab = "Files";
+#ifdef __ANDROID__
+            bool ok = setup::android::has_all_files_access();
+            p.rows = {row("Allow access to files", "To give the game its files (Android keeps them in a shared folder), this app needs \"all files access\". "
+                                                   "Android opens a settings page: switch it on for this app, then come back.", ok ? "Allowed" : "Needed"),
+                      row("Continue", iso.empty() ? "Pick your game file." : "Start building."), row("Back")};
+#endif
+            break;
+        }
+        case Screen::Download: {
+            p.title = "UPDATING";
+            p.tab = upd.version;
+#ifdef __ANDROID__
+            std::string st = setup::android::download_status();
+            double f = 0;
+            std::string line = ustage == 5 ? "Checking the download..." : "Downloading the update...";
+            if (st.compare(0, 8, "working:") == 0) {
+                size_t c2 = st.find(':', 8);
+                double done = std::atof(st.substr(8, c2 - 8).c_str()), total = c2 == std::string::npos ? 0 : std::atof(st.substr(c2 + 1).c_str());
+                if (total <= 0) total = (double)upd.size;
+                f = total > 0 ? std::min(1.0, done / total) : 0;
+            } else if (st == "ok") f = 1;
+            std::string bar = "[";
+            for (int i = 0; i < 20; i++) bar += i < (int)(f * 20 + 0.5) ? '#' : '-';
+            bar += "]";
+            p.rows = {row(line, "Android then asks you to confirm the installation of the new version. The game and your saves are not touched.", bar), row("Cancel")};
+#endif
+            break;
+        }
+        case Screen::AndroidInstall: {
+            p.title = "INSTALLING THE GAME";
+            p.tab = "Android";
+#ifdef __ANDROID__
+            std::string st = setup::android::install_status();
+            std::string line = st.empty() || st == "working" ? "Waiting for Android..." : st == "ok" ? "Installed" : st;
+            p.rows = {row(line, st == "ok" ? "Open \"Dissidia 012\" from your app list. The first start prepares graphics for a moment."
+                                           : "Android shows a confirmation: tap Install. If it asks for permission to install apps from this app, allow it and press Install again."),
+                      row("Install again", "Ask Android to install the built game again."), row("Back")};
+#endif
             break;
         }
         case Screen::Waiting:
             p.title = pick == Pick::Dir ? "CHOOSE A FOLDER" : pick == Pick::Undub ? "CHOOSE THE UNDUB FILE" : "CHOOSE YOUR GAME FILE";
             p.tab = "Waiting";
+#ifdef __ANDROID__
+            p.rows = {row("Choose the game file", "Opens Android's file picker. Pick your Dissidia 012 disc image (.iso or .cso) from the SD card, Download or anywhere else."),
+                      row("Use the simple browser instead", "Browse the storage inside this app. Needs the \"all files\" permission."),
+                      row("Back")};
+#else
             p.rows = {row("Use the simple browser instead", "A file window opened. Pick the file there, or press here to browse inside this program."),
                       row("Back")};
+#endif
             break;
         case Screen::PickIso:
         case Screen::PickUndub:
@@ -381,8 +492,12 @@ struct App {
             p.tab = upd.version;
             std::string help = "Version " + upd.version + " is available (you have " + upd.current + "). Download size: " +
                                human_size((uintmax_t)upd.size) + ".";
+#ifdef __ANDROID__
+            help += " Android asks you to confirm the installation. If the update changes how the game is built, you are offered to build it again afterwards (no game file needed).";
+#else
             help += upd.rebuild ? " The game has to be built again afterwards, as at installation." :
                     upd.relink ? " The game is relinked afterwards (a short step)." : " Only program files change.";
+#endif
             p.rows = {row("Update now", help), row(launch_mode ? "Not now: play" : "Not now", "You can update later from the start screen.")};
             break;
         }
@@ -394,6 +509,10 @@ struct App {
         case Screen::Done:
             p.title = "ALL DONE";
             p.tab = "Finished";
+#ifdef __ANDROID__
+            p.rows = {row("Install the game", "The game is built and its files are in place. This installs the app: Android asks you to confirm."), row("Quit")};
+            break;
+#endif
             p.rows = {row("Play now", "Start the game.")};
             if (setup::android_build_exists(cur_workdir()))
                 p.rows.push_back(row("Install on an Android device", "The Android version is built: " + cur_workdir() + "/android/dissidia.apk. This installs it on a device connected with USB or wireless debugging (adb in your PATH) and copies the game files to it. Or install the APK by hand and copy the folders (see docs/android.md)."));
@@ -418,6 +537,11 @@ struct App {
         updating = update;
         android_inst = android_install;
         const setup::Options& o = (rebuild || update) ? state.options : opt;
+#ifdef __ANDROID__
+        if (!rebuild) plan = setup::plan_install_android(layout, iso, workdir);
+        else if (!android_install && !update) plan = setup::plan_rebuild_android(layout, state.workdir);
+        else
+#endif
         if (android_install) plan = setup::plan_android_install(layout, cur_workdir());
         else if (update) plan = setup::plan_update(layout, state.workdir, o, upd);
         else plan = rebuild ? setup::plan_rebuild(layout, state.workdir, o) : setup::plan_install(layout, iso, workdir, o);
@@ -428,6 +552,9 @@ struct App {
         prog.step = 0;
         prog.start_ms = now_ms();
         building = true;
+#ifdef __ANDROID__
+        setup::android::keep_awake(true);
+#endif
         start_step();
         go(Screen::Build, 3);
     }
@@ -455,6 +582,9 @@ struct App {
     void fail(const std::string& msg) {
         log_line("FAILED: " + msg);
         building = false;
+#ifdef __ANDROID__
+        setup::android::keep_awake(false);
+#endif
         fail_msg = msg;
         go(Screen::Failed);
     }
@@ -485,6 +615,9 @@ struct App {
                 start_step();
             } else {
                 building = false;
+#ifdef __ANDROID__
+                setup::android::keep_awake(false);
+#endif
                 if (!rebuild_only) {
                     state.workdir = workdir;
                     state.iso = iso;
@@ -492,7 +625,14 @@ struct App {
                     state.options = opt;
                     write_settings();
                 }
+#ifdef __ANDROID__
+                state.workdir = rebuild_only ? state.workdir : workdir;
+                state.built_fp = setup::android_payload_fingerprint(layout);
+#endif
                 setup::save_state(state_file, state);
+#ifdef __ANDROID__
+                if (false)
+#endif
                 if (!rebuild_only) {
                     std::string where, serr;
                     if (setup::create_shortcut(workdir, layout.root, &where, &serr)) shortcut_note = "A menu entry was added: " + where;
@@ -522,6 +662,27 @@ struct App {
     // ---- update check ----
     void begin_check(bool manual) {
         if (!layout_problem.empty()) { go(Screen::Welcome); return; }
+#ifdef __ANDROID__
+        manual_check = manual;
+        check_result.clear();
+        std::error_code e2;
+        ufiles = setup::android::files_dir() + "/update";
+        fs::create_directories(ufiles, e2);
+        fs::remove(ufiles + "/manifest.json", e2);
+        fs::remove(ufiles + "/manifest.json.sig", e2);
+        manifest_url = setup::kManifestUrl;
+        if (std::ifstream mf{setup::android::files_dir() + "/manifest_url.txt"}) {   // debug / test switch: another manifest (still needs a valid signature)
+            std::string u; std::getline(mf, u);
+            while (!u.empty() && (u.back() == '\r' || u.back() == ' ')) u.pop_back();
+            if (!u.empty()) manifest_url = u;
+        }
+        setup::android::download(manifest_url, ufiles + "/manifest.json");
+        ustage = 1;
+        checking = true;
+        check_start = now_ms();
+        if (manual) go(Screen::Checking);   // the start-up check runs silently
+        return;
+#endif
         manual_check = manual;
         check_result.clear();
         if (!check_proc.start(setup::update_check_argv(layout), {{"PYTHONUNBUFFERED", "1"}}, "")) {
@@ -536,6 +697,10 @@ struct App {
     void finish_check(const setup::UpdateInfo& u) {
         checking = false;
         upd = u;
+#ifdef __ANDROID__
+        ustage = 0;
+        if (!manual_check && screen != Screen::Welcome) return;   // the silent start-up check never interrupts what the player is doing
+#endif
         if (u.available) { go(Screen::UpdateAvail); return; }
         if (manual_check) {
             msg_title = "UPDATES";
@@ -545,11 +710,75 @@ struct App {
         else go(Screen::Welcome);
     }
 
+#ifdef __ANDROID__
+    void update_log(const std::string& l) {   // <files>/update/update.log: what the updater did (the app has no console)
+        if (FILE* f = std::fopen((ufiles + "/update.log").c_str(), "ab")) { std::fprintf(f, "%s\n", l.c_str()); std::fclose(f); }
+    }
+
+    void pump_check_android() {
+        if (!checking || ustage < 1 || ustage > 3) return;
+        std::string st = setup::android::download_status();
+        auto failed = [&] { return st.compare(0, 6, "failed") == 0; };
+        if (now_ms() - check_start > 30000) {
+            setup::android::cancel_download();
+            if (check_proc.busy()) check_proc.kill();
+            setup::UpdateInfo u; u.error = "timed out";
+            finish_check(u);
+            return;
+        }
+        if (ustage == 1) {
+            if (st == "ok") { setup::android::download(manifest_url + ".sig", ufiles + "/manifest.json.sig"); ustage = 2; }
+            else if (failed()) { setup::UpdateInfo u; u.error = st.substr(std::min<size_t>(st.size(), 8)); finish_check(u); }
+        } else if (ustage == 2) {
+            if (st == "ok" || failed()) {   // a missing signature is judged by update.py (an error when this app carries a key)
+                if (!check_proc.start(setup::android_check_argv(layout, ufiles + "/manifest.json", ufiles + "/manifest.json.sig", setup::android::app_version()),
+                                      setup::android_env(layout, workdir), "")) { setup::UpdateInfo u; u.error = "cannot run the checker"; finish_check(u); return; }
+                ustage = 3;
+            }
+        } else if (ustage == 3) {
+            std::string line;
+            while (check_proc.read_line(line))
+                if (line.compare(0, 6, "UPDATE") == 0 || line.compare(0, 8, "NOUPDATE") == 0 || line.compare(0, 5, "ERROR") == 0) check_result = line;
+            if (!check_proc.busy()) finish_check(setup::parse_update_line(check_result));
+        }
+    }
+
+    // the update's APK: downloaded by Java, checked by update.py android-verify, installed by the PackageInstaller
+    void pump_download_android() {
+        if (screen != Screen::Download) return;
+        std::string st = setup::android::download_status();
+        if (ustage == 4) {
+            dirty = true;
+            if (st == "ok") {
+                update_log("verifying " + ufiles + "/dissidia-setup.apk sha256=" + upd.sha256 + " size=" + std::to_string(upd.size));
+                if (!check_proc.start(setup::android_verify_argv(layout, ufiles + "/dissidia-setup.apk", upd.sha256, upd.size), setup::android_env(layout, workdir), "")) {
+                    msg_title = "UPDATE FAILED"; msg_text = "Cannot run the checker."; go(Screen::Message); ustage = 0; return;
+                }
+                verify_ok = false;
+                ustage = 5;
+            } else if (st.compare(0, 6, "failed") == 0) {
+                msg_title = "UPDATE FAILED"; msg_text = "The download failed: " + st.substr(std::min<size_t>(st.size(), 8)); ustage = 0; go(Screen::Message);
+            }
+        } else if (ustage == 5) {
+            std::string line;
+            while (check_proc.read_line(line)) { update_log("verify: " + line); if (line == "OK") verify_ok = true; }
+            if (!check_proc.busy()) {
+                ustage = 0;
+                if (verify_ok) { setup::android::install_apk(ufiles + "/dissidia-setup.apk"); go(Screen::AndroidInstall); }
+                else { msg_title = "UPDATE FAILED"; msg_text = "The downloaded file does not match what the release lists, so it was deleted. Try again later."; go(Screen::Message); }
+            }
+        }
+    }
+#endif
+
     void pump_check() {
         std::string line;
         while (check_proc.read_line(line)) {
             if (line.compare(0, 6, "UPDATE") == 0 || line.compare(0, 8, "NOUPDATE") == 0 || line.compare(0, 5, "ERROR") == 0) check_result = line;
         }
+#ifdef __ANDROID__
+        return;   // pump_check_android drives it
+#endif
         if (checking && (!check_proc.busy() || now_ms() - check_start > 15000)) {
             if (check_proc.busy()) { check_proc.kill(); check_result = "ERROR timed out"; }
             finish_check(setup::parse_update_line(check_result));
@@ -570,7 +799,10 @@ struct App {
         std::error_code ec;
         if (k == Pick::Dir) return fs::path(workdir).parent_path();
         std::string cur = k == Pick::Undub ? opt.undub_iso : iso;
-        if (!cur.empty()) return fs::path(cur).parent_path();
+        if (!cur.empty() && cur.compare(0, 3, "fd:") != 0) return fs::path(cur).parent_path();
+#ifdef __ANDROID__
+        return fs::path("/storage/emulated/0");
+#endif
         fs::path dl = fs::path(setup::home_dir()) / "Downloads";
         return fs::is_directory(dl, ec) ? dl : fs::path(setup::home_dir());
     }
@@ -578,6 +810,13 @@ struct App {
     void begin_pick(Pick k, Screen back) {
         pick = k;
         before_pick = back;
+#ifdef __ANDROID__
+        if (k == Pick::Iso) {   // Android's own file picker; the built-in browser stays as the fallback (the Waiting page)
+            setup::android::pick_file();
+            go(Screen::Waiting);
+            return;
+        }
+#endif
         if (native_ok()) {
             std::string start = pick_start(k).string();
             if (k == Pick::Dir) dir_dlg = std::make_unique<pfd::select_folder>("Choose the install folder", start);
@@ -607,12 +846,35 @@ struct App {
             start_install_or_ask();
         } else {
             iso = path;
+#ifdef __ANDROID__
+            std::error_code e2;
+            fs::create_directories(workdir, e2);   // workdir = <app files>/work (set at start)
+            if (setup::android::has_all_files_access()) start_plan(false); else go(Screen::Permission);
+            return;
+#endif
             if (workdir.empty()) workdir = !state.workdir.empty() ? state.workdir : setup::default_install_dir();
             go(Screen::InstallDir);
         }
     }
 
     void poll_native() {
+#ifdef __ANDROID__
+        if (screen == Screen::Waiting) {
+            std::string st = setup::android::pick_status();
+            if (st.compare(0, 3, "ok:") == 0) {
+                size_t c = st.find(':', 3);
+                int fd = std::atoi(st.substr(3, c - 3).c_str());
+                int fl = fcntl(fd, F_GETFD);
+                if (fl >= 0) fcntl(fd, F_SETFD, fl & ~FD_CLOEXEC);   // the build tools inherit it (setup_from_iso.py "fd:N")
+                iso = "fd:" + std::to_string(fd);
+                iso_name = c == std::string::npos ? "game" : st.substr(c + 1);
+                setup::android::clear_pick();
+                picked(iso);
+                return;
+            }
+            if (st == "cancelled" || st.compare(0, 6, "failed") == 0) { setup::android::clear_pick(); dirty = true; }
+        }
+#endif
         if (file_dlg && file_dlg->ready(0)) {
             auto r = file_dlg->result();
             file_dlg.reset();
@@ -657,6 +919,19 @@ struct App {
         switch (screen) {
         case Screen::Welcome:
             if (!layout_problem.empty()) { quit = true; break; }
+#ifdef __ANDROID__
+            if (installed()) {
+                int i = sel - (need_rebuild() ? 1 : 0);
+                if (need_rebuild() && sel == 0) { workdir = state.workdir; start_plan(true); }
+                else if (i == 0) { setup::android::install_apk(state.workdir + "/android/dissidia.apk"); go(Screen::AndroidInstall); }
+                else if (i == 1) begin_pick(Pick::Iso, Screen::Welcome);
+                else if (i == 2) begin_check(true);
+                else quit = true;
+            } else if (sel == 0) begin_pick(Pick::Iso, Screen::Welcome);
+            else if (sel == 1) begin_check(true);
+            else quit = true;
+            break;
+#endif
             if (installed()) {
                 switch (sel) {
                 case 0: play(); break;
@@ -670,7 +945,41 @@ struct App {
                 begin_pick(Pick::Iso, Screen::Welcome);
             } else quit = true;
             break;
+        case Screen::Download:
+#ifdef __ANDROID__
+            setup::android::cancel_download();
+            if (check_proc.busy()) check_proc.kill();
+            ustage = 0;
+            go(Screen::Welcome);
+#endif
+            break;
+        case Screen::Permission:
+#ifdef __ANDROID__
+            if (sel == 0) {
+                if (setup::android::has_all_files_access()) { if (!iso.empty()) { std::error_code e2; fs::create_directories(workdir, e2); start_plan(false); } else { pick = Pick::Iso; open_browser(); } }
+                else setup::android::request_all_files_access();
+            } else if (sel == 1) {
+                if (setup::android::has_all_files_access()) { if (!iso.empty()) { std::error_code e2; fs::create_directories(workdir, e2); start_plan(false); } else { pick = Pick::Iso; open_browser(); } }
+                else { msg_title = "ALLOW ACCESS"; msg_text = "Access to files is not allowed yet. Press \"Allow access to files\" and switch it on for this app."; go(Screen::Message); }
+            } else go(Screen::Welcome);
+#endif
+            break;
+        case Screen::AndroidInstall:
+#ifdef __ANDROID__
+            if (sel == 1) {
+                if (!setup::android::can_install_packages()) setup::android::request_install_permission();
+                else setup::android::install_apk(cur_workdir() + "/android/dissidia.apk");
+            } else if (sel == 2) go(Screen::Welcome);
+#endif
+            break;
         case Screen::Waiting:
+#ifdef __ANDROID__
+            if (sel == 0) setup::android::pick_file();
+            else if (sel == 1) {
+                if (setup::android::has_all_files_access()) open_browser(); else go(Screen::Permission);
+            } else go(before_pick);
+            break;
+#endif
             if (sel == 0) open_browser();
             else { file_dlg.reset(); dir_dlg.reset(); go(before_pick); }
             break;
@@ -719,6 +1028,14 @@ struct App {
             if (launch_mode) play(); else go(Screen::Welcome);
             break;
         case Screen::UpdateAvail:
+#ifdef __ANDROID__
+            if (sel == 0) {
+                setup::android::download(upd.url, ufiles + "/dissidia-setup.apk");
+                ustage = 4;
+                go(Screen::Download);
+            } else go(Screen::Welcome);
+            break;
+#endif
             if (sel == 0) { opt = state.options; start_plan(false, true); }
             else if (launch_mode) play();
             else go(Screen::Welcome);
@@ -727,6 +1044,20 @@ struct App {
             go(Screen::Welcome);
             break;
         case Screen::Done:
+#ifdef __ANDROID__
+            if (sel == 0) {
+                if (!setup::android::can_install_packages()) {
+                    setup::android::request_install_permission();
+                    msg_title = "ALLOW INSTALLING";
+                    msg_text = "Switch on \"Allow from this source\" for this app, come back, then press Install the game again.";
+                    go(Screen::Message);
+                } else {
+                    setup::android::install_apk(cur_workdir() + "/android/dissidia.apk");
+                    go(Screen::AndroidInstall);
+                }
+            } else quit = true;
+            break;
+#endif
             if (sel == 0) play();
             else if (sel == 1 && setup::android_build_exists(cur_workdir())) start_plan(false, false, true);
             else quit = true;
@@ -749,6 +1080,13 @@ struct App {
             break;
         case Screen::PickIso:
             go(Screen::Welcome);
+            break;
+        case Screen::Permission:
+        case Screen::AndroidInstall:
+            go(Screen::Welcome);
+            break;
+        case Screen::Download:
+            sel = 1; confirm();
             break;
         case Screen::PickUndub:
             go(Screen::Options, 5);
@@ -781,6 +1119,71 @@ struct App {
     void adjust(int dir) {
         (void)dir;
         if (screen == Screen::Options && sel <= 4) toggle_option(sel);
+    }
+
+    // ---- touch (Android): a tap on a row picks it, a tap on the title bar goes back, a vertical drag moves the selection ----
+    bool touching = false;
+    float touch_x0 = 0, touch_y0 = 0, touch_x = 0, touch_y = 0;   // design units (480x272)
+    bool touch_moved = false;
+    float drag_accum = 0;
+    int64_t touch_t0 = 0;
+
+    bool to_design(float nx, float ny, float& dx, float& dy) {
+        int w = 0, h = 0;
+        SDL_GetWindowSize(win, &w, &h);
+        float lx = 0, ly = 0;
+        SDL_RenderWindowToLogical(ren, (int)(nx * (float)w), (int)(ny * (float)h), &lx, &ly);
+        dx = lx / (float)SCALE;
+        dy = ly / (float)SCALE;
+        return true;
+    }
+
+    void touch_event(const SDL_Event& ev) {
+        float dx, dy;
+        to_design(ev.tfinger.x, ev.tfinger.y, dx, dy);
+        if (ev.type == SDL_FINGERDOWN) {
+            touching = true; touch_moved = false; drag_accum = 0; touch_t0 = now_ms();
+            touch_x0 = touch_x = dx; touch_y0 = touch_y = dy;
+        } else if (ev.type == SDL_FINGERMOTION && touching) {
+            drag_accum += dy - touch_y;
+            touch_x = dx; touch_y = dy;
+            if (std::abs(dy - touch_y0) > 10 || std::abs(dx - touch_x0) > 10) touch_moved = true;
+            if (screen != Screen::TypePath && screen != Screen::Build) {
+                const float step = 22;   // design units of drag per row
+                int n = row_count();
+                while (drag_accum > step) { sel = n ? std::max(0, sel - 1) : 0; drag_accum -= step; dirty = true; }   // finger down = list moves down = earlier rows
+                while (drag_accum < -step) { sel = n ? std::min(n - 1, sel + 1) : 0; drag_accum += step; dirty = true; }
+            }
+        } else if (ev.type == SDL_FINGERUP && touching) {
+            touching = false;
+            if (touch_moved) {   // a flick keeps the list going: rows = speed (design units per ms) * a factor
+                int64_t dt = std::max<int64_t>(1, now_ms() - touch_t0);
+                float v = (dy - touch_y0) / (float)dt;
+                int extra = std::abs(v) < 0.3f ? 0 : (int)std::max(-120.f, std::min(120.f, -v * 90.f));   // only a quick flick
+                if (std::abs(extra) > 2 && screen != Screen::TypePath && screen != Screen::Build) {
+                    int n = row_count();
+                    sel = n ? std::max(0, std::min(n - 1, sel + extra)) : 0;
+                    dirty = true;
+                }
+                return;
+            }
+            if (screen == Screen::TypePath) return;
+            if (dy < 46) { if (screen != Screen::Welcome) cancel(); return; }   // the title / tab area
+            Page pg = page();
+            int n = (int)pg.rows.size();
+            if (n == 0) return;
+            const float y0 = 68, pitch = n > 4 ? 128.f / (float)n : 35.f;
+            int i = (int)((dy - y0) / pitch);
+            if (dx < 40 || dx > 460 || dy < y0 - 4 || i < 0 || i >= n) return;
+            int top = 0;
+            if (is_browser()) {   // page() lists only the visible window of the browser's entries
+                int total = (int)br.list.size();
+                top = std::max(0, std::min(sel - MENU_ROWS / 2, total - MENU_ROWS));
+            }
+            sel = top + i;
+            dirty = true;
+            confirm();
+        }
     }
 
     void update_input() {
@@ -942,6 +1345,9 @@ static std::string unpack_payload_with_window(const std::filesystem::path& exe, 
                 SDL_FreeSurface(ic);
             }
             ren = SDL_CreateRenderer(win, -1, 0);
+#ifdef __ANDROID__
+            if (ren) SDL_RenderSetLogicalSize(ren, 520, 70);   // the window is the whole screen there
+#endif
         }
     }
     int last = -1;
@@ -973,6 +1379,44 @@ static std::string unpack_payload_with_window(const std::filesystem::path& exe, 
     return err;
 }
 
+#ifdef __ANDROID__
+// The setup app: unpack the payload (python stdlib, zig's lib, the NDK sysroot, the Android core + libraries, the game tools) from
+// lib/libpayload.so the first time (and after an update of the app), link the Python loader the patched interpreter asks for, find the tools.
+static bool android_bootstrap(std::string& root, setup::Layout& layout, std::string& err) {
+    namespace fs2 = std::filesystem;
+    const std::string lib = setup::android::native_lib_dir(), files = setup::android::files_dir();
+    if (lib.empty() || files.empty()) { err = "cannot find the app's folders"; return false; }
+    // the interpreter of the bundled Python is /data/data/org.psprecomp.setup/files/ld-musl (patched in at build time): point it at the loader
+    std::error_code ec;
+    fs2::remove(fs2::path(files) / "ld-musl", ec);
+    fs2::create_symlink(fs2::path(lib) / "libmusl.so", fs2::path(files) / "ld-musl", ec);
+    setup::Payload pl;
+    fs2::path zip = fs2::path(lib) / "libpayload.so";
+    if (!fs2::exists(zip, ec)) { err = "this app has no payload (libpayload.so)"; return false; }
+    pl.offset = 0;
+    pl.size = (uint64_t)fs2::file_size(zip, ec);
+    {   // the version is the size plus a checksum of the zip's tail (its central directory lists every file's CRC): a rebuilt payload is a new one
+        uint32_t h = 2166136261u;
+        if (FILE* f = std::fopen(zip.string().c_str(), "rb")) {
+            long tail = (long)std::min<uint64_t>(pl.size, 1 << 16);
+            std::fseek(f, -tail, SEEK_END);
+            unsigned char b[4096]; size_t n;
+            while ((n = std::fread(b, 1, sizeof b, f)) > 0) for (size_t i = 0; i < n; i++) h = (h ^ b[i]) * 16777619u;
+            std::fclose(f);
+        }
+        pl.version = std::to_string(pl.size) + "-" + std::to_string(h);
+    }
+    fs2::path dest = fs2::path(files) / ("release-" + pl.version);
+    err = unpack_payload_with_window(zip, pl, dest, false);
+    if (!err.empty()) return false;
+    for (auto& e : fs2::directory_iterator(files, ec))   // an older unpack is not needed any more
+        if (e.path().filename().string().rfind("release-", 0) == 0 && e.path() != dest) fs2::remove_all(e.path(), ec);
+    root = dest.string();
+    layout = setup::find_layout_android(root, lib);
+    return true;
+}
+#endif
+
 int main(int argc, char** argv) {
     attach_parent_console();
     std::string root, iso, dir, play_dir, shots, import_from, saves_from;
@@ -997,7 +1441,20 @@ int main(int argc, char** argv) {
         if (dir.empty()) { std::fprintf(stderr, "--import-saves needs --dir DIR\n"); return 2; }
         return import_saves_cli(import_from, dir);
     }
+#ifdef __ANDROID__
+    setup::Layout android_layout;
+    {
+        if (SDL_Init(SDL_INIT_VIDEO) != 0) return 1;
+        std::string err;
+        if (!android_bootstrap(root, android_layout, err)) {
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Dissidia Recomp Setup", ("Could not prepare the app:\n" + err).c_str(), nullptr);
+            return 1;
+        }
+    }
+#else
     SDL_SetMainReady();
+#endif
+#ifndef __ANDROID__
     // Single-file release: the release folder is appended to this program (payload.h); unpack it once, then run from there.
     if (root.empty() || !unpack_to.empty()) {
         setup::Payload pl;
@@ -1020,7 +1477,12 @@ int main(int argc, char** argv) {
         SDL_free(base);
         while (root.size() > 1 && (root.back() == '/' || root.back() == '\\')) root.pop_back();
     }
+#endif
+#ifdef __ANDROID__
+    setup::Layout layout = android_layout;
+#else
     setup::Layout layout = setup::find_layout(root);
+#endif
 
     char* pref = SDL_GetPrefPath("psprecomp", "setup");
     std::string state_file = std::string(pref ? pref : "./") + "install.ini";
@@ -1042,7 +1504,11 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 1;
     }
+#ifdef __ANDROID__
+    if (false) {
+#else
     if (shots.empty() && !state.workdir.empty() && setup::game_installed(state.workdir)) {
+#endif
         std::string where, serr;   // installs from before the menu entry existed get one at the next start
         setup::create_shortcut(state.workdir, layout.root, &where, &serr);
     }
@@ -1055,6 +1521,11 @@ int main(int argc, char** argv) {
     app.iso = state.iso;
     app.opt = state.options;
     app.launch_mode = launch;
+#ifdef __ANDROID__
+    app.workdir = setup::android::files_dir() + "/work";
+    app.layout_problem = layout.problem();
+    app.iso.clear();   // a descriptor number ("fd:N") means nothing after a restart: the picker is asked again
+#endif
 
     if (!shots.empty()) {   // look check without a window
         std::error_code ec;
@@ -1106,8 +1577,15 @@ int main(int argc, char** argv) {
     app.tex = SDL_CreateTexture(app.ren, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, app.canvas.w, app.canvas.h);
     for (int i = 0; i < SDL_NumJoysticks(); i++)
         if (SDL_IsGameController(i) && (app.pad = SDL_GameControllerOpen(i))) break;
+#ifndef __ANDROID__
     SDL_StartTextInput();
+#endif
+#ifdef __ANDROID__
+    if (app.layout_problem.empty() && app.state.options.check_updates) app.begin_check(false);   // silent; an update shows its page only from the start screen
+    if (false) {
+#else
     if (app.installed() && app.layout_problem.empty()) {
+#endif
         if (setup::update_check_enabled(app.state.workdir)) app.begin_check(false);
         else if (launch) app.play();
     }
@@ -1129,13 +1607,20 @@ int main(int argc, char** argv) {
                     app.pad = nullptr;
                 }
                 break;
+            case SDL_FINGERDOWN:
+            case SDL_FINGERMOTION:
+            case SDL_FINGERUP:
+                app.touch_event(ev);
+                break;
             case SDL_TEXTINPUT:
                 if (app.screen == Screen::TypePath)
                     for (const unsigned char* c = (const unsigned char*)ev.text.text; *c; c++)
                         if (*c >= 0x20 && *c < 0x7F) psp_sddialog::osk_push_key(*c);
                 break;
             case SDL_KEYDOWN:
-                if (ev.key.keysym.sym == SDLK_F11 || (ev.key.keysym.sym == SDLK_RETURN && (ev.key.keysym.mod & KMOD_ALT))) {
+                if (ev.key.keysym.sym == SDLK_AC_BACK) {   // Android's back button
+                    if (app.building) { app.sel = 3; app.confirm(); } else app.cancel();
+                } else if (ev.key.keysym.sym == SDLK_F11 || (ev.key.keysym.sym == SDLK_RETURN && (ev.key.keysym.mod & KMOD_ALT))) {
                     bool fs_on = SDL_GetWindowFlags(app.win) & SDL_WINDOW_FULLSCREEN_DESKTOP;
                     SDL_SetWindowFullscreen(app.win, fs_on ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
                 } else if (app.screen == Screen::TypePath) {
@@ -1150,6 +1635,11 @@ int main(int argc, char** argv) {
             }
         }
         app.poll_native();
+#ifdef __ANDROID__
+        app.pump_check_android();
+        app.pump_download_android();
+#endif
+        if (app.screen == Screen::AndroidInstall && now_ms() - app.last_draw > 400) app.dirty = true;   // the installer's answer arrives from Java
         if (app.checking) app.pump_check();
         if (app.building) app.pump_build();
         app.update_input();

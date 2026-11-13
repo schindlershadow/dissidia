@@ -57,6 +57,7 @@ def main():
     # 3. dependencies (relocatable: deps.cmake finds them next to itself)
     shutil.copytree(os.path.join(deps, "deps"), os.path.join(out, "deps", "deps"), symlinks=True)
     shutil.copy2(os.path.join(deps, "deps.cmake"), os.path.join(out, "deps", "deps.cmake"))
+    shutil.copy2(os.path.join(deps, "link.txt"), os.path.join(out, "deps", "link.txt"))   # the libraries the on-device link adds (android/build_deps.py)
     # 4. APK skeleton + packer + debug key
     os.makedirs(os.path.join(out, "apk"))
     sdl_src = os.path.join(deps, "src-sdl2")

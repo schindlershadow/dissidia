@@ -22,7 +22,8 @@ The same four steps as pipeline.sh, in Python so a Windows install needs no bash
   --allow-system-compiler  build an SDK that carries a toolchain.json with the system compiler anyway (will not link unless the
                   system compiler happens to be the same one)
   --android [DIR] build the Android APK (<work>/android/dissidia.apk) instead of the desktop binary: needs the release's android/ folder
-                  (default: next to --game's parent) and downloads Google's NDK once (games/dissidia/tools/android_build.py)
+                  (default: next to --game's parent) and downloads Google's NDK once (games/dissidia/tools/android_build.py).
+                  On a phone (the setup app) nothing is downloaded: the bundled zig compiles against the sysroot of the Android part.
   --progress      print machine-readable lines:  [psp-build] STEP <i>/<n> <name>   [psp-build] PROGRESS <percent>
                   [psp-build] DONE <binary>   [psp-build] ERROR <message>
 
@@ -98,6 +99,14 @@ def android_build(a, work, env, jobs, exe):
     if not os.path.isdir(adir):
         die("%s: no Android part in this release" % adir)
     ab.check_prebuilt(adir, die)
+    if ab.is_device():
+        step(4, "Preparing the Android toolchain (the compiler that ships with the app)")
+        step(5, "Compiling the game on this device (the long step)")
+        lib = ab.device_build(adir, work, jobs, say, tag, die)
+        apk = ab.pack_apk(adir, work, lib, run, say, env)
+        tag("DONE", apk)
+        say("\nDone: %s" % apk)
+        return
     step(4, "Preparing the Android toolchain (Google's NDK, downloaded once)")
     ab.fetch_ndk(adir, say, tag, die)
     bd, tc = ab.write_toolchain(adir, work)
@@ -155,6 +164,7 @@ def main():
     ap.add_argument("--jobs", type=int, default=0)
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--progress", action="store_true")
+    ap.add_argument("--no-compile", action="store_true", help="stop after the translation steps (analysis, recompile, overlays)")
     ap.add_argument("--android", nargs="?", const="auto", default=None, metavar="DIR",
                     help="build the Android version (an APK) instead of the desktop game; DIR = the release's android/ folder")
     a = ap.parse_args()
@@ -167,6 +177,12 @@ def main():
     if not os.path.isdir(work):
         die("workdir %s does not exist (run setup_from_iso.py first)" % work)
     jobs = a.jobs or min(3, os.cpu_count() or 2)
+    if not a.jobs and os.path.isfile("/proc/meminfo"):   # about 1.5 GB per compile job: a phone is killed, not slowed, when it runs out
+        try:
+            kb = int(re.search(r"MemTotal:\s+(\d+)", open("/proc/meminfo").read()).group(1))
+            jobs = max(1, min(jobs, int(kb / 1048576 / 2.2)))
+        except (OSError, AttributeError, ValueError):
+            pass
 
     env = dict(os.environ)
     exe = ".exe" if os.name == "nt" else ""
@@ -208,7 +224,7 @@ def main():
         if not os.path.isfile(psprecomp):
             die("the recompiler %s was not found (pass --psprecomp, or install Rust to build it)" % psprecomp)
     env["PSPRECOMP_BIN"] = os.path.abspath(psprecomp)   # build_overlay.py runs the recompiler too
-    for tool in ("cmake",):
+    for tool in (() if a.no_compile or a.android else ("cmake",)):
         if not shutil.which(tool, path=env["PATH"]):
             die("%s not found in PATH (a release bundles it; pass --toolchain)" % tool)
     eboot = os.path.join(work, "EBOOT.dec.elf")
@@ -237,7 +253,7 @@ def main():
             out = os.path.join(work, n + ".json")
             if os.path.isfile(out) and not a.force and os.path.getmtime(out) >= os.path.getmtime(os.path.join(shipped, n + ".json.gz")):
                 continue
-            run([sys.executable, "-I", os.path.join(HERE, "ship_analysis.py"), "hydrate",
+            run([sys.executable] + ([] if os.environ.get("PYTHONHOME") else ["-I"]) + [os.path.join(HERE, "ship_analysis.py"), "hydrate",
                  os.path.join(shipped, n + ".json.gz"), sources[n], out], env=env)
     for name, lo in (("analysis", 5000), ("analysis_battle", 3000), ("analysis_menu", 3000), ("analysis_extra", 40), ("analysis_supacc", 30)):
         with open(os.path.join(work, name + ".json")) as f:
@@ -288,6 +304,9 @@ def main():
         step(2, "Translating the game to C++: up to date, skipping (--force to redo)")
         step(3, "Building the overlay sources: up to date, skipping")
 
+    if a.no_compile:
+        tag("DONE", work)
+        return
     if a.android:
         android_build(a, work, env, jobs, exe)
         return

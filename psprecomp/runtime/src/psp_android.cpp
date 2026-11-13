@@ -19,6 +19,8 @@
 #include <pthread.h>
 #include <unistd.h>
 
+#include <sys/stat.h>
+
 #include <cerrno>
 #include <vector>
 #include <algorithm>
@@ -65,7 +67,25 @@ static void load_env_file(const std::string& wd) {
         std::fclose(ef);
     }
 }
-__attribute__((constructor(101))) static void early_env() { load_env_file("/sdcard/Android/data/org.psprecomp.game/files/game"); }
+// Where the game folder is. Normally <external>/Android/data/<package>/files/game (copied there by adb or the PC installer). A build made
+// ON the phone (Termux, docs/android.md) cannot write there: since Android 11 no other app may touch Android/data, so it puts the folder in
+// Android/media/<package>/game, which both Termux and this app can use. The first one that holds a game (disc0) wins; the Android/data one
+// when neither does (a fresh install: the folder is created there).
+static bool has_game(const std::string& dir) {
+    struct stat st;
+    return stat((dir + "/disc0").c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+static std::string pick_workdir(const std::string& data_game) {
+    const std::string from = "/Android/data/";
+    const size_t at = data_game.find(from);
+    if (at == std::string::npos || has_game(data_game)) return data_game;
+    const std::string media = data_game.substr(0, at) + "/Android/media/" + data_game.substr(at + from.size());
+    // .../Android/media/<package>/files/game -> .../Android/media/<package>/game (no "files" level: it is the app's own media folder)
+    const size_t files = media.rfind("/files/game");
+    const std::string media_game = files == std::string::npos ? media : media.substr(0, files) + "/game";
+    return has_game(media_game) ? media_game : data_game;
+}
+__attribute__((constructor(101))) static void early_env() { load_env_file(pick_workdir("/sdcard/Android/data/org.psprecomp.game/files/game")); }
 
 // Android Dynamic Performance Framework (API 33, loaded at run time so the app still runs on API 29): a performance hint session tells the
 // system how long a frame should take and how long it really took, and it raises the CPU / GPU clocks in time. Without it the GPU governor
@@ -135,7 +155,7 @@ void psp_android_frame_hint() {
 
 std::string psp_android_workdir() {
     const char* ext = SDL_AndroidGetExternalStoragePath();
-    return std::string(ext ? ext : "/sdcard") + "/game";
+    return pick_workdir(std::string(ext ? ext : "/sdcard") + "/game");
 }
 
 

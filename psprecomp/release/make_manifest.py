@@ -3,7 +3,8 @@
 
   make_manifest.py --version V --repo owner/name --assets DIR [--tag vV] [-o manifest.json]
 
-DIR holds DissidiaRecomp-<version>-<platform>.tar.xz / .zip (+ .sha256). The manifest is what the updater downloads first (a few KB):
+DIR holds DissidiaRecomp-<version>-<platform>.tar.xz / .zip (+ .sha256) and, for Android, DissidiaRecomp-Setup-<version>-android.apk (+ .fp, the build
+fingerprint of the app's contents, written by android/pack_setup_app.py). The manifest is what the updater downloads first (a few KB):
 
   {"schema": 1, "version": "...", "min_wizard_version": 1, "published": "<utc>",
    "platforms": {"linux-x86_64": {"asset": name, "url": ..., "sha256": ..., "size": ..., "bundle_version": N,
@@ -56,6 +57,20 @@ def main():
     tag = a.tag or "v" + a.version
     plats = {}
     for fn in sorted(os.listdir(a.assets)):
+        am = re.fullmatch(r"DissidiaRecomp-Setup-(.+)-android\.apk", fn)
+        if am:   # the Android setup app: updated by installing the new APK (games/dissidia/tools/update.py android-check)
+            if am.group(1) != a.version:
+                sys.exit("%s: version %s does not match --version %s" % (fn, am.group(1), a.version))
+            path = os.path.join(a.assets, fn)
+            fp = open(path + ".fp").read().strip() if os.path.isfile(path + ".fp") else ""
+            plats["android-aarch64"] = {
+                "asset": fn,
+                "url": ((a.base_url.rstrip("/") + "/" + fn) if a.base_url else "https://github.com/%s/releases/download/%s/%s" % (a.repo, tag, fn)),
+                "sha256": sha256(path),
+                "size": os.path.getsize(path),
+                "build_fingerprint": fp,
+            }
+            continue
         m = re.fullmatch(r"DissidiaRecomp-(.+)-((?:linux|windows)-x86_64)\.(tar\.xz|zip)", fn)
         if not m:
             continue

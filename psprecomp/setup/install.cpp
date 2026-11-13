@@ -69,6 +69,15 @@ Layout find_layout(const std::string& root) {
 }
 
 std::string Layout::problem() const {
+#ifdef __ANDROID__
+    const std::pair<const std::string*, const char*> need_a[] = {
+        {&python, "libpython.so"}, {&recompiler, "libpsprecomp.so"}, {&pspdecrypt, "libpspdecrypt.so"}, {&zig, "libzig.so"},
+        {&setup_script, "game/tools/setup_from_iso.py"}, {&build_script, "game/tools/psp_build.py"}};
+    for (auto& n : need_a)
+        if (!is_file(*n.first)) return std::string("this app is incomplete: ") + n.second + " is missing";
+    if (!is_file(join(sdk, "lib/libpsprecomp_core.a"))) return "this app is incomplete: the game core (android/sdk) is missing";
+    return "";
+#endif
     if (python.empty()) return "Python 3 was not found (install python3; Windows releases include it)";
     const std::pair<const std::string*, const char*> need[] = {
         {&recompiler, "bin/psprecomp"}, {&setup_script, "game/tools/setup_from_iso.py"},
@@ -188,6 +197,86 @@ std::vector<Step> plan_android_install(const Layout& l, const std::string& workd
 
 bool android_build_exists(const std::string& workdir) { return is_file(join(workdir, "android/dissidia.apk")); }
 
+#ifdef __ANDROID__
+Layout find_layout_android(const std::string& root, const std::string& lib_dir) {
+    Layout l;
+    l.root = root;
+    l.lib_dir = lib_dir;
+    l.python = join(lib_dir, "libpython.so");
+    l.recompiler = join(lib_dir, "libpsprecomp.so");
+    l.pspdecrypt = join(lib_dir, "libpspdecrypt.so");
+    l.zig = join(lib_dir, "libzig.so");
+    l.android_dir = join(root, "android");
+    l.sdk = join(root, "android/sdk");
+    l.game_dir = join(root, "game");
+    l.setup_script = join(root, "game/tools/setup_from_iso.py");
+    l.build_script = join(root, "game/tools/psp_build.py");
+    l.update_script = join(root, "game/tools/update.py");
+    return l;
+}
+
+std::vector<std::string> android_check_argv(const Layout& l, const std::string& manifest, const std::string& sig, const std::string& current) {
+    return {l.python, l.update_script, "android-check", "--manifest", manifest, "--sig", sig, "--key", join(l.game_dir, "update_key.pub"), "--current", current};
+}
+
+std::vector<std::string> android_verify_argv(const Layout& l, const std::string& file, const std::string& sha256, long long size) {
+    return {l.python, l.update_script, "android-verify", "--file", file, "--sha256", sha256, "--size", std::to_string(size)};
+}
+
+std::string android_game_dir() { return std::string("/sdcard/Android/media/") + kGamePackage + "/game"; }
+
+EnvList android_env(const Layout& l, const std::string& workdir) {
+    return {{"PYTHONUNBUFFERED", "1"}, {"PYTHONDONTWRITEBYTECODE", "1"}, {"PYTHONHOME", join(l.root, "python")},
+            {"PSPRECOMP_ANDROID_DEVICE", "1"}, {"PSPRECOMP_ZIG", l.zig}, {"HOME", workdir},
+            {"TMPDIR", join(workdir, "tmp")}, {"ZIG_LIB_DIR", join(l.android_dir, "zig-lib")}};
+}
+
+std::string android_payload_fingerprint(const Layout& l) {
+    std::ifstream f(join(l.android_dir, "build_fingerprint.txt"));
+    std::string fp;
+    std::getline(f, fp);
+    while (!fp.empty() && (fp.back() == '\r' || fp.back() == ' ')) fp.pop_back();
+    return fp;
+}
+
+std::vector<Step> plan_rebuild_android(const Layout& l, const std::string& workdir) {
+    std::vector<Step> all = plan_install_android(l, "", workdir);
+    std::vector<Step> p(all.begin() + 1, all.end());   // without "Reading your game file": the disc is already extracted
+    for (auto& s : p) { s.base = 0; }
+    p[0].weight = 0.88; p[1].weight = 0.12;
+    finish_plan(p);
+    return p;
+}
+
+std::vector<Step> plan_install_android(const Layout& l, const std::string& iso, const std::string& workdir) {
+    std::error_code ec;
+    fs::create_directories(join(workdir, "tmp"), ec);
+    Step x;
+    x.label = "Reading your game file";
+    x.explain = "Copies the game's files out of the disc image and decrypts the main program. Nothing is uploaded anywhere.";
+    x.argv = {l.python, l.setup_script, iso, workdir, "--pspdecrypt", l.pspdecrypt};
+    x.env = android_env(l, workdir);
+    x.weight = 0.10;
+    Step b;
+    b.label = "Building the game on this device";
+    b.explain = "Translates the game to C++ and compiles it with the compiler that ships with this app. This is the long part: expect about 10 to 20 minutes. "
+                "Cancelling is safe; starting again continues where it stopped.";
+    b.is_build = true;
+    b.argv = {l.python, l.build_script, workdir, "--android", l.android_dir, "--psprecomp", l.recompiler, "--game", l.game_dir, "--progress"};
+    b.env = android_env(l, workdir);
+    b.weight = 0.80;
+    Step c;
+    c.label = "Putting the game files where the game can read them";
+    c.explain = "Copies the game's files (about 2 GB) to the game app's folder in shared storage.";
+    c.argv = {l.python, join(l.game_dir, "tools/android_local_install.py"), workdir, "--dest", android_game_dir()};
+    c.env = android_env(l, workdir);
+    c.weight = 0.10;
+    std::vector<Step> p{x, b, c};
+    finish_plan(p);
+    return p;
+}
+#endif
+
 std::vector<std::string> update_check_argv(const Layout& l) {
     std::vector<std::string> a = {l.python, l.update_script, "check", "--root", l.root};
     if (const char* m = std::getenv("PSPRECOMP_MANIFEST_URL")) { a.push_back("--manifest"); a.push_back(m); }
@@ -210,6 +299,8 @@ UpdateInfo parse_update_line(const std::string& line) {
         u.size = std::atoll(field("size").c_str());
         u.rebuild = field("rebuild") == "1";
         u.relink = field("relink") == "1";
+        u.url = field("url");
+        u.sha256 = field("sha256");
     } else if (line.compare(0, 5, "ERROR") == 0) {
         u.error = line.size() > 6 ? line.substr(6) : "unknown error";
     }
@@ -355,6 +446,7 @@ State load_state(const std::string& file) {
         if (k == "workdir") s.workdir = v;
         else if (k == "iso") s.iso = v;
         else if (k == "version") s.version = v;
+        else if (k == "built_fp") s.built_fp = v;
         else if (k == "check_updates") s.options.check_updates = v != "0";
         else if (k == "hd_textures") s.options.hd_textures = v == "1";
         else if (k == "jp_audio") s.options.jp_audio = v == "1";
@@ -369,7 +461,7 @@ bool save_state(const std::string& file, const State& s) {
     if (!f) return false;
     f << "workdir=" << s.workdir << "\niso=" << s.iso << "\nversion=" << s.version << "\n"
       << "check_updates=" << s.options.check_updates << "\nhd_textures=" << s.options.hd_textures << "\njp_audio=" << s.options.jp_audio
-      << "\nandroid=" << s.options.android << "\nundub_iso=" << s.options.undub_iso << "\n";
+      << "\nandroid=" << s.options.android << "\nundub_iso=" << s.options.undub_iso << "\nbuilt_fp=" << s.built_fp << "\n";
     return (bool)f;
 }
 

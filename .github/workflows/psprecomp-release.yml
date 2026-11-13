@@ -79,23 +79,79 @@ jobs:
           # the Linux single file must unpack itself and hold a working release
           work/DissidiaRecomp-Setup-*-linux-x86_64 --unpack "$RUNNER_TEMP/unpacked"
           test -x "$RUNNER_TEMP/unpacked/DissidiaRecomp" && test -f "$RUNNER_TEMP/unpacked/toolchain/toolchain.cmake" 
-          python3 release/make_manifest.py --version "${VERSION#v}" --repo "${{ github.repository }}" --tag "$VERSION" \
-            --assets dist -o dist/manifest.json
-          # Signed manifest (docs/installer.md "Signed manifests"). A committed public key without the secret would ship
-          # releases that no install accepts, so that combination fails here.
-          if [ -f games/dissidia/update_key.pub ] && [ -z "$RELEASE_SIGNING_KEY" ]; then
-            echo "games/dissidia/update_key.pub is committed but the RELEASE_SIGNING_KEY secret is not set"; exit 1
-          fi
-          if [ -n "$RELEASE_SIGNING_KEY" ]; then python3 release/sign_manifest.py sign dist/manifest.json; fi
           ls -la dist
       - uses: actions/upload-artifact@v4
         with:
           name: release-files
           path: psprecomp/dist/*
 
+  android-app:
+    # The Android setup app (DissidiaRecomp-Setup-<version>-android.apk): a wizard that builds the game ON the phone from the player's own disc.
+    # It carries its own compiler (zig), recompiler, Python and the prebuilt Android core, so nothing but the APK is downloaded.
+    # Design and the verified steps: docs/android.md "Building on the phone".
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+      - name: Tools and the Android SDK pieces
+        run: |
+          set -e
+          sudo sed -i 's#azure\.archive\.ubuntu\.com#archive.ubuntu.com#g' /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends ninja-build cmake perl make python3 python3-pip
+          pip install patchelf
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" "build-tools;34.0.0" "platforms;android-34"
+      - name: Build the setup app
+        run: python3 release/build_android_app.py --sdk "$ANDROID_HOME" --work work-android --version "${VERSION#v}" -o "work-android/DissidiaRecomp-Setup-${VERSION#v}-android.apk"
+      - name: Collect
+        run: |
+          mkdir dist
+          cp work-android/DissidiaRecomp-Setup-*-android.apk* dist/
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-android
+          path: psprecomp/dist/*
+
+  manifest:
+    # manifest.json (what the updaters download first) lists every platform's asset, so it is made once all of them exist, then signed.
+    needs: [build, android-app]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-files
+          path: psprecomp/dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-android
+          path: psprecomp/dist
+      - name: Manifest
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          mkdir -p manifest-out
+          python3 release/make_manifest.py --version "${VERSION#v}" --repo "${{ github.repository }}" --tag "$VERSION" \
+            --assets dist -o manifest-out/manifest.json
+          # Signed manifest (docs/installer.md "Signed manifests"). A committed public key without the secret would ship
+          # releases that no install accepts, so that combination fails here.
+          if [ -f games/dissidia/update_key.pub ] && [ -z "$RELEASE_SIGNING_KEY" ]; then
+            echo "games/dissidia/update_key.pub is committed but the RELEASE_SIGNING_KEY secret is not set"; exit 1
+          fi
+          if [ -n "$RELEASE_SIGNING_KEY" ]; then python3 release/sign_manifest.py sign manifest-out/manifest.json; fi
+          ls -la manifest-out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest
+          path: psprecomp/manifest-out/*
+
   publish:
     if: github.event_name == 'push'
-    needs: build
+    needs: [build, android-app, manifest]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -106,6 +162,14 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: release-files
+          path: psprecomp/dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-android
+          path: psprecomp/dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-manifest
           path: psprecomp/dist
       - name: Create the release
         env:

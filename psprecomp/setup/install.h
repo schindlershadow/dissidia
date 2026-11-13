@@ -18,6 +18,7 @@ namespace setup {
 struct Layout {
     std::string self;   // this program (the import-saves step runs it again)
     std::string root, python, setup_script, build_script, update_script, recompiler, toolchain, sdk, game_dir;
+    std::string pspdecrypt, zig, android_dir, lib_dir;   // Android only (find_layout_android): the tools in the app's native-library folder, the Android part
     // Empty string when everything needed is there, else a message naming what is missing.
     std::string problem() const;
 };
@@ -56,10 +57,28 @@ std::vector<Step> plan_rebuild(const Layout& l, const std::string& workdir, cons
 std::vector<Step> plan_android_install(const Layout& l, const std::string& workdir);
 bool android_build_exists(const std::string& workdir);
 
+#ifdef __ANDROID__
+// The setup app: the release folder is the unpacked payload (files/release); the executables are the app's lib*.so (lib_dir).
+Layout find_layout_android(const std::string& root, const std::string& lib_dir);
+// Read the disc image, translate + compile the game ON this device with the bundled zig (psp_build.py --android), copy the game's
+// files to Android/media/<package>/game. The built APK is installed by the wizard afterwards (Java PackageInstaller).
+std::vector<Step> plan_install_android(const Layout& l, const std::string& iso, const std::string& workdir);
+constexpr const char* kGamePackage = "org.psprecomp.game";
+std::string android_game_dir();
+EnvList android_env(const Layout& l, const std::string& workdir);   // PYTHONHOME etc. for the bundled Python
+// update.py android-check / android-verify (see games/dissidia/tools/update.py)
+std::vector<std::string> android_check_argv(const Layout& l, const std::string& manifest, const std::string& sig, const std::string& current);
+std::vector<std::string> android_verify_argv(const Layout& l, const std::string& file, const std::string& sha256, long long size);
+constexpr const char* kManifestUrl = "https://github.com/schindlershadow/dissidia/releases/latest/download/manifest.json";
+std::string android_payload_fingerprint(const Layout& l);   // android/build_fingerprint.txt of the unpacked payload ("" if absent)
+// The game build again (translate + compile + copy) from the already extracted work folder, after the app was updated.
+std::vector<Step> plan_rebuild_android(const Layout& l, const std::string& workdir);   // where the game app reads its files: /sdcard/Android/media/org.psprecomp.game/game
+#endif
+
 // ---- updates (game/tools/update.py; see docs/installer.md "Updater") ----
 struct UpdateInfo {
     bool available = false;
-    std::string version, current, error;
+    std::string version, current, error, url, sha256;
     long long size = 0;
     bool rebuild = false, relink = false;
 };
@@ -94,7 +113,7 @@ std::string elapsed_text(const Progress& p, long long now_ms);
 
 // ---- remembered install (per user: SDL pref dir, passed in so this file needs no SDL) ----
 struct State {
-    std::string workdir, iso, version;
+    std::string workdir, iso, version, built_fp;   // built_fp: Android, the build fingerprint of the payload the game was last built with
     Options options;
 };
 State load_state(const std::string& file);
