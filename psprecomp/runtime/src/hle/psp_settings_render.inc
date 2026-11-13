@@ -307,12 +307,12 @@ struct SettingsDraw {
     // -- state that moves ----------------------------------------------------------------------------------------------
     void step(float dt) {
         SettingsView& v = V;
-        const float open_rate = v.open_ ? 1.f / 0.36f : 1.f / 0.22f;
+        const float open_rate = v.open_ ? 1.f / 0.80f : 1.f / 0.45f;
         v.p_open_ = clamp01(v.p_open_ + (v.open_ ? 1.f : -1.f) * dt * open_rate);
         const float p = v.p_open_;
         e_hdr = seg(p, 0.00f, 0.55f); e_side = seg(p, 0.10f, 0.65f); e_list = seg(p, 0.20f, 0.80f);
         e_detail = seg(p, 0.30f, 0.90f); e_foot = seg(p, 0.35f, 1.00f);
-        v.page_p_ = clamp01(v.page_p_ + dt / 0.24f);
+        v.page_p_ = clamp01(v.page_p_ + dt / 0.45f);
         compute_rows();
         const float list_h = R_LIST.h;
         v.scroll_max_ = std::max(0.f, content_h - list_h);
@@ -348,6 +348,7 @@ struct SettingsDraw {
         const float hl = n > 0 ? ry[size_t(sel)] : 0.f;
         if (v.rows_reset_ || !v.glide_init_) v.sel_y_ = hl;
         else v.sel_y_ += (hl - v.sel_y_) * (1.f - std::exp(-dt * 22.f));
+        v.tab_focus_ += ((S.focus_tabs ? 1.f : 0.f) - v.tab_focus_) * (1.f - std::exp(-dt * 18.f));
         const float cat_t = float(S.cat);
         if (!v.glide_init_) v.cat_y_ = cat_t;
         else v.cat_y_ += (cat_t - v.cat_y_) * (1.f - std::exp(-dt * 16.f));
@@ -379,8 +380,17 @@ struct SettingsDraw {
     // -- background ---------------------------------------------------------------------------------------------------
     void draw_background() {
         if (T && T->background.valid()) {
-            c.clear(Canvas::rgba(200, 204, 232));
-            draw_sprite(c, T->background, 0, 0, float(SCREEN_W), float(SCREEN_H), 1.f, true);
+            // the scaled artwork never changes: scaling it every frame was most of the drawing time (a slow CPU then dropped
+            // the picture to a lower, blurry scale)
+            static std::vector<uint32_t> cache[MAX_SCALE + 1];
+            static const SdSprite* cached_for = nullptr;
+            std::vector<uint32_t>& cb = cache[std::clamp(c.scale, 0, int(MAX_SCALE))];
+            if (cached_for != &T->background) { for (auto& v : cache) v.clear(); cached_for = &T->background; }
+            if (cb.size() != c.px.size()) {
+                c.clear(Canvas::rgba(200, 204, 232));
+                draw_sprite(c, T->background, 0, 0, float(SCREEN_W), float(SCREEN_H), 1.f, true);
+                cb = c.px;
+            } else c.px = cb;
         } else {
             c.px = background(c.scale);
         }
@@ -441,10 +451,21 @@ struct SettingsDraw {
                 for (int yy = y0; yy < y1; ++yy) P.put(xx, yy, k, fade);
             }
         }
-        // back / close button
+        // top right: the project name; inside a sub-menu a Back button
+        if (!S.in_sub) {
+            FT_Face nf = bodyb;
+            const float tw = P.text_width(nf, 9.f * fs, S.brand);
+            const float pw = std::max(R_BACK.w, tw + 30.f);
+            const SetRect nb = shifted(SetRect{470.f - pw, R_BACK.y, pw, R_BACK.h}, 0, dy);
+            back = nb;
+            navy_plate(P, nb.x, nb.y, nb.w, nb.h, nb.h * 0.5f, 0.f);
+            themed_hint(P, nf, 9.f * fs, nb.x + (nb.w - tw) / 2.f, nb.y + nb.h / 2 + 3.3f, S.brand.c_str(), C_WHITE);
+            P.ga = 1.f;
+            return;
+        }
         const bool hot = S.hover_back;
         navy_plate(P, bk.x, bk.y, bk.w, bk.h, bk.h * 0.5f, hot ? 0.28f : 0.f);
-        const char* label = S.in_sub ? "Back" : "Close";
+        const char* label = "Back";
         float lx = bk.x + 14.f;
         if (S.device == 0) {   // the pad button that does it
             const SdSprite& g = (S.confirm_cross ? (T ? T->glyph_circle : SdSprite{}) : (T ? T->glyph_cross : SdSprite{}));
@@ -474,9 +495,12 @@ struct SettingsDraw {
         // the selection bar glides between categories
         const float hy = y0 + V.cat_y_ * pitch;
         {
+            const float tf = V.tab_focus_, ga0 = P.ga;
             chev(P, ix, hy, iw, ih, 5.f, 0.9f, [](float, float) { return rgb(214, 218, 240); });
+            P.ga = ga0 * (0.5f + 0.5f * tf);   // the category you are inside shows quieter than the one you are choosing
             Ramp rp(rgb(104, 118, 255), rgb(40, 48, 222), rgb(20, 22, 150), hy, hy + ih);
             chev(P, ix, hy, iw, ih, 5.f, 0.f, [&](float yy, float) { return rp.at(yy); });
+            P.ga = ga0;
             chev(P, ix + 2.f, hy + 1.f, iw - 4.f, ih * 0.42f, 4.f, 0.f, [](float, float) { return rgb(255, 255, 255, 0.26f); });
             const float pulse = 0.5f + 0.5f * std::sin(float(V.t_) * 3.2f);
             diamond(P, ix + 7.f, hy + ih / 2.f, 2.5f + 0.5f * pulse, rgb(250, 220, 120));
@@ -488,7 +512,7 @@ struct SettingsDraw {
             if (S.hover_cat == i && S.device == 1 && sf < 0.5f) {
                 chev(P, r.x, r.y, r.w, r.h, 5.f, 0.f, [](float, float) { return rgb(120, 134, 255, 0.20f); });
             }
-            const Col fg = col_mix(C_INK, C_WHITE, sf);
+            const Col fg = col_mix(C_INK, C_WHITE, sf * (0.7f + 0.3f * V.tab_focus_));
             draw_icon(P, S.cats[size_t(i)].icon, r.x + 17.f, r.y + r.h / 2.f, fg);
             P.text(bodyb, 9.2f * fs, r.x + 28.f, r.y + r.h / 2.f + 3.3f, S.cats[size_t(i)].name, fg, r.w - 32.f);
         }
@@ -622,7 +646,10 @@ struct SettingsDraw {
         const int sel = std::clamp(S.sel, 0, std::max(0, n - 1));
         // selection bar (glides)
         float hl_c = -1e9f;
-        if (n > 0 && S.rows[size_t(sel)].selectable()) {
+        const float lf = 1.f - V.tab_focus_;
+        if (n > 0 && S.rows[size_t(sel)].selectable() && lf > 0.02f) {
+            const float ga_l = P.ga;
+            P.ga = ga_l * lf;
             const float hy = list.y + V.sel_y_ - list_scroll + 0.5f, hh = ROW_PITCH - 1.5f;
             hl_c = hy + hh / 2.f;
             chev(P, rx, hy, rw, hh, 6.f, 0.9f, [](float, float) { return rgb(214, 218, 240); });
@@ -641,6 +668,8 @@ struct SettingsDraw {
             }
             const float pl = 0.5f + 0.5f * std::sin(float(V.t_) * 3.6f);
             diamond(P, rx + 8.f, hy + hh / 2.f, 2.6f + 0.5f * pl, rgb(250, 220, 120));
+            P.ga = ga_l;
+            if (lf < 0.5f) hl_c = -1e9f;
         }
         for (int i = 0; i < n; ++i) {
             const SetRow& r = S.rows[size_t(i)];
@@ -719,7 +748,7 @@ struct SettingsDraw {
         const int n = int(S.rows.size());
         if (n == 0 || S.sel < 0 || S.sel >= n) { P.ga = 1.f; return; }
         const SetRow& r = S.rows[size_t(S.sel)];
-        if (r.help.empty()) { P.ga = 1.f; return; }
+        if (r.help.empty() || S.focus_tabs) { P.ga = 1.f; return; }
         const size_t nl = r.help.find('\n');
         const std::string title = nl == std::string::npos ? r.label : r.help.substr(0, nl);
         const std::string text = nl == std::string::npos ? r.help : r.help.substr(nl + 1);
@@ -822,7 +851,7 @@ struct SettingsDraw {
         }
         if (S.device == 0) {
             x += glyph_btn(x, cy, S.confirm_cross) + 3.f; label("Select");
-            x += glyph_btn(x, cy, !S.confirm_cross) + 3.f; label(S.in_sub ? "Back" : "Close");
+            x += glyph_btn(x, cy, !S.confirm_cross) + 3.f; label((S.in_sub || !S.focus_tabs) ? "Back" : "Close");
             float w;
             keycap(x, cy, "L", w); x += w + 2.f; keycap(x, cy, "R", w); x += w + 3.f; label("Category");
             // right: d-pad glyphs
@@ -854,7 +883,7 @@ struct SettingsDraw {
         } else if (S.device == 1) {
             float w;
             keycap(x, cy, "Enter", w); x += w + 3.f; label("Select");
-            keycap(x, cy, "Esc", w); x += w + 3.f; label(S.in_sub ? "Back" : "Close");
+            keycap(x, cy, "Esc", w); x += w + 3.f; label((S.in_sub || !S.focus_tabs) ? "Back" : "Close");
             keycap(x, cy, "Q", w); x += w + 2.f; keycap(x, cy, "E", w); x += w + 3.f; label("Category");
             label_r("Scroll", 0.f);
             label_r("Wheel", 0.f);
@@ -979,16 +1008,24 @@ struct SettingsDraw {
 
     float lastdt = 0.016f;
     void draw_all() {
+        using Clk = std::chrono::steady_clock;
+        static double acc[8] = {}; static int cnt = 0;
+        auto tick = [&](int i, Clk::time_point& t0) { const auto t1 = Clk::now(); acc[i] += std::chrono::duration<double, std::milli>(t1 - t0).count(); t0 = t1; };
+        auto t0 = Clk::now();
         V.g_.back = SetRect{};
-        draw_background();
-        draw_header();
+        draw_background(); tick(0, t0);
+        draw_header(); tick(1, t0);
         V.g_.back = back;
-        draw_sidebar();
-        draw_list();
-        draw_detail();
-        draw_footer();
+        draw_sidebar(); tick(2, t0);
+        draw_list(); tick(3, t0);
+        draw_detail(); tick(4, t0);
+        draw_footer(); tick(5, t0);
         draw_keyboard();
-        draw_iris();
+        draw_iris(); tick(6, t0);
+        if (std::getenv("PSPRECOMP_SETTINGS_PROFILE") && ++cnt == 120) {
+            std::fprintf(stderr, "[SETTINGS] draw ms: bg %.1f header %.1f side %.1f list %.1f detail %.1f footer %.1f kb+iris %.1f\n", acc[0]/cnt, acc[1]/cnt, acc[2]/cnt, acc[3]/cnt, acc[4]/cnt, acc[5]/cnt, acc[6]/cnt);
+            cnt = 0; for (double& a : acc) a = 0;
+        }
         V.animating_ = true;
     }
 };

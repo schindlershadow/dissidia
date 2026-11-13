@@ -1554,6 +1554,11 @@ int psp_adhoc_group_fps_cap() {
     return cap;
 }
 
+bool psp_adhoc_connected() {   // the game has joined an ad-hoc group (lobby or match): pausing would stall the other players
+    std::lock_guard<std::mutex> lk(g_mu);
+    return g_connected;
+}
+
 bool psp_adhoc_in_session() {
     std::lock_guard<std::mutex> lk(g_mu);
     if (!g_connected) return false;

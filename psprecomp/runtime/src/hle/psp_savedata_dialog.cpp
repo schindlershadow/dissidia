@@ -2,6 +2,8 @@
 #include "psp_savedata_dialog.h"
 #include "psp_platform.h"
 
+#include <chrono>
+#include <cstdlib>
 #include <ft2build.h>
 #include FT_FREETYPE_H
 

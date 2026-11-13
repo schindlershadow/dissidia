@@ -231,6 +231,8 @@ struct SetScene {
     int device = 0;                           // 0 pad, 1 keyboard / mouse, 2 touch: which hints and cursors to show
     bool confirm_cross = true;
     bool in_sub = false;                      // the page is a sub-menu: Back goes up one level instead of closing
+    bool focus_tabs = false;                  // the category list (left) has the focus; Back there closes
+    std::string brand = "Dissidia 012 Recompiled";   // the plate in the top right corner (a Back button inside a sub-menu)
     SetKeyboardState kb;
 };
 struct SetRect {
@@ -273,6 +275,7 @@ public:
     float p_open_ = 0.f;
     double last_ms_ = -1, t_ = 0;
     float scroll_ = 0, scroll_target_ = 0, scroll_max_ = 0, fling_v_ = 0;
+    float tab_focus_ = 1.f;                   // eases to 1 while the category list has the focus
     float sel_y_ = 0, cat_y_ = 0;             // gliding highlight positions (design units)
     bool glide_init_ = false;
     int last_cat_ = -1;

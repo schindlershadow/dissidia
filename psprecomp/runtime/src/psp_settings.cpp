@@ -191,7 +191,8 @@ int g_drawn_scale = 0;
 int64_t g_last_present = 0;
 int g_ui_cap = 3;                      // the highest canvas scale the animated screen is drawn at (lowered when drawing is slow)
 double g_ui_ms = 5.0;
-int g_ui_calm = 0;
+int g_ui_interval = 15;                // ms between redraws: a slow CPU gets a lower frame rate before it gets a blurrier picture
+int g_ui_calm = 0, g_ui_up = 0;
 int g_pending_rs = 0;                  // render scale waiting for the game to park
 bool g_pending_scene = false;         // HDR Scene toggled: reformat the scene targets once the game has parked
 int g_pending_wide = -1;               // widescreen (0 / 1) waiting for the game to park, -1 = none
@@ -1419,7 +1420,10 @@ void change(int d) {   // left / right on the selected row
     g_dirty = true;
 }
 
+int g_built_page = -1;                 // the page build_rows last built (to keep the cursor on the same row when only the rows change)
 void build_rows() {
+    const bool had = g_built_page == page_id() && g_sel >= 0 && g_sel < int(g_rows.size());
+    const Row keep = had ? g_rows[size_t(g_sel)] : ROW_SEC_WINDOW;
     g_rows.clear();
     auto add = [&](Row r) { g_rows.push_back(r); };
     switch (page_id()) {
@@ -1488,6 +1492,8 @@ void build_rows() {
         break;
     }
     g_sel = std::clamp(g_sel_page[page_id()], 0, std::max(0, int(g_rows.size()) - 1));
+    if (had) for (size_t i = 0; i < g_rows.size(); ++i) if (g_rows[i] == keep) { g_sel = int(i); break; }   // same row, wherever it moved to
+    g_built_page = page_id();
     while (g_sel + 1 < int(g_rows.size()) && is_section(g_rows[size_t(g_sel)])) ++g_sel;   // never rest on a caption
 }
 
@@ -1498,6 +1504,7 @@ int64_t g_rows_next = 0;
 int g_device = 0;                      // 0 pad, 1 keyboard / mouse, 2 touch: what the hints show
 int g_hover_row = -1, g_hover_cat = -1, g_hover_part = 0, g_press_row = -1;
 bool g_hover_back = false;
+bool g_focus_tabs = true;              // the category list (left) has the focus; Confirm / Right open the category, Back returns here
 bool g_closing = false;                // the close animation is running (the game stays paused until it ends)
 std::atomic<bool> g_request_open{false};
 std::atomic<bool> g_gate_dirty{false};
@@ -1543,6 +1550,7 @@ void leave_sub() {
 void go_back() {   // Back: cancel a text entry, else up one sub-menu level, else close
     if (g_edit.active) { edit_end(); return; }
     if (g_sub >= 0) { leave_sub(); return; }
+    if (!g_focus_tabs) { g_focus_tabs = true; g_dirty = true; return; }   // from a category's rows back to the category list
     set_open(false);
 }
 
@@ -1550,7 +1558,7 @@ void set_open(bool open) {
     if (open) {
         if (g_closing) { g_closing = false; g_view.set_open(true); return; }   // changed our mind during the close animation
         if (open == g_open.load()) return;
-        if (psp_adhoc_in_session()) {   // opening pauses the game, which would stall the other players
+        if (psp_adhoc_connected() || psp_adhoc_in_session()) {   // opening pauses the game, which would stall the other players
             ge_draw_toast("Settings are unavailable during multiplayer", 2500);
             std::fprintf(stderr, "[SETTINGS] menu not opened: in a multiplayer session\n");
             return;
@@ -1563,6 +1571,8 @@ void set_open(bool open) {
         g_touch_ui = SDL_GetNumTouchDevices() > 0 || psp_touch_enabled() || (tm && (!std::strcmp(tm, "on") || !std::strcmp(tm, "auto") || !std::strcmp(tm, "1")));
         g_page = std::clamp(g_page, 0, int(page_list().size()) - 1);
         g_sub = -1;
+        g_focus_tabs = true;
+        g_built_page = -1;
         build_rows();
         g_view = psp_sddialog::SettingsView();
         g_view.set_open(true);
@@ -1605,7 +1615,7 @@ void move_sel(int d) {
     if (s != g_sel) { g_sel = s; g_quit_armed = false; g_dirty = true; }
 }
 
-void confirm() {
+void confirm_row() {
     if (g_sel < 0 || g_sel >= int(g_rows.size())) return;
     switch (g_rows[size_t(g_sel)]) {
     case ROW_SUB_HDR: enter_sub(PAGE_HDR); return;
@@ -1718,6 +1728,11 @@ void confirm() {
 }
 
 
+void confirm() {   // Confirm: open the highlighted category, or act on the highlighted row
+    if (g_focus_tabs && g_sub < 0) { g_focus_tabs = false; g_dirty = true; return; }
+    confirm_row();
+}
+
 void nav(uint32_t dir) {
     g_device = 0;
     if (g_edit.active) {
@@ -1726,6 +1741,12 @@ void nav(uint32_t dir) {
         else if (dir & 2) edit_move(1, 0, g);
         else if (dir & 4) edit_move(0, -1, g);
         else if (dir & 8) edit_move(0, 1, g);
+        return;
+    }
+    if (g_focus_tabs && g_sub < 0) {   // the category list: up / down choose, right (or Confirm) goes in
+        if (dir & 1) switch_page(-1);
+        else if (dir & 2) switch_page(1);
+        else if (dir & 8) { g_focus_tabs = false; g_dirty = true; }
         return;
     }
     if (dir & 1) move_sel(-1);
@@ -1814,8 +1835,9 @@ void row_tap(int idx) {   // a click / tap on a row's body
     const K k = g_set_rows[size_t(idx)].kind;
     g_sel = idx;
     g_quit_armed = g_quit_armed && g_rows[size_t(idx)] == ROW_QUIT;
+    g_focus_tabs = false;
     if (k == K::Header || k == K::Info || k == K::Slider) return;   // sliders are set by dragging or with their arrows
-    confirm();
+    confirm_row();
 }
 
 void pointer_hover(float ux, float uy) {
@@ -1850,7 +1872,7 @@ void pointer_press(float ux, float uy, bool touch) {
     }
     if (G.back.has(ux, uy)) { go_back(); return; }
     for (size_t i = 0; i < G.cats.size(); ++i)
-        if (G.cats[i].has(ux, uy)) { goto_category(int(i)); return; }
+        if (G.cats[i].has(ux, uy)) { goto_category(int(i)); g_focus_tabs = false; g_dirty = true; return; }
     if (G.scroll_thumb.w > 0 && G.scroll_thumb.has(ux, uy)) { g_ptr.mode = 4; g_ptr.scroll0 = g_view.scroll_pos(); return; }
     if (G.scroll_track.w > 0 && G.scroll_track.has(ux, uy)) {   // jump to that part of the list, then drag
         const float f = std::clamp((uy - G.scroll_track.y) / std::max(1.f, G.scroll_track.h), 0.f, 1.f);
@@ -1864,6 +1886,7 @@ void pointer_press(float ux, float uy, bool touch) {
             const auto& row = g_set_rows[size_t(r.idx)];
             if (row.kind == psp_sddialog::SetKind::Header) break;
             g_sel = r.idx;
+            g_focus_tabs = false;
             g_quit_armed = g_quit_armed && g_rows[size_t(r.idx)] == ROW_QUIT;
             g_view.follow_selection();
             const bool arrows = row.kind == psp_sddialog::SetKind::Choice || row.kind == psp_sddialog::SetKind::Slider;
@@ -2150,6 +2173,10 @@ bool psp_settings_handle_event(const SDL_Event& ev) {
 void psp_settings_tick() {
     if (g_request_open.exchange(false) && !g_open.load()) { set_open(true); g_gate_dirty.store(true); }
     if (!g_open.load()) return;
+    if (!g_closing && (psp_adhoc_connected() || psp_adhoc_in_session())) {   // a match started while the menu was open (e.g. from a pad press queued before): give the game back
+        std::fprintf(stderr, "[SETTINGS] closing: multiplayer session started\n");
+        set_open(false);
+    }
     if (!g_closing) held_dir_update();
     // A render scale change waits until the game has parked (no display list in flight).
     if (g_pending_wide >= 0 && g_parked.load() > 0) {
@@ -2198,7 +2225,7 @@ void psp_settings_tick() {
         }
     }
     // ~60 frames a second: the screen is animated. The picture is rendered at a lower scale when the CPU cannot keep up.
-    if (t - g_last_present < 15) return;
+    if (t - g_last_present < g_ui_interval) return;
     g_last_present = t;
     if (g_dirty || t >= g_rows_next) {
         g_set_rows = make_set_rows();
@@ -2212,6 +2239,7 @@ void psp_settings_tick() {
     sc.crumbs.push_back(k_page_names[page_list()[size_t(g_page)]]);
     if (g_sub >= 0) sc.crumbs.push_back(k_page_names[g_sub]);
     sc.in_sub = g_sub >= 0;
+    sc.focus_tabs = g_focus_tabs && g_sub < 0;
     sc.rows = g_set_rows;
     sc.sel = g_sel;
     sc.hover_row = g_hover_row; sc.hover_cat = g_hover_cat; sc.hover_part = g_hover_part; sc.hover_back = g_hover_back;
@@ -2234,8 +2262,18 @@ void psp_settings_tick() {
     psp_sddialog::menu_overlay_publish(*canvas);
     const double ms = std::chrono::duration<double, std::milli>(Clock::now() - r0).count();
     g_ui_ms = g_ui_ms * 0.85 + ms * 0.15;
-    if (g_ui_ms > 20.0 && g_ui_cap > 1) { --g_ui_cap; g_ui_ms = 8.0; g_ui_calm = 0; }
-    else if (g_ui_ms < 6.5 && g_ui_cap < psp_sddialog::MAX_SCALE && ++g_ui_calm > 150) { ++g_ui_cap; g_ui_calm = 0; }
+    // Sharpness first: a slow CPU (Steam Deck) redraws less often (down to ~15 fps) at the full canvas scale. Only a
+    // hopeless draw time (over 60 ms even then) lowers the scale, and never below 2.
+    const int want_iv = g_ui_ms > 11.0 ? std::min(66, int(g_ui_ms * 1.5)) : 15;
+    if (want_iv > g_ui_interval) g_ui_interval = want_iv;
+    else if (want_iv < g_ui_interval && ++g_ui_calm > 90) { g_ui_interval = std::max(want_iv, g_ui_interval - 8); g_ui_calm = 0; }
+    if (g_ui_ms > 60.0 && g_ui_cap > 2) { --g_ui_cap; g_ui_ms = 30.0; }
+    else if (g_ui_ms < 20.0 && g_ui_cap < psp_sddialog::MAX_SCALE && g_ui_interval <= 15 && ++g_ui_up > 300) { ++g_ui_cap; g_ui_up = 0; }
+    static int s_log_iv = 0, s_log_scale = 0;
+    if (g_ui_interval != s_log_iv || scale != s_log_scale) {
+        s_log_iv = g_ui_interval; s_log_scale = scale;
+        std::fprintf(stderr, "[SETTINGS] ui canvas scale %d (output %d, cap %d), redraw every %d ms, draw %.1f ms\n", scale, psp_sddialog::output_scale(), g_ui_cap, g_ui_interval, g_ui_ms);
+    }
     ge_draw_present_overlay_now();
     if (g_closing && g_view.closed()) finish_close();
 }
