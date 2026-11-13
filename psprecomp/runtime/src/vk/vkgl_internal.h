@@ -119,6 +119,7 @@ struct GLState {
     // enables
     bool blend = false, depth_test = false, cull = false, stencil = false, scissor = false, discard = false;
     BlendState bl;
+    int sc_rect[4] = {0, 0, 0, 0};   // glScissor rectangle (GL origin); only glClear honours it (the flash bars along the screen edge)
     float blend_color[4] = {0, 0, 0, 0};
     uint8_t color_mask = 15;
     GLenum depth_func = GL_LESS;
