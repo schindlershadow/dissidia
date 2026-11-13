@@ -157,6 +157,10 @@ bool core_init(SDL_Window* w, bool vsync, std::string* err);
 void core_shutdown();
 bool rt_set_scene(const float* xyz, uint32_t tri_count, const uint32_t* tri_cols, const float* fx_xyz, uint32_t fx_tri_count, const uint32_t* fx_cols);   // PSPRECOMP_VK_RT ray-query scene (psp_rt.h)
 bool rt_available();
+void core_set_hdr(bool on);
+bool core_hdr_supported();
+int core_hdr_encoding();
+const char* core_hdr_reason();
 const char* rt_unavailable_reason();
 void core_swap();
 void core_set_vsync(bool v);

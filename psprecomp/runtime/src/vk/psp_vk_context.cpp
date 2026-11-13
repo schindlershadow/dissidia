@@ -49,6 +49,11 @@ bool Context::init(const ContextOptions& opt, std::string* err) {
         iext.resize(n);
         SDL_Vulkan_GetInstanceExtensions(window_, &n, iext.data());
     }
+    {   // HDR swapchain colour spaces (scRGB / HDR10) are only listed when this instance extension is on
+        uint32_t ne = 0; vkEnumerateInstanceExtensionProperties(nullptr, &ne, nullptr);
+        std::vector<VkExtensionProperties> ep(ne); vkEnumerateInstanceExtensionProperties(nullptr, &ne, ep.data());
+        if (window_ && has_ext(ep, "VK_EXT_swapchain_colorspace")) { iext.push_back("VK_EXT_swapchain_colorspace"); colorspace_ext_ = true; }
+    }
     std::vector<const char*> layers;
     uint32_t nl = 0; vkEnumerateInstanceLayerProperties(&nl, nullptr);
     std::vector<VkLayerProperties> lp(nl); vkEnumerateInstanceLayerProperties(&nl, lp.data());
@@ -216,6 +221,27 @@ bool Context::create_swapchain(int w, int h, bool vsync, std::string* err) {
     std::vector<VkSurfaceFormatKHR> fm(nf); vkGetPhysicalDeviceSurfaceFormatsKHR(phys_, surface_, &nf, fm.data());
     VkSurfaceFormatKHR sf = fm.empty() ? VkSurfaceFormatKHR{VK_FORMAT_B8G8R8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR} : fm[0];
     for (auto& f : fm) if (f.format == VK_FORMAT_B8G8R8A8_UNORM || f.format == VK_FORMAT_R8G8B8A8_UNORM) { sf = f; break; }  // UNORM: the GE is not sRGB
+    // HDR: scRGB (fp16, linear, 1.0 = 80 nits) is preferred, HDR10 (10-bit PQ) is the other choice.
+    int hdr = 0;
+    {
+        const VkSurfaceFormatKHR* scrgb = nullptr; const VkSurfaceFormatKHR* hdr10 = nullptr;
+        for (auto& f : fm) {
+            if (f.format == VK_FORMAT_R16G16B16A16_SFLOAT && f.colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT) scrgb = &f;
+            if (f.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 && f.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT) hdr10 = &f;
+        }
+        hdr_supported_ = scrgb || hdr10;
+        if (hdr_supported_) hdr_reason_.clear();
+        else hdr_reason_ = colorspace_ext_ ? "The display or the window system offers no HDR format. Turn HDR on in the system display settings, and use Wayland, Windows or gamescope (X11 has no HDR)."
+                                           : "The Vulkan driver has no VK_EXT_swapchain_colorspace.";
+        if (hdr_wanted_ && hdr_supported_) {
+            // PSPRECOMP_HDR_FORMAT=hdr10|scrgb picks by hand; scRGB first otherwise.
+            const char* hf = std::getenv("PSPRECOMP_HDR_FORMAT");
+            const bool prefer10 = hf && !std::strcmp(hf, "hdr10");
+            if (prefer10 && hdr10) { sf = *hdr10; hdr = 2; }
+            else if (scrgb) { sf = *scrgb; hdr = 1; }
+            else { sf = *hdr10; hdr = 2; }
+        }
+    }
     VkExtent2D ext = caps.currentExtent;
     // Android reports the panel's native (portrait) orientation as currentTransform ROTATE_90/270: ask for the identity
     // transform instead and let the compositor rotate, so the window keeps the landscape size SDL reports.
@@ -248,7 +274,8 @@ bool Context::create_swapchain(int w, int h, bool vsync, std::string* err) {
     VkResult r = vkCreateSwapchainKHR(dev_, &si, nullptr, &nsc);
     if (r != VK_SUCCESS) { if (err) *err = "vkCreateSwapchainKHR failed (" + std::to_string(r) + ")"; return false; }
     if (sc_.handle) vkDestroySwapchainKHR(dev_, sc_.handle, nullptr);
-    sc_.handle = nsc; sc_.format = sf.format; sc_.extent = ext;
+    sc_.handle = nsc; sc_.format = sf.format; sc_.extent = ext; sc_.hdr = hdr;
+    std::fprintf(stderr, "[VK] swapchain format %d colour space %d (%s)\n", (int)sf.format, (int)sf.colorSpace, hdr == 1 ? "HDR scRGB" : hdr == 2 ? "HDR10 PQ" : "SDR");
     uint32_t ni = 0; vkGetSwapchainImagesKHR(dev_, nsc, &ni, nullptr);
     sc_.images.resize(ni); vkGetSwapchainImagesKHR(dev_, nsc, &ni, sc_.images.data());
     return true;

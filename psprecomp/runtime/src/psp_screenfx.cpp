@@ -230,6 +230,16 @@ bool psp_rt_enabled() {
     if (v < 0) { const char* e = std::getenv("PSPRECOMP_VK_RT"); v = e && e[0] ? std::min(3, std::max(0, std::atoi(e))) : 0; g_rt_on.store(v); }
     return v != 0;
 }
+static std::atomic<int> g_rt_soft_lvl{-1};   // -1 = not chosen: PSPRECOMP_RT_SOFT (a float) or the default level (Firm)
+static const float k_rt_soft_ang[5] = {0.012f, 0.025f, 0.04f, 0.075f, 0.12f};
+int psp_rt_softness() { int v = g_rt_soft_lvl.load(); return v < 0 ? 1 : v; }   // default Firm
+void psp_rt_set_softness(int level) { g_rt_soft_lvl.store(std::min(4, std::max(0, level))); }
+float psp_rt_soft_angle() {
+    const int v = g_rt_soft_lvl.load();
+    if (v >= 0) return k_rt_soft_ang[v];
+    const char* e = std::getenv("PSPRECOMP_RT_SOFT");
+    return e && e[0] ? (float)std::atof(e) : k_rt_soft_ang[1];
+}
 int psp_rt_quality() { return psp_rt_enabled() ? g_rt_on.load() : 0; }
 void psp_rt_set_quality(int q) { g_rt_on.store(std::min(3, std::max(0, q))); }
 void psp_rt_set_enabled(bool on) { psp_rt_set_quality(on ? 2 : 0); }
@@ -1188,7 +1198,7 @@ void psp_screenfx_run(GLuint fbo, GLuint color_tex, int w, int h, const ScreenFx
         glUniform3f(loc(mp.id, "u_light_w"), wl_n[0], wl_n[1], wl_n[2]);
         glUniform1f(loc(mp.id, "u_rt_len"), env_float("PSPRECOMP_RT_LEN", 40.f));
         { const int q = psp_rt_quality(); glUniform1i(loc(mp.id, "u_rt_rays"), q >= 3 ? 6 : q == 2 ? 3 : 1); }
-        glUniform1f(loc(mp.id, "u_rt_soft"), env_float("PSPRECOMP_RT_SOFT", 0.04f));
+        glUniform1f(loc(mp.id, "u_rt_soft"), psp_rt_soft_angle());
         glUniform1i(loc(mp.id, "u_n_lights"), n_lights);
         if (n_lights) { glUniform4fv(loc(mp.id, "u_lp"), n_lights, lp4); glUniform4fv(loc(mp.id, "u_lc"), n_lights, lc4); glUniform4fv(loc(mp.id, "u_lvp"), n_lights, lv4); }
         glUniform1f(loc(mp.id, "u_lscale"), 1.f / std::max(0.05f, dark));

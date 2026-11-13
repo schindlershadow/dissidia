@@ -21,6 +21,9 @@ extern PspRtHooks g_psp_rt;
 /// creates the ray-query device when the GPU has it (desktop), this only decides whether scenes are captured and used.
 bool psp_rt_enabled();
 void psp_rt_set_enabled(bool on);   // on = Medium
+int psp_rt_softness();              // 0..4 shadow edge softness (sharp, firm (default), normal, soft, very soft): the half-angle of the light disc the rays are spread over
+void psp_rt_set_softness(int level);
+float psp_rt_soft_angle();          // that level as the shader's disc half-angle (PSPRECOMP_RT_SOFT=<float> overrides the default level only)
 int psp_rt_quality();               // 0 off, 1 low (1 hard ray), 2 medium (3 soft rays), 3 high (6 soft rays)
 void psp_rt_set_quality(int q);
 /// Text for the settings row when ray tracing cannot be used (never empty then).

@@ -376,8 +376,45 @@ never touched and the effects work at every render scale. All three effects are 
 | Sharpening | `PSPRECOMP_SHARPEN` | 0 off, 1..4 (contrast-adaptive sharpening, after AMD CAS) |
 | Upscale Filter | `PSPRECOMP_UPSCALE` | `bilinear` (as before), `sharp` (sharp bilinear), `bicubic` (Catmull-Rom) |
 
+`PSPRECOMP_POST_AA=2` selects SMAA 1x ('high' preset) instead of FXAA: three passes at render-target resolution (luma edge detection,
+blend-weight calculation with the area / search lookup textures, neighbourhood blending) that run before the upscale / sharpen pass.
+The reference shaders and lookup tables (MIT licence) are embedded by `tools/gen_smaa.py` into `runtime/src/psp_smaa_data.cpp`.
+Unlike FXAA it leaves flat areas, textures and text untouched. A failed shader build falls back to FXAA.
+
+Ray-traced shadow softness (`PSPRECOMP_RT_SOFT`, Settings > System > Shadow Softness, saved as `rt_soft`): levels 0..4 = Sharp, Firm
+(default), Normal, Soft, Very Soft, i.e. a light-disc half-angle of 0.012, 0.025, 0.04, 0.075, 0.12 over which Medium / High spread their
+rays. `PSPRECOMP_RT_SOFT=<float>` sets the angle directly until a level is chosen in the menu.
+
 An exact integer-scale (nearest) present keeps its hard pixels: the upscale filter does not apply there, FXAA and sharpening still do.
 If the shader fails to build, the plain blit is used. The pass resets the cached GL state afterwards (`glc::invalidate`).
+
+### Colour grade and HDR output
+
+A second, final pass (`psp_post_final`, same file) runs once per present, after the HUD, menus and overlays, over the whole
+window. It first needs a copy of the scene taken before the overlays (`psp_post_scene_snapshot`) and a copy of the finished window,
+and writes the result back into the default framebuffer. It runs only when a grade is set or an HDR swapchain is live.
+
+| Setting | Env | Values |
+|---|---|---|
+| Brightness | `PSPRECOMP_BRIGHTNESS` | 50..150 %, gamma on the midtones, 100 = unchanged |
+| Contrast | `PSPRECOMP_CONTRAST` | 50..150 %, 100 = unchanged |
+| Saturation | `PSPRECOMP_SATURATION` | 0..200 %, 100 = unchanged |
+| HDR Output | `PSPRECOMP_HDR` | 0 / 1. Vulkan renderer only, and only when the surface offers an HDR format |
+| HDR Highlights | `PSPRECOMP_HDR_BOOST` | 0 off, 1 low (default), 2 medium, 3 high |
+| HDR Peak Brightness | `PSPRECOMP_HDR_PEAK` | 400..4000 nits, default 1000 |
+| HDR Paper White | `PSPRECOMP_HDR_PAPER` | 80..400 nits, default 203 (BT.2408 reference white) |
+| (debug) | `PSPRECOMP_HDR_FORMAT=hdr10` | prefer HDR10 over scRGB when the surface offers both |
+
+HDR: the game is SDR, so this is an inverse tone map, not native HDR. The picture is linearised and SDR white is placed at paper
+white. Only SMALL bright features rise above it: a pixel is lifted by how far it stands out from the average of 8 neighbours (rings
+of 6 and 11 window pixels) and by how bright it is, scaled by HDR Highlights (`PSPRECOMP_HDR_BOOST` 0 off, 1 low (default), 2 medium,
+3 high) and the peak. Large bright areas (menus, white skies, white stages) are never lifted: an earlier version that lifted
+everything above 0.45 linear blew them out on the Deck's OLED. A pixel the overlays changed (HUD text, menus, dialogs) differs from the
+scene snapshot and is left at paper white. The Vulkan swapchain asks for
+`R16G16B16A16_SFLOAT` + `EXTENDED_SRGB_LINEAR` (scRGB, 1.0 = 80 nits) first and `A2B10G10R10` + `HDR10_ST2084` (PQ, encoded in the
+shader) second; the default framebuffer becomes fp16 while HDR is live. Toggling the row rebuilds the swapchain at the next present.
+HDR needs the system's HDR mode on and a compositor that exposes it (Windows, Wayland compositors with HDR, gamescope, Android
+panels); X11 offers none, and the row then reads Unavailable with the reason.
 
 ### Anisotropic filtering
 
