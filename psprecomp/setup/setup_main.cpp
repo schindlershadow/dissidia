@@ -219,6 +219,8 @@ struct App {
     SDL_Texture* tex = nullptr;
     SDL_GameController* pad = nullptr;
     Canvas canvas{SCALE};
+    psp_sddialog::SettingsView view;   // the same screen as the game's Settings menu (sidebar, list, description panel)
+    bool view_opened = false;
     Input in;
     bool quit = false, dirty = true;
 
@@ -254,11 +256,8 @@ struct App {
     Pick pick = Pick::Iso;
     Screen before_pick = Screen::Welcome;
 
-    // The Options page is a tabbed page like the game's Settings menu: L / R (or a tap on the right of the tab strip) switch the tab, with the same slide.
+    // Every page is drawn by the game's Settings screen renderer; the Options page has two categories (sidebar): L / R or a tap on one switch.
     int opt_tab = 0;
-    int anim_from = -1, anim_dir = 0;
-    int64_t anim_t0 = 0;
-    static constexpr int kTabAnimMs = 200;
     enum OptRow { OR_UPDATES, OR_HD, OR_JP, OR_ANDROID, OR_SAVES, OR_FOLDER, OR_START, OR_BACK };
     static const std::vector<std::string>& option_tabs() { static const std::vector<std::string> t = {"Extras", "General"}; return t; }
     std::vector<OptRow> option_rows() const {
@@ -282,7 +281,7 @@ struct App {
         return r;
     }
     void go_options(OptRow focus = OR_START) {   // the Options page on the Extras tab with `focus` selected
-        opt_tab = 0; anim_from = -1;
+        opt_tab = 0;
         std::vector<OptRow> r = option_rows();
         int i = 0;
         for (size_t k = 0; k < r.size(); k++) if (r[k] == focus) i = (int)k;
@@ -290,9 +289,10 @@ struct App {
     }
     void switch_tab(int dir) {
         const int n = (int)option_tabs().size();
-        anim_from = opt_tab; anim_dir = dir; anim_t0 = now_ms();
         opt_tab = (opt_tab + dir + n) % n;
         sel = 0;
+        view.page_changed(dir);
+        view.rows_changed();
         dirty = true;
     }
 
@@ -321,6 +321,7 @@ struct App {
 
     void go(Screen s, int select = 0) {
         screen = s; sel = select; dirty = true;
+        view.rows_changed();
 #ifdef __ANDROID__
         if (s == Screen::TypePath) SDL_StartTextInput(); else SDL_StopTextInput();   // the soft keyboard only for typing a path
 #endif
@@ -1344,25 +1345,30 @@ struct App {
                 return;
             }
             if (screen == Screen::TypePath) return;
-            if (dy < 46) {   // the title / tab area: on the Options page the right part switches the tab, the left goes back
-                if (screen == Screen::Options && dx > 300) switch_tab(+1);
-                else if (screen != Screen::Welcome) cancel();
-                return;
-            }
-            Page pg = page();
-            int n = (int)pg.rows.size();
-            if (n == 0) return;
-            const float y0 = 68, pitch = n > 4 ? 128.f / (float)n : 35.f;
-            int i = (int)((dy - y0) / pitch);
-            if (dx < 40 || dx > 460 || dy < y0 - 4 || i < 0 || i >= n) return;
+            // hit-test against what the settings renderer drew (its geometry is in the same 480x272 design units)
+            const psp_sddialog::SetGeom& G = view.geom();
+            if (G.back.w > 0 && G.back.has(dx, dy) && screen != Screen::Welcome) { cancel(); return; }
+            for (size_t k = 0; k < G.cats.size(); k++)
+                if (G.cats[k].has(dx, dy) && screen == Screen::Options) {
+                    const int n = (int)option_tabs().size();
+                    int d = (int)k - opt_tab;
+                    if (d != 0) { if (d > n / 2) d -= n; else if (d < -n / 2) d += n; switch_tab(d > 0 ? 1 : -1); while (opt_tab != (int)k) switch_tab(d > 0 ? 1 : -1); }
+                    return;
+                }
             int top = 0;
             if (is_browser()) {   // page() lists only the visible window of the browser's entries
                 int total = (int)br.list.size();
                 top = std::max(0, std::min(sel - MENU_ROWS / 2, total - MENU_ROWS));
             }
-            sel = top + i;
-            dirty = true;
-            confirm();
+            for (const auto& r : G.rows) {
+                if (!r.r.has(dx, dy)) continue;
+                sel = top + r.idx;
+                dirty = true;
+                if (r.dec.w > 0 && r.dec.has(dx, dy)) adjust(-1);
+                else if (r.inc.w > 0 && r.inc.has(dx, dy)) adjust(+1);
+                else confirm();
+                return;
+            }
         }
     }
 
@@ -1405,6 +1411,53 @@ struct App {
         }
     }
 
+    static std::string nice(const std::string& up) {   // "WHERE TO INSTALL" -> "Where to install"
+        std::string r;
+        for (size_t k = 0; k < up.size(); k++) r += k == 0 ? up[k] : (char)std::tolower((unsigned char)up[k]);
+        return r;
+    }
+
+    // The page as a SetScene for the settings renderer. Rows: no value = an action; On / Off = a toggle; arrows = a choice; the progress rows are info lines.
+    psp_sddialog::SetScene make_scene(const Page& pg, int vis) {
+        using psp_sddialog::SetKind;
+        psp_sddialog::SetScene sc;
+        sc.title = "Setup";
+        sc.brand = "Dissidia 012 Setup";
+        sc.crumbs.push_back(nice(pg.title));
+        if (pg.tabs.size() > 1) {
+            for (size_t k = 0; k < pg.tabs.size(); k++) sc.cats.push_back({pg.tabs[k], k == 0 ? 10 : 7});
+            sc.cat = pg.tab_active;
+        } else {
+            sc.cats.push_back({screen == Screen::Build ? "Install" : is_browser() ? "Files" : "Setup", 7});   // the page's own tab text (a percentage, a folder) is too long for the sidebar
+        }
+        const bool progress = screen == Screen::Build;
+        int id = 0;
+        for (const MenuRow& m : pg.rows) {
+            psp_sddialog::SetRow r;
+            r.id = id++ % psp_sddialog::SET_MAX_IDS;
+            r.label = m.label;
+            r.value = m.value;
+            r.disabled = m.disabled;
+            r.can_dec = m.can_dec; r.can_inc = m.can_inc;
+            r.help = m.help.empty() ? std::string() : m.label + "\n" + m.help;
+            if (m.value == "On" || m.value == "Off") { r.kind = SetKind::Toggle; r.on = m.value == "On"; }
+            else if (m.can_dec || m.can_inc) r.kind = SetKind::Choice;
+            else if (progress && r.id < 3) r.kind = SetKind::Info;
+            else if (m.value.empty()) r.kind = SetKind::Action;
+            else r.kind = SetKind::Info;
+            sc.rows.push_back(r);
+        }
+        sc.sel = std::min(vis, std::max(0, (int)pg.rows.size() - 1));
+        sc.in_sub = screen != Screen::Welcome;   // Back goes up one step
+#ifdef __ANDROID__
+        sc.device = 2;
+#else
+        sc.device = 1;
+#endif
+        sc.confirm_cross = true;
+        return sc;
+    }
+
     void render_page() {
         canvas.clear(0xFF000000);
         if (screen == Screen::TypePath) {
@@ -1418,20 +1471,9 @@ struct App {
             int top = std::max(0, std::min(sel - MENU_ROWS / 2, total - MENU_ROWS));
             vis = sel - top;
         }
-        psp_sddialog::MenuAnim anim;
-        bool animating = false;
-        if (screen == Screen::Options && anim_from >= 0) {   // the same ease-out slide as the game's Settings menu
-            const float u = float(now_ms() - anim_t0) / float(kTabAnimMs);
-            if (u >= 1.f) anim_from = -1;
-            else {
-                anim.from_tab = anim_from; anim.dir = anim_dir;
-                anim.p = 0.2f + 0.8f * (1.f - (1.f - u) * (1.f - u) * (1.f - u));
-                animating = true;
-                dirty = true;   // keep drawing until it ends
-            }
-        }
-        render_menu(canvas, pg.title, pg.tab, pg.rows, std::min(vis, std::max(0, (int)pg.rows.size() - 1)), true,
-                    pg.tabs.size() > 1 ? &pg.tabs : nullptr, pg.tab_active, animating ? &anim : nullptr);
+        if (!view_opened) { view.set_open(true); view_opened = true; }
+        view.render(canvas, make_scene(pg, vis), (double)now_ms());
+        if (view.animating()) dirty = true;   // keep drawing while something moves
     }
 
     void present() {
@@ -1734,7 +1776,7 @@ int main(int argc, char** argv) {
         app.opt.hd_textures = true;
         app.br.open(setup::home_dir(), false);
         int n = 0;
-        auto shot = [&](const char* name) { app.render_page(); write_ppm(app.canvas, shots + "/" + name + ".ppm"); n++; };
+        auto shot = [&](const char* name) { for (int f = 0; f < 90; f++) { app.render_page(); if (!app.view.animating()) break; SDL_Delay(16); } app.render_page(); write_ppm(app.canvas, shots + "/" + name + ".ppm"); n++; };
         app.layout_problem.clear();
         app.go(Screen::Welcome); shot("1_welcome");
         app.pick = Pick::Iso; app.go(Screen::Waiting); shot("2_waiting");
