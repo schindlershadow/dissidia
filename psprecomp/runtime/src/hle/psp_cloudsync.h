@@ -46,6 +46,9 @@ public:
     virtual std::string get(const std::string& name, Bytes* out) = 0;
     virtual std::string put(const std::string& name, const Bytes& data) = 0;   // create or replace
     virtual std::string remove(const std::string& name) = 0;        // a missing object is not an error
+    // True when get() may be called from several threads at once (after list()): the start-up scan then downloads the small
+    // per-save metadata files in parallel instead of one connection after the other.
+    virtual bool concurrent_get() const { return false; }
 };
 
 // A folder on this machine (or any mounted/synced one). Created on first use.

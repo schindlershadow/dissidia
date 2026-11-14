@@ -3,6 +3,8 @@
 
 #include "psp_savemgr.h"
 
+#include <thread>
+#include <atomic>
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -244,14 +246,32 @@ struct Run {
             };
             if (ends(".save")) remote_blobs.insert(it.name.substr(0, it.name.size() - 5));
         }
+        std::vector<std::pair<std::string, std::string>> wanted;   // (suffix, object name) of every metadata file to read
         for (const RemoteItem& it : items) {
             if (it.name.size() <= 5 || it.name.compare(it.name.size() - 5, 5, ".meta") != 0) continue;
             const std::string sfx = it.name.substr(0, it.name.size() - 5);
             if (!plain_suffix(sfx) || !included(sfx) || !remote_blobs.count(sfx)) continue;
-            Bytes b;
-            if (!p.get(it.name, &b).empty()) continue;
-            const Meta m = meta_from_text(std::string(b.begin(), b.end()));
-            if (m.valid()) remote[sfx] = m;
+            wanted.push_back({sfx, it.name});
+        }
+        // Each download is its own connection (a TLS handshake each): with a provider that allows it, read them side by side.
+        std::vector<Bytes> bodies(wanted.size());
+        std::vector<char> got(wanted.size(), 0);
+        auto fetch = [&](size_t i) { got[i] = p.get(wanted[i].second, &bodies[i]).empty() ? 1 : 0; };
+        if (p.concurrent_get() && wanted.size() > 1) {
+            std::atomic<size_t> next{0};
+            auto worker = [&] { for (size_t i; (i = next.fetch_add(1)) < wanted.size();) fetch(i); };
+            std::vector<std::thread> th;
+            const size_t n = std::min<size_t>(6, wanted.size());
+            for (size_t i = 1; i < n; ++i) th.emplace_back(worker);
+            worker();
+            for (auto& t : th) t.join();
+        } else {
+            for (size_t i = 0; i < wanted.size(); ++i) fetch(i);
+        }
+        for (size_t i = 0; i < wanted.size(); ++i) {
+            if (!got[i]) continue;
+            const Meta m = meta_from_text(std::string(bodies[i].begin(), bodies[i].end()));
+            if (m.valid()) remote[wanted[i].first] = m;
         }
         return "";
     }

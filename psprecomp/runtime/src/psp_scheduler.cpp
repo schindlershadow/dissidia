@@ -3,9 +3,20 @@
 #include "psp_debug_socket.h"  // PspDebugThreadInfo ([#35] I command)
 #include "psp_vfpu.h"  // vfpu_init_context — VFPU prefix reset default
 #include "hle/psp_hle.h"  // SCE_KERNEL_ERROR_WAIT_TIMEOUT
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#if defined(__linux__) || defined(__ANDROID__)
+#include <atomic>
+#include <chrono>
+#include <csignal>
+#include <dlfcn.h>
+#include <pthread.h>
+#include <thread>
+#include <unwind.h>
+#define PSP_BOOT_SAMPLER 1
+#endif
 
 /// Global scheduler lock — held during ALL status transitions and cv ops.
 static std::mutex g_sched_mutex;
@@ -83,6 +94,60 @@ static void thread_entry_wrapper(PspThread* t);
 // ---------------------------------------------------------------------------
 // psp_thread_start — set READY, launch OS thread
 // ---------------------------------------------------------------------------
+#ifdef PSP_BOOT_SAMPLER
+// PSPRECOMP_BOOT_SAMPLE=<ms>[,<seconds>]: diagnostics for "what is the game doing" during a slow start. A thread signals the first game
+// thread every <ms> (default for <seconds> = 12) and logs its native call stack as module+offset, for addr2line on an unstripped build:
+//   [SAMPLE] 1.20s libmain.so+0x1a2b3c libmain.so+0x1a2f00 ...
+static std::atomic<int> g_samp_n{-1};
+static void* g_samp_pc[20];
+struct SampUnwind { int n; };
+static _Unwind_Reason_Code samp_unwind_cb(struct _Unwind_Context* c, void* arg) {
+    SampUnwind* u = static_cast<SampUnwind*>(arg);
+    const uintptr_t pc = _Unwind_GetIP(c);
+    if (!pc) return _URC_END_OF_STACK;
+    if (u->n >= 20) return _URC_END_OF_STACK;
+    g_samp_pc[u->n++] = reinterpret_cast<void*>(pc);
+    return _URC_NO_REASON;
+}
+static void samp_handler(int) {
+    SampUnwind u{0};
+    _Unwind_Backtrace(samp_unwind_cb, &u);
+    g_samp_n.store(u.n);
+}
+static void boot_sampler_start(pthread_t target) {
+    const char* e = std::getenv("PSPRECOMP_BOOT_SAMPLE");
+    if (!e || !e[0]) return;
+    static std::atomic<bool> started{false};
+    if (started.exchange(true)) return;
+    const int ms = std::max(5, std::atoi(e));
+    const char* comma = std::strchr(e, ',');
+    const int secs = comma ? std::max(1, std::atoi(comma + 1)) : 12;
+    std::signal(SIGUSR2, samp_handler);
+    std::thread([target, ms, secs] {
+        const auto t0 = std::chrono::steady_clock::now();
+        while (std::chrono::steady_clock::now() - t0 < std::chrono::seconds(secs)) {
+            g_samp_n.store(-1);
+            pthread_kill(target, SIGUSR2);
+            for (int i = 0; i < 100 && g_samp_n.load() < 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            const int n = g_samp_n.load();
+            char line[900];
+            int len = std::snprintf(line, sizeof line, "[SAMPLE] %.2fs",
+                                    std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+            for (int i = 0; i < n && len < int(sizeof line) - 80; ++i) {
+                Dl_info di;
+                if (dladdr(g_samp_pc[i], &di) && di.dli_fname) {
+                    const char* base = std::strrchr(di.dli_fname, '/');
+                    len += std::snprintf(line + len, sizeof line - len, " %s+0x%lx", base ? base + 1 : di.dli_fname,
+                                         static_cast<unsigned long>(reinterpret_cast<uintptr_t>(g_samp_pc[i]) - reinterpret_cast<uintptr_t>(di.dli_fbase)));
+                } else len += std::snprintf(line + len, sizeof line - len, " ?%p", g_samp_pc[i]);
+            }
+            std::fprintf(stderr, "%s\n", line);
+            std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+        }
+    }).detach();
+}
+#endif
+
 int psp_thread_start(int thid) {
     std::unique_lock<std::mutex> lock(g_sched_mutex);
     if (thid < 0 || thid >= MAX_THREADS) {
@@ -95,6 +160,9 @@ int psp_thread_start(int thid) {
     t.status = READY;
     g_alive_threads.fetch_add(1);
     t.host_thread = std::thread(thread_entry_wrapper, &t);
+#ifdef PSP_BOOT_SAMPLER
+    boot_sampler_start(t.host_thread.native_handle());   // the first guest thread (the game's main thread)
+#endif
     return 0;
 }
 
