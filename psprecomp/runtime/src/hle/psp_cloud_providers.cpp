@@ -3,6 +3,7 @@
 
 #include "psp_http.h"
 
+#include <mutex>
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -324,10 +325,11 @@ class DriveProvider : public Provider {
 public:
     explicit DriveProvider(GoogleConfig c) : c_(std::move(c)) {}
     std::string label() const override { return "Google Drive"; }
+    bool concurrent_get() const override { return true; }   // after list(): token_ and ids_ are guarded by mu_
 
     std::string list(std::vector<RemoteItem>* out) override {
         out->clear();
-        ids_.clear();
+        { std::lock_guard<std::mutex> lk(mu_); ids_.clear(); }
         if (std::string e = ensure_folder(false); !e.empty()) return e;
         if (folder_.empty()) return "";                     // nothing uploaded yet
         std::string page;
@@ -347,8 +349,11 @@ public:
                     it.size = uint64_t(file.num("size"));
                     const std::string id = file.str("id");
                     if (it.name.empty() || id.empty()) continue;
-                    if (ids_.count(it.name)) continue;      // a duplicate name (two devices created it at once): keep the first
-                    ids_[it.name] = id;
+                    {
+                        std::lock_guard<std::mutex> lk(mu_);
+                        if (ids_.count(it.name)) continue;      // a duplicate name (two devices created it at once): keep the first
+                        ids_[it.name] = id;
+                    }
                     out->push_back(it);
                 }
             page = j.str("nextPageToken");
@@ -419,8 +424,11 @@ private:
 
     // The file id for `name` (cached from the last list or lookup); "" = not there.
     std::string find(const std::string& name, std::string* id) {
-        auto it = ids_.find(name);
-        if (it != ids_.end()) { *id = it->second; return ""; }
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            auto it = ids_.find(name);
+            if (it != ids_.end()) { *id = it->second; return ""; }
+        }
         id->clear();
         if (std::string e = ensure_folder(false); !e.empty()) return e;
         if (folder_.empty()) return "";
@@ -432,7 +440,7 @@ private:
         if (!r.ok() || !parse_json(r.text(), &j)) return http_error(r, "Google Drive lookup of " + name);
         id->clear();
         if (const Json* f = j.get("files"))
-            if (!f->a.empty()) { *id = f->a[0].str("id"); ids_[name] = *id; }
+            if (!f->a.empty()) { *id = f->a[0].str("id"); std::lock_guard<std::mutex> lk(mu_); ids_[name] = *id; }
         return "";
     }
 
@@ -483,16 +491,21 @@ private:
     // One API call with the bearer token; on a 401 the token is refreshed and the call repeated once.
     std::string call(const std::string& method, const std::string& url, Headers extra, Response* out, const Bytes* body = nullptr) {
         for (int attempt = 0; attempt < 2; attempt++) {
-            if (token_.empty()) if (std::string e = refresh_access(); !e.empty()) return e;
+            std::string tok;
+            {   // the token is shared by the threads of a parallel download: one refreshes, the others wait and use it
+                std::lock_guard<std::mutex> lk(mu_);
+                if (token_.empty()) if (std::string e = refresh_access(); !e.empty()) return e;
+                tok = token_;
+            }
             Request r;
             r.method = method;
             r.url = url;
             r.timeout_ms = 30000;
             r.headers = extra;
-            r.headers.emplace_back("Authorization", "Bearer " + token_);
+            r.headers.emplace_back("Authorization", "Bearer " + tok);
             if (body) r.body = *body;
             *out = psp_http::perform(r);
-            if (out->status == 401 && attempt == 0) { token_.clear(); continue; }
+            if (out->status == 401 && attempt == 0) { std::lock_guard<std::mutex> lk(mu_); if (token_ == tok) token_.clear(); continue; }
             break;
         }
         if (out->status == 0) return "Google Drive: " + (out->error.empty() ? "no answer" : out->error);
@@ -500,6 +513,7 @@ private:
     }
 
     GoogleConfig c_;
+    std::mutex mu_;                              // guards token_ and ids_ (never held across a request, except the token refresh)
     std::string token_;
     std::map<std::string, std::string> ids_;     // object name -> Drive file id
     std::string folder_;                         // Drive id of the saves folder ("" = not looked up / not there)

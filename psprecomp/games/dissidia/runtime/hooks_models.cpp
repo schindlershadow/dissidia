@@ -129,11 +129,17 @@ void prescan_mods_for_budget() {
     const std::string dir = dissidia_mods_dir();
     if (dir.empty() || !fs::is_directory(dir, ec)) return;
     uint64_t biggest = 0;
-    for (fs::recursive_directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec)) {
-        if (!it->is_regular_file(ec)) continue;
-        std::string rel = fs::relative(it->path(), dir, ec).generic_string();
-        for (char& c : rel) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        if (rel.compare(0, 4, "obj/") == 0) biggest = std::max<uint64_t>(biggest, it->file_size(ec));
+    // Only the obj/ folder holds model overrides, so only it is walked. (The whole mods tree also holds the HD texture pack, thousands of
+    // files; walking it with fs::relative() canonicalised every path and took about 5 s of the start-up on Android's shared storage.)
+    for (fs::directory_iterator top(dir, fs::directory_options::skip_permission_denied, ec), tend; !ec && top != tend; top.increment(ec)) {
+        std::string name = top->path().filename().generic_string();
+        for (char& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (name != "obj" || !top->is_directory(ec)) continue;
+        std::error_code ec2;
+        for (fs::recursive_directory_iterator it(top->path(), fs::directory_options::skip_permission_denied, ec2), end; !ec2 && it != end; it.increment(ec2)) {
+            if (!it->is_regular_file(ec2)) continue;
+            biggest = std::max<uint64_t>(biggest, it->file_size(ec2));
+        }
     }
     if (biggest > g_staging) {
         const uint32_t b = dissidia_model_budget_request(static_cast<uint32_t>(std::min<uint64_t>(biggest, 0xFFFFFFFFull)));
