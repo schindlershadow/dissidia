@@ -38,6 +38,8 @@ constexpr uint32_t FIGHTER_READY = 0x08B2F9E0u;  // battle overlay: bit 0x10 of 
 constexpr uint32_t LOCK_SET = 0x08B3B0B4u;       // battle overlay: lock block: set the target (a0 = block, a1 = actor)
 constexpr uint32_t BRAIN_TICK = 0x08A64400u;     // battle overlay: the CPU brain tick (a0 = brain, actor +0x5C4)
 constexpr uint32_t TARGET_REFRESH = 0x08B2F17Cu; // battle overlay: copy the lock block's result into actor +0x2FC (a0 = actor)
+constexpr uint32_t LOCK_OTHER = 0x08B40994u;     // battle overlay: the lock cycle's 2nd candidate, retail = the foe's assist (a0 = handler, a1 = lock block)
+constexpr uint32_t LOCK_GET = 0x08B3B280u;       // battle overlay: the lock block's current target (a0 = block)
 constexpr uint32_t START_ACTION = 0x0882FA10u;   // EBOOT: start an action (a0 = actor + 304, a1 = id, a2 = 0, f12 = f13 = 0)
 constexpr uint32_t REC_INIT = 0x08B01090u;       // battle overlay: fills the 40-byte init block (a0 = buf, a1 = side)
 constexpr uint32_t LOCK_INIT = 0x08B3B1B8u;      // battle overlay: lock-on block init (a0 = *(actor + 0x5AC), a1 = 3 words)
@@ -45,7 +47,7 @@ constexpr uint32_t PLACE = 0x088359A8u;          // EBOOT: place an actor (a0 = 
 constexpr uint32_t REC_BASE = 0x09AFB8A0u;       // global per-side records (stride 0x1060), 0x09B00000 - 18272
 constexpr uint32_t ACT_VT = 0x544u, ACT_FLAGS = 0x5B0u, ACT_LOCKBLK = 0x5ACu;
 
-FuncPtr g_orig_setup = nullptr, g_orig_flow = nullptr, g_orig_tick = nullptr;
+FuncPtr g_orig_setup = nullptr, g_orig_flow = nullptr, g_orig_tick = nullptr, g_orig_lock_other = nullptr, g_orig_refresh = nullptr;
 bool g_log = false;
 uint8_t* g_ram = nullptr;
 recomp_context* g_ctx = nullptr;
@@ -83,6 +85,8 @@ uint32_t call(uint32_t addr, uint32_t a0, uint32_t a1 = 0, uint32_t a2 = 0, uint
 }
 
 void tick_hook(uint8_t* rdram, recomp_context* ctx);
+void lock_other_hook(uint8_t* rdram, recomp_context* ctx);
+void refresh_hook(uint8_t* rdram, recomp_context* ctx);
 
 // Debug: every guest word outside the actor itself that holds the actor's address (who registered it).
 void scan_refs(uint32_t actor, const char* tag) {
@@ -159,12 +163,21 @@ void setup_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t a0 = rd(bs + 56), a1 = rd(bs + 60), mode = rd(bs + 76), human = rd(bs + 84);
     if (g_log) std::fprintf(stderr, "[TAGTEAM] setup bs=%08X mode=%u slots %08X %08X human slot %u\n", bs, mode, a0, a1, human);
     if (!ok(a0, 0x12D0) || !ok(a1, 0x12D0)) return;
+    if (!g_orig_lock_other) {
+        g_orig_lock_other = fn(LOCK_OTHER); g_orig_refresh = fn(TARGET_REFRESH);
+        if (g_orig_lock_other && g_orig_refresh) { psp_dispatch_register(LOCK_OTHER, lock_other_hook); psp_dispatch_register(TARGET_REFRESH, refresh_hook); }
+        else std::fprintf(stderr, "[TAGTEAM] lock cycle hooks not installed\n");
+    }
     if (!g_orig_tick) { g_orig_tick = fn(BRAIN_TICK); if (g_orig_tick) psp_dispatch_register(BRAIN_TICK, tick_hook); else std::fprintf(stderr, "[TAGTEAM] brain tick not found\n"); }
     const uint32_t hum = human == 0 ? a0 : a1, cpu = human == 0 ? a1 : a0;
     if (const char* w = std::getenv("PSPRECOMP_TAGTEAM_WATCH")) {   // arm the write watch on <human actor> + hex offset
         const uint32_t off = static_cast<uint32_t>(std::strtoul(w, nullptr, 16));
         psp_mem_watch_set(hum + off);
         std::fprintf(stderr, "[TAGTEAM] watching %08X\n", hum + off);
+    }
+    if (std::getenv("PSPRECOMP_TAGTEAM_WATCH_SEL")) {   // watch the human's lock cycle selector (retail mode handler [1] + 28)
+        const uint32_t L = rd(hum + 0x5ACu), h1 = ok(L, 0x200) ? rd(L + 304u) : 0u;
+        if (ok(h1, 0x40)) { psp_mem_watch_set(h1 + 28u); std::fprintf(stderr, "[TAGTEAM] watching the lock selector at %08X\n", h1 + 28u); }
     }
     // Slot 0 is side 0 and slot 1 side 1 in the setup, whoever the human is; the CPU brain settings are the CPU slot's.
     const uint32_t cpu_side = human == 0 ? 1 : 0, hum_side = human;
@@ -280,6 +293,56 @@ void hud_update() {
     tagteam_hud_draw(fs, g_reserve);
 }
 
+// ---- lock-on cycling between the enemy team's fighters ----
+// Every fighter of the battle: the two retail slots and the extras. Side = halfword actor+0x10CC (the ctor's side argument).
+int all_fighters(uint32_t out[6]) {
+    int n = 0;
+    if (g_bs) { for (int k = 0; k < 2; k++) { const uint32_t a = rd(g_bs + 56u + 4u * k); if (ok(a, 0x12D0)) out[n++] = a; } }
+    for (int i = 0; i < g_nextra && n < 6; i++) if (g_extra[i].started) out[n++] = g_extra[i].actor;
+    return n;
+}
+uint32_t side_of(uint32_t a) { return rdh(a + 0x10CCu); }
+bool alive(uint32_t a) { return static_cast<int32_t>(rd(a + 0x10B0u)) > 0; }
+
+// The enemy fighter to cycle to from `foe` for `owner`: another living fighter of the other team, 0 if none.
+uint32_t other_enemy(uint32_t owner, uint32_t foe) {
+    uint32_t f[6];
+    const int n = all_fighters(f);
+    for (int i = 0; i < n; i++) if (f[i] != owner && f[i] != foe && side_of(f[i]) != side_of(owner) && alive(f[i])) return f[i];
+    return 0;
+}
+
+// FUN_08B40994: the cycle's second candidate (retail: the foe's assist). In a tag battle it is the foe's team mate, so the retail cycle
+// (FUN_08B3FE3C advances through the candidates, asking this function whether each exists) walks foe -> other enemy -> ...
+void lock_other_hook(uint8_t* rdram, recomp_context* ctx) {
+    g_ram = rdram; g_ctx = ctx;
+    const uint32_t L = static_cast<uint32_t>(ctx->r[5]);
+    if (g_nextra && ok(L, 0x200)) {
+        const uint32_t owner = rd(L + 248u);
+        if (ok(owner, 0x12D0) && g_ram[(owner + 0x542u) & 0x07FFFFFFu] == 0) {
+            const uint32_t o = other_enemy(owner, rd(owner + 0x300u));
+            if (o) { ctx->r[2] = static_cast<int32_t>(o); return; }
+        }
+    }
+    g_orig_lock_other(rdram, ctx);
+}
+
+// FUN_08B2F17C copies the lock result into actor+0x2FC but, for a fighter that is not an assist, always writes the foe (+0x300). Afterwards
+// a locked enemy fighter other than the foe is written back.
+void refresh_hook(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t actor = static_cast<uint32_t>(ctx->r[4]);
+    g_ram = rdram; g_ctx = ctx;
+    g_orig_refresh(rdram, ctx);
+    if (!g_nextra || !ok(actor, 0x12D0)) return;
+    const uint32_t L = rd(actor + 0x5ACu);
+    if (!ok(L, 0x200)) return;
+    const uint32_t t = call(LOCK_GET, L);
+    if (t && t != actor && ok(t, 0x12D0) && g_ram[(t + 0x542u) & 0x07FFFFFFu] == 0 && side_of(t) != side_of(actor) && alive(t)) {
+        if (g_log && rd(actor + 0x2FCu) != t) std::fprintf(stderr, "[TAGTEAM] %08X targets %08X (foe %08X)\n", actor, t, rd(actor + 0x300u));
+        wr(actor + 0x2FCu, t);
+    }
+}
+
 Extra* extra_of(uint32_t actor) {
     for (int i = 0; i < g_nextra; i++) if (g_extra[i].actor == actor) return &g_extra[i];
     return nullptr;
@@ -290,6 +353,16 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
     g_ram = rdram; g_ctx = ctx;
     const uint32_t owner = rd(brain + 4);
     if (g_nextra && owner == g_extra[0].actor && g_extra[0].started) hud_update();
+    if (g_log && g_bs) {   // the human's lock cycle selector (retail mode handler [1], +28) and its target
+        static int last_sel = -99; static uint32_t last_t = 0, last_mode = 99;
+        const uint32_t hum = rd(g_bs + 56u + 4u * rd(g_bs + 84u)), L = ok(hum, 0x12D0) ? rd(hum + 0x5ACu) : 0u;
+        if (ok(L, 0x200) && owner == rd(hum + 0x5C4u + 0u) + 0u) {}
+        if (ok(L, 0x200)) {
+            const uint32_t h1 = rd(L + 304u);
+            const int sel = ok(h1, 0x40) ? static_cast<int>(rd(h1 + 28u)) : -99; const uint32_t t = rd(L + 252u);
+            if (sel != last_sel || t != last_t || rd(L + 264u) != last_mode) { last_mode = rd(L + 264u); std::fprintf(stderr, "[TAGTEAM] human lock: sel %d -> %d, mode %u, target %08X -> %08X (+0x2FC %08X foe %08X)\n", last_sel, sel, rd(L + 264u), last_t, t, rd(hum + 0x2FCu), rd(hum + 0x300u)); last_sel = sel; last_t = t; }
+        }
+    }
     if (g_late_p.pending && g_bs && rd(g_bs + 72) != 0) {   // the battle has started: make the late partner now
         g_late_p.pending = false;
         Extra& e = g_extra[g_nextra];
@@ -298,7 +371,7 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
     }
     for (int i = 0; i < g_nextra; i++) if (!g_extra[i].started && g_bs && rd(g_bs + 72) != 0 && call(FIGHTER_READY, g_extra[i].actor)) start_extra(g_extra[i]);
     if (Extra* e = extra_of(owner); e && e->started) {
-        if (rd(owner + 0x2FCu) == 0) call(TARGET_REFRESH, owner);
+        if (rd(owner + 0x2FCu) == 0 && g_orig_refresh) { const recomp_context sv = *g_ctx; g_ctx->r[4] = static_cast<int32_t>(owner); g_orig_refresh(g_ram, g_ctx); *g_ctx = sv; }
         wr(owner + 0x380u, rd(owner + 0x380u) & ~2u);   // bit 2 of +0x380 makes the CPU brain skip the actor; the retail two lose it after the intro
     }
     static uint32_t seen[8] = {}; static int cnt[8] = {}; static int n = 0;
@@ -311,6 +384,20 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
         std::fprintf(stderr, "[TAGTEAM] status %08X owner %08X%s hp10B0=%u:", st, owner, extra_of(owner) ? " EXTRA" : "", rd(owner + 0x10B0u));
         if (ok(st, 0x80)) for (uint32_t o = 0; o < 0x60; o += 4) std::fprintf(stderr, " %08X", rd(st + o));
         std::fprintf(stderr, "\n");
+    }
+    if (g_log && std::getenv("PSPRECOMP_TAGTEAM_LOCKDUMP") && i < 8 && cnt[i] == 302 && g_bs) {
+        for (int side = 0; side < 2; side++) {
+            const uint32_t act = rd(g_bs + 56u + 4u * side), L = rd(act + 0x5ACu);
+            if (!ok(L, 0x200)) continue;
+            std::fprintf(stderr, "[TAGTEAM] lock block %08X of %08X (slot %d): owner=%08X target=%08X mode=%u prev=%u idx=%u idx2=%u\n", L, act, side, rd(L + 248), rd(L + 252), rd(L + 264), rd(L + 268), rd(L + 272), rd(L + 276));
+            for (uint32_t o = 240; o < 400; o += 4) { const uint32_t v = rd(L + o); if (v) std::fprintf(stderr, "[TAGTEAM]   +%u = %08X\n", o, v); }
+            for (uint32_t k = 0; k < 6; k++) {
+                const uint32_t h = rd(L + 300 + 4 * k);
+                if (!ok(h, 16)) continue;
+                const uint32_t vt = rd(h), e = vt + 112;
+                std::fprintf(stderr, "[TAGTEAM]   handler[%u] %08X vtable %08X getter(+112) off=%d fn=%08X  +8: fn=%08X +16: fn=%08X\n", k, h, vt, static_cast<int16_t>(rd(e) & 0xFFFF), rd(e + 4), rd(vt + 8 + 4), rd(vt + 16 + 4));
+            }
+        }
     }
     g_orig_tick(rdram, ctx);
 }
