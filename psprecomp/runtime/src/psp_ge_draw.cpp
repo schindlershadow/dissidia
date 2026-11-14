@@ -568,6 +568,30 @@ static void read_fbo_native(GLuint fbo, std::vector<uint8_t>& out, int* ow = nul
 // Composite the active savedata-dialog overlay (rendered at an integer
 // multiple of 480x272) into a top-down RGBA readback of w x h pixels, box
 // filtering when the sizes differ. No-op when no dialog is active.
+struct GameCanvas { std::mutex m; std::vector<uint32_t> px; int w = 0, h = 0; bool dirty = false; };
+static GameCanvas g_game_canvas;   // ge_draw_set_game_overlay: a game module's own 2D overlay (RGBA, row 0 = top)
+
+// The game module's overlay canvas alpha-blended into a captured frame (screenshots), centred at the canvas's own aspect.
+static void composite_game_overlay(std::vector<uint8_t>& rgba, int w, int h) {
+    std::lock_guard<std::mutex> lk(g_game_canvas.m);
+    const int cw = g_game_canvas.w, ch = g_game_canvas.h;
+    if (cw <= 0 || ch <= 0 || g_game_canvas.px.size() < size_t(cw) * size_t(ch) || rgba.size() < size_t(w) * h * 4) return;
+    const int dw = std::min(w, int(int64_t(h) * cw / ch)), x0 = (w - dw) / 2;
+    for (int y = 0; y < h; y++) {
+        const int sy = std::min(ch - 1, int(int64_t(y) * ch / h));
+        for (int x = 0; x < dw; x++) {
+            const int sx = std::min(cw - 1, int(int64_t(x) * cw / dw));
+            const uint32_t p = g_game_canvas.px[size_t(sy) * cw + sx];
+            const unsigned a = p >> 24;
+            if (!a) continue;
+            uint8_t* d = rgba.data() + (size_t(y) * w + x0 + x) * 4;
+            d[0] = uint8_t((d[0] * (255 - a) + (p & 255) * a) / 255);
+            d[1] = uint8_t((d[1] * (255 - a) + ((p >> 8) & 255) * a) / 255);
+            d[2] = uint8_t((d[2] * (255 - a) + ((p >> 16) & 255) * a) / 255);
+        }
+    }
+}
+
 static void composite_dialog_overlay(std::vector<uint8_t>& rgba, int w, int h) {
     static std::vector<uint32_t> ovl;
     int ow = 0, oh = 0;
@@ -603,6 +627,7 @@ static bool capture_fbo_to_tga(const char* path) {
     // An active savedata dialog is composited over the frame at present
     // time; include it so the capture matches the window.
     composite_dialog_overlay(flipped, w, h);
+    composite_game_overlay(flipped, w, h);
     return write_tga(path, flipped.data(), w, h);
 }
 
@@ -3509,6 +3534,7 @@ static void present_service_screenshot(GLuint fbo) {
     // An active savedata dialog is composited over the frame at present time;
     // include it in the capture so screenshots match what the window shows.
     composite_dialog_overlay(flipped, cw, chh);
+    composite_game_overlay(flipped, cw, chh);
     write_tga(g_screenshot_path, flipped.data(), cw, chh);
     g_screenshot_done = true;
 }
@@ -4380,8 +4406,8 @@ static void present_toast(const PresentRect& pr) {
 // (top-left), otherwise the bare number with a soft shadow (top-right). `alpha` is the overall opacity.
 struct HudBlend { GLuint tex = 0; int tw = 0, th = 0, tscale = 0, alloc_w = 0, alloc_h = 0; std::vector<uint32_t> px; };
 static void present_blend_hud(HudBlend& st, const std::string& text, bool& text_dirty, bool box, float alpha, const PresentRect& pr,
-                              const float* graph = nullptr, int graph_n = 0) {
-    if (text.empty()) return;
+                              const float* graph = nullptr, int graph_n = 0, bool canvas = false) {
+    if (!canvas && text.empty()) return;
     static GLuint prog = 0, vao = 0, vbo = 0;
     static GLint u_tex = -1, u_alpha = -1;
     static bool failed = false;
@@ -4433,15 +4459,22 @@ static void present_blend_hud(HudBlend& st, const std::string& text, bool& text_
         glBindBuffer(GL_ARRAY_BUFFER, GLuint(prev_abo));
         glBindVertexArray(GLuint(prev_vao));
     }
-    const int scale = psp_sddialog::output_scale();
+    const int scale = canvas ? 1 : psp_sddialog::output_scale();
     GLint prev_tex = 0, prev_active = 0;
     glGetIntegerv(GL_ACTIVE_TEXTURE, &prev_active);
     glActiveTexture(GL_TEXTURE0);
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev_tex);
     if (text_dirty || scale != tscale || !tex) {
         int w = 0, h = 0;
-        const bool ok = box ? psp_sddialog::render_hud_box(text, scale, px, &w, &h, graph, graph_n)
-                            : psp_sddialog::render_hud_text(text, scale, px, &w, &h);
+        bool ok = false;
+        if (canvas) {
+            std::lock_guard<std::mutex> lk(g_game_canvas.m);
+            w = g_game_canvas.w; h = g_game_canvas.h;
+            if (w > 0 && h > 0 && g_game_canvas.px.size() >= size_t(w) * size_t(h)) { px = g_game_canvas.px; ok = true; }
+        } else {
+            ok = box ? psp_sddialog::render_hud_box(text, scale, px, &w, &h, graph, graph_n)
+                     : psp_sddialog::render_hud_text(text, scale, px, &w, &h);
+        }
         if (!ok || w <= 0 || h <= 0) {
             glActiveTexture(GLenum(prev_active));
             return;
@@ -4477,10 +4510,10 @@ static void present_blend_hud(HudBlend& st, const std::string& text, bool& text_
     psp_gl_drawable_size(psp_get_sdl_window(), &dw, &dh);
     if (dw <= 0 || dh <= 0) { glBindTexture(GL_TEXTURE_2D, GLuint(prev_tex)); glActiveTexture(GLenum(prev_active)); return; }
     const float sx = float(pr.x1 - pr.x0) / 480.f, sy = float(std::abs(pr.y1 - pr.y0)) / 272.f;
-    const float qw = float(tw) / float(tscale) * sx;
-    const float right = box ? float(std::min(pr.x0, pr.x1)) + 4.f * sx + qw : float(std::max(pr.x0, pr.x1)) - 4.f * sx;
-    const float top = float(std::max(pr.y0, pr.y1)) - 4.f * sy;   // GL origin is bottom-left
-    const float qh = float(th) / float(tscale) * sy;
+    const float qw = canvas ? float(std::abs(pr.x1 - pr.x0)) : float(tw) / float(tscale) * sx;
+    const float right = canvas ? float(std::max(pr.x0, pr.x1)) : box ? float(std::min(pr.x0, pr.x1)) + 4.f * sx + qw : float(std::max(pr.x0, pr.x1)) - 4.f * sx;
+    const float top = canvas ? float(std::max(pr.y0, pr.y1)) : float(std::max(pr.y0, pr.y1)) - 4.f * sy;   // GL origin is bottom-left
+    const float qh = canvas ? float(std::abs(pr.y1 - pr.y0)) : float(th) / float(tscale) * sy;
     auto cx = [&](float x) { return x / float(dw) * 2.f - 1.f; };
     auto cy = [&](float y) { return y / float(dh) * 2.f - 1.f; };
     const float u1 = float(tw) / float(alloc_w), v1 = float(th) / float(alloc_h);
@@ -4540,6 +4573,23 @@ static void present_fps_counter(const PresentRect& pr) {
     static HudBlend st;
     if (!g_fps_counter.load(std::memory_order_relaxed)) return;
     present_blend_hud(st, g_perf.fps_text, g_perf.fps_dirty, false, 0.95f, pr);
+}
+// A game module's overlay canvas (ge_draw_set_game_overlay), over the 480-pixel-wide picture area.
+static void present_game_overlay(const PresentRect& pr) {
+    static HudBlend st;
+    bool dirty = false;
+    {
+        std::lock_guard<std::mutex> lk(g_game_canvas.m);
+        if (g_game_canvas.w <= 0 || g_game_canvas.h <= 0) return;
+        dirty = g_game_canvas.dirty; g_game_canvas.dirty = false;
+    }
+    present_blend_hud(st, std::string(), dirty, false, 1.0f, pr, nullptr, 0, true);
+}
+void ge_draw_set_game_overlay(const uint32_t* rgba, int w, int h) {
+    std::lock_guard<std::mutex> lk(g_game_canvas.m);
+    if (!rgba || w <= 0 || h <= 0) { g_game_canvas.w = g_game_canvas.h = 0; return; }
+    g_game_canvas.px.assign(rgba, rgba + size_t(w) * size_t(h));
+    g_game_canvas.w = w; g_game_canvas.h = h; g_game_canvas.dirty = true;
 }
 static void present_perf_hud(const PresentRect& pr) {
     static HudBlend st;
@@ -4695,7 +4745,7 @@ static void present_blit(GLuint fbo, const char* why = "flip") {
         psp_gl_drawable_size(window, &sdw, &sdh);
         psp_post_scene_snapshot(sdw, sdh);
     }
-    if (std::strcmp(why, "menu") != 0) { present_perf_hud(pr); present_fps_counter(pr); present_toast(pr); present_flash(pr); }
+    if (std::strcmp(why, "menu") != 0) { present_game_overlay(cpr); present_perf_hud(pr); present_fps_counter(pr); present_toast(pr); present_flash(pr); }
     present_dialog_overlay(cpr);
     if (psp_touch_enabled() && (!psp_settings_menu_open() || psp_touch_editing())) {   // on-screen controls over the whole window (hidden while the settings menu is open: it takes touches itself) (own program/VAO: the GE's cached GL state is reset after)
         int tw = 0, th = 0;

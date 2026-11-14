@@ -8,11 +8,14 @@
 #include "psp_game_module.h"
 #include "psp_runtime.h"
 #include "recomp.h"
+#include "tagteam_hud.h"
 #include "hle/psp_hle.h"
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
+#include <string>
 #include <vector>
 
 extern FuncPtr ovl_battle_lookup(uint32_t vaddr);
@@ -48,7 +51,7 @@ uint8_t* g_ram = nullptr;
 recomp_context* g_ctx = nullptr;
 
 // The extra fighters of the battle being set up. side 1 = the CPU's team (the "third"), side 0 = the human's (the partner).
-struct Extra { uint32_t actor = 0, side = 0, foe = 0, slot_actor = 0; bool started = false; };
+struct Extra { uint32_t actor = 0, side = 0, foe = 0, slot_actor = 0; bool started = false; int hp_max = 0; };
 Extra g_extra[2];
 int g_nextra = 0;
 uint32_t g_bs = 0;
@@ -218,6 +221,65 @@ void flow_hook(uint8_t* rdram, recomp_context* ctx) {
     for (int i = 0; i < g_nextra; i++) if (!g_extra[i].started) start_extra(g_extra[i]);
 }
 
+// ---- HUD (tagteam_hud.cpp) ----
+std::vector<TagHudReserve> g_reserve;   // waiting fighters per side (placeholder list until the roster call-ins exist)
+bool g_hud_on = true;
+
+// A character's label. Retail charIds 1..33 have a name table (the order of the roster; 15 = Squall and 31 = Lightning are confirmed
+// in runs, the rest follows the roster order and the series codes of the table at 0x089D6CA8); other ids (mods) show the first
+// letters of their code string ("fiv100" = Bartz -> "FIV1"), else "#id".
+struct CharName { const char* full; const char* brief; };
+const CharName kNames[34] = {
+    {"", ""}, {"WARRIOR OF LIGHT", "WOL"}, {"GARLAND", "GARL"}, {"FIRION", "FIRI"}, {"EMPEROR", "EMPE"}, {"ONION KNIGHT", "ONIO"},
+    {"CLOUD OF DARKNESS", "COD"}, {"CECIL", "CECI"}, {"GOLBEZ", "GOLB"}, {"BARTZ", "BART"}, {"EXDEATH", "EXDE"}, {"TERRA", "TERR"},
+    {"KEFKA", "KEFK"}, {"CLOUD", "CLOU"}, {"SEPHIROTH", "SEPH"}, {"SQUALL", "SQUA"}, {"ULTIMECIA", "ULTI"}, {"ZIDANE", "ZIDA"},
+    {"KUJA", "KUJA"}, {"TIDUS", "TIDU"}, {"JECHT", "JECH"}, {"SHANTOTTO", "SHAN"}, {"GABRANTH", "GABR"}, {"CHAOS", "CHAO"},
+    {"KAIN", "KAIN"}, {"GILGAMESH", "GILG"}, {"TIFA", "TIFA"}, {"LAGUNA", "LAGU"}, {"YUNA", "YUNA"}, {"VAAN", "VAAN"},
+    {"PRISHE", "PRIS"}, {"LIGHTNING", "LIGH"}, {"FERAL CHAOS", "FCHA"}, {"YUFFIE", "YUFF"},
+};
+std::string char_label(int id, bool full) {
+    if (id >= 1 && id <= 33) return full ? kNames[id].full : kNames[id].brief;
+    if (id <= 0 || id > 60) return "#" + std::to_string(id);
+    const uint32_t p = rd(0x089D6CA8u + 4u * static_cast<uint32_t>(id));
+    std::string out;
+    if (ok(p, 8)) for (int i = 0; i < 4; i++) { const char c = static_cast<char>(g_ram[(p + i) & 0x07FFFFFFu]); if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) break; out += c; }
+    return out.size() >= 2 ? out : "#" + std::to_string(id);
+}
+int actor_char(uint32_t actor) {
+    const uint32_t info = rd(actor + 0x2F8u);
+    return ok(info, 8) ? static_cast<int8_t>(g_ram[(info + 6u) & 0x07FFFFFFu]) : -1;
+}
+
+void init_reserve() {
+    g_reserve.clear();
+    g_reserve.resize(2);
+    g_reserve[0].side = 0; g_reserve[1].side = 1;
+    const char* e = std::getenv("PSPRECOMP_TAGTEAM_RESERVE");   // "id,id;id,id": charIds waiting on the human's side ; the enemy's side
+    std::string spec = e ? e : "5,9;20,24";                      // placeholder roster for the HUD until the party call-ins exist
+    int side = 0; int v = -1;
+    auto flush = [&]() { if (v >= 0) g_reserve[side].names.push_back(char_label(v, false)); v = -1; };
+    for (char c : spec) { if (c >= '0' && c <= '9') v = (v < 0 ? 0 : v * 10) + (c - '0'); else if (c == ',') flush(); else if (c == ';') { flush(); side = 1; } }
+    flush();
+}
+
+void hud_update() {
+    if (!g_hud_on) return;
+    static bool inited = false;
+    if (!inited) { inited = true; init_reserve(); if (g_log) { std::fprintf(stderr, "[TAGTEAM] labels:"); for (int i = 0; i <= 36; i++) { const uint32_t p = rd(0x089D6CA8u + 4u * static_cast<uint32_t>(i)); char b[9] = {}; if (ok(p, 8)) for (int k = 0; k < 8; k++) b[k] = static_cast<char>(g_ram[(p + k) & 0x07FFFFFFu]); std::fprintf(stderr, " %d=%s", i, b); } std::fprintf(stderr, "\n"); } }
+    std::vector<TagHudFighter> fs;
+    for (int i = 0; i < g_nextra; i++) {
+        Extra& e = g_extra[i];
+        TagHudFighter f;
+        f.name = char_label(actor_char(e.actor), true); f.side = static_cast<int>(e.side == g_extra[0].side ? e.side : e.side);
+        f.hp = static_cast<int>(rd(e.actor + 0x10B0u)); e.hp_max = std::max(e.hp_max, f.hp); f.hp_max = std::max(e.hp_max, 1);
+        fs.push_back(f);
+    }
+    // sides in the HUD: the human's team on the left (side value of the human's slot), the other on the right
+    const uint32_t hum_side = g_bs ? rd(g_bs + 84u) : 0u;
+    for (TagHudFighter& f : fs) f.side = (static_cast<uint32_t>(f.side) == hum_side) ? 0 : 1;
+    tagteam_hud_draw(fs, g_reserve);
+}
+
 Extra* extra_of(uint32_t actor) {
     for (int i = 0; i < g_nextra; i++) if (g_extra[i].actor == actor) return &g_extra[i];
     return nullptr;
@@ -227,6 +289,7 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t brain = static_cast<uint32_t>(ctx->r[4]);
     g_ram = rdram; g_ctx = ctx;
     const uint32_t owner = rd(brain + 4);
+    if (g_nextra && owner == g_extra[0].actor && g_extra[0].started) hud_update();
     if (g_late_p.pending && g_bs && rd(g_bs + 72) != 0) {   // the battle has started: make the late partner now
         g_late_p.pending = false;
         Extra& e = g_extra[g_nextra];
@@ -243,6 +306,12 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
     if (i == n && n < 8) { seen[n++] = brain; }
     if (g_log && i < 8 && (cnt[i]++ % 300) == 0 && ok(brain, 0x40))
         std::fprintf(stderr, "[TAGTEAM] brain tick %08X (owner %08X) enabled=%u state=%u call#%d tgt2FC=%08X foe300=%08X partner1108=%08X lockT=%08X act380=%08X%s\n", brain, owner, g_ram[(brain) & 0x07FFFFFFu], g_ram[(brain + 12) & 0x07FFFFFFu], cnt[i], rd(owner + 0x2FCu), rd(owner + 0x300u), rd(owner + 0x1108u), rd(rd(owner + 0x5ACu) + 252u), rd(owner + 0x380u), extra_of(owner) ? " <- EXTRA" : "");
+    if (g_log && std::getenv("PSPRECOMP_TAGTEAM_STATUS") && i < 8 && (cnt[i] % 300) == 2) {
+        const uint32_t st = rd(owner + 0x52Cu);
+        std::fprintf(stderr, "[TAGTEAM] status %08X owner %08X%s hp10B0=%u:", st, owner, extra_of(owner) ? " EXTRA" : "", rd(owner + 0x10B0u));
+        if (ok(st, 0x80)) for (uint32_t o = 0; o < 0x60; o += 4) std::fprintf(stderr, " %08X", rd(st + o));
+        std::fprintf(stderr, "\n");
+    }
     g_orig_tick(rdram, ctx);
 }
 
@@ -254,6 +323,7 @@ void dissidia_tagteam_install(uint8_t* rdram) {
     g_log = std::getenv("PSPRECOMP_TAGTEAM_LOG") != nullptr;
     if (const char* m = std::getenv("PSPRECOMP_TAGTEAM_EXTRAS")) g_mask = std::atoi(m);
     g_late = std::getenv("PSPRECOMP_TAGTEAM_LATE") != nullptr;
+    g_hud_on = !(std::getenv("PSPRECOMP_TAGTEAM_HUD") && std::getenv("PSPRECOMP_TAGTEAM_HUD")[0] == '0');
     if (const char* m = std::getenv("PSPRECOMP_TAGTEAM_STOP")) g_stop = std::atoi(m);
     g_ram = rdram;
     g_orig_setup = psp_dispatch_probe_lookup(BATTLE_SETUP);

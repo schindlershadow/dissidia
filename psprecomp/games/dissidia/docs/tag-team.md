@@ -129,3 +129,19 @@ actor** (kind 1), which is why `+0x1108` is not a team mate pointer.
 
 Still open: the camera does not frame the third fighter, the lock block's cycle is not wired to it, the human has no
 partner yet.
+
+## HUD for the extra fighters and the reserve (14 Nov)
+
+The retail HUD only knows the two original fighters (it reads them by slot through `FUN_089E95B0(side)` = the actor in `bs+56+4*side`).
+The extras get their own: **`runtime/tagteam_hud.cpp`** draws a panel for each extra (name, HP bar, KO state; HP is the live word
+`actor+0x10B0`, its maximum is the largest value seen) above the retail HUD, and a **reserve strip** per side under the top row
+(the waiting fighters, next one highlighted). It needed a small engine feature: `ge_draw_set_game_overlay(rgba, w, h)`
+(`runtime/include/psp_ge_draw.h`), a game module's own 480x272 canvas that the presenter blends over the picture (centred on the
+480-pixel area in widescreen) and that screenshots include.
+
+- Names: retail charIds 1..33 come from a built-in name table (the roster order; 15 Squall and 31 Lightning are confirmed in runs, the
+  other ids are from the roster order and the series codes, so check them in game); mods fall back to their code string.
+- The reserve lists are a **placeholder** (`PSPRECOMP_TAGTEAM_RESERVE="id,id;id,id"`, default `5,9;20,24`) until the KO call-ins
+  read the real party. `PSPRECOMP_TAGTEAM_HUD=0` hides the HUD.
+- Not done yet: bravery (the live BRV is not in the actor; the status object at `actor+0x52C` has floats at +0x18 / +0x1C that may be
+  it, unverified), the "active" arrow for the pad-driven fighter, portraits.

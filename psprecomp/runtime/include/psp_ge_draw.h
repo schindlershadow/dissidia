@@ -64,6 +64,10 @@ void ge_draw_set_fx_shaders(bool on);
 /// corner (PSPRECOMP_FPS_COUNTER=1 turns it on at start).
 bool ge_draw_fps_counter();
 void ge_draw_set_fps_counter(bool on);
+/// A game module's own 2D overlay: an RGBA canvas (bytes R, G, B, A; row 0 = top) of w x h pixels, laid over the picture
+/// (the middle 480-pixel-wide area when widescreen), alpha-blended each present. A canvas that stays unchanged costs nothing;
+/// call again to update it; null / 0 size removes it. Thread safe (the game thread sets it, the present thread draws it).
+void ge_draw_set_game_overlay(const uint32_t* rgba, int w, int h);
 /// Performance overlay (debugging): frames per second, average / worst frame time, presents per second, render
 /// scale and process memory, in the top-left corner (PSPRECOMP_PERF_HUD=1 turns it on at start).
 bool ge_draw_perf_overlay();
