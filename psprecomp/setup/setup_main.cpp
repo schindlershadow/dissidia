@@ -209,7 +209,7 @@ struct Browser {
 };
 
 // -------------------------------------------------------------------------------------------------------------- app
-enum class Screen { Welcome, PickIso, PickUndub, Waiting, InstallDir, BrowseDir, TypePath, Options, Build, Done, Failed, Checking, UpdateAvail, Message, Permission, AndroidInstall, Download };
+enum class Screen { Welcome, PickInfo, PickIso, PickUndub, Waiting, InstallDir, BrowseDir, TypePath, Options, Build, Done, Failed, Checking, UpdateAvail, Message, Permission, AndroidInstall, Download };
 // What a file/folder pick is for.
 enum class Pick { Iso, Undub, Dir };
 
@@ -399,6 +399,32 @@ struct App {
                           row("Quit")};
             }
 #endif
+            break;
+        }
+        case Screen::PickInfo: {
+            const bool undub = pick == Pick::Undub;
+#ifdef __ANDROID__
+            const std::string how = "Android's own file picker opens next: browse to the file (SD card, Downloads...) and tap it. The app only reads it; nothing is uploaded.";
+#else
+            const std::string how = "A file dialog opens next: browse to the file and open it. The program only reads it; nothing is uploaded.";
+#endif
+            if (!undub) {
+                p.title = "YOUR GAME FILE";
+                p.tab = "Step 1";
+                p.rows = {row("A Dissidia 012 disc image", "The game is built from your own copy of the PSP game Dissidia 012 [duodecim] Final Fantasy, as a disc image file: a .iso or a .cso (compressed ISO) of the whole disc. Nothing from the game is downloaded or shipped with this app.", ".iso or .cso"),
+                          row("Valid: EU or US release", "The European release (ULES-01505, also the PSN version) and the US release (ULUS-10566) work. Make it from your own disc.", "EU / US"),
+                          row("Not valid", "Archives (.zip, .7z, .rar: unpack them first), other compressed formats (.zso, .dax, .chd), save data or PPSSPP folders, or the first Dissidia Final Fantasy (it must be Dissidia 012).", "zip, saves, other games"),
+                          row("Choose the file", how),
+                          row("Back")};
+            } else {
+                p.title = "THE UNDUB FILE";
+                p.tab = "Japanese voices";
+                p.rows = {row("A second disc image", "The Japanese voices and movies come from a Japanese or undub version of Dissidia 012, as a disc image: a .iso or .cso. It is only read once; your own disc stays the base of the game.", ".iso or .cso"),
+                          row("Valid: the undub / Japanese disc", "A Dissidia 012 image that has the Japanese voices, for example the Japanese release or an undub patch of the game. The same game as your own disc, just with different voice and movie files.", "Japanese / undub"),
+                          row("Not valid", "Your own disc image again (nothing would differ, so it is rejected), a different game, archives (.zip, .7z, .rar) or other compressed formats (.zso, .dax, .chd).", "same disc, other games"),
+                          row("Choose the file", how),
+                          row("Back")};
+            }
             break;
         }
         case Screen::Permission: {
@@ -955,9 +981,10 @@ struct App {
         return fs::is_directory(dl, ec) ? dl : fs::path(setup::home_dir());
     }
 
-    void begin_pick(Pick k, Screen back) {
+    void begin_pick(Pick k, Screen back, bool explained = false) {
         pick = k;
         before_pick = back;
+        if ((k == Pick::Iso || k == Pick::Undub) && !explained) { go(Screen::PickInfo, 0); return; }   // first say what to pick and what is valid
 #ifdef __ANDROID__
         if (k == Pick::Iso || k == Pick::Undub) {   // Android's own file picker; the built-in browser stays as the fallback (the Waiting page)
             setup::android::pick_file();
@@ -1150,6 +1177,10 @@ struct App {
                 begin_pick(Pick::Iso, Screen::Welcome);
             } else quit = true;
             break;
+        case Screen::PickInfo:
+            if (sel == 3) begin_pick(pick, before_pick, true);
+            else if (sel == 4) go(before_pick);
+            break;
         case Screen::Download:
 #ifdef __ANDROID__
             setup::android::cancel_download();
@@ -1301,6 +1332,9 @@ struct App {
             break;
         case Screen::PickUndub:
             go_options();
+            break;
+        case Screen::PickInfo:
+            go(before_pick);
             break;
         case Screen::BrowseDir:
             go(Screen::InstallDir);
@@ -1809,6 +1843,9 @@ int main(int argc, char** argv) {
         app.go(Screen::Welcome); shot("1_welcome");
         app.pick = Pick::Iso; app.go(Screen::Waiting); shot("2_waiting");
         app.go(Screen::PickIso); shot("2b_pick_iso");
+        app.pick = Pick::Iso; app.go(Screen::PickInfo, 3); shot("2c_pick_info");
+        app.pick = Pick::Undub; app.go(Screen::PickInfo, 3); shot("2d_pick_info_undub");
+        app.pick = Pick::Iso;
         app.go(Screen::InstallDir); shot("3_install_dir");
         app.go(Screen::Options, 0); shot("4_options");
         app.opt.texture_pack = "ai"; app.go(Screen::Options, 1); shot("4b_options_pack");
