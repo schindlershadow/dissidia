@@ -178,3 +178,20 @@ with the undo 151; enemy extra with the undo 80; partner late after the intro 1.
 
 Debug switches: `PSPRECOMP_TAGTEAM_NOFIX=1` (no undo), `_KEEP_LAST=1`, `_FREE=1` (do not skip the releases), `_STOP=n`,
 `_LATE=1|2`, `_REGDUMP=1`, `_PTRDIFF=1`, `_SCAN=1`, `_WATCHRES=<hex>`.
+
+## 2v2 works (14 Nov, `PSPRECOMP_TAGTEAM=1`)
+
+State of `runtime/tagteam.cpp`: both extras (the enemy team's second fighter and the human's partner, each a copy of the existing
+fighter's setup data on a CPU brain) are made **after the intro** (the intro cut's camera data is loaded per fighter, and a second
+fighter spawned during it zeroes the camera for ~80 frames; `PSPRECOMP_TAGTEAM_LATE=0` spawns at setup, `=1` right when the battle
+starts), started together once both are loaded, and fight: in a 30 s run camera garbage is 1 frame in 500 (the load frame) and the four
+fighters change script 22-41 times each. HUD panels and reserve strips show (see the HUD section).
+
+- The fork's undo of the constructor's registrations (camera slot table, lock block, "last fighter" global) stays, **except the pair
+  table at 0x08BAE9FC / 0x08BAEA08**: the CPU brain tick of an extra needs its place in it (with it undone the extras idle, only
+  the first tick runs). `PSPRECOMP_TAGTEAM_UNDO_PAIR=1` restores the old behaviour for experiments.
+- **Lock-on.** L toggles the human's lock through `FUN_08B3B3EC(block, mode, flag)` (mode 1 locked, 0 released; the retail cycle selector
+  at mode handler [1] +28 is reset by the press itself). In a tag battle the hook `lock_mode_hook` turns the press that would release
+  the lock into a cycle first: foe -> the other living enemy (`FUN_08B40994`, retail "the foe's assist", is hooked to return it, and
+  `FUN_08B2F17C` is hooked to write the locked fighter into `+0x2FC`) -> release -> foe. Seen in a run: `lock cycle: foe -> other
+  enemy`, `+0x2FC` changed to the extra. Not verified yet: that attacks and the camera really follow the second target in play.
