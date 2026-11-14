@@ -886,7 +886,7 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.label = "Performance Overlay";
             m.value = on ? "On" : "Off";
             m.can_dec = on; m.can_inc = !on;
-            m.help = "Performance overlay\nFor debugging: frames per second, average and worst frame time, presents per second, render scale and memory use in the top-left corner. Saved.";
+            m.help = "Performance overlay\nFor debugging, top-left corner: frames per second, average and worst frame time, the battle's average fps and 1% / 0.1% lows (they restart when a battle begins and ignore menus), GPU usage, which parts of the work take the most frame time (draw setup, textures, effects, post-processing, waiting), the costliest GPU passes (Vulkan), render scale and memory use. Saved.";
             break;
         }
         case ROW_FX: {

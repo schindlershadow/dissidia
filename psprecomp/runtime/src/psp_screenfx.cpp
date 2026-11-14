@@ -10,6 +10,7 @@
 //   3. composite: AO * (1 - shadow) multiplied into the scene (depth-aware 2x2 upsample), then the reflection blended
 //      over the result (so a shadow darkens the floor but not the reflection in it).
 // RGB only: the buffer's alpha is the GE stencil.
+#include "psp_perf.h"
 #include "psp_post.h"
 #include "psp_screenfx.h"
 #include "psp_rt.h"
@@ -1028,6 +1029,7 @@ void psp_fx_set_ssr(int level) { g_sr.store(level < 0 ? 0 : level > 3 ? 3 : leve
 bool psp_screenfx_active() { return psp_fx_ssao() || psp_fx_contact() || psp_fx_ssr() || psp_rt_active() || psp_rt_refl_active(); }
 
 void psp_screenfx_run(GLuint fbo, GLuint color_tex, int w, int h, const ScreenFxScene& sc) {
+    psp_perf::Scope perf_scope_(psp_perf::SCREENFX);
     (void)color_tex;
 #ifndef PSP_GLES
     ts_begin();

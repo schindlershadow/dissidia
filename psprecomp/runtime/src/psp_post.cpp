@@ -1,4 +1,5 @@
 // Present-time post-processing, see include/psp_post.h.
+#include "psp_perf.h"
 #include "psp_post.h"
 #include "psp_smaa_data.h"
 
@@ -542,6 +543,7 @@ void psp_post_scene_snapshot(int dw, int dh) {
 }
 
 bool psp_post_final(int dw, int dh) {
+    psp_perf::Scope perf_scope_(psp_perf::POST);
     if (dw <= 0 || dh <= 0 || !psp_post_final_active() || !ensure_final_program() || !ensure_copy_targets(dw, dh)) return false;
     const int enc = psp_hdr_encoding();
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
@@ -612,6 +614,7 @@ bool psp_post_active() {
 }
 
 bool psp_post_draw(GLuint tex, int sw, int sh, int x0, int y0, int x1, int y1, bool nearest) {
+    psp_perf::Scope perf_scope_(psp_perf::POST);
     if (!ensure_program() || x1 <= x0 || y1 <= y0) return false;
     int aa = psp_post_aa();
     if (aa == POST_AA_SMAA) {

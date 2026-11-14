@@ -1,6 +1,7 @@
 #include <cstdlib>
 #include <cstring>
 #include "psp_ge_texture.h"
+#include "psp_perf.h"
 #include "hle/psp_hle_mpeg.h"
 #include "hle/psp_hle_font.h"
 #include "psp_ge.h"
@@ -616,6 +617,7 @@ GLuint ge_texture_bind(
     uint8_t* rdram,
     uint32_t frame_num
 ) {
+    psp_perf::Scope perf_scope_(psp_perf::TEXTURE);
     const GeState& state = ge_get_state();
 
     g_bound_pack_id = 0;

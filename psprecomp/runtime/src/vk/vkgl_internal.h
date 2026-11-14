@@ -160,6 +160,8 @@ bool rt_available();
 void core_set_hdr(bool on);
 bool core_hdr_supported();
 bool core_device_info(DeviceInfo* out);
+void core_set_profile(bool on);
+bool core_take_perf(PerfSample* out);
 int core_hdr_encoding();
 const char* core_hdr_reason();
 const char* rt_unavailable_reason();
