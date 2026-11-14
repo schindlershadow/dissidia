@@ -458,16 +458,42 @@ void lock_mode_hook(uint8_t* rdram, recomp_context* ctx) {
     g_orig_lock_mode(rdram, ctx);
 }
 
+// ---- tag swap: SELECT (PSPRECOMP_TAGTEAM_SWAP_BUTTON=<hex psp mask>) hands the pad to the partner ----
+uint32_t g_swap_mask = 0;         // off until the swap keeps the camera and HUD intact; PSPRECOMP_TAGTEAM_SWAP_BUTTON=1 (hex PSP mask, 1 = SELECT) turns it on
+bool g_swap_req = false;
 Extra* extra_of(uint32_t actor) {
     for (int i = 0; i < g_nextra; i++) if (g_extra[i].actor == actor) return &g_extra[i];
     return nullptr;
+}
+
+// Hand the pad to the partner: the two fighters trade brains (the pad is read by the human brain, +0x54 != 0) and trade places in
+// the battle's slot table, which the retail HUD, the camera and the lock cycle read. The partner becomes an extra on the CPU brain.
+void swap_roles() {
+    if (!g_bs) return;
+    const uint32_t hs = rd(g_bs + 84u), slot = g_bs + 56u + 4u * hs, H = rd(slot);
+    Extra* pe = nullptr;
+    for (int i = 0; i < g_nextra; i++) if (g_extra[i].started && g_extra[i].side == side_of(H) && alive(g_extra[i].actor)) pe = &g_extra[i];
+    if (!pe || !ok(H, 0x12D0) || !alive(H)) { if (g_log) std::fprintf(stderr, "[TAGTEAM] swap: no living partner\n"); return; }
+    const uint32_t P = pe->actor, bh = rd(H + ACT_BRAIN), bp = rd(P + ACT_BRAIN);
+    if (g_log) { const uint32_t T = rd(0x089D6A10u); std::fprintf(stderr, "[TAGTEAM] swap: bs %08X slots %08X %08X human slot %u; [0x089D6A10] = %08X slots %08X %08X\n", g_bs, rd(g_bs + 56u), rd(g_bs + 60u), hs, T, ok(T, 0x80) ? rd(T + 56u) : 0u, ok(T, 0x80) ? rd(T + 60u) : 0u); }
+    if (!ok(bh, 0x80) || !ok(bp, 0x80)) return;
+    static const int mode = std::getenv("PSPRECOMP_TAGTEAM_SWAP_MODE") ? std::atoi(std::getenv("PSPRECOMP_TAGTEAM_SWAP_MODE")) : 3;   // 1 brains only, 2 slots only, 3 both (debugging)
+    if (mode & 1) { wr(H + ACT_BRAIN, bp); wr(P + ACT_BRAIN, bh); wr(bh + 4u, P); wr(bp + 4u, H); }   // the pad (human brain) goes to the partner, the AI brain to the old human, each brain's owner
+    if (mode & 2) { wr(slot, P); pe->actor = H; pe->slot_actor = P; }   // slot table: the retail HUD / camera / lock cycle follow the new human
+    // the camera manager keeps one lock block per side (mgr + 0x6D0 + 4 * side)
+    const uint32_t mgr = dissidia_camera_manager(), side = side_of(H), lbH = rd(H + ACT_LOCKBLK), lbP = rd(P + ACT_LOCKBLK);
+    if (mgr) { const uint32_t at = mgr + 0x6D0u + 4u * side; if (rd(at) == lbH) wr(at, lbP); else if (g_log) std::fprintf(stderr, "[TAGTEAM] swap: camera slot %08X holds %08X, expected %08X\n", at, rd(at), lbH); }
+    // the new human locks on to the foe, the old one keeps the foe he had
+    if (rd(lbP + 264u) != 1) call(LOCK_MODE, lbP, 1, 0);
+    if (g_log) std::fprintf(stderr, "[TAGTEAM] swap: pad %08X -> %08X (brains %08X / %08X)\n", H, P, bh, bp);
 }
 
 void tick_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t brain = static_cast<uint32_t>(ctx->r[4]);
     g_ram = rdram; g_ctx = ctx;
     const uint32_t owner = rd(brain + 4);
-    if (g_nextra && owner == g_extra[0].actor && g_extra[0].started) hud_update();
+    if (g_swap_req && g_bs && owner == rd(g_bs + 56u + 4u * rd(g_bs + 84u))) { g_swap_req = false; swap_roles(); }   // (the human's brain is about to tick: a safe point)
+    if (g_nextra && g_extra[0].started && owner == g_extra[0].actor) hud_update();
     if (g_log && g_bs) {   // the human's lock cycle selector (retail mode handler [1], +28) and its target
         static int last_sel = -99; static uint32_t last_t = 0, last_mode = 99;
         const uint32_t hum = rd(g_bs + 56u + 4u * rd(g_bs + 84u)), L = ok(hum, 0x12D0) ? rd(hum + 0x5ACu) : 0u;
@@ -535,6 +561,17 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
 
 }  // namespace
 
+// Pad filter (framerate.cpp calls it with the buttons of every poll): a rising edge of the swap button becomes a swap request and is
+// taken out of the input.
+uint32_t dissidia_tagteam_pad(uint32_t raw) {
+    static uint32_t prev = 0;
+    const uint32_t edge = raw & ~prev & g_swap_mask;
+    prev = raw;
+    if (g_nextra == 0 || g_swap_mask == 0) return raw;
+    if (edge) g_swap_req = true;
+    return raw & ~g_swap_mask;
+}
+
 void dissidia_tagteam_install(uint8_t* rdram) {
     const char* e = std::getenv("PSPRECOMP_TAGTEAM");
     if (!e || e[0] == '0') return;
@@ -542,6 +579,7 @@ void dissidia_tagteam_install(uint8_t* rdram) {
     if (const char* m = std::getenv("PSPRECOMP_TAGTEAM_EXTRAS")) g_mask = std::atoi(m);
     { const char* l = std::getenv("PSPRECOMP_TAGTEAM_LATE"); g_late = !(l && l[0] == '0'); g_late_wait = !(l && l[0] == '1'); }   // default: spawn after the intro; LATE=1 right when the battle starts, LATE=0 during the intro setup
     g_hud_on = !(std::getenv("PSPRECOMP_TAGTEAM_HUD") && std::getenv("PSPRECOMP_TAGTEAM_HUD")[0] == '0');
+    if (const char* b = std::getenv("PSPRECOMP_TAGTEAM_SWAP_BUTTON")) g_swap_mask = static_cast<uint32_t>(std::strtoul(b, nullptr, 16));
     if (const char* m = std::getenv("PSPRECOMP_TAGTEAM_STOP")) g_stop = std::atoi(m);
     g_ram = rdram;
     g_orig_setup = psp_dispatch_probe_lookup(BATTLE_SETUP);

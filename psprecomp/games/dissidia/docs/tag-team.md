@@ -195,3 +195,15 @@ fighters change script 22-41 times each. HUD panels and reserve strips show (see
   the lock into a cycle first: foe -> the other living enemy (`FUN_08B40994`, retail "the foe's assist", is hooked to return it, and
   `FUN_08B2F17C` is hooked to write the locked fighter into `+0x2FC`) -> release -> foe. Seen in a run: `lock cycle: foe -> other
   enemy`, `+0x2FC` changed to the extra. Not verified yet: that attacks and the camera really follow the second target in play.
+
+## Tag swap (first attempt, 14 Nov: not working yet, off by default)
+
+`PSPRECOMP_TAGTEAM_SWAP_BUTTON=1` (hex PSP button mask, 1 = SELECT) turns it on; the press is taken out of the pad input by the pad filter
+(`dissidia_tagteam_pad`, called from framerate.cpp) and served by the next tick of the human's brain (`swap_roles`). The swap trades the
+two fighters' brains (+0x5C4, brain +4 owner) and their places in the battle slot table (`bs+56+4*slot`, `[0x089D6A10]` is the same
+`bs`), and re-points the camera manager's lock block slot (`mgr+0x6D0+4*side`). `PSPRECOMP_TAGTEAM_SWAP_MODE` = 1 brains only, 2 slots only,
+3 both. Result: the pad does go to the other fighter (the swap logs `pad H -> P`), a second press swaps back and everything recovers, but
+- brains only: HUD fine, **the game camera produces garbage** (eye 0 / grey world, ~46 of 700 logged updates);
+- slots only: camera garbage too and **the retail HUD breaks** (left portrait / bars missing, right side shows the wrong fighter);
+- so the camera and the HUD keep references to the human fighter (cached actor pointers in camera mode objects, HUD widgets) beyond the
+  slot table, brain and camera slot.
