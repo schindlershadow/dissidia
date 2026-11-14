@@ -418,3 +418,5 @@ void dissidia_camera_install(uint8_t* rdram) {
     std::fprintf(stderr, "[CAM] analogue camera installed (sens %.2f%s, pitch %.0f..%.0f deg, recenter %.1fs)\n",
                  g_sens, g_invert ? ", inverted" : "", g_pitch_min, g_pitch_max, g_recenter);
 }
+
+uint32_t dissidia_camera_manager() { return g_mgr; }   // the game's camera manager (0 before the first update), for tagteam.cpp

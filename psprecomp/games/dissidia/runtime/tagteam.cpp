@@ -19,6 +19,7 @@
 #include <vector>
 
 extern FuncPtr ovl_battle_lookup(uint32_t vaddr);
+uint32_t dissidia_camera_manager();   // camera.cpp
 void psp_mem_watch_set(uint32_t addr);   // runtime/src/psp_dispatch.cpp
 
 namespace {
@@ -45,20 +46,25 @@ constexpr uint32_t REC_INIT = 0x08B01090u;       // battle overlay: fills the 40
 constexpr uint32_t LOCK_INIT = 0x08B3B1B8u;      // battle overlay: lock-on block init (a0 = *(actor + 0x5AC), a1 = 3 words)
 constexpr uint32_t PLACE = 0x088359A8u;          // EBOOT: place an actor (a0 = actor, a1 = vec4, a2 = 1)
 constexpr uint32_t REC_BASE = 0x09AFB8A0u;       // global per-side records (stride 0x1060), 0x09B00000 - 18272
+constexpr uint32_t REG_PAIR0 = 0x08BAE9FCu, REG_PAIR1 = 0x08BAEA08u;   // ctor writes the new fighter here (see spawn_fighter)
+constexpr uint32_t LAST_FIGHTER_OBJ = 0x089D4774u;   // EBOOT global the fighter constructor sets to its own controller-side object
 constexpr uint32_t ACT_VT = 0x544u, ACT_FLAGS = 0x5B0u, ACT_LOCKBLK = 0x5ACu;
 
-FuncPtr g_orig_setup = nullptr, g_orig_flow = nullptr, g_orig_tick = nullptr, g_orig_lock_other = nullptr, g_orig_refresh = nullptr;
+FuncPtr g_orig_setup = nullptr, g_orig_flow = nullptr, g_orig_tick = nullptr, g_orig_lock_other = nullptr, g_orig_refresh = nullptr, g_orig_rel1 = nullptr, g_orig_rel2 = nullptr;
+bool g_in_ctor = false;   // inside the extra's constructor: the resource releases are skipped (see rel_hook)
 bool g_log = false;
 uint8_t* g_ram = nullptr;
 recomp_context* g_ctx = nullptr;
 
 // The extra fighters of the battle being set up. side 1 = the CPU's team (the "third"), side 0 = the human's (the partner).
-struct Extra { uint32_t actor = 0, side = 0, foe = 0, slot_actor = 0; bool started = false; int hp_max = 0; };
+struct Extra { uint32_t actor = 0, side = 0, foe = 0, slot_actor = 0; bool started = false; int hp_max = 0; std::vector<std::pair<uint32_t, uint32_t>> undo; };   // undo: (address, value) writes that take back what the constructor registered
 Extra g_extra[2];
+std::vector<std::pair<uint32_t, uint32_t>> g_last_undo;
 int g_nextra = 0;
 uint32_t g_bs = 0;
 int g_mask = 3;
 int g_stop = 99;   // PSPRECOMP_TAGTEAM_STOP=n: debugging, spawn steps up to n only (1 alloc, 2 ctor, 3 foe, 4 init, 5 brain, 6 start/place)
+bool g_late_wait = false;   // PSPRECOMP_TAGTEAM_LATE=2: the late partner waits until the intro is over
 bool g_late = false;   // PSPRECOMP_TAGTEAM_LATE=1: the partner is made once the battle has started (not during the intro setup)
 struct Late { bool pending = false; uint32_t side = 0, foe = 0, cpu_side = 0, info_slot = 0, slot_actor = 0; } g_late_p;   // PSPRECOMP_TAGTEAM_EXTRAS: 1 = enemy side fighter, 2 = partner on the human's side
 
@@ -88,6 +94,13 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx);
 void lock_other_hook(uint8_t* rdram, recomp_context* ctx);
 void refresh_hook(uint8_t* rdram, recomp_context* ctx);
 
+// The fighter constructor first releases the resource handles of the side's slot object (FUN_0886CAA0: two handles at +288,
+// FUN_0886A140: one at +268), the intro / outro camera data the retail fighter of that side is still using, and loads its own.
+// For an extra on a side that already has a fighter that frees the retail fighter's data (its intro camera then reads
+// nothing: eye and target 0). While an extra is being constructed the releases are skipped.
+void rel1_hook(uint8_t* rdram, recomp_context* ctx) { if (g_in_ctor) { if (g_log) std::fprintf(stderr, "[TAGTEAM] release (two handles) of %08X skipped\n", static_cast<uint32_t>(ctx->r[4])); return; } g_orig_rel1(rdram, ctx); }
+void rel2_hook(uint8_t* rdram, recomp_context* ctx) { if (g_in_ctor) { if (g_log) std::fprintf(stderr, "[TAGTEAM] release (one handle) of %08X skipped\n", static_cast<uint32_t>(ctx->r[4])); return; } g_orig_rel2(rdram, ctx); }
+
 // Debug: every guest word outside the actor itself that holds the actor's address (who registered it).
 void scan_refs(uint32_t actor, const char* tag) {
     int n = 0;
@@ -102,7 +115,7 @@ void scan_refs(uint32_t actor, const char* tag) {
 
 // One more fighter, the same steps as the setup's own for `side` (its character is the one in that side's setup data).
 // `cpu_side` is the side whose record holds the CPU brain settings (record +3892 control type, +3894 / +3896 parameters).
-uint32_t spawn_fighter(uint32_t bs, uint32_t side, uint32_t foe, uint32_t cpu_side, uint32_t info_slot) {
+uint32_t spawn_fighter(uint32_t bs, uint32_t side, uint32_t foe, uint32_t cpu_side, uint32_t info_slot, uint32_t slot_actor) {
     const uint32_t sp0 = static_cast<uint32_t>(g_ctx->r[29]);
     g_ctx->r[29] = static_cast<int32_t>(sp0 - 0x200u);   // scratch below the stack pointer, clear of the callees' frames
     const uint32_t buf = sp0 - 0x1C0u, lockargs = sp0 - 0x180u;
@@ -112,7 +125,70 @@ uint32_t spawn_fighter(uint32_t bs, uint32_t side, uint32_t foe, uint32_t cpu_si
     const uint32_t rec = call(SIDE_REC, side);
     uint32_t before[24]; if (g_log) for (int k = 0; k < 24; k++) before[k] = rd(rec + 4u * k);
     const uint32_t info = call(CHAR_INFO, rd(bs + 2008u + 4u * info_slot));
+    std::vector<uint32_t> reg;
+    const uint32_t RB = 0x08B64000u, RN = (0x09000000u - RB) / 4;
+    const bool regdump = g_log && std::getenv("PSPRECOMP_TAGTEAM_REGDUMP");
+    if (regdump) { reg.resize(RN); std::memcpy(reg.data(), g_ram + (RB & 0x07FFFFFFu), RN * 4); }
+    // The constructor stores itself in two words of a table of the retail pair (0x08BAE9FC / 0x08BAEA08: the CPU fighter,
+    // twice, with the human between), overwriting the CPU's entries. The game camera reads them, so they are put back.
+    const uint32_t t0 = rd(REG_PAIR0), t1 = rd(REG_PAIR1);
+    if (const char* w = std::getenv("PSPRECOMP_TAGTEAM_WATCHRES")) { const uint32_t a = static_cast<uint32_t>(std::strtoul(w, nullptr, 16)); psp_mem_watch_set(a); std::fprintf(stderr, "[TAGTEAM] watching %08X (before the constructor)\n", a); }
+    // The constructor also registers the new fighter's lock block in the camera manager's slot for its side (mgr + 0x6D0 +
+    // 4 * side: the camera follows the lock blocks of the retail pair) and resets a few words of the old one. The camera
+    // then loses the human (eye and target 0). Snapshot the guest RAM so exactly those writes can be taken back.
+    const uint32_t old_lb = rd(slot_actor + ACT_LOCKBLK);
+    constexpr uint32_t SB = 0x08800000u, SN = (0x0A000000u - SB) / 4;
+    std::vector<uint32_t> snap;
+    std::vector<std::pair<uint32_t, uint32_t>> undo;   // handed to the caller (g_last_undo)
+    const bool guard = !std::getenv("PSPRECOMP_TAGTEAM_NOFIX");
+    if (guard) { snap.resize(SN); std::memcpy(snap.data(), g_ram + (SB & 0x07FFFFFFu), SN * 4); }
+    std::vector<uint32_t> cam;   // debug: the camera manager and its mode objects around the constructor
+    const uint32_t mgr = dissidia_camera_manager();
+    std::vector<uint32_t> modes;
+    if (regdump && ok(mgr, 0x2400)) { cam.resize(0x2400 / 4); std::memcpy(cam.data(), g_ram + (mgr & 0x07FFFFFFu), 0x2400); for (int k = 0; k < 8; k++) modes.push_back(rd(mgr + 1744u + 4u * k)); }
+    std::vector<std::vector<uint32_t>> msnap;
+    for (uint32_t m : modes) { std::vector<uint32_t> v(0x400 / 4, 0); if (ok(m, 0x400)) std::memcpy(v.data(), g_ram + (m & 0x07FFFFFFu), 0x400); msnap.push_back(v); }
+    g_in_ctor = !std::getenv("PSPRECOMP_TAGTEAM_FREE");
     call(FIGHTER_CTOR, mem, rec, info, side, 0);
+    g_in_ctor = false;
+    if (!cam.empty()) {
+        std::fprintf(stderr, "[TAGTEAM] camera manager %08X, modes:", mgr); for (uint32_t m : modes) std::fprintf(stderr, " %08X", m); std::fprintf(stderr, "\n");
+        int n = 0;
+        for (uint32_t i = 0; i < cam.size() && n < 120; i++) if (rd(mgr + 4 * i) != cam[i]) { std::fprintf(stderr, "[TAGTEAM] mgr +%04X: %08X -> %08X\n", 4 * i, cam[i], rd(mgr + 4 * i)); n++; }
+        for (size_t k = 0; k < modes.size(); k++) for (uint32_t i = 0; i < 0x100 && ok(modes[k], 0x400); i++) if (rd(modes[k] + 4 * i) != msnap[k][i]) std::fprintf(stderr, "[TAGTEAM] mode%zu %08X +%03X: %08X -> %08X\n", k, modes[k], 4 * i, msnap[k][i], rd(modes[k] + 4 * i));
+    }
+    if (guard && g_log && std::getenv("PSPRECOMP_TAGTEAM_PTRDIFF")) {   // debug: every overwritten pointer (old value a live-looking pointer, not zero)
+        int n = 0;
+        for (uint32_t i = 0; i < SN && n < 400; i++) {
+            const uint32_t a = SB + 4 * i, ov = snap[i], nv = rd(a);
+            if (ov != nv && ov >= 0x08800000u && ov < 0x0A000000u && !(a >= mem && a < mem + 0x12D0u)) { std::fprintf(stderr, "[TAGTEAM] ptr %08X: %08X -> %08X\n", a, ov, nv); n++; }
+        }
+    }
+    if (guard) {
+        undo.push_back({REG_PAIR0, t0}); undo.push_back({REG_PAIR1, t1});
+        if (!std::getenv("PSPRECOMP_TAGTEAM_KEEP_LAST")) undo.push_back({LAST_FIGHTER_OBJ, snap[(LAST_FIGHTER_OBJ - SB) / 4]});   // global: the last created fighter's object
+        const uint32_t new_lb = rd(mem + ACT_LOCKBLK);
+        uint32_t slot_at = 0;
+        for (uint32_t i = 0; i < SN; i++) {
+            const uint32_t a = SB + 4 * i;
+            if (snap[i] == old_lb && rd(a) == new_lb && !(a >= mem && a < mem + 0x12D0u)) { undo.push_back({a, old_lb}); slot_at = a; if (g_log) std::fprintf(stderr, "[TAGTEAM] camera slot %08X: %08X to go back to the retail lock block %08X when the extra starts\n", a, new_lb, old_lb); }
+        }
+        if (slot_at) {
+            const uint32_t m = slot_at - 0x6D0u - 4u * side;   // the camera manager
+            int n = 0;
+            for (uint32_t o = 0; o < 0xD00u; o += 4) { const uint32_t a = m + o, ov = snap[(a - SB) / 4]; if (rd(a) != ov) { undo.push_back({a, ov}); n++; } }
+            int k = 0;
+            for (uint32_t o = 0; o < 0x440u; o += 4) { const uint32_t a = old_lb - 0x40u + o, ov = snap[(a - SB) / 4]; if (rd(a) != ov) { undo.push_back({a, ov}); k++; if (g_log) std::fprintf(stderr, "[TAGTEAM]   lock block %+d: now %08X, was %08X\n", int(o) - 0x40, rd(a), ov); } }
+            if (g_log) std::fprintf(stderr, "[TAGTEAM] camera manager %08X: %d words and %d words of the old lock block to put back when the extra starts\n", m, n, k);
+        } else if (g_log) std::fprintf(stderr, "[TAGTEAM] no camera slot found for lock block %08X\n", new_lb);
+    }
+    if (regdump) {
+        int n = 0;
+        for (uint32_t i = 0; i < RN && n < 300; i++) {
+            const uint32_t a = RB + 4 * i, v = rd(a);
+            if (v != reg[i] && !(a >= mem && a < mem + 0x12D0u)) { std::fprintf(stderr, "[TAGTEAM] reg side %u %08X: %08X -> %08X\n", side, a, reg[i], v); n++; }
+        }
+    }
     if (g_stop < 3) { g_ctx->r[29] = static_cast<int32_t>(sp0); return mem; }
     call(SET_FOE, mem, foe);
     if (g_stop < 4) { g_ctx->r[29] = static_cast<int32_t>(sp0); return mem; }
@@ -144,6 +220,7 @@ uint32_t spawn_fighter(uint32_t bs, uint32_t side, uint32_t foe, uint32_t cpu_si
         if (type < 3 && ok(brain, 0x40)) { call(BRAIN_MODE, brain, rdh(cr + 3894u)); call(BRAIN_LEVEL, brain, rdh(cr + 3896u)); }
     }
     if (g_log && std::getenv("PSPRECOMP_TAGTEAM_SCAN")) { std::fprintf(stderr, "[TAGTEAM] slots: %08X %08X human slot %u\n", rd(bs + 56), rd(bs + 60), rd(bs + 84)); scan_refs(mem, side ? "extra side 1" : "extra side 0"); }
+    g_last_undo = undo;
     g_ctx->r[29] = static_cast<int32_t>(sp0);
     return mem;
 }
@@ -183,8 +260,8 @@ void setup_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t cpu_side = human == 0 ? 1 : 0, hum_side = human;
     if (g_mask & 1) {   // the enemy team's second fighter: a copy of the CPU fighter, foe = the human
         Extra& e = g_extra[g_nextra];
-        e.actor = spawn_fighter(bs, cpu_side, hum, cpu_side, cpu_side); e.side = cpu_side; e.foe = hum; e.slot_actor = cpu; e.started = false;
-        if (e.actor) g_nextra++;
+        e.actor = spawn_fighter(bs, cpu_side, hum, cpu_side, cpu_side, cpu); e.side = cpu_side; e.foe = hum; e.slot_actor = cpu; e.started = false;
+        if (e.actor) { e.undo = g_last_undo; g_nextra++; }
     }
     if (g_mask & 2) {   // the human's partner: a copy of the human fighter on the CPU brain, foe = the CPU fighter
         const uint32_t P = rd(0x089D6A10u);
@@ -192,16 +269,25 @@ void setup_hook(uint8_t* rdram, recomp_context* ctx) {
         if (g_log) { sb = take(bs, 0x2800); if (ok(P, 0x400)) sp = take(P, 0x400); sg = take(0x089D6000u, 0x1000); }
         if (g_late) { g_late_p = {true, hum_side, cpu, cpu_side, std::getenv("PSPRECOMP_TAGTEAM_PARTNER_CPU_CHAR") ? cpu_side : hum_side, hum}; g_bs = bs; goto after_partner; }
         Extra& e = g_extra[g_nextra];
-        e.actor = spawn_fighter(bs, hum_side, cpu, cpu_side, std::getenv("PSPRECOMP_TAGTEAM_PARTNER_CPU_CHAR") ? cpu_side : hum_side);
+        e.actor = spawn_fighter(bs, hum_side, cpu, cpu_side, std::getenv("PSPRECOMP_TAGTEAM_PARTNER_CPU_CHAR") ? cpu_side : hum_side, hum);
         if (g_log) { diff("bs", sb); if (!sp.w.empty()) diff("P", sp); diff("glob", sg); } e.side = hum_side; e.foe = cpu; e.slot_actor = hum; e.started = false;
-        if (e.actor) g_nextra++;
+        if (e.actor) { e.undo = g_last_undo; g_nextra++; }
     }
     after_partner:
     if (g_nextra) g_bs = bs;
 }
 
+// Take back the constructor's registrations (camera slot, lock block list, pair table). They are needed while the fighter
+// loads (it never becomes ready without them), but with them in place the game camera follows the new fighter, not the human.
+void apply_undo(Extra& e) {
+    for (auto& u : e.undo) wr(u.first, u.second);
+    if (g_log && !e.undo.empty()) std::fprintf(stderr, "[TAGTEAM] extra %08X: %zu registration words taken back\n", e.actor, e.undo.size());
+    e.undo.clear();
+}
+
 void start_extra(Extra& e) {
     if (g_stop < 6) { e.started = true; return; }
+    apply_undo(e);
     const uint32_t sp0 = static_cast<uint32_t>(g_ctx->r[29]);
     g_ctx->r[29] = static_cast<int32_t>(sp0 - 0x100u);
     const uint32_t vec = sp0 - 0xC0u;
@@ -229,6 +315,7 @@ void flow_hook(uint8_t* rdram, recomp_context* ctx) {
     for (int i = 0; i < g_nextra; i++) if (!call(FIGHTER_READY, g_extra[i].actor)) ready = false;
     if (g_log && (n++ % 60) == 0) std::fprintf(stderr, "[TAGTEAM] flow: extras ready=%d\n", ready);
     if (!ready) return;                                      // wait: the original would start the others without them
+    for (int i = g_nextra - 1; i >= 0; i--) apply_undo(g_extra[i]);   // (last spawned first) before the original starts the retail pair and the camera
     g_orig_flow(rdram, ctx);
     if (rd(bs + 72) == 0) return;                            // the others were not ready yet
     for (int i = 0; i < g_nextra; i++) if (!g_extra[i].started) start_extra(g_extra[i]);
@@ -363,11 +450,17 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
             if (sel != last_sel || t != last_t || rd(L + 264u) != last_mode) { last_mode = rd(L + 264u); std::fprintf(stderr, "[TAGTEAM] human lock: sel %d -> %d, mode %u, target %08X -> %08X (+0x2FC %08X foe %08X)\n", last_sel, sel, rd(L + 264u), last_t, t, rd(hum + 0x2FCu), rd(hum + 0x300u)); last_sel = sel; last_t = t; }
         }
     }
-    if (g_late_p.pending && g_bs && rd(g_bs + 72) != 0) {   // the battle has started: make the late partner now
+    static bool intro_seen = false, intro_done = false;
+    if (g_late_p.pending && g_bs && rd(g_bs + 72) != 0 && !intro_done) {   // the intro scripts (ids >= 1000) have run and the human is idle again
+        const int cur = static_cast<int16_t>(rd(g_late_p.slot_actor + 0x180u) & 0xFFFFu);
+        if (cur >= 1000) intro_seen = true;
+        else if (intro_seen && (cur == 1 || cur == 2)) intro_done = true;
+    }
+    if (g_late_p.pending && g_bs && rd(g_bs + 72) != 0 && (g_late_wait ? intro_done : true)) {   // the battle has started: make the late partner now
         g_late_p.pending = false;
         Extra& e = g_extra[g_nextra];
-        e.actor = spawn_fighter(g_bs, g_late_p.side, g_late_p.foe, g_late_p.cpu_side, g_late_p.info_slot); e.side = g_late_p.side; e.foe = g_late_p.foe; e.slot_actor = g_late_p.slot_actor; e.started = false;
-        if (e.actor) g_nextra++;
+        e.actor = spawn_fighter(g_bs, g_late_p.side, g_late_p.foe, g_late_p.cpu_side, g_late_p.info_slot, g_late_p.slot_actor); e.side = g_late_p.side; e.foe = g_late_p.foe; e.slot_actor = g_late_p.slot_actor; e.started = false;
+        if (e.actor) { e.undo = g_last_undo; g_nextra++; }
     }
     for (int i = 0; i < g_nextra; i++) if (!g_extra[i].started && g_bs && rd(g_bs + 72) != 0 && call(FIGHTER_READY, g_extra[i].actor)) start_extra(g_extra[i]);
     if (Extra* e = extra_of(owner); e && e->started) {
@@ -411,6 +504,7 @@ void dissidia_tagteam_install(uint8_t* rdram) {
     if (const char* m = std::getenv("PSPRECOMP_TAGTEAM_EXTRAS")) g_mask = std::atoi(m);
     g_late = std::getenv("PSPRECOMP_TAGTEAM_LATE") != nullptr;
     g_hud_on = !(std::getenv("PSPRECOMP_TAGTEAM_HUD") && std::getenv("PSPRECOMP_TAGTEAM_HUD")[0] == '0');
+    g_late_wait = g_late && std::atoi(std::getenv("PSPRECOMP_TAGTEAM_LATE")) >= 2;
     if (const char* m = std::getenv("PSPRECOMP_TAGTEAM_STOP")) g_stop = std::atoi(m);
     g_ram = rdram;
     g_orig_setup = psp_dispatch_probe_lookup(BATTLE_SETUP);
@@ -419,5 +513,7 @@ void dissidia_tagteam_install(uint8_t* rdram) {
     if (!g_orig_flow) { std::fprintf(stderr, "[TAGTEAM] flow step not found\n"); return; }
     psp_dispatch_register(BATTLE_SETUP, setup_hook);
     psp_dispatch_register(FLOW_STEP, flow_hook);
+    g_orig_rel1 = psp_dispatch_probe_lookup(0x0886CAA0u); g_orig_rel2 = psp_dispatch_probe_lookup(0x0886A140u);
+    if (g_orig_rel1 && g_orig_rel2) { psp_dispatch_register(0x0886CAA0u, rel1_hook); psp_dispatch_register(0x0886A140u, rel2_hook); }
     std::fprintf(stderr, "[TAGTEAM] spike installed\n");
 }

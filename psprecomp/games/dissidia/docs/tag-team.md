@@ -145,3 +145,36 @@ The extras get their own: **`runtime/tagteam_hud.cpp`** draws a panel for each e
   read the real party. `PSPRECOMP_TAGTEAM_HUD=0` hides the HUD.
 - Not done yet: bravery (the live BRV is not in the actor; the status object at `actor+0x52C` has floats at +0x18 / +0x1C that may be
   it, unverified), the "active" arrow for the pad-driven fighter, portraits.
+
+## Camera and side-0 extras (tag-camera fork, 14 Nov)
+
+Symptom: with a second fighter on the human's side the game's camera manager (`FUN_08B3CA24`, `[CAMX]` logs) computed
+eye = target = (0, 0, 0) (later garbage), so the 3D scene came out grey / white. An extra on the enemy side looked fine.
+Reproduced by the constructor alone (`PSPRECOMP_TAGTEAM_STOP=2`), with either character.
+
+Cause (confirmed with RAM diffs around the constructor, `PSPRECOMP_TAGTEAM_REGDUMP/PTRDIFF=1`): `FUN_08B39E5C` registers the
+new fighter in shared tables, replacing the retail pair's entries:
+- the **camera manager's slot table at `mgr + 0x6D0 + 4 * side`** holds the fighters' lock blocks (slot 0 the human's,
+  slot 1 the CPU's, 2 / 3 the assists'); the new fighter's lock block (`actor + 0x5AC`) takes the slot of its side, so the camera
+  follows the new, not yet placed fighter. The camera uses side 0 only, which is why the enemy side looked fine;
+- it resets four words of the old lock block (`+0x274 +0x278 +0x2A0 +0x314`) and links a new node into the old block's list
+  (head at `old_lb - 0x30`);
+- a pair table at `0x08BAE9FC / 0x08BAEA08` (CPU, human, human, CPU) gets the new actor instead of the CPU;
+- EBOOT global `0x089D4774` (the last created fighter's controller-side object) and a node in the resource pool at `0x08C00xxx`.
+
+The registration has to stay while the fighter loads (without it the actor's ready bit, `FUN_08B2F9E0`, never sets and the flow
+waits forever), so `spawn_fighter` records an undo list (snapshot of 0x08800000..0x0A000000 before the constructor, diff after)
+and `apply_undo` writes the old values back when the extra is released, in reverse spawn order: before the original flow step
+for extras made at setup, in `start_extra` for late ones. Result: the gameplay camera is the retail one again.
+
+Remaining: the resource node (`HE_D001T` / `HE_P001T_P1` for the human's side, `SG_D...` for the enemy's) holds the side's
+**intro camera data**. A second fighter on a side re-loads it (the old node is released by `FUN_0886CAA0` / `FUN_0886A140`
+and reused, even for a different character), so that side's intro cut shows eye = target = 0 for ~80 frames (and a second
+~70 frames for the human's side). Skipping the two releases does not help (the node is reset anyway). Two ways around it:
+make the extras after the intro (`PSPRECOMP_TAGTEAM_LATE=2`: the partner is made once the human's script ids >= 1000 have
+run and it is idle again: 1 zero camera frame of 622, the frame it loads) or give the extras their own slot objects
+(not done). Measured, `[CAMX]` zero frames in the first 400 updates: baseline 0; partner at setup, no fix 400 (all);
+with the undo 151; enemy extra with the undo 80; partner late after the intro 1.
+
+Debug switches: `PSPRECOMP_TAGTEAM_NOFIX=1` (no undo), `_KEEP_LAST=1`, `_FREE=1` (do not skip the releases), `_STOP=n`,
+`_LATE=1|2`, `_REGDUMP=1`, `_PTRDIFF=1`, `_SCAN=1`, `_WATCHRES=<hex>`.
