@@ -92,3 +92,29 @@ candidates have not been read yet.
 4. **Tag swap button** and active-fighter HUD.
 5. **KO flow and roster call-ins**, then round end rules.
 6. **Camera and HUD polish**, settings menu option, docs, tests.
+
+## Spike results (14 Nov, `runtime/tagteam.cpp`, `PSPRECOMP_TAGTEAM=1`)
+
+A third kind-0 fighter (a copy of the CPU fighter's setup data, so no new assets) is made after the setup and the
+engine accepts it: it is updated every frame, stands where it is placed, becomes "ready" and is started with the others,
+and the fight, HUD and result screen carry on. It does nothing yet (idle action, no AI choices, not on the camera).
+
+What it takes (all confirmed in a run):
+1. The construction: `FUN_08831320(0x12D0)`, `FUN_088729A0(side)`, `FUN_088470B8(bs + 0x7DC)`, `FUN_08B39E5C(mem, siderec, info, side, 0)`.
+2. The setup's per-fighter init for that side: `FUN_08B01090(buf, side)`, then the actor's init through
+   `*(actor + 0x544)`-style vtable slot at `*(actor + 1348) + 256` with `(actor + off, G + 0x1060 * side, buf)` where
+   `G = 0x09AFB8A0` (per-side records), the two flag bits (`actor + 1456` bytes 7 / 8), and the lock block init
+   `FUN_08B3B1B8(actor +0x5AC block, 3 words)`. Without it the actor ticks but never gets a script.
+3. Placement `FUN_088359A8(actor, vec4, 1)` and the brain `FUN_08A64078(brain, 2)` / `FUN_08A64100(brain, 15)`
+   (`brain = actor + 0x5C4`).
+4. **The battle flow step `FUN_088887A4(bs)`** drives the start: it is called every frame until both fighters in
+   `bs+56` / `bs+60` are ready (`FUN_08B2F9E0(actor)` = bit 0x10 of byte `actor+1456`), then calls
+   `FUN_0882FA10(actor + 304, 1, 0)` (start action 1) for each and sets `bs+72 = 1`. The spike wraps it: it holds the
+   flow until the third is ready too, lets the original run, then starts the third.
+
+Test notes: actor addresses differ between runs (do not watch fixed addresses; `PSPRECOMP_TAGTEAM_WATCH=<hex off>` arms
+the write watch on the human actor + offset from inside the hook). `PSPRECOMP_TAGTEAM_LOG=1` logs the steps.
+Menu fast-forward above 1x misnavigated the menu walk (landed in the story), so the walk runs at normal speed.
+
+Still open for step 1: the third fighter gets no AI actions, is not framed by the camera, and the lock block / foe
+cycle is not wired to it.

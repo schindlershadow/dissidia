@@ -14,6 +14,7 @@
 #include <cstring>
 
 extern FuncPtr ovl_battle_lookup(uint32_t vaddr);
+void psp_mem_watch_set(uint32_t addr);   // runtime/src/psp_dispatch.cpp
 
 namespace {
 
@@ -26,13 +27,18 @@ constexpr uint32_t SET_FOE = 0x08836DA4u;        // EBOOT: a->+0x300 = b
 constexpr uint32_t BRAIN_MODE = 0x08A64078u;     // battle overlay: brain (actor +0x5C4) mode (a1 = 2: CPU)
 constexpr uint32_t BRAIN_LEVEL = 0x08A64100u;    // battle overlay: brain level (a1 = 15)
 constexpr uint32_t ACT_BRAIN = 0x5C4u;
+constexpr uint32_t FLOW_STEP = 0x088887A4u;      // EBOOT: battle flow step (a0 = bs): waits for both fighters, starts action 1 on each, bs+72 = 1
+constexpr uint32_t FIGHTER_READY = 0x08B2F9E0u;  // battle overlay: bit 0x10 of byte actor+1456 (the fighter is ready)
+constexpr uint32_t START_ACTION = 0x0882FA10u;   // EBOOT: start an action (a0 = actor + 304, a1 = id, a2 = 0, f12 = f13 = 0)
 constexpr uint32_t REC_INIT = 0x08B01090u;       // battle overlay: fills the 40-byte init block (a0 = buf, a1 = side)
 constexpr uint32_t LOCK_INIT = 0x08B3B1B8u;      // battle overlay: lock-on block init (a0 = *(actor + 0x5AC), a1 = 3 words)
 constexpr uint32_t PLACE = 0x088359A8u;          // EBOOT: place an actor (a0 = actor, a1 = vec4, a2 = 1)
 constexpr uint32_t REC_BASE = 0x09AFB8A0u;       // global per-side records (stride 0x1060), 0x09B00000 - 18272
 constexpr uint32_t ACT_VT = 0x544u, ACT_FLAGS = 0x5B0u, ACT_LOCKBLK = 0x5ACu;
 
-FuncPtr g_orig_setup = nullptr;
+FuncPtr g_orig_setup = nullptr, g_orig_flow = nullptr;
+uint32_t g_third = 0, g_third_bs = 0;
+bool g_third_started = false;
 bool g_log = false;
 uint8_t* g_ram = nullptr;
 recomp_context* g_ctx = nullptr;
@@ -76,6 +82,11 @@ void setup_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t a0 = rd(bs + 56), a1 = rd(bs + 60), mode = rd(bs + 76), human = rd(bs + 84);
     if (g_log) std::fprintf(stderr, "[TAGTEAM] setup bs=%08X mode=%u slots %08X %08X human slot %u\n", bs, mode, a0, a1, human);
     if (!ok(a0, 0x12D0) || !ok(a1, 0x12D0)) return;
+    if (const char* w = std::getenv("PSPRECOMP_TAGTEAM_WATCH")) {   // arm the write watch on <human actor> + hex offset
+        const uint32_t off = static_cast<uint32_t>(std::strtoul(w, nullptr, 16));
+        psp_mem_watch_set((human == 0 ? a0 : a1) + off);
+        std::fprintf(stderr, "[TAGTEAM] watching %08X\n", (human == 0 ? a0 : a1) + off);
+    }
 
     // Scratch space below the stack pointer, kept clear of the callees' own frames.
     const uint32_t sp0 = static_cast<uint32_t>(ctx->r[29]);
@@ -108,10 +119,30 @@ void setup_hook(uint8_t* rdram, recomp_context* ctx) {
     // Stand next to the CPU fighter.
     wrf(vec, rdf(a1 + 0x80u) + 3.0f); wrf(vec + 4, rdf(a1 + 0x84u)); wrf(vec + 8, rdf(a1 + 0x88u)); wrf(vec + 12, 1.0f);
     call(PLACE, mem, vec, 1);
+    g_third = mem; g_third_bs = bs; g_third_started = false;
     const uint32_t brain = rd(mem + ACT_BRAIN);
     if (g_log) std::fprintf(stderr, "[TAGTEAM] third fighter %08X (rec %08X info %08X brain %08X)\n", mem, rec, info, brain);
     if (ok(brain, 0x40)) { call(BRAIN_MODE, brain, 2); call(BRAIN_LEVEL, brain, 15); }
     ctx->r[29] = static_cast<int32_t>(sp0);
+}
+
+// The flow step runs every frame until both fighters are ready, then starts them (action 1) and sets bs+72. The third
+// one is held to the same rule and started right after.
+void flow_hook(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t bs = static_cast<uint32_t>(ctx->r[4]);
+    g_ram = rdram; g_ctx = ctx;
+    if (g_log) { static int m = 0; if (m++ < 6 || (m % 120) == 0) std::fprintf(stderr, "[TAGTEAM] flow step bs=%08X (third %08X bs %08X started %d) bs+72=%u\n", bs, g_third, g_third_bs, g_third_started, ok(bs, 80) ? rd(bs + 72) : 99u); }
+    if (!g_third || bs != g_third_bs || g_third_started || rd(bs + 72) != 0) { g_orig_flow(rdram, ctx); return; }
+    static int n = 0;
+    const bool ready = call(FIGHTER_READY, g_third) != 0;
+    if (g_log && (n++ % 30) == 0) std::fprintf(stderr, "[TAGTEAM] flow: third ready=%d (flags %08X)\n", ready, rd(g_third + 1456));
+    if (!ready) return;                                      // wait: the original would start the other two without it
+    g_orig_flow(rdram, ctx);
+    if (rd(bs + 72) == 0) return;                            // the others were not ready yet
+    ctx->f[12] = 0.0f; ctx->f[13] = 0.0f;
+    call(START_ACTION, g_third + 304u, 1, 0);
+    g_third_started = true;
+    if (g_log) std::fprintf(stderr, "[TAGTEAM] third fighter started (action 1)\n");
 }
 
 }  // namespace
@@ -123,6 +154,9 @@ void dissidia_tagteam_install(uint8_t* rdram) {
     g_ram = rdram;
     g_orig_setup = psp_dispatch_probe_lookup(BATTLE_SETUP);
     if (!g_orig_setup) { std::fprintf(stderr, "[TAGTEAM] setup function not found\n"); return; }
+    g_orig_flow = psp_dispatch_probe_lookup(FLOW_STEP);
+    if (!g_orig_flow) { std::fprintf(stderr, "[TAGTEAM] flow step not found\n"); return; }
     psp_dispatch_register(BATTLE_SETUP, setup_hook);
+    psp_dispatch_register(FLOW_STEP, flow_hook);
     std::fprintf(stderr, "[TAGTEAM] spike installed\n");
 }
