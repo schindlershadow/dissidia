@@ -394,7 +394,8 @@ void hud_update() {
         Extra& e = g_extra[i];
         TagHudFighter f;
         f.name = char_label(actor_char(e.actor), true); f.side = static_cast<int>(e.side == g_extra[0].side ? e.side : e.side);
-        f.hp = static_cast<int>(rd(e.actor + 0x10B0u)); e.hp_max = std::max(e.hp_max, f.hp); f.hp_max = std::max(e.hp_max, 1);
+        { const uint32_t st = rd(e.actor + 0x52Cu); f.hp = ok(st, 0x40) ? static_cast<int>(static_cast<int32_t>(rd(st + 0xCu))) : 0; }   // live HP (the status object word the retail HUD reads); +0x10B0 is the maximum
+        f.hp_max = std::max(static_cast<int>(rd(e.actor + 0x10B0u)), std::max(f.hp, 1));
         fs.push_back(f);
     }
     // sides in the HUD: the human's team on the left (side value of the human's slot), the other on the right
@@ -571,6 +572,25 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
             const int sel = ok(h1, 0x40) ? static_cast<int>(rd(h1 + 28u)) : -99; const uint32_t t = rd(L + 252u);
             if (sel != last_sel || t != last_t || rd(L + 264u) != last_mode) { last_mode = rd(L + 264u); std::fprintf(stderr, "[TAGTEAM] t=%.1fs human lock: sel %d -> %d, mode %u, target %08X -> %08X (+0x2FC %08X foe %08X)\n", dissidia_battle_age() / 60.0f, last_sel, sel, rd(L + 264u), last_t, t, rd(hum + 0x2FCu), rd(hum + 0x300u)); last_sel = sel; last_t = t; }
         }
+    }
+    if (g_log && g_bs && std::getenv("PSPRECOMP_TAGTEAM_KO")) {   // debugging: "<who>:<seconds>" puts a fighter on 1 HP and 0 bravery so the next hit KOs it (who = human, cpu, enemy2, partner)
+        static bool done = false; static uint32_t target = 0; static int lasthp = -1;
+        char who[16] = {}; float at = 0; std::sscanf(std::getenv("PSPRECOMP_TAGTEAM_KO"), "%15[a-z0-9]:%f", who, &at);
+        if (!done && dissidia_battle_age() / 60.0f >= at && g_nextra) {
+            uint32_t a = 0;
+            const uint32_t hs = rd(g_bs + 84u);
+            if (!std::strcmp(who, "human")) a = rd(g_bs + 56u + 4u * hs);
+            else if (!std::strcmp(who, "cpu")) a = rd(g_bs + 56u + 4u * (1u - hs));
+            else for (int i = 0; i < g_nextra; i++) if (g_extra[i].started && ((!std::strcmp(who, "enemy2") && g_extra[i].side != side_of(rd(g_bs + 56u + 4u * hs))) || (!std::strcmp(who, "partner") && g_extra[i].side == side_of(rd(g_bs + 56u + 4u * hs))))) a = g_extra[i].actor;
+            if (ok(a, 0x12D0)) {
+                const uint32_t st = rd(a + 0x52Cu);
+                const uint32_t hp0 = std::getenv("PSPRECOMP_TAGTEAM_KO_HP0") ? 0u : 1u;   // HP0=1: the live HP goes to 0 at once (the game's own update has to notice)
+                if (ok(st, 0x40)) { wr(st + 0xCu, hp0); g_ram[(st + 0x14u) & 0x07FFFFFFu] = 0; g_ram[(st + 0x15u) & 0x07FFFFFFu] = 0; }
+                target = a; done = true;
+                std::fprintf(stderr, "[TAGTEAM] t=%.1fs KO prepared on %s %08X (hp 1, brv 0)\n", dissidia_battle_age() / 60.0f, who, a);
+            }
+        }
+        if (target && owner == target) { const uint32_t st2 = rd(target + 0x52Cu); const int hp = ok(st2, 0x40) ? static_cast<int32_t>(rd(st2 + 0xCu)) : -1; if (hp != lasthp) { std::fprintf(stderr, "[TAGTEAM] t=%.1fs KO target %08X live hp %d (max %u) script %d flags %08X\n", dissidia_battle_age() / 60.0f, target, hp, rd(target + 0x10B0u), static_cast<int16_t>(rd(target + 0x180u) & 0xFFFF), rd(target + 0x380u)); lasthp = hp; } }
     }
     static bool intro_seen = false;
     if (!g_late_q.empty() && g_bs && rd(g_bs + 72) != 0 && !g_late_ready) {   // the intro scripts (ids >= 1000) have run and the human is idle again
