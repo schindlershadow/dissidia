@@ -150,18 +150,10 @@ std::vector<Step> plan_rebuild(const Layout& l, const std::string& workdir, cons
     return p;
 }
 
-std::vector<Step> plan_install(const Layout& l, const std::string& iso, const std::string& workdir, const Options& o) {
-    Step x;
-    x.label = "Reading your game file";
-    x.explain = "Copies the game's files out of the disc image and decrypts the main program. Nothing is uploaded anywhere.";
-    x.argv = {l.python, l.setup_script, iso, workdir};
-    x.env = {{"PSPRECOMP_TOOLCHAIN", l.toolchain}, {"PYTHONUNBUFFERED", "1"}};
-    x.weight = 0.08;
-    std::vector<Step> p{x};
-    for (auto& s : plan_rebuild(l, workdir, o)) p.push_back(s);   // weights are renormalised below
-    // plan_rebuild() normalised its own steps; restore their relative sizes
-    for (size_t i = 1; i < p.size(); i++) p[i].weight = i == 1 ? 0.84 : 0.60;
-    if (o.hd_textures && feature_available(l, "hd_textures")) {
+// The optional extras after the game is built: the HD texture pack, the Japanese voices, the saves. `textures` = fetch the pack
+// (false when it is already installed and only the other extras are wanted).
+static void append_extras(std::vector<Step>& p, const Layout& l, const std::string& workdir, const Options& o, bool skip_textures) {
+    if (!skip_textures && o.hd_textures && feature_available(l, "hd_textures")) {
         Step t;
         const bool ai = o.texture_pack == "ai";
         t.label = ai ? "Downloading the AI upscaled textures" : "Downloading the HD textures";
@@ -189,6 +181,33 @@ std::vector<Step> plan_install(const Layout& l, const std::string& iso, const st
         v.weight = 0.01;
         p.push_back(v);
     }
+}
+
+std::vector<Step> plan_install(const Layout& l, const std::string& iso, const std::string& workdir, const Options& o) {
+    Step x;
+    x.label = "Reading your game file";
+    x.explain = "Copies the game's files out of the disc image and decrypts the main program. Nothing is uploaded anywhere.";
+    x.argv = {l.python, l.setup_script, iso, workdir};
+    x.env = {{"PSPRECOMP_TOOLCHAIN", l.toolchain}, {"PYTHONUNBUFFERED", "1"}};
+    x.weight = 0.08;
+    std::vector<Step> p{x};
+    for (auto& s : plan_rebuild(l, workdir, o)) p.push_back(s);   // weights are renormalised below
+    // plan_rebuild() normalised its own steps; restore their relative sizes
+    for (size_t i = 1; i < p.size(); i++) p[i].weight = i == 1 ? 0.84 : 0.60;
+    append_extras(p, l, workdir, o, false);
+    finish_plan(p);
+    return p;
+}
+
+std::vector<Step> plan_extras(const Layout& l, const std::string& workdir, const Options& o, bool skip_textures) {
+    std::vector<Step> p;
+    append_extras(p, l, workdir, o, skip_textures);
+    if (o.android && feature_available(l, "android")) {
+        Step a = build_step(l, workdir, true);
+        a.weight = 0.60;
+        p.push_back(a);
+    }
+    for (auto& st : p) if (st.weight <= 0) st.weight = 0.05;
     finish_plan(p);
     return p;
 }
@@ -260,32 +279,8 @@ std::vector<Step> plan_rebuild_android(const Layout& l, const std::string& workd
     return p;
 }
 
-std::vector<Step> plan_install_android(const Layout& l, const std::string& iso, const std::string& workdir, const Options& o) {
-    std::error_code ec;
-    fs::create_directories(join(workdir, "tmp"), ec);
-    Step x;
-    x.label = "Reading your game file";
-    x.explain = "Copies the game's files out of the disc image and decrypts the main program. Nothing is uploaded anywhere.";
-    x.argv = {l.python, l.setup_script, iso, workdir, "--pspdecrypt", l.pspdecrypt};
-    x.env = android_env(l, workdir);
-    x.weight = 0.10;
-    Step b;
-    b.label = "Building the game on this device";
-    b.explain = "Translates the game to C++ and compiles it with the compiler that ships with this app. This is the long part: expect about 10 to 20 minutes. "
-                "Cancelling is safe; starting again continues where it stopped.";
-    b.is_build = true;
-    b.argv = {l.python, l.build_script, workdir, "--android", l.android_dir, "--psprecomp", l.recompiler, "--game", l.game_dir, "--progress"};
-    b.env = android_env(l, workdir);
-    b.weight = 0.80;
-    Step c;
-    c.label = "Putting the game files where the game can read them";
-    c.explain = "Copies the game's files (about 2 GB) to the game app's folder in shared storage.";
-    c.argv = {l.python, join(l.game_dir, "tools/android_local_install.py"), workdir, "--dest", android_game_dir()};
-    c.env = android_env(l, workdir);
-    c.weight = 0.10;
-    std::vector<Step> p{x};
-    // the extras go in before the files are copied to the game's folder
-    if (o.hd_textures && feature_available(l, "hd_textures")) {
+static void append_extras_android(std::vector<Step>& p, const Layout& l, const std::string& workdir, const Options& o, bool skip_textures) {
+    if (!skip_textures && o.hd_textures && feature_available(l, "hd_textures")) {
         const std::string mods = join(workdir, "mods");
         std::error_code mk;
         fs::create_directories(mods, mk);
@@ -322,8 +317,53 @@ std::vector<Step> plan_install_android(const Layout& l, const std::string& iso, 
         j.weight = 0.05;
         p.push_back(j);
     }
+}
+
+std::vector<Step> plan_install_android(const Layout& l, const std::string& iso, const std::string& workdir, const Options& o) {
+    std::error_code ec;
+    fs::create_directories(join(workdir, "tmp"), ec);
+    Step x;
+    x.label = "Reading your game file";
+    x.explain = "Copies the game's files out of the disc image and decrypts the main program. Nothing is uploaded anywhere.";
+    x.argv = {l.python, l.setup_script, iso, workdir, "--pspdecrypt", l.pspdecrypt};
+    x.env = android_env(l, workdir);
+    x.weight = 0.10;
+    Step b;
+    b.label = "Building the game on this device";
+    b.explain = "Translates the game to C++ and compiles it with the compiler that ships with this app. This is the long part: expect about 10 to 20 minutes. "
+                "Cancelling is safe; starting again continues where it stopped.";
+    b.is_build = true;
+    b.argv = {l.python, l.build_script, workdir, "--android", l.android_dir, "--psprecomp", l.recompiler, "--game", l.game_dir, "--progress"};
+    b.env = android_env(l, workdir);
+    b.weight = 0.80;
+    Step c;
+    c.label = "Putting the game files where the game can read them";
+    c.explain = "Copies the game's files (about 2 GB) to the game app's folder in shared storage.";
+    c.argv = {l.python, join(l.game_dir, "tools/android_local_install.py"), workdir, "--dest", android_game_dir()};
+    c.env = android_env(l, workdir);
+    c.weight = 0.10;
+    std::vector<Step> p{x};
+    // the extras go in before the files are copied to the game's folder
+    append_extras_android(p, l, workdir, o, false);
     p.push_back(b);
     p.push_back(c);
+    finish_plan(p);
+    return p;
+}
+
+std::vector<Step> plan_extras_android(const Layout& l, const std::string& workdir, const Options& o, bool skip_textures) {
+    std::error_code ec;
+    fs::create_directories(join(workdir, "tmp"), ec);
+    std::vector<Step> p;
+    append_extras_android(p, l, workdir, o, skip_textures);
+    Step c;
+    c.label = "Putting the game files where the game can read them";
+    c.explain = "Copies the game's files to the game app's folder in shared storage.";
+    c.argv = {l.python, join(l.game_dir, "tools/android_local_install.py"), workdir, "--dest", android_game_dir()};
+    c.env = android_env(l, workdir);
+    c.weight = 0.15;
+    p.push_back(c);
+    for (auto& st : p) if (st.weight <= 0) st.weight = 0.05;
     finish_plan(p);
     return p;
 }

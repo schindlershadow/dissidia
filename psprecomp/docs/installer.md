@@ -69,6 +69,7 @@ of the fork.
    - **Progress page**: stage name and step count, a bar, a detail line (ninja's "Compiled 183 of 474: file"), elapsed time, an ETA
      ("About 6 minutes left", from ninja's file counter during the compile, from the overall fraction elsewhere) and an explanation
      of what the current stage does in the information panel. The step weights live in `setup/install.cpp`.
+   - **Change extras** (start page of an installed game): the Extras page again, applied without a rebuild (`plan_extras`): downloads / swaps / removes the HD texture pack, adds the Japanese voices, builds the Android version once.
    - **Options** (tabs like the game's Settings menu, L / R switch: Extras = the features and Start installing, General = update check and install folder): check for updates; HD textures (LiinkPK's hand-retouched pack, listed first, or the AI upscaled pack; Left/Right cycles, the help line credits the selected pack); Japanese voices (undub; asks for the undub disc image first); Android
      version; **Import saves** (cycles Off / each PPSSPP or memory-stick SAVEDATA folder found with Dissidia 012 saves, found by
      `psp_savemgr::detect_sources`; it adds the last install step, `DissidiaRecomp --import-saves FROM --dir WORK`, which copies the

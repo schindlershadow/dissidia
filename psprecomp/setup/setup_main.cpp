@@ -259,7 +259,13 @@ struct App {
     // Every page is drawn by the game's Settings screen renderer; the Options page has two categories (sidebar): L / R or a tap on one switch.
     int opt_tab = 0;
     enum OptRow { OR_UPDATES, OR_HD, OR_JP, OR_ANDROID, OR_SAVES, OR_FOLDER, OR_START, OR_BACK };
-    static const std::vector<std::string>& option_tabs() { static const std::vector<std::string> t = {"Extras", "General"}; return t; }
+    bool extras_mode = false;   // the Options page opened from "Change extras" on an installed game: only the extras, applied without a rebuild
+    bool extras_run = false;    // the running plan is such an apply
+    bool extras_skip_tex = false;
+    const std::vector<std::string>& option_tabs() const {
+        static const std::vector<std::string> both = {"Extras", "General"}, one = {"Extras"};
+        return extras_mode ? one : both;
+    }
     std::vector<OptRow> option_rows() const {
         std::vector<OptRow> r;
         if (opt_tab == 0) {
@@ -385,6 +391,7 @@ struct App {
                     p.rows.push_back(row("Update the game", "This app was updated since the game was built. Builds the game again from the files already on this device (no game file needed), "
                                                             "then installs it. About 5 minutes."));
                 p.rows.push_back(row("Install the game", "The game is built. This installs it as an app (Android asks you to confirm)."));
+                p.rows.push_back(row("Change extras", "Turn the HD textures or the Japanese voices on or off, or pick another texture pack, without building the game again."));
                 p.rows.push_back(row("Build it again", "Pick your game file and build from scratch (your saves are kept)."));
                 p.rows.push_back(row("Check for updates", "Looks for a newer version of this app (it contacts github.com; nothing about you or your game is sent)."));
                 p.rows.push_back(row("Quit"));
@@ -399,6 +406,7 @@ struct App {
             else if (installed()) {
                 p.tab = "Installed";
                 p.rows = {row("Play", "Start the game."),
+                          row("Change extras", "Turn the HD textures, the Japanese voices or the Android version on or off, or pick another texture pack, without rebuilding the game."),
                           row("Check for updates", "Look for a newer release of the game files (not available yet)."),
                           row("Rebuild the game", "Compile the game again from your extracted files. Use this if the game does not start."),
                           row("Install again", "Pick a game file and install from scratch (your saves are kept)."),
@@ -550,7 +558,8 @@ struct App {
                     p.rows.push_back(row("Install folder", "The game's files and your saves go here. Press Confirm to pick another folder.", shorten_left(workdir, 34)));
                     break;
                 case OR_START:
-                    p.rows.push_back(row("Start installing", "Reads " + shorten_left(iso, 40) + " and builds the game in " + shorten_left(workdir, 34) +
+                    if (extras_mode) p.rows.push_back(row("Apply changes", "Downloads or adds the extras you turned on and removes the HD textures if you turned them off. The game is not rebuilt. Turning the Japanese voices off keeps the files already added."));
+                    else p.rows.push_back(row("Start installing", "Reads " + shorten_left(iso, 40) + " and builds the game in " + shorten_left(workdir, 34) +
                                                                 ". You can cancel and continue later."));
                     break;
                 case OR_BACK:
@@ -630,11 +639,14 @@ struct App {
     int row_count() { return is_browser() ? (int)br.list.size() : (int)page().rows.size(); }
 
     // ---- actions ----
-    void start_plan(bool rebuild, bool update = false, bool android_install = false) {
-        rebuild_only = rebuild || update || android_install;
+    void start_plan(bool rebuild, bool update = false, bool android_install = false, bool extras = false) {
+        extras_run = extras;
+        rebuild_only = rebuild || update || android_install || extras;
         updating = update;
         android_inst = android_install;
         const setup::Options& o = (rebuild || update) ? state.options : opt;
+        if (extras) {}   // plan already built by start_extras()
+        else
 #ifdef __ANDROID__
         if (!rebuild) plan = setup::plan_install_android(layout, iso, workdir, opt);
         else if (!android_install && !update) plan = setup::plan_rebuild_android(layout, state.workdir);
@@ -643,7 +655,7 @@ struct App {
         if (android_install) plan = setup::plan_android_install(layout, cur_workdir());
         else if (update) plan = setup::plan_update(layout, state.workdir, o, upd);
         else plan = rebuild ? setup::plan_rebuild(layout, state.workdir, o) : setup::plan_install(layout, iso, workdir, o);
-        log_open((rebuild || update) ? state.workdir : workdir);
+        log_open((rebuild || update || extras) ? state.workdir : workdir);
         prog = setup::Progress();
         prog.stage = plan[0].label;
         prog.explain = plan[0].explain;
@@ -778,8 +790,9 @@ struct App {
                 }
 #ifdef __ANDROID__
                 state.workdir = rebuild_only ? state.workdir : workdir;
-                state.built_fp = setup::android_payload_fingerprint(layout);
+                if (!extras_run) state.built_fp = setup::android_payload_fingerprint(layout);
 #endif
+                if (extras_run) { state.options = opt; state.options.undub_iso.clear(); }
                 setup::save_state(state_file, state);
 #ifdef __ANDROID__
                 if (false)
@@ -789,7 +802,12 @@ struct App {
                     if (setup::create_shortcut(workdir, layout.root, &where, &serr)) shortcut_note = "A menu entry was added: " + where;
                     else shortcut_note = "No menu entry (" + serr + ")";
                 }
-                go(Screen::Done);
+                if (extras_run) {
+                    extras_mode = false;
+                    msg_title = "EXTRAS UPDATED";
+                    msg_text = "The extras are in place.";
+                    go(Screen::Message);
+                } else go(Screen::Done);
             }
             dirty = true;
         }
@@ -1039,7 +1057,54 @@ struct App {
         }
     }
 
+    void begin_extras() {
+        extras_mode = true;
+        workdir = state.workdir;
+        opt = state.options;
+        opt.undub_iso.clear();   // a saved path (or Android descriptor) from the install is no longer valid
+        go_options(OR_HD);
+    }
+
+    // Applies the extras that differ from what is installed: no rebuild.
+    void start_extras() {
+        const setup::Options& prev = state.options;
+        std::error_code ec;
+        const fs::path tex = fs::path(workdir) / "mods" / "textures";
+        const bool present = fs::is_regular_file(tex / "textures.ini", ec);
+        const bool pack_changed = prev.hd_textures && opt.hd_textures && prev.texture_pack != opt.texture_pack;
+        extras_skip_tex = !(opt.hd_textures && (!prev.hd_textures || pack_changed || !present));
+        if (!opt.hd_textures || pack_changed) {   // turned off, or another pack: the old files must not stay
+            fs::remove_all(tex, ec);
+#ifdef __ANDROID__
+            fs::remove_all(fs::path(setup::android_game_dir()) / "mods" / "textures", ec);
+#endif
+        }
+        setup::Options o = opt;
+        if (prev.jp_audio && o.undub_iso.empty()) o.jp_audio = false;   // already added: nothing to extract
+        if (prev.android && setup::android_build_exists(workdir)) o.android = false;   // its APK is already built
+#ifdef __ANDROID__
+        plan = setup::plan_extras_android(layout, workdir, o, extras_skip_tex);
+#else
+        plan = setup::plan_extras(layout, workdir, o, extras_skip_tex);
+#endif
+        if (plan.empty()) {
+            state.options = opt; state.options.undub_iso.clear();
+            setup::save_state(state_file, state);
+            extras_mode = false;
+            msg_title = "EXTRAS";
+            msg_text = "Nothing needed to be added: the extras you chose are already in place.";
+            go(Screen::Message);
+            return;
+        }
+        start_plan(false, false, false, true);
+    }
+
     void start_install_or_ask() {
+        if (extras_mode) {
+            if (opt.jp_audio && !state.options.jp_audio && opt.undub_iso.empty() && setup::feature_available(layout, "jp_audio")) { begin_pick(Pick::Undub, Screen::Options); return; }
+            start_extras();
+            return;
+        }
         // the undub option needs its disc image first
         if (opt.jp_audio && opt.undub_iso.empty() && setup::feature_available(layout, "jp_audio")) { begin_pick(Pick::Undub, Screen::Options); return; }
         std::error_code ec;
@@ -1089,8 +1154,9 @@ struct App {
                 int i = sel - (need_rebuild() ? 1 : 0);
                 if (need_rebuild() && sel == 0) { workdir = state.workdir; start_plan(true); }
                 else if (i == 0) { setup::android::install_apk(state.workdir + "/android/dissidia.apk"); go(Screen::AndroidInstall); }
-                else if (i == 1) begin_pick(Pick::Iso, Screen::Welcome);
-                else if (i == 2) begin_check(true);
+                else if (i == 1) begin_extras();
+                else if (i == 2) begin_pick(Pick::Iso, Screen::Welcome);
+                else if (i == 3) begin_check(true);
                 else quit = true;
             } else if (sel == 0) begin_pick(Pick::Iso, Screen::Welcome);
             else if (sel == 1) begin_check(true);
@@ -1100,9 +1166,10 @@ struct App {
             if (installed()) {
                 switch (sel) {
                 case 0: play(); break;
-                case 1: begin_check(true); break;
-                case 2: opt = state.options; start_plan(true); break;
-                case 3: begin_pick(Pick::Iso, Screen::Welcome); break;
+                case 1: begin_extras(); break;
+                case 2: begin_check(true); break;
+                case 3: opt = state.options; start_plan(true); break;
+                case 4: begin_pick(Pick::Iso, Screen::Welcome); break;
                 default: quit = true;
                 }
             } else if (sel == 0) {
@@ -1270,9 +1337,10 @@ struct App {
             break;
         case Screen::Options:
 #ifdef __ANDROID__
+            extras_mode = false;
             go(Screen::Welcome);
 #else
-            go(Screen::InstallDir);
+            if (extras_mode) { extras_mode = false; go(Screen::Welcome); } else go(Screen::InstallDir);
 #endif
             break;
         case Screen::Welcome:

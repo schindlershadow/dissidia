@@ -55,6 +55,8 @@ bool feature_available(const Layout& l, const std::string& name);
 
 std::vector<Step> plan_install(const Layout& l, const std::string& iso, const std::string& workdir, const Options& o);
 // The game build only (rebuild / repair): analysis, recompile, compile (+ the Android build when chosen).
+// Only the extras of `o` (HD textures unless skip_textures, Japanese voices, saves, the Android build) on an installed game: no rebuild.
+std::vector<Step> plan_extras(const Layout& l, const std::string& workdir, const Options& o, bool skip_textures);
 std::vector<Step> plan_rebuild(const Layout& l, const std::string& workdir, const Options& o);
 
 // Installs the Android build (<workdir>/android/dissidia.apk) on a connected device with adb and copies the game's files to it
@@ -77,6 +79,8 @@ std::vector<std::string> android_verify_argv(const Layout& l, const std::string&
 constexpr const char* kManifestUrl = "https://github.com/schindlershadow/dissidia/releases/latest/download/manifest.json";
 std::string android_payload_fingerprint(const Layout& l);   // android/build_fingerprint.txt of the unpacked payload ("" if absent)
 // The game build again (translate + compile + copy) from the already extracted work folder, after the app was updated.
+// Only the extras of `o` on a built game, then the copy to the game's folder (no rebuild).
+std::vector<Step> plan_extras_android(const Layout& l, const std::string& workdir, const Options& o, bool skip_textures);
 std::vector<Step> plan_rebuild_android(const Layout& l, const std::string& workdir);   // where the game app reads its files: /sdcard/Android/media/org.psprecomp.game/game
 #endif
 

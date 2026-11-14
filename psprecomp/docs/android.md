@@ -36,6 +36,7 @@ disc image and installs it. Nothing but the APK is downloaded, and no PC or term
 3. After the file, the **Options** page (the same tabbed look as the game's Settings menu: L / R or a tap at the right of the tab strip switch tabs) offers **HD texture pack**
    (about 1.3 GB, downloaded by the app itself over your connection, then unpacked into the game's mods folder; finished downloads are kept if you retry),
    **Japanese voices (undub)** (asks for a second disc image with the same file picker) and, in General, the update check. Android version and Import saves are PC-only.
+   Later, **Change extras** on the start page opens the same Extras page for the built game: it adds, removes or swaps the HD texture pack and adds the Japanese voices without building the game again.
 3b. The app asks for "all files access" once: the game app reads its files from the shared folder `<storage>/Android/media/org.psprecomp.game/game` (since Android 11 no
    other app may write to `Android/data`).
 4. It extracts and decrypts the disc, translates the game to C++ and compiles it (about 5 minutes on a Snapdragon 8 Gen 2; the screen is kept on and a wake lock is held),

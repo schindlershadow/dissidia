@@ -34,6 +34,14 @@ int main() {
     for (auto& s : plan) sum += s.weight;
     CHECK(std::fabs(sum - 1.0) < 1e-9);
     CHECK(std::fabs(plan[1].base - plan[0].weight) < 1e-9);
+    {   // extras on an installed game: no build step, only what is wanted
+        Options e;
+        auto ep = plan_extras(l, "/w", e, false);
+        CHECK(ep.size() == 1 && !ep[0].is_build);           // the texture download only
+        CHECK(plan_extras(l, "/w", e, true).empty());        // textures already in place: nothing to do
+        e.hd_textures = false;
+        CHECK(plan_extras(l, "/w", e, false).empty());
+    }
     o.hd_textures = true;   // available in this release: one more step
     o.android = true;       // not available: no step
     plan = plan_install(l, "x.iso", "/w", o);
