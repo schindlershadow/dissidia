@@ -196,7 +196,7 @@ void render_menu(Canvas& c, const std::string& title, const std::string& tab,
 // SettingsView (which owns the animation state and remembers where everything was drawn, so the mouse / touch code can hit-test
 // against the same geometry). All coordinates are design units (480x272).
 // ---------------------------------------------------------------------------
-enum class SetKind { Choice, Toggle, Slider, Action, Danger, Submenu, Text, Info, Header };
+enum class SetKind { Choice, Toggle, Slider, Action, Danger, Submenu, Text, Info, Header, Progress };   // Progress: a bar filled to `progress` (0..1) with `value` (e.g. "42%") on its right
 struct SetRow {
     SetKind kind = SetKind::Choice;
     int id = 0;                 // stable per row (animation memory); < SET_MAX_IDS
@@ -206,6 +206,7 @@ struct SetRow {
     bool can_dec = false, can_inc = false;   // Choice / Slider: the arrows
     bool disabled = false;      // greyed out (the help text says why); still selectable
     bool on = false;            // Toggle
+    float progress = 0.f;       // Progress: 0..1
     int steps = 0, cur = 0;     // Slider: number of positions (>= 2) and the current one
     bool selectable() const { return kind != SetKind::Header; }
 };

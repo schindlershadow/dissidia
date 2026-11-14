@@ -412,8 +412,7 @@ struct App {
                 p.title = "YOUR GAME FILE";
                 p.tab = "Step 1";
                 p.rows = {row("A Dissidia 012 disc image", "The game is built from your own copy of the PSP game Dissidia 012 [duodecim] Final Fantasy, as a disc image file: a .iso or a .cso (compressed ISO) of the whole disc. Nothing from the game is downloaded or shipped with this app.", ".iso or .cso"),
-                          row("Valid: EU or US release", "The European release (ULES-01505, also the PSN version) and the US release (ULUS-10566) work. Make it from your own disc.", "EU / US"),
-                          row("Not valid", "Archives (.zip, .7z, .rar: unpack them first), other compressed formats (.zso, .dax, .chd), save data or PPSSPP folders, or the first Dissidia Final Fantasy (it must be Dissidia 012).", "zip, saves, other games"),
+                          row("Valid: EU or US release", "The European release (ULES-01505, also the PSN version) and the US release (ULUS-10566) work. It must be Dissidia 012, not an archive: unpack .zip / .7z first.", "EU / US"),
                           row("Choose the file", how),
                           row("Back")};
             } else {
@@ -421,7 +420,6 @@ struct App {
                 p.tab = "Japanese voices";
                 p.rows = {row("A second disc image", "The Japanese voices and movies come from a Japanese or undub version of Dissidia 012, as a disc image: a .iso or .cso. It is only read once; your own disc stays the base of the game.", ".iso or .cso"),
                           row("Valid: the undub / Japanese disc", "A Dissidia 012 image that has the Japanese voices, for example the Japanese release or an undub patch of the game. The same game as your own disc, just with different voice and movie files.", "Japanese / undub"),
-                          row("Not valid", "Your own disc image again (nothing would differ, so it is rejected), a different game, archives (.zip, .7z, .rar) or other compressed formats (.zso, .dax, .chd).", "same disc, other games"),
                           row("Choose the file", how),
                           row("Back")};
             }
@@ -578,18 +576,14 @@ struct App {
             p.title = android_inst ? "ON YOUR DEVICE" : updating ? "UPDATING" : rebuild_only ? "REBUILDING" : "INSTALLING";
             char pc[16];
             std::snprintf(pc, sizeof pc, "%d%%", (int)(prog.fraction * 100 + 0.5));
-            std::string bar = "[";
-            int fill = (int)(prog.fraction * 20 + 0.5);
-            for (int i = 0; i < 20; i++) bar += i < fill ? '#' : '-';
-            bar += "]";
-            p.tab = pc;
+            p.tab = pc;   // shown in the header after the title
             int64_t t = now_ms();
             std::string stage = prog.stage.empty() ? "Starting..." : prog.stage;
             std::string steps = plan.size() > 1 ? " (" + std::to_string(prog.step + 1) + "/" + std::to_string(plan.size()) + ")" : "";
-            p.rows = {row(stage + steps, "", bar),
+            p.rows = {row(stage + steps, "", pc),
                       row(prog.detail.empty() ? "Working..." : prog.detail, "", setup::elapsed_text(prog, t)),
                       row(setup::eta_text(prog, t), ""),
-                      row("Cancel", (prog.explain.empty() ? "" : prog.explain + " ") + "Cancel stops the installation; starting it again continues where it stopped.")};
+                      row("Cancel")};
             if (sel > 3) sel = 3;
             break;
         }
@@ -1178,8 +1172,8 @@ struct App {
             } else quit = true;
             break;
         case Screen::PickInfo:
-            if (sel == 3) begin_pick(pick, before_pick, true);
-            else if (sel == 4) go(before_pick);
+            if (sel == 2) begin_pick(pick, before_pick, true);
+            else if (sel == 3) go(before_pick);
             break;
         case Screen::Download:
 #ifdef __ANDROID__
@@ -1502,8 +1496,10 @@ struct App {
             r.disabled = m.disabled;
             r.can_dec = m.can_dec; r.can_inc = m.can_inc;
             r.help = m.help.empty() ? std::string() : m.label + "\n" + m.help;
+            if (progress) r.help = (prog.stage.empty() ? std::string("Working") : prog.stage) + "\n" + (prog.explain.empty() ? std::string("Cancelling stops the install; starting it again continues where it stopped.") : prog.explain);   // the same text whichever row is selected
             if (m.value == "On" || m.value == "Off") { r.kind = SetKind::Toggle; r.on = m.value == "On"; }
             else if (m.can_dec || m.can_inc) r.kind = SetKind::Choice;
+            else if (progress && r.id == 0) { r.kind = SetKind::Progress; r.progress = (float)prog.fraction; }
             else if (progress && r.id < 3) r.kind = SetKind::Info;
             else if (m.value.empty()) r.kind = SetKind::Action;
             else r.kind = SetKind::Info;
@@ -1843,8 +1839,8 @@ int main(int argc, char** argv) {
         app.go(Screen::Welcome); shot("1_welcome");
         app.pick = Pick::Iso; app.go(Screen::Waiting); shot("2_waiting");
         app.go(Screen::PickIso); shot("2b_pick_iso");
-        app.pick = Pick::Iso; app.go(Screen::PickInfo, 3); shot("2c_pick_info");
-        app.pick = Pick::Undub; app.go(Screen::PickInfo, 3); shot("2d_pick_info_undub");
+        app.pick = Pick::Iso; app.go(Screen::PickInfo, 0); shot("2c_pick_info");
+        app.pick = Pick::Undub; app.go(Screen::PickInfo, 0); shot("2d_pick_info_undub");
         app.pick = Pick::Iso;
         app.go(Screen::InstallDir); shot("3_install_dir");
         app.go(Screen::Options, 0); shot("4_options");

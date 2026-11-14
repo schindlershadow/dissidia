@@ -646,6 +646,16 @@ struct SettingsDraw {
             }
             return left;
         }
+        case SetKind::Progress: {   // a bar (the setup wizard's install progress) with the percentage on its right
+            const float pw = 34.f, bw = 200.f, bh = 8.f;
+            P.text(bodyb, vs, xr, cy + 3.2f, r.value, vcol, pw, 1);
+            const float bar_r = xr - pw - 6.f, bar_l = bar_r - bw, by = cy - bh / 2.f;
+            P.rrect(bar_l, by, bw, bh, bh / 2.f, with_a(sf > 0.5f ? rgb(210, 216, 255) : rgb(176, 182, 210), 0.9f));
+            P.rrect(bar_l, by, bw, bh, bh / 2.f, with_a(rgb(70, 78, 150), 0.75f), 0.8f);
+            const float fw = std::max(bh, bw * clamp01(r.progress));
+            if (r.progress > 0.001f) P.rrect(bar_l, by, fw, bh, bh / 2.f, Ramp(rgb(250, 214, 110), rgb(226, 160, 40), by, by + bh));
+            return bar_l - 10.f;
+        }
         case SetKind::Submenu: {
             chevron_mark(P, xr - 2.f, cy, 4.2f, 1.3f, true, fg);
             chevron_mark(P, xr - 6.f, cy, 4.2f, 1.3f, true, with_a(fg, 0.55f));
