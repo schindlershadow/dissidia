@@ -207,3 +207,35 @@ two fighters' brains (+0x5C4, brain +4 owner) and their places in the battle slo
 - slots only: camera garbage too and **the retail HUD breaks** (left portrait / bars missing, right side shows the wrong fighter);
 - so the camera and the HUD keep references to the human fighter (cached actor pointers in camera mode objects, HUD widgets) beyond the
   slot table, brain and camera slot.
+
+## Tag swap: findings of the tag-swap fork (14 Nov; the swap still does not work)
+
+**Fixed on the way: the extras' bravery was 0.** The retail HUD reads a fighter's current bravery as the halfword at
+`*(actor + 0x52C) + 0x14` (`FUN_089E978C(side)`; the word is `<initial><current>`, both halves = the character's base bravery
+`actor + 0x10AC` at battle start: human 0x0434 = 1076, CPU 0x0406 = 1030). The extras were left at 0, i.e. permanently broken
+(`FUN_089E9A4C` flips to 1). `start_extra` now writes `(base << 16) | base` when the word is 0. (`status + 0x1C` is not bravery:
+it is the assist gauge's draining bar; HP is `status + 0xC` = `actor + 0x10B0`.) A 2v2 run is unchanged otherwise (camera 1 bad
+frame in 500, all four fighters act).
+
+**HUD accessors** (`PSPRECOMP_TAGTEAM_HUDPROBE=1` calls the retail HUD getters `0x089E95B0..0x089E9EF4(side)` before and after the
+swap): `FUN_089E95B0(side)` = `bs[56 + 4*side]`; `FUN_089E95E0 / 089E9628` = "side is CPU-controlled" (reads the brain: slots-only
+swap makes both sides CPU, brains-only keeps them right); `089E96DC / 973C` = HP, `089E978C` = bravery. So the HUD does read the slot
+actors live; with brains and slots both swapped and the bravery fixed the getters return the right numbers for both sides, yet the
+left HUD still disappears and the right portrait shows the wrong character, so the **portraits / widgets are bound at setup** and not
+re-read.
+
+**Shared references to the human** (`PSPRECOMP_TAGTEAM_SWAPSCAN=1`, scans RAM for words equal to H, P, their lock blocks and brains
+at swap time): H is held by the slot table (`bs+56`), a pair table at `0x08BAE9FC..0x08BAEA08`, a resource node near `0x08C00720`,
+`0x08B63310`, a word near the camera manager (`mgr + 0x6360`, listed as `[CPU, human]`), `0x089D4890`, and ~50 words inside H's own
+sub-objects, the CPU's, the extras' and a per-fighter record array at `0x09744xxx..0x09747xxx` (which holds P once per record, so
+it is an interaction matrix, not a list to swap). The lock block of H is held only by the camera manager slot (`mgr + 0x6D0 + 4*side`)
+and two words in a pool. `swap_roles` now also swaps `mgr + 0x6360`, `0x089D4890`, `0x08B63310` (`PSPRECOMP_TAGTEAM_SWAP_LISTS=<hex mask>`);
+the addresses that hold H vary between runs once the extras spawn late (heap layout), so fixed addresses are unreliable and the
+camera still shows garbage in 36 of 700 updates after a swap (46 before this change; baseline 1).
+
+Conclusion: moving the retail slot between two actors needs the same bookkeeping the constructor does for a new fighter (camera
+slot table, lock block list, pair table, "last fighter" global, the HUD's setup-time bindings), found by RAM diffs at the right moment, not by
+patching a fixed list. Suggested next step: instead of swapping existing actors, **re-run the retail registrations** for the pair:
+snapshot RAM before and after constructing a fighter into slot 0 (the fork's undo machinery does exactly this) and, at swap time,
+write P's "after" values for the retail registrations and H's "before" values for the extra, or give the HUD and camera a single
+fixed "player" actor and swap the character data under it (clones only).

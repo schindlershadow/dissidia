@@ -265,6 +265,10 @@ void setup_hook(uint8_t* rdram, recomp_context* ctx) {
         psp_mem_watch_set(hum + off);
         std::fprintf(stderr, "[TAGTEAM] watching %08X\n", hum + off);
     }
+    if (const char* w = std::getenv("PSPRECOMP_TAGTEAM_WATCH_STATUS")) {   // watch the human's status object (actor+0x52C) + hex offset
+        const uint32_t st = rd(hum + 0x52Cu), off = static_cast<uint32_t>(std::strtoul(w, nullptr, 16));
+        psp_mem_watch_set(st + off); std::fprintf(stderr, "[TAGTEAM] watching status %08X + %X\n", st, off);
+    }
     if (std::getenv("PSPRECOMP_TAGTEAM_WATCH_SEL")) {   // watch the human's lock cycle selector (retail mode handler [1] + 28)
         const uint32_t L = rd(hum + 0x5ACu), h1 = ok(L, 0x200) ? rd(L + 304u) : 0u;
         if (ok(h1, 0x40)) { psp_mem_watch_set(h1 + 28u); std::fprintf(stderr, "[TAGTEAM] watching the lock selector at %08X\n", h1 + 28u); }
@@ -311,7 +315,12 @@ void start_extra(Extra& e) {
     g_ctx->f[12] = 0.0f; g_ctx->f[13] = 0.0f;
     call(START_ACTION, e.actor + 304u, 1, 0);
     call(LOCK_SET, rd(e.actor + 0x5ACu), e.foe);          // lock on to the foe: the AI and the turn-to-target ops read it
+    {   // Bravery: the retail pair gets its base bravery (actor +0x10AC) in both halves of status +0x14 at battle start; the extras start at 0 (broken).
+        const uint32_t st = rd(e.actor + 0x52Cu), b = rd(e.actor + 0x10ACu) & 0xFFFFu;
+        if (ok(st, 0x40) && rd(st + 0x14u) == 0) wr(st + 0x14u, (b << 16) | b);
+    }
     e.started = true;
+    if (g_log) for (uint32_t a : {e.slot_actor, e.actor}) { const uint32_t st = rd(a + 0x52Cu); std::fprintf(stderr, "[TAGTEAM] stats %08X: +10A8 %u %u %u %u %u status %08X +0x14 %08X +0x18 %08X +0x1C %08X\n", a, rd(a + 0x10A8u), rd(a + 0x10ACu), rd(a + 0x10B0u), rd(a + 0x10B4u), rd(a + 0x10B8u), st, rd(st + 0x14u), rd(st + 0x18u), rd(st + 0x1Cu)); }
     if (g_log) std::fprintf(stderr, "[TAGTEAM] extra %08X (side %u) started, target %08X foe %08X\n", e.actor, e.side, rd(e.actor + 0x2FCu), e.foe);
     g_ctx->r[29] = static_cast<int32_t>(sp0);
 }
@@ -476,6 +485,41 @@ Extra* extra_of(uint32_t actor) {
 
 // Hand the pad to the partner: the two fighters trade brains (the pad is read by the human brain, +0x54 != 0) and trade places in
 // the battle's slot table, which the retail HUD, the camera and the lock cycle read. The partner becomes an extra on the CPU brain.
+// Debug (PSPRECOMP_TAGTEAM_SWAPSCAN=1): every word in guest RAM equal to `v`, outside the two actors' own blocks.
+void scan_val(uint32_t v, const char* tag, uint32_t a0, uint32_t a1) {
+    int n = 0;
+    for (uint32_t a = 0x08800000u; a < 0x0BF00000u && n < 150; a += 4) {
+        if ((a >= a0 && a < a0 + 0x12D0u) || (a >= a1 && a < a1 + 0x12D0u)) continue;
+        if (rd(a) == v) { std::fprintf(stderr, "[SWAPSCAN] %s %08X held at %08X\n", tag, v, a); n++; }
+    }
+}
+
+void dump_win(uint32_t at, const char* tag, uint32_t H, uint32_t P, uint32_t C, uint32_t lbH, uint32_t lbP) {
+    std::fprintf(stderr, "[SWAPSCAN] window %s @%08X:", tag, at);
+    for (int k = -6; k <= 6; k++) {
+        const uint32_t v = rd(at + 4 * k);
+        const char* n = v == H ? "H" : v == P ? "P" : v == C ? "C" : v == lbH ? "lbH" : v == lbP ? "lbP" : nullptr;
+        if (n) std::fprintf(stderr, " [%s]", n); else std::fprintf(stderr, " %X", v);
+    }
+    std::fprintf(stderr, "\n");
+}
+
+// Debug: the retail HUD's accessor functions (battle overlay 0x089E95E0..0x089E9EF4, a0 = side) before / after the swap.
+void hud_probe(const char* tag) {
+    static const uint32_t fns[] = {0x089E95B0u, 0x089E95E0u, 0x089E9628u, 0x089E968Cu, 0x089E96DCu, 0x089E973Cu, 0x089E978Cu, 0x089E97FCu, 0x089E9858u, 0x089E98F0u, 0x089E9964u, 0x089E99C0u, 0x089E9A4Cu, 0x089E9AA8u, 0x089E9B18u, 0x089E9C24u, 0x089E9C64u, 0x089E9D84u, 0x089E9E10u, 0x089E9E68u, 0x089E9EF4u};
+    for (uint32_t f : fns) {
+        std::fprintf(stderr, "[HUDPROBE] %s %08X:", tag, f);
+        for (uint32_t side = 0; side < 2; side++) {
+            FuncPtr fp = fn(f); if (!fp) continue;
+            const recomp_context sv = *g_ctx; g_ctx->r[4] = static_cast<int32_t>(side); g_ctx->r[5] = 0;
+            fp(g_ram, g_ctx);
+            std::fprintf(stderr, "  s%u v0=%08X f0=%g", side, static_cast<uint32_t>(g_ctx->r[2]), static_cast<double>(g_ctx->f[0]));
+            *g_ctx = sv;
+        }
+        std::fprintf(stderr, "\n");
+    }
+}
+
 void swap_roles() {
     if (!g_bs) return;
     const uint32_t hs = rd(g_bs + 84u), slot = g_bs + 56u + 4u * hs, H = rd(slot);
@@ -485,14 +529,30 @@ void swap_roles() {
     const uint32_t P = pe->actor, bh = rd(H + ACT_BRAIN), bp = rd(P + ACT_BRAIN);
     if (g_log) { const uint32_t T = rd(0x089D6A10u); std::fprintf(stderr, "[TAGTEAM] swap: bs %08X slots %08X %08X human slot %u; [0x089D6A10] = %08X slots %08X %08X\n", g_bs, rd(g_bs + 56u), rd(g_bs + 60u), hs, T, ok(T, 0x80) ? rd(T + 56u) : 0u, ok(T, 0x80) ? rd(T + 60u) : 0u); }
     if (!ok(bh, 0x80) || !ok(bp, 0x80)) return;
+    if (g_log && std::getenv("PSPRECOMP_TAGTEAM_SWAPSCAN")) {
+        std::fprintf(stderr, "[SWAPSCAN] mgr %08X bs %08X H %08X P %08X\n", dissidia_camera_manager(), g_bs, H, P);
+        scan_val(H, "H", H, P); scan_val(P, "P", H, P);
+        scan_val(rd(H + ACT_LOCKBLK), "lbH", H, P); scan_val(rd(P + ACT_LOCKBLK), "lbP", H, P);
+        scan_val(bh, "brainH", H, P); scan_val(bp, "brainP", H, P);
+        const uint32_t C = rd(g_bs + 56u + 4u * (1u - hs)), lbH_ = rd(H + ACT_LOCKBLK), lbP_ = rd(P + ACT_LOCKBLK);
+        const uint32_t ws[] = {0x08B63310u, 0x08B876A0u, 0x08BAEA04u, 0x08C00720u, 0x09AEEFD0u, 0x089D4890u, 0x08BAE204u, 0x08BAE9FCu, 0x08C00AD4u, 0x09785AECu, 0x09785AFCu, 0x09AE9340u};
+        for (uint32_t w : ws) dump_win(w, "w", H, P, C, lbH_, lbP_);
+    }
+    if (g_log && std::getenv("PSPRECOMP_TAGTEAM_HUDPROBE")) hud_probe("before");
     static const int mode = std::getenv("PSPRECOMP_TAGTEAM_SWAP_MODE") ? std::atoi(std::getenv("PSPRECOMP_TAGTEAM_SWAP_MODE")) : 3;   // 1 brains only, 2 slots only, 3 both (debugging)
     if (mode & 1) { wr(H + ACT_BRAIN, bp); wr(P + ACT_BRAIN, bh); wr(bh + 4u, P); wr(bp + 4u, H); }   // the pad (human brain) goes to the partner, the AI brain to the old human, each brain's owner
     if (mode & 2) { wr(slot, P); pe->actor = H; pe->slot_actor = P; }   // slot table: the retail HUD / camera / lock cycle follow the new human
     // the camera manager keeps one lock block per side (mgr + 0x6D0 + 4 * side)
     const uint32_t mgr = dissidia_camera_manager(), side = side_of(H), lbH = rd(H + ACT_LOCKBLK), lbP = rd(P + ACT_LOCKBLK);
     if (mgr) { const uint32_t at = mgr + 0x6D0u + 4u * side; if (rd(at) == lbH) wr(at, lbP); else if (g_log) std::fprintf(stderr, "[TAGTEAM] swap: camera slot %08X holds %08X, expected %08X\n", at, rd(at), lbH); }
+    // Other shared references to the human fighter (found by scanning RAM for H at swap time): the camera manager's fighter list
+    // (mgr + 0x6360: [CPU, human]), an EBOOT fighter list (0x089D4890: [CPU, human]) and 0x08B63310. H is replaced by P there.
+    static const uint32_t mask = std::getenv("PSPRECOMP_TAGTEAM_SWAP_LISTS") ? static_cast<uint32_t>(std::strtoul(std::getenv("PSPRECOMP_TAGTEAM_SWAP_LISTS"), nullptr, 16)) : 7u;
+    const uint32_t lists[3] = {mgr ? mgr + 0x6360u : 0u, 0x089D4890u, 0x08B63310u};
+    for (int i = 0; i < 3; i++) if ((mask & (1u << i)) && lists[i]) { const uint32_t v = rd(lists[i]); if (v == H) wr(lists[i], P); else if (v == P) wr(lists[i], H); else if (g_log) std::fprintf(stderr, "[TAGTEAM] swap: list %08X holds %08X (H %08X P %08X), left alone\n", lists[i], v, H, P); }
     // the new human locks on to the foe, the old one keeps the foe he had
     if (rd(lbP + 264u) != 1) call(LOCK_MODE, lbP, 1, 0);
+    if (g_log && std::getenv("PSPRECOMP_TAGTEAM_HUDPROBE")) hud_probe("after");
     if (g_log) std::fprintf(stderr, "[TAGTEAM] swap: pad %08X -> %08X (brains %08X / %08X)\n", H, P, bh, bp);
 }
 
