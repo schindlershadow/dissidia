@@ -22,7 +22,7 @@ static SetScene scene() {
     s.crumbs = {"Image"};
     s.rows.push_back(row(SetKind::Header, 1, "Colour", "", ""));
     SetRow b = row(SetKind::Slider, 2, "Brightness", "Default", "Brightness (PSPRECOMP_BRIGHTNESS)\nLifts or lowers the midtones of the whole picture without crushing blacks or clipping whites. 100% is the original look.");
-    b.steps = 21; b.cur = 10; b.can_dec = b.can_inc = true; b.badge = "Saved"; s.rows.push_back(b);
+    b.steps = 21; b.cur = 10; b.can_dec = b.can_inc = true; b.badge = "Saved"; b.cost = "High"; s.rows.push_back(b);
     SetRow c = b; c.id = 3; c.label = "Contrast"; c.value = "115%"; c.cur = 13; s.rows.push_back(c);
     SetRow d = b; d.id = 4; d.label = "Saturation"; d.value = "120%"; d.cur = 12; s.rows.push_back(d);
     s.rows.push_back(row(SetKind::Header, 5, "High dynamic range", "", ""));

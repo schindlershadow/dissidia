@@ -203,6 +203,7 @@ struct SetRow {
     std::string label, value;
     std::string help;           // "Title\nBody": the description panel
     std::string badge;          // small chip beside the title in the description panel ("Saved", "Next start", ...)
+    std::string cost;           // estimated performance cost chip ("None", "Low", "Medium", "High", "Very high"); empty = no chip
     bool can_dec = false, can_inc = false;   // Choice / Slider: the arrows
     bool disabled = false;      // greyed out (the help text says why); still selectable
     bool on = false;            // Toggle
@@ -210,7 +211,7 @@ struct SetRow {
     int steps = 0, cur = 0;     // Slider: number of positions (>= 2) and the current one
     bool selectable() const { return kind != SetKind::Header; }
 };
-constexpr int SET_MAX_IDS = 192;
+constexpr int SET_MAX_IDS = 320;
 struct SetCat { std::string name; int icon = 0; };   // icon: see settings_icon()
 struct SetKeyboardState {    // the text-entry modal
     bool active = false;

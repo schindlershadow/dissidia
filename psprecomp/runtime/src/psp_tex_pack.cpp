@@ -531,10 +531,34 @@ void pp_init() {
     if (pp.kind == 3) pp.ignore_addr = false;   // PPSSPP refuses ignoreAddress with the quick hash; the wildcard keys do the job
     // Packs list textures they do not ship (Niosa's lists ~220 such entries): drop them now so a lookup does not
     // report a hit and then fail to load the file.
+    // One directory listing instead of an fopen per entry: on Android's shared storage each open costs about a millisecond, which
+    // was over two seconds of start-up for a full pack. A name the listing lacks still gets the old fopen check.
+    std::unordered_set<std::string> present;
+    {
+        std::vector<std::string> todo{""};
+        while (!todo.empty()) {
+            const std::string rel = todo.back();
+            todo.pop_back();
+            DIR* d = opendir((rel.empty() ? g.dir : g.dir + "/" + rel).c_str());
+            if (!d) continue;
+            while (dirent* de = readdir(d)) {
+                const std::string n = de->d_name;
+                if (n == "." || n == "..") continue;
+                const std::string r = rel.empty() ? n : rel + "/" + n;
+                if (de->d_type == DT_DIR) todo.push_back(r);
+                else present.insert(r);
+            }
+            closedir(d);
+        }
+    }
     size_t dangling = 0;
     for (auto it = pp.files.begin(); it != pp.files.end();) {
-        FILE* t = std::fopen((g.dir + "/" + it->second).c_str(), "rb");
-        if (t) { std::fclose(t); ++it; }
+        bool ok = present.count(it->second) != 0;
+        if (!ok) {
+            FILE* t = std::fopen((g.dir + "/" + it->second).c_str(), "rb");
+            if (t) { std::fclose(t); ok = true; }
+        }
+        if (ok) ++it;
         else { it = pp.files.erase(it); dangling++; }
     }
     if (dangling) std::fprintf(stderr, "[TEXPACK] %zu pack entr%s to a file the pack does not contain (ignored)\n", dangling, dangling == 1 ? "y points" : "ies point");

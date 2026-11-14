@@ -18,6 +18,11 @@
 #include <SDL.h>
 #include "psp_gl.h"
 #include "psp_touch.h"
+#include "psp_perf.h"
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <vector>
 #include "psp_settings.h"
 #include <atomic>
 #include <unordered_map>
@@ -61,7 +66,7 @@ struct GeTarget {
     bool mip_dirty = true;     // drawn into since its mipmaps were last built (see ge_draw_find_target_texture)
 };
 
-// Render scale (PSPRECOMP_RENDER_SCALE, 1..16 or auto): targets are 480*g_rs x 272*g_rs.
+// Render scale (PSPRECOMP_RENDER_SCALE, 1..16 or auto; default 2): targets are 480*g_rs x 272*g_rs.
 static int g_rs = 1;
 // HDR Scene (psp_post.h): the scene targets are fp16 while it is live, so additive effects keep values above 1.0.
 // g_scene_fp16 is the format the targets currently have; ge_draw_sync_scene_format() reallocates them when it changes.
@@ -1595,6 +1600,7 @@ static bool fxl_bind(int ti) {
 
 static void flush_batch() {
     if (!g_batch.active) return;
+    psp_perf::Scope perf_scope_(psp_perf::FLUSH);
     Stream& s = *g_batch.s;
     g_batch.active = false;
     const bool fx_timed = g_batch.fx_timed;
@@ -1723,8 +1729,16 @@ void ge_draw_set_fps_counter(bool on) {
     g_fps_counter = on;
     std::fprintf(stderr, "[DRAW] fps counter %s\n", on ? "on" : "off");
 }
+static void perf_overlay_apply(bool on) {
+    psp_perf::g_on.store(on);
+    for (auto& n : psp_perf::g_ns) n.store(0);
+#if defined(PSPRECOMP_HAVE_VKGL)
+    vkgl::set_profile(on);
+#endif
+}
 void ge_draw_set_perf_overlay(bool on) {
     g_perf_hud = on;
+    perf_overlay_apply(on);
     std::fprintf(stderr, "[DRAW] performance overlay %s\n", on ? "on" : "off");
 }
 
@@ -2238,7 +2252,10 @@ void ge_draw_init() {
                      sizeof(g_screenshot_path) - 1);
     }
 
-    if (const char* rs = std::getenv("PSPRECOMP_RENDER_SCALE")) {
+    // Default render scale: 2x (960x544). PSPRECOMP_RENDER_SCALE (or the saved menu value) overrides it.
+    const char* rs = std::getenv("PSPRECOMP_RENDER_SCALE");
+    if (!rs || !rs[0]) rs = "2";
+    {
         int v = std::atoi(rs);
         if (!std::strcmp(rs, "auto")) {
             // PSPRECOMP_RENDER_SCALE=auto: nearest whole multiple of the
@@ -2335,7 +2352,7 @@ void ge_draw_init() {
     g_ab = std::getenv("PSPRECOMP_GE_AB") != nullptr;
     if (g_ab) std::fprintf(stderr, "[AB] fast-vs-legacy dual rendering on (compare logged per present)\n");
     g_cpu_xform = std::getenv("PSPRECOMP_GE_CPU3D") != nullptr;
-    if (const char* ph = std::getenv("PSPRECOMP_PERF_HUD")) g_perf_hud = ph[0] && ph[0] != '0';
+    if (const char* ph = std::getenv("PSPRECOMP_PERF_HUD")) { g_perf_hud = ph[0] && ph[0] != '0'; perf_overlay_apply(g_perf_hud.load()); }
     if (const char* fc = std::getenv("PSPRECOMP_FPS_COUNTER")) g_fps_counter = fc[0] && fc[0] != '0';
     g_nobatch = std::getenv("PSPRECOMP_GE_NOBATCH") != nullptr;
     if (const char* sm = std::getenv("PSPRECOMP_GE_SYNC")) {
@@ -2460,6 +2477,7 @@ void ge_draw_end_list() {
 static void ge_draw_prim_one(uint8_t* rdram, int prim_type, int count);
 
 void ge_draw_prim(uint8_t* rdram, int prim_type, int count) {
+    psp_perf::Scope perf_scope_(psp_perf::PRIM);
     if (!g_ab || !g_fast_enabled || g_current_target < 0 || !g_targets[g_current_target].ab_fbo) {
         ge_draw_prim_one(rdram, prim_type, count);
         return;
@@ -3608,15 +3626,16 @@ static void present_service_window_capture() {
 // state is saved and restored so the GE's own state tracking is not disturbed.
 // The overlay texture drawn with its own alpha over the window (the settings screen's opening circle): a textured quad over the
 // picture rectangle instead of the opaque blit.
+// (The Vulkan layer's GLSL translator reads one in / out / uniform declaration per line: keep them on separate lines.)
 static void draw_overlay_alpha(GLuint tex, const PresentRect& pr) {
     static GLuint prog = 0, vao = 0, vbo = 0;
     static GLint u_tex = -1;
     static bool failed = false;
     if (failed) return;
     if (!prog) {
-        const char* vs_body = "in vec2 a_pos; in vec2 a_uv; out vec2 v_uv;\n"
+        const char* vs_body = "in vec2 a_pos;\nin vec2 a_uv;\nout vec2 v_uv;\n"
                               "void main() { v_uv = a_uv; gl_Position = vec4(a_pos, 0.0, 1.0); }\n";
-        const char* fs_body = "in vec2 v_uv; out vec4 o_col; uniform sampler2D u_tex;\n"
+        const char* fs_body = "in vec2 v_uv;\nout vec4 o_col;\nuniform sampler2D u_tex;\n"
                               "void main() { o_col = texture(u_tex, v_uv); }\n";
         auto compile = [](GLenum type, const char* body) {
             const char* src[2] = {PSP_GLSL_VERSION, body};
@@ -3782,8 +3801,49 @@ struct PerfHud {
     std::string text;       // performance overlay line
     std::string fps_text;   // fps counter
     bool dirty = false, fps_dirty = false;
+    // Session statistics (average fps, 1% lows): only frames of "gameplay" count (ge_draw_perf_set_gameplay); they restart when
+    // gameplay starts again, so menus and loading screens never pull the numbers down.
+    static constexpr int kHist = 1200;   // frame-time histogram, 0.25 ms buckets up to 300 ms (the last one also takes anything slower)
+    uint32_t hist[kHist] = {};
+    uint64_t sess_frames = 0;
+    double sess_ms = 0;
+    bool sess_seen = false;   // a session has run (so there is something to show while a menu is up)
+    bool was_gameplay = false;
+    double ph_ms[psp_perf::N_IDS] = {};   // psp_perf scope time per frame, last window
+    double gpu_ms = -1;                    // GPU time per frame, last window (Vulkan timestamp queries)
+    std::vector<std::pair<std::string, double>> gpu_passes;   // most expensive GPU passes, ms per frame
 };
 static PerfHud g_perf;
+// Whether the game is in "gameplay" (a battle) right now: only then do the average / 1% low frame rates count. A game module sets it every
+// frame (games/dissidia/runtime/framerate.cpp); a game that never does leaves it true, so every frame counts.
+static std::atomic<bool> g_perf_gameplay{true};
+void ge_draw_perf_set_gameplay(bool on) { g_perf_gameplay.store(on, std::memory_order_relaxed); }
+
+static void perf_session_reset() {
+    std::memset(g_perf.hist, 0, sizeof g_perf.hist);
+    g_perf.sess_frames = 0;
+    g_perf.sess_ms = 0;
+}
+static void perf_session_add(double ms) {
+    int b = int(ms * 4.0);
+    if (b < 0) b = 0;
+    if (b >= PerfHud::kHist) b = PerfHud::kHist - 1;
+    g_perf.hist[b]++;
+    g_perf.sess_frames++;
+    g_perf.sess_ms += ms;
+    g_perf.sess_seen = true;
+}
+// Frame time (ms) that the slowest `frac` of the frames reach or exceed, from the histogram (bucket upper edge).
+static double perf_session_percentile_ms(double frac) {
+    if (g_perf.sess_frames == 0) return 0;
+    const uint64_t want = std::max<uint64_t>(1, uint64_t(std::ceil(double(g_perf.sess_frames) * frac)));
+    uint64_t seen = 0;
+    for (int b = PerfHud::kHist - 1; b >= 0; --b) {
+        seen += g_perf.hist[b];
+        if (seen >= want) return double(b + 1) / 4.0;
+    }
+    return 0;
+}
 
 static bool perf_stats_wanted() { return g_perf_hud.load(std::memory_order_relaxed) || g_fps_counter.load(std::memory_order_relaxed); }
 
@@ -3977,6 +4037,64 @@ static std::string sys_info_text() {
     return r;
 }
 
+// The overlay's extra lines: session average / 1% low, GPU usage, and where the frame time goes. Each ends with a newline.
+static std::string perf_detail_text(double frame_ms) {
+    char b[320];
+    std::string r;
+    // ---- session fps (battle only) ----
+    if (g_perf.sess_frames >= 30 || g_perf.sess_seen) {
+        const double avg = g_perf.sess_frames ? 1000.0 * double(g_perf.sess_frames) / g_perf.sess_ms : 0.0;
+        const double low1 = perf_session_percentile_ms(0.01), low01 = perf_session_percentile_ms(0.001);
+        std::snprintf(b, sizeof b, "%s: avg %.1f fps  |  1%% low %.0f fps  |  0.1%% low %.0f fps  |  %llu frames\n",
+                      g_perf_gameplay.load(std::memory_order_relaxed) ? "Battle" : "Last battle (paused in menu)", avg,
+                      low1 > 0 ? 1000.0 / low1 : 0.0, low01 > 0 ? 1000.0 / low01 : 0.0, (unsigned long long)g_perf.sess_frames);
+        r += b;
+    } else {
+        r += "Battle: avg / 1% low start when a battle begins (menus are not counted)\n";
+    }
+    // ---- GPU usage ----
+    if (g_perf.gpu_ms >= 0 && frame_ms > 0) {
+        std::snprintf(b, sizeof b, "GPU usage: %.0f%%  (%.1f ms of %.1f ms per frame)\n", std::min(100.0, 100.0 * g_perf.gpu_ms / frame_ms), g_perf.gpu_ms, frame_ms);
+        r += b;
+    } else if (g_sys.gpu_busy >= 0) {
+        std::snprintf(b, sizeof b, "GPU usage: %d%%\n", g_sys.gpu_busy);
+        r += b;
+    } else {
+        r += "GPU usage: n/a on this system\n";
+    }
+    // ---- where the frame time goes: the biggest parts of the render thread's work ----
+    {
+        struct Part { const char* name; double ms; };
+        std::vector<Part> parts;
+        double used = 0;
+        for (int i = 0; i < psp_perf::N_IDS; ++i) { parts.push_back({psp_perf::name(i), g_perf.ph_ms[i]}); used += g_perf.ph_ms[i]; }
+        parts.push_back({"Waiting for the game / other", std::max(0.0, frame_ms - used)});
+        std::sort(parts.begin(), parts.end(), [](const Part& a, const Part& c) { return a.ms > c.ms; });
+        r += "Frame time:";
+        for (size_t i = 0; i < parts.size() && i < 4; ++i) {
+            if (parts[i].ms < 0.05) break;
+            std::snprintf(b, sizeof b, "%s %s %.1f ms (%.0f%%)", i ? "  |" : "", parts[i].name, parts[i].ms, frame_ms > 0 ? 100.0 * parts[i].ms / frame_ms : 0.0);
+            r += b;
+        }
+        r += "\n";
+    }
+    // ---- the most expensive GPU passes (Vulkan) ----
+    if (!g_perf.gpu_passes.empty()) {
+        r += "GPU passes:";
+        for (size_t i = 0; i < g_perf.gpu_passes.size() && i < 3; ++i) {
+            std::string l = g_perf.gpu_passes[i].first;
+            const size_t arrow = l.find(" <-");
+            if (arrow != std::string::npos) l.resize(arrow);
+            const size_t fbo = l.find("fbo");
+            if (fbo != std::string::npos) { size_t e = l.find(' ', fbo); if (e != std::string::npos) l.erase(fbo, e - fbo + 1); }
+            std::snprintf(b, sizeof b, "%s %s %.1f ms", i ? "  |" : "", l.c_str(), g_perf.gpu_passes[i].second);
+            r += b;
+        }
+        r += "\n";
+    }
+    return r;
+}
+
 static void perf_note_present() {
     if (perf_stats_wanted()) g_perf.presents++;
 }
@@ -3999,6 +4117,12 @@ static void perf_note_flip() {
     g_perf.frames++;
     g_perf.sum_ms += ms;
     g_perf.worst_ms = std::max(g_perf.worst_ms, ms);
+    {
+        const bool gp = g_perf_gameplay.load(std::memory_order_relaxed);
+        if (gp && !g_perf.was_gameplay) perf_session_reset();   // a new battle: start the averages again
+        g_perf.was_gameplay = gp;
+        if (gp) perf_session_add(ms);
+    }
     if (g_perf_hud.load(std::memory_order_relaxed)) {
         if (g_perf.graph_n == PerfHud::kGraph) std::memmove(g_perf.graph, g_perf.graph + 1, (PerfHud::kGraph - 1) * sizeof(float));
         else g_perf.graph_n++;
@@ -4012,12 +4136,25 @@ static void perf_note_flip() {
         std::snprintf(buf, sizeof buf, "%.0f", fps);
         if (g_perf.fps_text != buf) { g_perf.fps_text = buf; g_perf.fps_dirty = true; }
         if (g_perf_hud.load(std::memory_order_relaxed)) {
+            for (int i = 0; i < psp_perf::N_IDS; ++i)
+                g_perf.ph_ms[i] = double(psp_perf::g_ns[i].exchange(0, std::memory_order_relaxed)) * 1e-6 / double(g_perf.frames);
+#if defined(PSPRECOMP_HAVE_VKGL)
+            {
+                vkgl::PerfSample ps;
+                g_perf.gpu_ms = -1;
+                g_perf.gpu_passes.clear();
+                if (vkgl::take_perf(&ps)) {
+                    g_perf.gpu_ms = ps.gpu_ms;
+                    for (auto& p : ps.passes) g_perf.gpu_passes.push_back({p.label, p.ms});
+                }
+            }
+#endif
             int n = std::snprintf(buf, sizeof buf, "%.0f fps  %.1f ms  worst %.1f ms  |  present %.0f/s  |  %dx",
                                   fps, g_perf.sum_ms / g_perf.frames, g_perf.worst_ms, g_perf.presents * 1000.0 / win,
                                   ge_draw_render_scale());
             if (ge_draw_widescreen() && n > 0 && n < int(sizeof buf)) std::snprintf(buf + n, sizeof buf - n, " wide");
             sys_info_sample();
-            g_perf.text = std::string(buf) + "\n" + sys_info_text();
+            g_perf.text = std::string(buf) + "\n" + perf_detail_text(g_perf.sum_ms / g_perf.frames) + sys_info_text();
             g_perf.dirty = true;
         }
         g_perf.win0 = now;
@@ -4253,9 +4390,9 @@ static void present_blend_hud(HudBlend& st, const std::string& text, bool& text_
     std::vector<uint32_t>& px = st.px;
     if (failed) return;
     if (!prog) {
-        const char* vs_body = "in vec2 a_pos; in vec2 a_uv; out vec2 v_uv;\n"
+        const char* vs_body = "in vec2 a_pos;\nin vec2 a_uv;\nout vec2 v_uv;\n"
                               "void main() { v_uv = a_uv; gl_Position = vec4(a_pos, 0.0, 1.0); }\n";
-        const char* fs_body = "in vec2 v_uv; out vec4 o_col; uniform sampler2D u_tex; uniform float u_alpha;\n"
+        const char* fs_body = "in vec2 v_uv;\nout vec4 o_col;\nuniform sampler2D u_tex;\nuniform float u_alpha;\n"
                               "void main() { vec4 c = texture(u_tex, v_uv); o_col = vec4(c.rgb, c.a * u_alpha); }\n";
         auto compile = [](GLenum type, const char* body) {
             const char* src[2] = {PSP_GLSL_VERSION, body};
@@ -4462,6 +4599,7 @@ void ge_draw_overlay_rect(float* fx0, float* fy0, float* fx1, float* fy1) {
 // Blit the given front FBO to the window and swap. Common to the routine
 // (page-flip) present and the liveness net.
 static void present_blit(GLuint fbo, const char* why = "flip") {
+    psp_perf::Scope perf_scope_(psp_perf::PRESENT);
     SDL_Window* window = psp_get_sdl_window();
     if (!window) return;
     present_dump_frame(fbo, why);
@@ -4579,7 +4717,10 @@ static void present_blit(GLuint fbo, const char* why = "flip") {
     present_service_window_capture();
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     if (g_sync_mode == 3) glFinish();
-    psp_gl_swap(window);
+    {
+        psp_perf::Scope swap_scope_(psp_perf::SWAP);
+        psp_gl_swap(window);
+    }
     g_present_dirty = false;
     g_last_present = std::chrono::steady_clock::now();
 }
@@ -4910,7 +5051,7 @@ void ge_draw_present_overlay_now() {
     glClear(GL_COLOR_BUFFER_BIT);
     present_dialog_overlay(pr);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    psp_gl_swap(window);
+    { psp_perf::Scope swap_scope_(psp_perf::SWAP); psp_gl_swap(window); }
     if (sc) glEnable(GL_SCISSOR_TEST);
     glc::invalidate();
 }

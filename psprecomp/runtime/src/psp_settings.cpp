@@ -163,9 +163,11 @@ enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_FPSCOUNT, ROW_WIDE, ROW
            ROW_DBG0, ROW_DBG1, ROW_DBG2, ROW_DBG3, ROW_DBG4, ROW_DBG5,   // Debug page rows a game module adds (psp_settings_add_debug_toggle)
            ROW_GPU, ROW_GPU_GET, ROW_GPU_DEL,   // custom GPU drivers (Android, Adreno): Drivers page
            ROW_SUB_HDR, ROW_SUB_RT,             // rows that open a sub-menu
+           ROW_SUB_ENV0, ROW_SUB_ENV_END = ROW_SUB_ENV0 + 15,   // Debug page: one row per developer-options category (psp_env_options.inc)
+           ROW_ENV0, ROW_ENV_END = ROW_ENV0 + 63,               // a developer-options category page: one row per environment variable
            ROW_MOD0, ROW_MOD_END = ROW_MOD0 + 31, ROW_MODS_NONE,   // Mods page: one toggle per mod folder, or a note when there are none
            ROW_SEC_WINDOW, ROW_SEC_PERF, ROW_SEC_QUALITY, ROW_SEC_AA, ROW_SEC_TEX, ROW_SEC_ENGINE, ROW_SEC_COLOUR, ROW_SEC_HDR, ROW_SEC_LIGHT,
-           ROW_SEC_RT, ROW_SEC_TOUCH, ROW_SEC_GAME, ROW_SEC_SESSION, ROW_SEC_REFL, ROW_SEC_SERVER, ROW_SEC_SYNC, ROW_SEC_DRIVER, ROW_SEC_MODS,   // section captions (not selectable)
+           ROW_SEC_RT, ROW_SEC_TOUCH, ROW_SEC_GAME, ROW_SEC_SESSION, ROW_SEC_REFL, ROW_SEC_SERVER, ROW_SEC_SYNC, ROW_SEC_DRIVER, ROW_SEC_MODS, ROW_SEC_DEV,   // section captions (not selectable)
            ROW_COUNT };
 static_assert(ROW_COUNT < psp_sddialog::SET_MAX_IDS, "row ids are animation slots");
 bool is_section(Row r) { return r >= ROW_SEC_WINDOW && r < ROW_COUNT; }
@@ -173,9 +175,11 @@ std::vector<Row> g_rows;
 int g_sel = 0;
 // Pages: the categories shown in the sidebar, and the sub-menus a row can open (PAGE_HDR under Image, PAGE_RT under Effects).
 enum Page { PAGE_DISPLAY, PAGE_GRAPHICS, PAGE_IMAGE, PAGE_EFFECTS, PAGE_CONTROLS, PAGE_NETWORK, PAGE_CLOUD, PAGE_SYSTEM, PAGE_GPU, PAGE_DEBUG, PAGE_MODS,
-            PAGE_HDR, PAGE_RT, PAGES };
+            PAGE_HDR, PAGE_RT, PAGE_ENV0, PAGE_ENV_END = PAGE_ENV0 + 10, PAGES };
+constexpr int k_env_cats = 11;   // = EC_COUNT (psp_env_options.inc)
 const char* const k_page_names[PAGES] = {"Display", "Graphics", "Image", "Effects", "Controls", "Network", "Cloud", "System", "Drivers", "Debug", "Mods",
-                                         "HDR", "Ray Tracing"};
+                                         "HDR", "Ray Tracing",
+                                         "Camera", "Input", "Timing", "Graphics", "Effects tuning", "Vulkan", "Textures", "Audio / video", "Game data", "Game logs", "Engine logs"};
 int g_page = 0;                        // the category (an index into page_list()): L / R, Q / E or Tab, the sidebar
 int g_sub = -1;                        // the open sub-menu page, -1 = none
 int g_sel_page[PAGES] = {};
@@ -195,7 +199,7 @@ const std::vector<int>& page_list() {
 }
 int page_id() { return g_sub >= 0 ? g_sub : page_list()[size_t(g_page)]; }
 // Sidebar icon of a page (settings_render.inc draw_icon).
-int page_icon(int page) { return page <= PAGE_MODS ? page : (page == PAGE_HDR ? PAGE_IMAGE : PAGE_EFFECTS); }
+int page_icon(int page) { return page <= PAGE_MODS ? page : (page == PAGE_HDR ? PAGE_IMAGE : page >= PAGE_ENV0 ? PAGE_DEBUG : PAGE_EFFECTS); }
 int g_ring_next = -1;                  // vertex upload mode saved for the next launch (-1 = unchanged)
 bool g_quit_armed = false;
 bool g_dirty = true;
@@ -538,6 +542,58 @@ bool mod_set_enabled(size_t i, bool on) {
 }
 bool is_mod_row(Row r) { return r >= ROW_MOD0 && r <= ROW_MOD_END; }
 
+// ---- Debug > developer options: one row per environment variable (psp_env_options.inc) ----
+#include "psp_env_options.inc"
+static_assert(EC_COUNT == k_env_cats, "page ids for the developer-options categories");
+std::string env_key(const EnvOpt& o) { return std::string("env.") + o.name; }
+// The value the variable has / will have: what the menu saved, else what the environment held when the game started.
+std::string env_current(const EnvOpt& o) {
+    auto it = g_saved.find(env_key(o));
+    if (it != g_saved.end()) return it->second;
+    const char* e = std::getenv((std::string("PSPRECOMP_") + o.name).c_str());
+    return e ? e : "";
+}
+bool env_is_on(const EnvOpt& o) {
+    const std::string v = env_current(o);
+    return o.type == 'k' ? v != "0" : (!v.empty() && v != "0");
+}
+std::vector<std::string> env_presets(const EnvOpt& o) {   // "Default" first (stored as the empty string)
+    std::vector<std::string> out{""};
+    std::string cur;
+    for (const char* c = o.values; ; ++c) {
+        if (*c == '|' || !*c) { if (!cur.empty()) out.push_back(cur); cur.clear(); if (!*c) break; }
+        else cur += *c;
+    }
+    return out;
+}
+std::vector<const EnvOpt*> env_cat_opts(int cat) {
+    std::vector<const EnvOpt*> v;
+    for (int i = 0; i < k_env_opt_count; ++i) if (k_env_opts[i].cat == cat) v.push_back(&k_env_opts[i]);
+    return v;
+}
+const EnvOpt* env_row_opt(Row r) {   // the variable a row of an open developer-options page stands for
+    const int page = page_id();
+    if (r < ROW_ENV0 || r > ROW_ENV_END || page < PAGE_ENV0 || page > PAGE_ENV_END) return nullptr;
+    const auto v = env_cat_opts(page - PAGE_ENV0);
+    const size_t n = size_t(r - ROW_ENV0);
+    return n < v.size() ? v[n] : nullptr;
+}
+void env_set(const EnvOpt& o, const std::string& v) { save(env_key(o).c_str(), v); }
+// Left / right (d = +1 / -1) or confirm (wrap = true) on a developer-options row.
+void env_change(const EnvOpt& o, int d, bool wrap) {
+    if (o.type == 'c') {
+        const auto pr = env_presets(o);
+        const std::string cur = env_current(o);
+        int i = 0;
+        for (size_t k = 0; k < pr.size(); ++k) if (pr[k] == cur) i = int(k);
+        int n = i + (d > 0 ? 1 : -1);
+        if (wrap) n = (n % int(pr.size()) + int(pr.size())) % int(pr.size());
+        n = std::clamp(n, 0, int(pr.size()) - 1);
+        env_set(o, pr[size_t(n)]);
+    } else if (o.type == 'k') env_set(o, d > 0 ? "" : "0");   // on = unset, off = 0
+    else env_set(o, d > 0 ? "1" : "");
+}
+
 std::vector<psp_sddialog::MenuRow> make_rows() {
     std::vector<psp_sddialog::MenuRow> out;
     char buf[96];
@@ -554,7 +610,37 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             out.push_back(std::move(m));
             continue;
         }
+        if (const EnvOpt* o = env_row_opt(r)) {
+            m.label = o->name;
+            if (o->type == 'c') {
+                const std::string cur = env_current(*o);
+                m.value = cur.empty() ? "Default" : cur;
+                const auto pr = env_presets(*o);
+                m.can_dec = m.can_inc = pr.size() > 1;
+            } else {
+                const bool on = env_is_on(*o);
+                m.value = on ? "On" : "Off";
+                m.can_dec = on; m.can_inc = !on;
+            }
+            m.help = std::string("PSPRECOMP_") + o->name + "\n" + o->desc + (o->type == 'e' ? " Off by default." : o->type == 'k' ? " On by default." : " Default leaves it to the game.") +
+                     " Takes effect the next time the game starts. Saved.";
+            out.push_back(std::move(m));
+            continue;
+        }
+        if (r >= ROW_SUB_ENV0 && r <= ROW_SUB_ENV_END) {
+            const int cat = int(r - ROW_SUB_ENV0);
+            if (cat < EC_COUNT) {
+                int on = 0, n = 0;
+                for (const EnvOpt* o : env_cat_opts(cat)) { ++n; const std::string cur = env_current(*o); if (o->type == 'k' ? cur == "0" : (!cur.empty() && cur != "0")) ++on; }
+                m.label = k_env_cat_names[cat];
+                m.value = on ? std::to_string(on) + " changed" : std::to_string(n) + " options";
+                m.help = std::string(k_env_cat_names[cat]) + "\n" + k_env_cat_help[cat] + " One row for each environment variable; the choice is saved and applied the next time the game starts. Press Cross to open.";
+            }
+            out.push_back(std::move(m));
+            continue;
+        }
         switch (r) {
+        case ROW_SEC_DEV: m.label = "Developer options"; break;
         case ROW_SEC_MODS: m.label = "Installed mods"; break;
         case ROW_MODS_NONE:
             m.label = "No mods found";
@@ -599,13 +685,13 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.can_dec = n > 1;
             m.can_inc = n < k_max_rs;
             char hb[256];
-            std::snprintf(hb, sizeof hb, "Internal 3D resolution\nCurrently %d x %d (%dx the PSP's 480 x 272). Higher is sharper and costs more GPU time (Steam Deck: 2x or 3x).", 480 * n, 272 * n, n);
+            std::snprintf(hb, sizeof hb, "Internal 3D resolution\nCurrently %d x %d (%dx the PSP's 480 x 272). Higher is sharper and costs more GPU time; 2x is a good fit for most devices and more is rarely needed.", 480 * n, 272 * n, n);
             m.help = hb;
             break;
         }
         case ROW_WIDE: {
             const bool on = g_pending_wide >= 0 ? g_pending_wide != 0 : ge_draw_widescreen();
-            m.label = "Widescreen";
+            m.label = "Ultrawide";
             if (!on) m.value = "Off";
             else if (g_pending_wide >= 0) m.value = "On";
             else {
@@ -614,7 +700,7 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
                 m.value = buf;
             }
             m.can_dec = on; m.can_inc = !on;
-            m.help = "Wide screens (PSPRECOMP_WIDESCREEN)\nThe battle scene is drawn wider to fill a window or screen wider than 16:9; the HUD stays centred at its normal size and backgrounds stretch. Saved.";
+            m.help = "Ultrawide (PSPRECOMP_WIDESCREEN)\nThe battle scene is drawn wider to fill an ultrawide window or screen (wider than 16:9); the HUD stays centred at its normal size and backgrounds stretch. Saved.";
             break;
         }
         case ROW_FPS: {
@@ -624,7 +710,7 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.value = buf;
             m.can_dec = i > 0;
             m.can_inc = i + 1 < g_fps.count;
-            m.help = "Battle logic rate (multiples of 30)\nBattles run at this many updates a second; the PSP ran 30. Costs CPU and GPU time in proportion. Menus stay at 30.";
+            m.help = "Frame rate (multiples of 30)\nBattles run at this many frames a second; the PSP ran 30. Pick a rate your device can hold: if it cannot reach the target, the game will run slower than normal and stutter. Costs CPU and GPU time in proportion. Menus stay at 30. Saved.";
             break;
         }
         case ROW_RENDERER: {
@@ -886,7 +972,7 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.label = "Performance Overlay";
             m.value = on ? "On" : "Off";
             m.can_dec = on; m.can_inc = !on;
-            m.help = "Performance overlay\nFor debugging: frames per second, average and worst frame time, presents per second, render scale and memory use in the top-left corner. Saved.";
+            m.help = "Performance overlay\nFor debugging, top-left corner: frames per second, average and worst frame time, the battle's average fps and 1% / 0.1% lows (they restart when a battle begins and ignore menus), GPU usage, which parts of the work take the most frame time (draw setup, textures, effects, post-processing, waiting), the costliest GPU passes (Vulkan), render scale and memory use. Saved.";
             break;
         }
         case ROW_FX: {
@@ -1020,7 +1106,7 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.value = k_names[v];
             const bool usable = psp_rt_available() && psp_rt_quality() >= 2;
             m.disabled = !usable;
-            m.can_dec = usable && v > 0; m.can_inc = usable && v < 4;
+            m.can_dec = usable; m.can_inc = usable;   // loops
             m.help = !psp_rt_available() ? std::string("Shadow softness: unavailable\n") + psp_rt_unavailable_reason()
                    : psp_rt_quality() < 2 ? "Shadow softness: needs Ray-Traced Shadows set to Medium or High (Off and Low use at most one hard ray, so there is no soft edge to adjust)."
                    : "Shadow softness (PSPRECOMP_RT_SOFT)\nHow wide the light is for ray-traced shadows. A wider light gives softer edges that sharpen where a shadow meets its caster, like a real shadow; Sharp is almost a point light. Firm is the default. Needs Medium or High ray-traced shadows (Low uses one hard ray). Takes effect at once. Saved.";
@@ -1113,7 +1199,6 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
 bool slider_of(Row r, int* steps, int* cur) {
     auto lin = [&](int lo, int hi, int step, int v) { *steps = (hi - lo) / step + 1; *cur = std::clamp((v - lo) / step, 0, *steps - 1); return true; };
     switch (r) {
-    case ROW_SCALE: return lin(1, k_max_rs, 1, g_pending_rs ? g_pending_rs : ge_draw_render_scale());
     case ROW_BRIGHT: return lin(50, 150, 5, psp_post_brightness());
     case ROW_CONTRAST: return lin(50, 150, 5, psp_post_contrast());
     case ROW_SAT: return lin(0, 200, 5, psp_post_saturation());
@@ -1132,7 +1217,6 @@ bool slider_of(Row r, int* steps, int* cur) {
     case ROW_SSR: *steps = 4; *cur = std::clamp(psp_fx_ssr(), 0, 3); return true;
     case ROW_RT: *steps = 4; *cur = psp_rt_available() ? std::clamp(psp_rt_quality(), 0, 3) : 0; return true;
     case ROW_RT_REFL: *steps = 4; *cur = psp_rt_available() ? std::clamp(psp_rt_refl_quality(), 0, 3) : 0; return true;
-    case ROW_RT_SOFT: *steps = 5; *cur = std::clamp(psp_rt_softness(), 0, 4); return true;
     case ROW_HDR_BOOST: *steps = 4; *cur = std::clamp(psp_hdr_boost(), 0, 3); return true;
     case ROW_HDR_GAMUT: *steps = 5; *cur = std::clamp(psp_hdr_gamut(), 0, 4); return true;
     case ROW_UPSCALE: *steps = 3; *cur = std::clamp(psp_post_upscale(), 0, 2); return true;
@@ -1145,6 +1229,8 @@ bool slider_of(Row r, int* steps, int* cur) {
 psp_sddialog::SetKind row_kind(Row r) {
     using K = psp_sddialog::SetKind;
     if (is_mod_row(r)) return K::Toggle;
+    if (r >= ROW_SUB_ENV0 && r <= ROW_SUB_ENV_END) return K::Submenu;
+    if (const EnvOpt* o = env_row_opt(r)) return o->type == 'c' ? K::Choice : K::Toggle;
     switch (r) {
     case ROW_FPSCOUNT: case ROW_WIDE: case ROW_SOFT: case ROW_TEXPACK: case ROW_UPDATES: case ROW_HDR: case ROW_HDR_SCENE: case ROW_CLOUD_AUTO:
     case ROW_CLOUD_REPLAYS: case ROW_PERF: case ROW_FX: case ROW_GLOWSOFT: case ROW_GLOWPASS:
@@ -1190,6 +1276,36 @@ void polish_help(std::string& help, std::string& badge) {
     for (char ch : body) if (!(ch == ' ' && !o.empty() && o.back() == ' ')) o += ch;
     help = nl == std::string::npos ? o : title + "\n" + o;
 }
+// Estimated cost of a setting at its current value, shown as a badge on the description: "None", "Low", "Medium", "High" or
+// "Very high". These are rough, relative figures for an average GPU (not measurements): the point is to tell a cheap row from an
+// expensive one. Rows that cost nothing worth mentioning (display, window size, ...) have no badge.
+bool cost_of(Row r, std::string& out) {
+    static const char* const k_lv[] = {"None", "Low", "Medium", "High", "Very high"};
+    auto lv = [&](int i) { out = k_lv[std::clamp(i, 0, 4)]; return true; };
+    switch (r) {
+    case ROW_SCALE: { const int n = g_pending_rs ? g_pending_rs : ge_draw_render_scale(); return lv(n <= 1 ? 1 : n == 2 ? 2 : n == 3 ? 3 : 4); }
+    case ROW_FPS: { const int f = g_fps.get ? g_fps.get() : 30; return lv(f <= 30 ? 1 : f <= 60 ? 2 : f <= 120 ? 3 : 4); }
+    case ROW_WIDE: return lv((g_pending_wide >= 0 ? g_pending_wide != 0 : ge_draw_widescreen()) ? 1 : 0);
+    case ROW_FPSCOUNT: return lv(ge_draw_fps_counter() ? 1 : 0);
+    case ROW_PERF: return lv(ge_draw_perf_overlay() ? 1 : 0);
+    case ROW_AA: return lv(psp_post_aa() > 0 ? 1 : 0);
+    case ROW_SHARP: return lv(psp_post_sharpen() > 0 ? 1 : 0);
+    case ROW_UPSCALE: return lv(psp_post_upscale());
+    case ROW_BRIGHT: return lv(psp_post_brightness() != 100 ? 1 : 0);
+    case ROW_CONTRAST: return lv(psp_post_contrast() != 100 ? 1 : 0);
+    case ROW_SAT: return lv(psp_post_saturation() != 100 ? 1 : 0);
+    case ROW_HDR: return lv(psp_hdr_wanted() ? 1 : 0);
+    case ROW_HDR_SCENE: return lv(psp_hdr_scene_wanted() ? 2 : 0);
+    case ROW_SSAO: return lv(psp_fx_ssao());
+    case ROW_CONTACT: return lv(psp_fx_contact());
+    case ROW_SSR: return lv(psp_fx_ssr());
+    case ROW_RT: return lv(psp_rt_available() && psp_rt_quality() > 0 ? psp_rt_quality() + 1 : 0);
+    case ROW_RT_REFL: return lv(psp_rt_available() && psp_rt_refl_quality() > 0 ? psp_rt_refl_quality() + 1 : 0);
+    case ROW_RT_SOFT: return lv(psp_rt_available() && psp_rt_quality() >= 2 ? 1 : 0);
+    case ROW_ANISO: return lv(ge_texture_aniso() > 1 ? 1 : 0);
+    default: return false;
+    }
+}
 std::vector<psp_sddialog::SetRow> make_set_rows() {
     using psp_sddialog::SetKind;
     const std::vector<psp_sddialog::MenuRow> src = make_rows();
@@ -1214,11 +1330,12 @@ std::vector<psp_sddialog::SetRow> make_set_rows() {
             else if (word("Off")) { o.on = false; o.value = trim_str(v.substr(3)); }
             else { o.on = false; o.value = v; }
         }
-        if (o.kind == SetKind::Slider && (r == ROW_SCALE)) {   // "3x  1440 x 816" is a long value for a slider row: keep the multiplier
+        if (r == ROW_SCALE) {   // "2x  960 x 544" is a long value for a row: keep the multiplier (the description has the size)
             const size_t sp = o.value.find(' ');
             if (sp != std::string::npos) o.value = o.value.substr(0, sp);
         }
         polish_help(o.help, o.badge);
+        cost_of(r, o.cost);
         if (m.value.find("next start") != std::string::npos || m.value.find("next launch") != std::string::npos) o.badge = "Next start";
         out.push_back(std::move(o));
     }
@@ -1327,6 +1444,7 @@ void change(int d) {   // left / right on the selected row
     if (g_sel < 0 || g_sel >= int(g_rows.size())) return;
     NextStartNote note_;
     if (is_mod_row(g_rows[size_t(g_sel)])) { const size_t i = size_t(g_rows[size_t(g_sel)] - ROW_MOD0); if (i < g_mods.size() && g_mods[i].on != (d > 0)) mod_set_enabled(i, d > 0); return; }
+    if (const EnvOpt* o = env_row_opt(g_rows[size_t(g_sel)])) { env_change(*o, d, false); g_dirty = true; return; }
     switch (g_rows[size_t(g_sel)]) {
     case ROW_DISPLAY:
         apply_display(d > 0);
@@ -1502,7 +1620,7 @@ void change(int d) {   // left / right on the selected row
     }
     case ROW_RT_SOFT: {
         if (!psp_rt_available() || psp_rt_quality() < 2) break;
-        const int v = std::min(4, std::max(0, psp_rt_softness() + d));
+        const int v = ((psp_rt_softness() + (d > 0 ? 1 : -1)) % 5 + 5) % 5;   // loops: Very Soft -> Sharp and back
         if (v != psp_rt_softness()) { psp_rt_set_softness(v); save("rt_soft", std::to_string(v)); }
         break;
     }
@@ -1644,7 +1762,15 @@ void build_rows() {
     case PAGE_DEBUG:
         add(ROW_PERF); add(ROW_FX); add(ROW_SYNC); add(ROW_RING); add(ROW_GLOWSOFT); add(ROW_GLOWPASS);
         for (size_t i = 0; i < g_dbg_toggles.size(); i++) g_rows.push_back(Row(ROW_DBG0 + int(i)));
+        add(ROW_SEC_DEV);
+        for (int c = 0; c < EC_COUNT; c++) g_rows.push_back(Row(ROW_SUB_ENV0 + c));
         break;
+    case PAGE_ENV0: case PAGE_ENV0 + 1: case PAGE_ENV0 + 2: case PAGE_ENV0 + 3: case PAGE_ENV0 + 4: case PAGE_ENV0 + 5:
+    case PAGE_ENV0 + 6: case PAGE_ENV0 + 7: case PAGE_ENV0 + 8: case PAGE_ENV0 + 9: case PAGE_ENV0 + 10: {
+        const size_t n = std::min<size_t>(env_cat_opts(page_id() - PAGE_ENV0).size(), size_t(ROW_ENV_END - ROW_ENV0 + 1));
+        for (size_t i = 0; i < n; i++) g_rows.push_back(Row(ROW_ENV0 + int(i)));
+        break;
+    }
     default:   // PAGE_SYSTEM
         add(ROW_SEC_GAME);
         if (voice_row_wanted()) add(ROW_VOICE);
@@ -1829,6 +1955,12 @@ void confirm_row() {
     if (g_sel < 0 || g_sel >= int(g_rows.size())) return;
     NextStartNote note_;
     if (is_mod_row(g_rows[size_t(g_sel)])) { const size_t i = size_t(g_rows[size_t(g_sel)] - ROW_MOD0); if (i < g_mods.size()) mod_set_enabled(i, !g_mods[i].on); g_dirty = true; return; }
+    if (g_rows[size_t(g_sel)] >= ROW_SUB_ENV0 && g_rows[size_t(g_sel)] <= ROW_SUB_ENV_END) { enter_sub(PAGE_ENV0 + int(g_rows[size_t(g_sel)] - ROW_SUB_ENV0)); return; }
+    if (const EnvOpt* o = env_row_opt(g_rows[size_t(g_sel)])) {
+        env_change(*o, o->type == 'c' ? 1 : (env_is_on(*o) ? -1 : 1), true);
+        g_dirty = true;
+        return;
+    }
     switch (g_rows[size_t(g_sel)]) {
     case ROW_SUB_HDR: enter_sub(PAGE_HDR); return;
     case ROW_SUB_RT: enter_sub(PAGE_RT); return;
@@ -1921,7 +2053,7 @@ void confirm_row() {
     case ROW_HDR_SCENE: if (psp_hdr_available() && psp_hdr_wanted() && psp_hdr_encoding() != 0) change(psp_hdr_scene_wanted() ? -1 : 1); return;
     case ROW_SSAO: change(psp_fx_ssao() >= 3 ? -3 : 1); return;
     case ROW_CONTACT: change(psp_fx_contact() >= 3 ? -3 : 1); return;
-    case ROW_RT_SOFT: if (psp_rt_available() && psp_rt_quality() >= 2) change(psp_rt_softness() >= 4 ? -4 : 1); return;
+    case ROW_RT_SOFT: if (psp_rt_available() && psp_rt_quality() >= 2) change(1); return;
     case ROW_RT: if (psp_rt_available()) change(psp_rt_quality() >= 3 ? -3 : 1); return;
     case ROW_RT_REFL: if (psp_rt_available()) change(psp_rt_refl_quality() >= 3 ? -3 : 1); return;
     case ROW_SSR: change(psp_fx_ssr() >= 3 ? -3 : 1); return;
@@ -2184,6 +2316,11 @@ void psp_settings_load_early() {
         psp_plat::setenv_(var, v.c_str());
         applied += std::string(" ") + var + "=" + v;
     };
+    for (const auto& kv : g_saved)   // developer options (Debug page): env.<NAME> = value; empty = the default (not set)
+        if (kv.first.compare(0, 4, "env.") == 0 && kv.first.size() > 4) {
+            if (kv.second.empty()) psp_plat::unsetenv_(("PSPRECOMP_" + kv.first.substr(4)).c_str());
+            else put(("PSPRECOMP_" + kv.first.substr(4)).c_str(), kv.second);
+        }
     auto it = g_saved.find("display");
     if (it != g_saved.end() && it->second == "fullscreen") put("PSPRECOMP_FULLSCREEN", "1");
     else if (it != g_saved.end() && it->second == "window") {
@@ -2398,7 +2535,28 @@ bool psp_settings_handle_event(const SDL_Event& ev) {
     }
 }
 
+// First run (no saved or PSPRECOMP_FPS value): the frame rate starts at the display's refresh rate, rounded down to a multiple of
+// 30 (a refresh rate that is not a whole multiple of 30 gives the next lower rate: 144 Hz -> 120, 75 Hz -> 60; 59.94 Hz counts
+// as 60). Runs once, as soon as the window and the game's frame-rate hook exist.
+static void apply_default_frame_rate() {
+    static bool done = false;
+    if (done || !g_fps.set || g_fps.count < 1) return;
+    SDL_Window* w = win();
+    if (!w) return;
+    done = true;
+    if (const char* e = std::getenv("PSPRECOMP_FPS"); e && e[0]) return;   // chosen by the user (saved menu value or environment)
+    SDL_DisplayMode dm;
+    const int disp = std::max(0, SDL_GetWindowDisplayIndex(w));
+    if (SDL_GetCurrentDisplayMode(disp, &dm) != 0 || dm.refresh_rate <= 0) return;
+    int want = std::max(30, (dm.refresh_rate + 1) / 30 * 30);   // +1: 59.94 -> 60, 89.9 -> 90
+    int best = 0;
+    for (int i = 0; i < g_fps.count; ++i) if (g_fps.rates[i] <= want) best = i;
+    std::fprintf(stderr, "[SETTINGS] display %d Hz: default frame rate %d fps\n", dm.refresh_rate, g_fps.rates[best]);
+    g_fps.set(g_fps.rates[best]);
+}
+
 void psp_settings_tick() {
+    apply_default_frame_rate();
     if (g_request_open.exchange(false) && !g_open.load()) { set_open(true); g_gate_dirty.store(true); }
     if (!g_open.load()) return;
     if (!g_closing && (psp_adhoc_connected() || psp_adhoc_in_session())) {   // a match started while the menu was open (e.g. from a pad press queued before): give the game back

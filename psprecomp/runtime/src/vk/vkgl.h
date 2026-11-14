@@ -6,6 +6,7 @@
 // inverted accordingly. GL clip depth [-w,w] is mapped to Vulkan [0,w] in the vertex shader (psp_vk_glsl).
 #pragma once
 #include <string>
+#include <vector>
 
 struct SDL_Window;
 
@@ -35,6 +36,16 @@ struct DeviceInfo {
     double vram_total_gb = -1;   // largest device-local heap
 };
 bool device_info(DeviceInfo* out);
+/// GPU time, for the performance overlay. take_perf() returns the averages since its last call: gpu_ms = GPU time per frame (timestamp
+/// queries around every submission), passes = the most expensive render passes / other GPU work, per frame, largest first.
+/// set_profile(true) turns the per-pass recording on (a few timestamps per pass), off again when the overlay is closed.
+struct PerfSample {
+    double gpu_ms = -1;
+    struct Pass { std::string label; double ms; };
+    std::vector<Pass> passes;
+};
+void set_profile(bool on);
+bool take_perf(PerfSample* out);
 /// "Preparing graphics": compiles the shaders of the shader pack (assets/shaders.pack; PSPRECOMP_SHADER_PACK=<file>) that the SPIR-V cache
 /// lacks, on worker threads, with a progress screen. Returns at once (and shows nothing) when the pack is absent or everything is cached.
 /// Call after init(), before the game starts.

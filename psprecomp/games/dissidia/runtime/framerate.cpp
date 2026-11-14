@@ -902,6 +902,7 @@ void note_negotiated_rate(int cap) {
 void frame_end_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t timer = static_cast<uint32_t>(ctx->r[4]);
     g_tick++;
+    ge_draw_perf_set_gameplay(battle_running());   // the performance overlay's average / 1% low count battle frames only
     if (ok(timer)) {
         // In an ad-hoc session every player runs at the lowest rate any of them asked for, so the
         // lock-step battle stays in sync (psp_adhoc_group_fps_cap() is 0 when not connected).

@@ -415,6 +415,8 @@ bool requested() {
 }
 bool active() { return g_active; }
 bool device_info(DeviceInfo* out) { return g_active && core_device_info(out); }
+void set_profile(bool on) { if (g_active) core_set_profile(on); }
+bool take_perf(PerfSample* out) { return g_active && core_take_perf(out); }
 
 bool init(SDL_Window* window, bool vsync, std::string* err) {
     if (!core_init(window, vsync, err)) return false;

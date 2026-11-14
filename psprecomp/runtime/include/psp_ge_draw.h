@@ -68,6 +68,9 @@ void ge_draw_set_fps_counter(bool on);
 /// scale and process memory, in the top-left corner (PSPRECOMP_PERF_HUD=1 turns it on at start).
 bool ge_draw_perf_overlay();
 void ge_draw_set_perf_overlay(bool on);
+/// Whether the game is in gameplay (a battle) right now: the overlay's average / 1% low frame rates count only those frames and restart
+/// when gameplay begins again. Call it every frame; a game that never calls it has every frame counted.
+void ge_draw_perf_set_gameplay(bool on);
 
 /// A short message over the picture, top centre, for `ms` milliseconds (a new call replaces the old
 /// message). Any thread. Used for "frame rate set to 30 fps" when a multiplayer group agrees on one.

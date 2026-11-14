@@ -7,6 +7,7 @@
 #include <SDL.h>
 #include <SDL_vulkan.h>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -88,7 +89,10 @@ struct Globals {
     uint64_t clears_folded = 0, passes = 0;   // glClear turned into a load op / render passes begun
     uint64_t conflict_copies = 0, conflict_bytes = 0;   // buffer stores copied because a write overlapped unfinished reads
     double gpu_ms_sum = 0; uint64_t gpu_ms_n = 0;
-    bool passprof = false;
+    double ov_gpu_sum = 0; uint64_t ov_gpu_n = 0;                       // the overlay's own GPU-time window (core_take_perf)
+    std::unordered_map<std::string, std::pair<double, uint64_t>> ov_pp;  // pass label -> (ms, count) for the overlay
+    std::atomic<bool> want_prof{false};                                    // overlay on: record the per-pass profile
+    bool passprof = false, passprof_env = false;
     std::unordered_map<std::string, std::pair<double, uint64_t>> pp_acc;   // label -> (ms, count) since the last stats line
     double t_submit = 0, t_draw = 0, t_wait = 0, t_upload = 0;   // CPU seconds spent in each since the last stats line
     uint64_t n_submit = 0;
@@ -163,7 +167,7 @@ static constexpr int kPpMax = 256;
 // charged to `label`. Only with PSPRECOMP_VK_PASSPROF=1.
 static void pp_mark(VkCommandBuffer cb, const std::string& label) {
     Frame& f = fr();
-    if (!f.pp || (int)f.pp_labels.size() >= kPpMax) return;
+    if (!f.pp || !g().passprof || (int)f.pp_labels.size() >= kPpMax) return;
     if (!f.pp_labels.empty() && f.pp_labels.back() == label && label == "other") return;
     vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, f.pp, (uint32_t)f.pp_labels.size());
     f.pp_labels.push_back(label);
@@ -195,7 +199,7 @@ static VkCommandBuffer main_cb() {
     if (!f.main_open) {
         f.main = new_cb(f);
         f.main_open = true;
-        if (f.pp && f.pp_labels.empty()) { vkCmdResetQueryPool(f.main, f.pp, 0, kPpMax); pp_mark(f.main, "other"); }
+        if (f.pp && g().passprof && f.pp_labels.empty()) { vkCmdResetQueryPool(f.main, f.pp, 0, kPpMax); pp_mark(f.main, "other"); }
         if (f.ts && f.ts_pairs < kTsPairs) {
             vkCmdResetQueryPool(f.main, f.ts, (uint32_t)f.ts_pairs * 2, 2);
             vkCmdWriteTimestamp(f.main, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, f.ts, (uint32_t)f.ts_pairs * 2);
@@ -248,15 +252,23 @@ static void frame_begin(int i) {
             for (int i = 0; i < f.ts_pairs; i++) if (t[i * 2 + 1] >= t[i * 2]) ns += (double)(t[i * 2 + 1] - t[i * 2]);
             g().gpu_ms_sum += ns * g().ts_period * 1e-6;
             g().gpu_ms_n++;
+            g().ov_gpu_sum += ns * g().ts_period * 1e-6;
+            g().ov_gpu_n++;
         }
     }
     if (f.pp && f.pp_labels.size() > 1) {
         uint64_t t[kPpMax];
         const uint32_t n = (uint32_t)f.pp_labels.size();
         if (vkGetQueryPoolResults(g().dev, f.pp, 0, n, sizeof(uint64_t) * n, t, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
-            for (uint32_t i = 0; i + 1 < n; i++) if (t[i + 1] >= t[i]) { auto& a = g().pp_acc[f.pp_labels[i]]; a.first += (double)(t[i + 1] - t[i]) * g().ts_period * 1e-6; a.second++; }
+            for (uint32_t i = 0; i + 1 < n; i++) if (t[i + 1] >= t[i]) {
+                const double ms = (double)(t[i + 1] - t[i]) * g().ts_period * 1e-6;
+                auto& a = g().pp_acc[f.pp_labels[i]]; a.first += ms; a.second++;
+                auto& o = g().ov_pp[f.pp_labels[i]]; o.first += ms; o.second++;
+            }
     }
     f.pp_labels.clear();
+    g().passprof = g().passprof_env || g().want_prof.load(std::memory_order_relaxed);
+    if (!g().passprof) g().ov_pp.clear();
     f.ts_pairs = 0; f.ts_open = false;
     vkResetCommandPool(g().dev, f.pool, 0);
     f.cb_next = 0;
@@ -1468,7 +1480,8 @@ bool core_init(SDL_Window* w, bool vsync, std::string* err) {
     { const char* he = std::getenv("PSPRECOMP_HDR"); gl.ctx.set_hdr_wanted(he && he[0] && he[0] != '0'); }
     if (!gl.ctx.create_swapchain(dw, dh, vsync, err)) { core_shutdown(); return false; }
     gl.ts_period = gl.ctx.props().limits.timestampPeriod;
-    gl.passprof = std::getenv("PSPRECOMP_VK_PASSPROF") != nullptr;
+    gl.passprof_env = std::getenv("PSPRECOMP_VK_PASSPROF") != nullptr;
+    gl.passprof = gl.passprof_env;
     { const char* sy = std::getenv("PSPRECOMP_VK_SYNC"); g_narrow_sync = sy && !std::strcmp(sy, "narrow"); }
     if (gl.ctx.has_multi_draw() && !std::getenv("PSPRECOMP_VK_NO_MULTIDRAW")) {
         gl.cmd_draw_multi = (PFN_vkCmdDrawMultiEXT)vkGetDeviceProcAddr(gl.dev, "vkCmdDrawMultiEXT");
@@ -1529,7 +1542,7 @@ bool core_init(SDL_Window* w, bool vsync, std::string* err) {
         VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         vkCreateSemaphore(gl.dev, &si, nullptr, &f.acquire_sem);
         alloc_buffer(f.ubo, 32u << 20, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
-        if (gl.passprof && gl.ctx.props().limits.timestampComputeAndGraphics) {
+        if (gl.ctx.props().limits.timestampComputeAndGraphics) {   // always: the performance overlay switches the pass profile on at run time
             VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO}; qi.queryType = VK_QUERY_TYPE_TIMESTAMP; qi.queryCount = kPpMax;
             vkCreateQueryPool(gl.dev, &qi, nullptr, &f.pp);
         }
@@ -1718,6 +1731,21 @@ static void log_stats() {
 static bool g_hdr_dirty = false;
 void core_set_hdr(bool on) { if (!G) return; G->ctx.set_hdr_wanted(on); g_hdr_dirty = true; }
 bool core_hdr_supported() { return G && G->ctx.hdr_supported(); }
+void core_set_profile(bool on) { if (G) G->want_prof.store(on); }
+bool core_take_perf(PerfSample* out) {
+    if (!G || !out || !G->ts_period) return false;
+    Globals& gl = *G;
+    out->gpu_ms = gl.ov_gpu_n ? gl.ov_gpu_sum / (double)gl.ov_gpu_n : -1.0;
+    out->passes.clear();
+    if (gl.ov_gpu_n) {
+        std::vector<std::pair<std::string, std::pair<double, uint64_t>>> v(gl.ov_pp.begin(), gl.ov_pp.end());
+        std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.second.first > b.second.first; });
+        for (size_t i = 0; i < v.size() && i < 4; i++) out->passes.push_back({v[i].first, v[i].second.first / (double)gl.ov_gpu_n});
+    }
+    gl.ov_gpu_sum = 0; gl.ov_gpu_n = 0; gl.ov_pp.clear();
+    return true;
+}
+
 bool core_device_info(DeviceInfo* out) {
     if (!G || !out) return false;
     const VkPhysicalDeviceProperties& p = G->ctx.props();
