@@ -37,7 +37,7 @@ target_compile_options(psprecomp_setup PRIVATE -O2)
 set_source_files_properties(third_party/miniz.c PROPERTIES COMPILE_DEFINITIONS "MINIZ_NO_ZLIB_COMPATIBLE_NAMES;MINIZ_NO_ARCHIVE_WRITING_APIS")
 if(WIN32 AND CMAKE_RC_COMPILER)
     # The program's icon (Explorer, taskbar, shortcuts): zig's rc compiles the resource, zig cc links the .res.
-    set(APP_ICO ${CMAKE_CURRENT_SOURCE_DIR}/../games/dissidia/icon/icon.ico)
+    set(APP_ICO ${CMAKE_CURRENT_SOURCE_DIR}/../games/dissidia/icon/installer.ico)
     file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/app.rc "1 ICON \"${APP_ICO}\"\n")
     add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/app.res
         COMMAND ${CMAKE_RC_COMPILER} /fo ${CMAKE_CURRENT_BINARY_DIR}/app.res ${CMAKE_CURRENT_BINARY_DIR}/app.rc

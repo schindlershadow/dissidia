@@ -29,6 +29,7 @@ struct Step {
     std::string explain;                // what is going on, in plain words
     std::vector<std::string> argv;
     EnvList env;
+    std::vector<std::pair<std::string, std::string>> downloads;   // (url, file) fetched by the app itself instead of running argv (Android: the bundled Python has no DNS / CA store)
     bool is_build = false;              // output carries "[psp-build] ..." progress lines
     double weight = 0;                  // share of the whole install (all steps sum to 1)
     double base = 0;                    // fraction done when this step starts
@@ -66,7 +67,7 @@ bool android_build_exists(const std::string& workdir);
 Layout find_layout_android(const std::string& root, const std::string& lib_dir);
 // Read the disc image, translate + compile the game ON this device with the bundled zig (psp_build.py --android), copy the game's
 // files to Android/media/<package>/game. The built APK is installed by the wizard afterwards (Java PackageInstaller).
-std::vector<Step> plan_install_android(const Layout& l, const std::string& iso, const std::string& workdir);
+std::vector<Step> plan_install_android(const Layout& l, const std::string& iso, const std::string& workdir, const Options& o);
 constexpr const char* kGamePackage = "org.psprecomp.game";
 std::string android_game_dir();
 EnvList android_env(const Layout& l, const std::string& workdir);   // PYTHONHOME etc. for the bundled Python

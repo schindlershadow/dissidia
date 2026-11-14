@@ -23,7 +23,7 @@ folder only exists after the app was started once). Then make sure the app can w
 Command line (what the wizard runs): `psp_build.py <install folder> --sdk sdk --toolchain toolchain --psprecomp bin/psprecomp
 --game game --android android` (add `--progress` for machine-readable lines).
 
-The launcher icon is original artwork (a crystal), drawn by `android/icon/make_icon.py` (Pillow); `android/icon/icon_512.png` is the full-size version, `make_skeleton.py` compiles the sized copies into the APK. The desktop uses the same artwork: `games/dissidia/icon/` (icon.png for the Linux menu entry, icon.ico for the Windows Start Menu shortcut, both written next to the install; `embed_icon.py` regenerates them and the 64x64 window icon in `runtime/include/psp_app_icon_dissidia.h`, set with `psp_set_window_icon` for the game window and the wizard).
+The launcher icon is original artwork (a crystal); the setup app and the PC wizard have their own variant (teal, with a download badge: `android/icon/make_installer_icon.py`, `installer_512.png`, `setup_res/`) so they are not mistaken for the game, drawn by `android/icon/make_icon.py` (Pillow); `android/icon/icon_512.png` is the full-size version, `make_skeleton.py` compiles the sized copies into the APK. The desktop uses the same artwork: `games/dissidia/icon/` (icon.png for the Linux menu entry, icon.ico for the Windows Start Menu shortcut, both written next to the install; `embed_icon.py` regenerates them and the 64x64 window icon in `runtime/include/psp_app_icon_dissidia.h`, set with `psp_set_window_icon` for the game window and the wizard).
 
 ## Building on the phone (the setup app)
 
@@ -33,7 +33,10 @@ disc image and installs it. Nothing but the APK is downloaded, and no PC or term
 1. Install the setup APK (allow your browser or file manager to install apps once) and open "Dissidia Recomp Setup". The first start unpacks its tools (about a minute).
 2. **Build the game** opens Android's own file picker: choose your disc image (`.iso`/`.cso`) anywhere (SD card, Download...). The picker hands the app an open
    file, so no storage permission is needed to read it. "Use the simple browser instead" is a built-in fallback (needs "all files access").
-3. The app asks for "all files access" once: the game app reads its files from the shared folder `<storage>/Android/media/org.psprecomp.game/game` (since Android 11 no
+3. After the file, the **Options** page (the same tabbed look as the game's Settings menu: L / R or a tap at the right of the tab strip switch tabs) offers **HD texture pack**
+   (about 1.3 GB, downloaded by the app itself over your connection, then unpacked into the game's mods folder; finished downloads are kept if you retry),
+   **Japanese voices (undub)** (asks for a second disc image with the same file picker) and, in General, the update check. Android version and Import saves are PC-only.
+3b. The app asks for "all files access" once: the game app reads its files from the shared folder `<storage>/Android/media/org.psprecomp.game/game` (since Android 11 no
    other app may write to `Android/data`).
 4. It extracts and decrypts the disc, translates the game to C++ and compiles it (about 5 minutes on a Snapdragon 8 Gen 2; the screen is kept on and a wake lock is held),
    copies the files, and asks Android to install the game (confirm the dialog; allow the setup app to install apps once). Then start "Dissidia 012".

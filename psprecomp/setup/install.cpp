@@ -250,7 +250,9 @@ std::string android_payload_fingerprint(const Layout& l) {
 }
 
 std::vector<Step> plan_rebuild_android(const Layout& l, const std::string& workdir) {
-    std::vector<Step> all = plan_install_android(l, "", workdir);
+    Options none;
+    none.hd_textures = false;
+    std::vector<Step> all = plan_install_android(l, "", workdir, none);
     std::vector<Step> p(all.begin() + 1, all.end());   // without "Reading your game file": the disc is already extracted
     for (auto& s : p) { s.base = 0; }
     p[0].weight = 0.88; p[1].weight = 0.12;
@@ -258,7 +260,7 @@ std::vector<Step> plan_rebuild_android(const Layout& l, const std::string& workd
     return p;
 }
 
-std::vector<Step> plan_install_android(const Layout& l, const std::string& iso, const std::string& workdir) {
+std::vector<Step> plan_install_android(const Layout& l, const std::string& iso, const std::string& workdir, const Options& o) {
     std::error_code ec;
     fs::create_directories(join(workdir, "tmp"), ec);
     Step x;
@@ -281,7 +283,47 @@ std::vector<Step> plan_install_android(const Layout& l, const std::string& iso, 
     c.argv = {l.python, join(l.game_dir, "tools/android_local_install.py"), workdir, "--dest", android_game_dir()};
     c.env = android_env(l, workdir);
     c.weight = 0.10;
-    std::vector<Step> p{x, b, c};
+    std::vector<Step> p{x};
+    // the extras go in before the files are copied to the game's folder
+    if (o.hd_textures && feature_available(l, "hd_textures")) {
+        const std::string mods = join(workdir, "mods");
+        std::error_code mk;
+        fs::create_directories(mods, mk);
+        const bool ai = o.texture_pack == "ai";
+        Step d;
+        d.label = ai ? "Downloading the AI upscaled textures" : "Downloading the HD textures";
+        d.explain = std::string(ai ? "Downloads the community HD texture pack and our own AI upscales (about 1.3 GB in all) over your connection. "
+                                   : "Downloads LiinkPK's hand-retouched HD texture pack (about 0.8 GB) over your connection. ") +
+                    "A WiFi network is a good idea. " + texture_pack_credit(o.texture_pack);
+        Step t;
+        t.label = "Unpacking the HD textures";
+        t.explain = "Unpacks the textures into the game's mods folder.";
+        t.argv = {l.python, join(l.game_dir, "tools/fetch_textures.py"), workdir, "--pack", ai ? "ai" : "liink", "--consume-zips"};
+        if (ai) {
+            d.downloads = {{"https://codeload.github.com/Niosa/D012FFRT/zip/main", join(mods, ".d012ffrt.zip")},
+                           {"https://codeload.github.com/schindlershadow/dissidia-hd-textures/zip/main", join(mods, ".hdtextures.zip")}};
+            t.argv.insert(t.argv.end(), {"--zip", join(mods, ".d012ffrt.zip"), "--ids-zip", join(mods, ".hdtextures.zip")});
+        } else {
+            d.downloads = {{"https://codeload.github.com/LiinkPK/Dissidia-012-HD-Textures/zip/master", join(mods, ".liink.zip")}};
+            t.argv.insert(t.argv.end(), {"--zip", join(mods, ".liink.zip")});
+        }
+        t.env = android_env(l, workdir);
+        d.weight = 0.25;
+        t.weight = 0.06;
+        p.push_back(d);
+        p.push_back(t);
+    }
+    if (o.jp_audio && feature_available(l, "jp_audio") && !o.undub_iso.empty()) {
+        Step j;
+        j.label = "Extracting the Japanese voices";
+        j.explain = "Reads the voice and movie files out of the undub disc image you picked and adds them as an option in the game.";
+        j.argv = {l.python, join(l.game_dir, "tools/jp_audio.py"), "--iso", o.undub_iso, "--work", workdir};
+        j.env = android_env(l, workdir);
+        j.weight = 0.05;
+        p.push_back(j);
+    }
+    p.push_back(b);
+    p.push_back(c);
     finish_plan(p);
     return p;
 }

@@ -174,7 +174,7 @@ def main():
     skeleton = os.path.join(work, "setup_skeleton.apk")
     run([sys.executable, "-I", os.path.join(REPO, "android", "make_skeleton.py"), "--sdk", sdk, "--sdl-src", os.path.join(work, "android-work", "deps", "src-sdl2"),
          "--package", "org.psprecomp.setup", "--label", "Dissidia Recomp Setup", "--manifest", os.path.join(REPO, "android", "setup", "AndroidManifest.xml"),
-         "--extra-java", os.path.join(REPO, "android", "setup", "java"), "--api", str(av["api"]), "--version", a.version, "-o", skeleton])
+         "--extra-java", os.path.join(REPO, "android", "setup", "java"), "--icon-res", os.path.join(REPO, "android", "icon", "setup_res"), "--api", str(av["api"]), "--version", a.version, "-o", skeleton])
 
     # ---- 5. the wizard
     libmain = os.path.join(work, "setup_libmain.so")

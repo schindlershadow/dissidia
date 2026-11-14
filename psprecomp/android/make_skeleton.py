@@ -19,6 +19,7 @@ def main():
     ap.add_argument("--api", default="29"); ap.add_argument("-o", "--output", required=True)
     ap.add_argument("--manifest", help="manifest template (default: hello/AndroidManifest.xml); its package is replaced by --package")
     ap.add_argument("--version", help="release version: sets android:versionName and a versionCode that grows with it (an update must have a higher one)")
+    ap.add_argument("--icon-res", help="launcher icon resources (default: icon/res; the setup app uses icon/setup_res)")
     ap.add_argument("--extra-java", help="a folder of extra Java sources compiled with SDL's (the setup app's activity)")
     a = ap.parse_args()
     here = os.path.dirname(os.path.abspath(__file__))
@@ -44,7 +45,7 @@ def main():
     open(man, "w").write(txt)
     base = work + "/base.apk"
     compiled = work + "/res.zip"
-    run([bt + "/aapt2", "compile", "--dir", here + "/icon/res", "-o", compiled])   # launcher icon (icon/make_icon.py)
+    run([bt + "/aapt2", "compile", "--dir", os.path.abspath(a.icon_res) if a.icon_res else here + "/icon/res", "-o", compiled])   # launcher icon (icon/make_icon.py)
     run([bt + "/aapt2", "link", "-o", base, "-I", jar, "--manifest", man, "-R", compiled, "--min-sdk-version", a.api, "--target-sdk-version", "34"])
     import zipfile
     unaligned = work + "/unaligned.apk"
