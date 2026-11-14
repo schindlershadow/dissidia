@@ -116,5 +116,16 @@ Test notes: actor addresses differ between runs (do not watch fixed addresses; `
 the write watch on the human actor + offset from inside the hook). `PSPRECOMP_TAGTEAM_LOG=1` logs the steps.
 Menu fast-forward above 1x misnavigated the menu walk (landed in the story), so the walk runs at normal speed.
 
-Still open for step 1: the third fighter gets no AI actions, is not framed by the camera, and the lock block / foe
-cycle is not wired to it.
+5. **AI.** The brain (`actor + 0x5C4`) is given the setup's CPU settings: `FUN_08B2F2E4(actor, 0)` and, for control types 1
+   and 2, `FUN_08A640CC` / `FUN_08A64100` with record halfwords +3894 / +3896. Two more things were needed: the target
+   (`FUN_08B2F17C(actor)` copies the lock block's result into `+0x2FC`; the lock block target is set with
+   `FUN_08B3B0B4(block, foe)`), and clearing **bit 2 of `actor+0x380`**, which the CPU brain tick `FUN_08A64400`
+   treats as "skip this actor" (set at construction; the retail two fighters lose it after the intro; what clears it
+   there is not found yet, the spike clears it every tick).
+
+With all five the third fighter fights: in a run Squall faced two Lightnings and the new one dashed and attacked
+(script ids 400 / 460 / 1 / 2 repeating). The brain's per-fighter `partner +0x1108` of a retail fighter is its **assist
+actor** (kind 1), which is why `+0x1108` is not a team mate pointer.
+
+Still open: the camera does not frame the third fighter, the lock block's cycle is not wired to it, the human has no
+partner yet.

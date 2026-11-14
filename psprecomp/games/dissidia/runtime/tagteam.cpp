@@ -24,11 +24,15 @@ constexpr uint32_t SIDE_REC = 0x088729A0u;       // EBOOT: per-side record (a0 =
 constexpr uint32_t CHAR_INFO = 0x088470B8u;      // EBOOT: character info from a setup record (a0 = bs+0x7D8 / +0x7DC)
 constexpr uint32_t FIGHTER_CTOR = 0x08B39E5Cu;   // battle overlay: fighter constructor (mem, siderec, info, side, 0)
 constexpr uint32_t SET_FOE = 0x08836DA4u;        // EBOOT: a->+0x300 = b
-constexpr uint32_t BRAIN_MODE = 0x08A64078u;     // battle overlay: brain (actor +0x5C4) mode (a1 = 2: CPU)
-constexpr uint32_t BRAIN_LEVEL = 0x08A64100u;    // battle overlay: brain level (a1 = 15)
+constexpr uint32_t CPU_MODE = 0x08B2F2E4u;       // battle overlay: FUN_08B2F2E4(actor, 0), the setup's CPU-control call
+constexpr uint32_t BRAIN_MODE = 0x08A640CCu;     // battle overlay: brain (actor +0x5C4) parameter 1 (record +3894)
+constexpr uint32_t BRAIN_LEVEL = 0x08A64100u;    // battle overlay: brain parameter 2 (record +3896)
 constexpr uint32_t ACT_BRAIN = 0x5C4u;
 constexpr uint32_t FLOW_STEP = 0x088887A4u;      // EBOOT: battle flow step (a0 = bs): waits for both fighters, starts action 1 on each, bs+72 = 1
 constexpr uint32_t FIGHTER_READY = 0x08B2F9E0u;  // battle overlay: bit 0x10 of byte actor+1456 (the fighter is ready)
+constexpr uint32_t LOCK_SET = 0x08B3B0B4u;       // battle overlay: lock block: set the target (a0 = block, a1 = actor)
+constexpr uint32_t BRAIN_TICK = 0x08A64400u;     // battle overlay: the CPU brain tick (a0 = brain, actor +0x5C4)
+constexpr uint32_t TARGET_REFRESH = 0x08B2F17Cu; // battle overlay: copy the lock block's result into actor +0x2FC (a0 = actor)
 constexpr uint32_t START_ACTION = 0x0882FA10u;   // EBOOT: start an action (a0 = actor + 304, a1 = id, a2 = 0, f12 = f13 = 0)
 constexpr uint32_t REC_INIT = 0x08B01090u;       // battle overlay: fills the 40-byte init block (a0 = buf, a1 = side)
 constexpr uint32_t LOCK_INIT = 0x08B3B1B8u;      // battle overlay: lock-on block init (a0 = *(actor + 0x5AC), a1 = 3 words)
@@ -36,8 +40,8 @@ constexpr uint32_t PLACE = 0x088359A8u;          // EBOOT: place an actor (a0 = 
 constexpr uint32_t REC_BASE = 0x09AFB8A0u;       // global per-side records (stride 0x1060), 0x09B00000 - 18272
 constexpr uint32_t ACT_VT = 0x544u, ACT_FLAGS = 0x5B0u, ACT_LOCKBLK = 0x5ACu;
 
-FuncPtr g_orig_setup = nullptr, g_orig_flow = nullptr;
-uint32_t g_third = 0, g_third_bs = 0;
+FuncPtr g_orig_setup = nullptr, g_orig_flow = nullptr, g_orig_tick = nullptr;
+uint32_t g_third = 0, g_third_bs = 0, g_third_foe = 0;
 bool g_third_started = false;
 bool g_log = false;
 uint8_t* g_ram = nullptr;
@@ -65,6 +69,7 @@ float rdf(uint32_t a) { float f; std::memcpy(&f, g_ram + (a & 0x07FFFFFFu), 4); 
 void wr(uint32_t a, uint32_t v) { std::memcpy(g_ram + (a & 0x07FFFFFFu), &v, 4); }
 void wrf(uint32_t a, float f) { std::memcpy(g_ram + (a & 0x07FFFFFFu), &f, 4); }
 
+void tick_hook(uint8_t* rdram, recomp_context* ctx);
 uint32_t call_ptr(FuncPtr f, uint32_t a0, uint32_t a1, uint32_t a2) {
     const recomp_context saved = *g_ctx;
     g_ctx->r[4] = static_cast<int32_t>(a0); g_ctx->r[5] = static_cast<int32_t>(a1); g_ctx->r[6] = static_cast<int32_t>(a2);
@@ -82,6 +87,7 @@ void setup_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t a0 = rd(bs + 56), a1 = rd(bs + 60), mode = rd(bs + 76), human = rd(bs + 84);
     if (g_log) std::fprintf(stderr, "[TAGTEAM] setup bs=%08X mode=%u slots %08X %08X human slot %u\n", bs, mode, a0, a1, human);
     if (!ok(a0, 0x12D0) || !ok(a1, 0x12D0)) return;
+    if (!g_orig_tick) { g_orig_tick = fn(BRAIN_TICK); if (g_orig_tick) psp_dispatch_register(BRAIN_TICK, tick_hook); else std::fprintf(stderr, "[TAGTEAM] brain tick not found\n"); }
     if (const char* w = std::getenv("PSPRECOMP_TAGTEAM_WATCH")) {   // arm the write watch on <human actor> + hex offset
         const uint32_t off = static_cast<uint32_t>(std::strtoul(w, nullptr, 16));
         psp_mem_watch_set((human == 0 ? a0 : a1) + off);
@@ -119,10 +125,20 @@ void setup_hook(uint8_t* rdram, recomp_context* ctx) {
     // Stand next to the CPU fighter.
     wrf(vec, rdf(a1 + 0x80u) + 3.0f); wrf(vec + 4, rdf(a1 + 0x84u)); wrf(vec + 8, rdf(a1 + 0x88u)); wrf(vec + 12, 1.0f);
     call(PLACE, mem, vec, 1);
-    g_third = mem; g_third_bs = bs; g_third_started = false;
+    g_third = mem; g_third_bs = bs; g_third_foe = a0; g_third_started = false;
     const uint32_t brain = rd(mem + ACT_BRAIN);
     if (g_log) std::fprintf(stderr, "[TAGTEAM] third fighter %08X (rec %08X info %08X brain %08X)\n", mem, rec, info, brain);
-    if (ok(brain, 0x40)) { call(BRAIN_MODE, brain, 2); call(BRAIN_LEVEL, brain, 15); }
+    {   // The CPU brain, as the setup gives it to a fighter whose control type (record +3892) is not 0: FUN_08B2F2E4(actor, 0),
+        // then, for types 1 and 2, its two parameters (record +3894, +3896).
+        const uint32_t r = REC_BASE + 4192u;
+        auto h = [&](uint32_t o) { return static_cast<uint32_t>(g_ram[(r + o) & 0x07FFFFFFu]) | (static_cast<uint32_t>(g_ram[(r + o + 1) & 0x07FFFFFFu]) << 8); };
+        const uint32_t type = h(3892);
+        if (g_log) std::fprintf(stderr, "[TAGTEAM] cpu record: type %u params %u %u\n", type, h(3894), h(3896));
+        if (type != 0) {
+            call(CPU_MODE, mem, 0);
+            if (type < 3 && ok(brain, 0x40)) { call(BRAIN_MODE, brain, h(3894)); call(BRAIN_LEVEL, brain, h(3896)); }
+        }
+    }
     ctx->r[29] = static_cast<int32_t>(sp0);
 }
 
@@ -142,7 +158,27 @@ void flow_hook(uint8_t* rdram, recomp_context* ctx) {
     ctx->f[12] = 0.0f; ctx->f[13] = 0.0f;
     call(START_ACTION, g_third + 304u, 1, 0);
     g_third_started = true;
+    call(LOCK_SET, rd(g_third + 0x5ACu), g_third_foe);       // lock on to the foe: the AI and the turn-to-target ops read it
+    if (g_log) std::fprintf(stderr, "[TAGTEAM] third target %08X (foe %08X)\n", rd(g_third + 0x2FCu), g_third_foe);
     if (g_log) std::fprintf(stderr, "[TAGTEAM] third fighter started (action 1)\n");
+}
+
+void tick_hook(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t brain = static_cast<uint32_t>(ctx->r[4]);
+    g_ram = rdram; g_ctx = ctx;
+    if (g_third && g_third_started && rd(brain + 4) == g_third && rd(g_third + 0x2FCu) == 0) call(TARGET_REFRESH, g_third);
+    if (g_third && g_third_started && rd(brain + 4) == g_third) wr(g_third + 0x380u, rd(g_third + 0x380u) & ~2u);   // bit 2 of +0x380 makes the CPU brain skip the actor; the retail two lose it after the intro
+    static uint32_t seen[8] = {}; static int cnt[8] = {}; static int n = 0;
+    int i = 0; while (i < n && seen[i] != brain) i++;
+    if (i == n && n < 8) { seen[n++] = brain; }
+    if (g_log && i < 8 && (cnt[i]++ % 300) == 0 && ok(brain, 0x40))
+        std::fprintf(stderr, "[TAGTEAM] brain tick %08X (owner %08X) enabled=%u state=%u call#%d tgt2FC=%08X foe300=%08X partner1108=%08X lockblk=%08X lockT=%08X act380=%08X act542=%02X%s\n", brain, rd(brain + 4), g_ram[(brain) & 0x07FFFFFFu], g_ram[(brain + 12) & 0x07FFFFFFu], cnt[i], rd(rd(brain + 4) + 0x2FCu), rd(rd(brain + 4) + 0x300u), rd(rd(brain + 4) + 0x1108u), rd(rd(brain + 4) + 0x5ACu), rd(rd(rd(brain + 4) + 0x5ACu) + 252u), rd(rd(brain + 4) + 0x380u), g_ram[(rd(brain + 4) + 0x542u) & 0x07FFFFFFu], rd(brain + 4) == g_third ? " <- THIRD" : "");
+    if (g_log && std::getenv("PSPRECOMP_TAGTEAM_BRAINDUMP") && i < 8 && cnt[i] == 302 && ok(brain, 0x100)) {
+        std::fprintf(stderr, "[TAGTEAM] brain dump %08X%s:", brain, rd(brain + 4) == g_third ? " THIRD" : "");
+        for (uint32_t o = 0; o < 0x100; o += 4) std::fprintf(stderr, "%s%08X", (o % 32) == 0 ? "\n  " : " ", rd(brain + o));
+        std::fprintf(stderr, "\n");
+    }
+    g_orig_tick(rdram, ctx);
 }
 
 }  // namespace
