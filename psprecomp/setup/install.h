@@ -29,6 +29,7 @@ struct Step {
     std::string explain;                // what is going on, in plain words
     std::vector<std::string> argv;
     EnvList env;
+    std::vector<std::pair<std::string, std::string>> downloads;   // (url, file) fetched by the app itself instead of running argv (Android: the bundled Python has no DNS / CA store)
     bool is_build = false;              // output carries "[psp-build] ..." progress lines
     double weight = 0;                  // share of the whole install (all steps sum to 1)
     double base = 0;                    // fraction done when this step starts
@@ -54,6 +55,8 @@ bool feature_available(const Layout& l, const std::string& name);
 
 std::vector<Step> plan_install(const Layout& l, const std::string& iso, const std::string& workdir, const Options& o);
 // The game build only (rebuild / repair): analysis, recompile, compile (+ the Android build when chosen).
+// Only the extras of `o` (HD textures unless skip_textures, Japanese voices, saves, the Android build) on an installed game: no rebuild.
+std::vector<Step> plan_extras(const Layout& l, const std::string& workdir, const Options& o, bool skip_textures);
 std::vector<Step> plan_rebuild(const Layout& l, const std::string& workdir, const Options& o);
 
 // Installs the Android build (<workdir>/android/dissidia.apk) on a connected device with adb and copies the game's files to it
@@ -66,7 +69,7 @@ bool android_build_exists(const std::string& workdir);
 Layout find_layout_android(const std::string& root, const std::string& lib_dir);
 // Read the disc image, translate + compile the game ON this device with the bundled zig (psp_build.py --android), copy the game's
 // files to Android/media/<package>/game. The built APK is installed by the wizard afterwards (Java PackageInstaller).
-std::vector<Step> plan_install_android(const Layout& l, const std::string& iso, const std::string& workdir);
+std::vector<Step> plan_install_android(const Layout& l, const std::string& iso, const std::string& workdir, const Options& o);
 constexpr const char* kGamePackage = "org.psprecomp.game";
 std::string android_game_dir();
 EnvList android_env(const Layout& l, const std::string& workdir);   // PYTHONHOME etc. for the bundled Python
@@ -76,6 +79,8 @@ std::vector<std::string> android_verify_argv(const Layout& l, const std::string&
 constexpr const char* kManifestUrl = "https://github.com/schindlershadow/dissidia/releases/latest/download/manifest.json";
 std::string android_payload_fingerprint(const Layout& l);   // android/build_fingerprint.txt of the unpacked payload ("" if absent)
 // The game build again (translate + compile + copy) from the already extracted work folder, after the app was updated.
+// Only the extras of `o` on a built game, then the copy to the game's folder (no rebuild).
+std::vector<Step> plan_extras_android(const Layout& l, const std::string& workdir, const Options& o, bool skip_textures);
 std::vector<Step> plan_rebuild_android(const Layout& l, const std::string& workdir);   // where the game app reads its files: /sdcard/Android/media/org.psprecomp.game/game
 #endif
 

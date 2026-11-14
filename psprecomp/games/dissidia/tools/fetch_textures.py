@@ -142,6 +142,7 @@ def main():
     ap.add_argument("--ref", default=None, help="branch or commit of the pack (default: main, master for liink)")
     ap.add_argument("--zip", help="use this archive instead of downloading")
     ap.add_argument("--keep-zip", action="store_true")
+    ap.add_argument("--consume-zips", action="store_true", help="delete the archives given with --zip / --ids-zip once unpacked (the Android app downloads them)")
     ap.add_argument("--no-ids", action="store_true", help="skip the extra textures (%s)" % IDS_REPO)
     ap.add_argument("--ids-zip", help="use this archive of %s instead of downloading" % IDS_REPO)
     a = ap.parse_args()
@@ -230,6 +231,13 @@ def main():
             os.remove(zpath)
         except OSError:
             pass
+    if a.consume_zips:
+        for z in (a.zip, a.ids_zip):
+            try:
+                if z:
+                    os.remove(z)
+            except OSError:
+                pass
     pngs = sum(1 for dp, _, fns in os.walk(dest) for fn in fns if fn.lower().endswith(".png"))
     say("HD texture pack installed: %d files (%d PNG, %d of them our own upscales) in %s" % (n + n_ids, pngs, n_ids, dest))
     say("[textures] PROGRESS 100")

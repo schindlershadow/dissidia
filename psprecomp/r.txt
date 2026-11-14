@@ -1,0 +1,7 @@
+1
+built /home/schindler/code/.apkwork/libmain.so 3462000
+replaced fetch_textures.py
+ok 121524161
+Performing Streamed Install
+Success
+Starting: Intent { cmp=org.psprecomp.setup/.SetupActivity }

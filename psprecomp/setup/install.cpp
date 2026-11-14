@@ -109,17 +109,16 @@ bool feature_available(const Layout& l, const std::string& name) {
 }
 
 static const char* kExplainBuild[5] = {
-    "Checks your game files against the analysis data that ships with this program, so the translation matches your copy exactly.",
-    "Translates the game's PSP machine code into C++ on this computer (about 9,000 functions). The result stays on your PC and is never shared.",
-    "Does the same for the game's battle, menu and extra modules.",
-    "Sets up the compiler for the project.",
-    "Compiles about 470 source files with the bundled compiler. This is the long part: a couple of minutes on a fast PC, up to half an hour on a slow one. "
-    "Cancelling is safe; starting again continues where it stopped."};
+    "Checks your game files against the analysis data that ships with this program.",
+    "Translates the game's PSP code into C++ on this device. Nothing is shared.",
+    "Does the same for the battle, menu and extra modules.",
+    "Sets up the compiler.",
+    "Compiles about 470 source files: the long part. Cancelling is safe; it continues where it stopped."};
 
 static Step build_step(const Layout& l, const std::string& workdir, bool android) {
     Step b;
     b.label = android ? "Building the Android version" : "Building the game";
-    b.explain = android ? "Builds the Android version of the game from the same translation, for copying to your phone or handheld."
+    b.explain = android ? "Builds the Android version from the same translation."
                         : "";
     b.is_build = true;
     b.argv = {l.python, l.build_script, workdir, "--sdk", l.sdk, "--toolchain", l.toolchain, "--psprecomp", l.recompiler,
@@ -150,23 +149,14 @@ std::vector<Step> plan_rebuild(const Layout& l, const std::string& workdir, cons
     return p;
 }
 
-std::vector<Step> plan_install(const Layout& l, const std::string& iso, const std::string& workdir, const Options& o) {
-    Step x;
-    x.label = "Reading your game file";
-    x.explain = "Copies the game's files out of the disc image and decrypts the main program. Nothing is uploaded anywhere.";
-    x.argv = {l.python, l.setup_script, iso, workdir};
-    x.env = {{"PSPRECOMP_TOOLCHAIN", l.toolchain}, {"PYTHONUNBUFFERED", "1"}};
-    x.weight = 0.08;
-    std::vector<Step> p{x};
-    for (auto& s : plan_rebuild(l, workdir, o)) p.push_back(s);   // weights are renormalised below
-    // plan_rebuild() normalised its own steps; restore their relative sizes
-    for (size_t i = 1; i < p.size(); i++) p[i].weight = i == 1 ? 0.84 : 0.60;
-    if (o.hd_textures && feature_available(l, "hd_textures")) {
+// The optional extras after the game is built: the HD texture pack, the Japanese voices, the saves. `textures` = fetch the pack
+// (false when it is already installed and only the other extras are wanted).
+static void append_extras(std::vector<Step>& p, const Layout& l, const std::string& workdir, const Options& o, bool skip_textures) {
+    if (!skip_textures && o.hd_textures && feature_available(l, "hd_textures")) {
         Step t;
         const bool ai = o.texture_pack == "ai";
         t.label = ai ? "Downloading the AI upscaled textures" : "Downloading the HD textures";
-        t.explain = std::string(ai ? "Fetches the community HD texture pack and our own AI upscales (about 1.3 GB in all) into the game's mods folder. "
-                                   : "Fetches LiinkPK's hand-retouched HD texture pack (about 0.8 GB) into the game's mods folder. ") + texture_pack_credit(o.texture_pack);
+        t.explain = ai ? "Downloads the AI upscaled HD textures (about 1.3 GB)." : "Downloads LiinkPK's HD textures (about 0.8 GB).";
         t.argv = {l.python, join(l.game_dir, "tools/fetch_textures.py"), workdir, "--pack", ai ? "ai" : "liink"};
         t.env = {{"PYTHONUNBUFFERED", "1"}};
         t.weight = 0.06;
@@ -175,7 +165,7 @@ std::vector<Step> plan_install(const Layout& l, const std::string& iso, const st
     if (o.jp_audio && feature_available(l, "jp_audio") && !o.undub_iso.empty()) {
         Step j;
         j.label = "Extracting the Japanese voices";
-        j.explain = "Reads the voice and movie files out of the undub disc image you picked and adds them as an option in the game.";
+        j.explain = "Adds the Japanese voices and movies from the undub disc.";
         j.argv = {l.python, join(l.game_dir, "tools/jp_audio.py"), "--iso", o.undub_iso, "--work", workdir};
         j.env = {{"PYTHONUNBUFFERED", "1"}};
         j.weight = 0.05;
@@ -184,11 +174,38 @@ std::vector<Step> plan_install(const Layout& l, const std::string& iso, const st
     if (!o.import_saves.empty()) {
         Step v;
         v.label = "Importing your saves";
-        v.explain = "Copies your Dissidia 012 saves into the game's save folder (from another region or from PPSSPP) and signs them for this game. The originals are not changed.";
+        v.explain = "Copies your saves into the game. The originals are not changed.";
         v.argv = {l.self, "--import-saves", o.import_saves, "--dir", workdir};
         v.weight = 0.01;
         p.push_back(v);
     }
+}
+
+std::vector<Step> plan_install(const Layout& l, const std::string& iso, const std::string& workdir, const Options& o) {
+    Step x;
+    x.label = "Reading your game file";
+    x.explain = "Reads the game's files out of your disc image. Nothing is uploaded.";
+    x.argv = {l.python, l.setup_script, iso, workdir};
+    x.env = {{"PSPRECOMP_TOOLCHAIN", l.toolchain}, {"PYTHONUNBUFFERED", "1"}};
+    x.weight = 0.08;
+    std::vector<Step> p{x};
+    for (auto& s : plan_rebuild(l, workdir, o)) p.push_back(s);   // weights are renormalised below
+    // plan_rebuild() normalised its own steps; restore their relative sizes
+    for (size_t i = 1; i < p.size(); i++) p[i].weight = i == 1 ? 0.84 : 0.60;
+    append_extras(p, l, workdir, o, false);
+    finish_plan(p);
+    return p;
+}
+
+std::vector<Step> plan_extras(const Layout& l, const std::string& workdir, const Options& o, bool skip_textures) {
+    std::vector<Step> p;
+    append_extras(p, l, workdir, o, skip_textures);
+    if (o.android && feature_available(l, "android")) {
+        Step a = build_step(l, workdir, true);
+        a.weight = 0.60;
+        p.push_back(a);
+    }
+    for (auto& st : p) if (st.weight <= 0) st.weight = 0.05;
     finish_plan(p);
     return p;
 }
@@ -196,7 +213,7 @@ std::vector<Step> plan_install(const Layout& l, const std::string& iso, const st
 std::vector<Step> plan_android_install(const Layout& l, const std::string& workdir) {
     Step x;
     x.label = "Installing on your device";
-    x.explain = "Installs the app on the phone or handheld that is connected with USB or wireless debugging (adb), then copies the game files (about 2 GB) to it. Needs adb (Android platform-tools) in your PATH.";
+    x.explain = "Installs the app over adb and copies the game files (about 2 GB).";
     x.argv = {l.python, join(l.game_dir, "tools/android_install.py"), workdir};
     x.env = {{"PYTHONUNBUFFERED", "1"}};
     x.weight = 1;
@@ -250,7 +267,9 @@ std::string android_payload_fingerprint(const Layout& l) {
 }
 
 std::vector<Step> plan_rebuild_android(const Layout& l, const std::string& workdir) {
-    std::vector<Step> all = plan_install_android(l, "", workdir);
+    Options none;
+    none.hd_textures = false;
+    std::vector<Step> all = plan_install_android(l, "", workdir, none);
     std::vector<Step> p(all.begin() + 1, all.end());   // without "Reading your game file": the disc is already extracted
     for (auto& s : p) { s.base = 0; }
     p[0].weight = 0.88; p[1].weight = 0.12;
@@ -258,30 +277,88 @@ std::vector<Step> plan_rebuild_android(const Layout& l, const std::string& workd
     return p;
 }
 
-std::vector<Step> plan_install_android(const Layout& l, const std::string& iso, const std::string& workdir) {
+static void append_extras_android(std::vector<Step>& p, const Layout& l, const std::string& workdir, const Options& o, bool skip_textures) {
+    if (!skip_textures && o.hd_textures && feature_available(l, "hd_textures")) {
+        const std::string mods = join(workdir, "mods");
+        std::error_code mk;
+        fs::create_directories(mods, mk);
+        const bool ai = o.texture_pack == "ai";
+        Step d;
+        d.label = ai ? "Downloading the AI upscaled textures" : "Downloading the HD textures";
+        d.explain = ai ? "Downloads the AI upscaled textures (about 1.3 GB). WiFi is best." : "Downloads LiinkPK's HD textures (about 0.8 GB). WiFi is best.";
+        Step t;
+        t.label = "Unpacking the HD textures";
+        t.explain = "Unpacks the textures into the mods folder.";
+        t.argv = {l.python, join(l.game_dir, "tools/fetch_textures.py"), workdir, "--pack", ai ? "ai" : "liink", "--consume-zips"};
+        if (ai) {
+            d.downloads = {{"https://codeload.github.com/Niosa/D012FFRT/zip/main", join(mods, ".d012ffrt.zip")},
+                           {"https://codeload.github.com/schindlershadow/dissidia-hd-textures/zip/main", join(mods, ".hdtextures.zip")}};
+            t.argv.insert(t.argv.end(), {"--zip", join(mods, ".d012ffrt.zip"), "--ids-zip", join(mods, ".hdtextures.zip")});
+        } else {
+            d.downloads = {{"https://codeload.github.com/LiinkPK/Dissidia-012-HD-Textures/zip/master", join(mods, ".liink.zip")}};
+            t.argv.insert(t.argv.end(), {"--zip", join(mods, ".liink.zip")});
+        }
+        t.env = android_env(l, workdir);
+        d.weight = 0.25;
+        t.weight = 0.06;
+        p.push_back(d);
+        p.push_back(t);
+    }
+    if (o.jp_audio && feature_available(l, "jp_audio") && !o.undub_iso.empty()) {
+        Step j;
+        j.label = "Extracting the Japanese voices";
+        j.explain = "Adds the Japanese voices and movies from the undub disc.";
+        j.argv = {l.python, join(l.game_dir, "tools/jp_audio.py"), "--iso", o.undub_iso, "--work", workdir};
+        j.env = android_env(l, workdir);
+        j.weight = 0.05;
+        p.push_back(j);
+    }
+}
+
+std::vector<Step> plan_install_android(const Layout& l, const std::string& iso, const std::string& workdir, const Options& o) {
     std::error_code ec;
     fs::create_directories(join(workdir, "tmp"), ec);
     Step x;
     x.label = "Reading your game file";
-    x.explain = "Copies the game's files out of the disc image and decrypts the main program. Nothing is uploaded anywhere.";
+    x.explain = "Reads the game's files out of your disc image. Nothing is uploaded.";
     x.argv = {l.python, l.setup_script, iso, workdir, "--pspdecrypt", l.pspdecrypt};
     x.env = android_env(l, workdir);
     x.weight = 0.10;
     Step b;
     b.label = "Building the game on this device";
-    b.explain = "Translates the game to C++ and compiles it with the compiler that ships with this app. This is the long part: expect about 10 to 20 minutes. "
-                "Cancelling is safe; starting again continues where it stopped.";
+    b.explain = "Translates the game and compiles it here: the long part (10 to 20 minutes). Cancelling is safe.";
     b.is_build = true;
     b.argv = {l.python, l.build_script, workdir, "--android", l.android_dir, "--psprecomp", l.recompiler, "--game", l.game_dir, "--progress"};
     b.env = android_env(l, workdir);
     b.weight = 0.80;
     Step c;
     c.label = "Putting the game files where the game can read them";
-    c.explain = "Copies the game's files (about 2 GB) to the game app's folder in shared storage.";
+    c.explain = "Copies the game's files (about 2 GB) to where the game reads them.";
     c.argv = {l.python, join(l.game_dir, "tools/android_local_install.py"), workdir, "--dest", android_game_dir()};
     c.env = android_env(l, workdir);
     c.weight = 0.10;
-    std::vector<Step> p{x, b, c};
+    std::vector<Step> p{x};
+    // the extras go in before the files are copied to the game's folder
+    append_extras_android(p, l, workdir, o, false);
+    p.push_back(b);
+    p.push_back(c);
+    finish_plan(p);
+    return p;
+}
+
+std::vector<Step> plan_extras_android(const Layout& l, const std::string& workdir, const Options& o, bool skip_textures) {
+    std::error_code ec;
+    fs::create_directories(join(workdir, "tmp"), ec);
+    std::vector<Step> p;
+    append_extras_android(p, l, workdir, o, skip_textures);
+    Step c;
+    c.label = "Putting the game files where the game can read them";
+    c.explain = "Copies the files to where the game reads them.";
+    c.argv = {l.python, join(l.game_dir, "tools/android_local_install.py"), workdir, "--dest", android_game_dir()};
+    c.env = android_env(l, workdir);
+    c.weight = 0.15;
+    p.push_back(c);
+    for (auto& st : p) if (st.weight <= 0) st.weight = 0.05;
     finish_plan(p);
     return p;
 }
@@ -320,7 +397,7 @@ UpdateInfo parse_update_line(const std::string& line) {
 std::vector<Step> plan_update(const Layout& l, const std::string& workdir, const Options& o, const UpdateInfo& u) {
     Step d;
     d.label = "Downloading the update";
-    d.explain = "Downloads the new release, checks it and replaces the program files. Your game files and saves are not touched.";
+    d.explain = "Downloads the new release and replaces the program files. Your saves are untouched.";
     d.argv = {l.python, l.update_script, "apply", "--root", l.root};
     if (const char* m = std::getenv("PSPRECOMP_MANIFEST_URL")) { d.argv.push_back("--manifest"); d.argv.push_back(m); }
     d.env = {{"PYTHONUNBUFFERED", "1"}};

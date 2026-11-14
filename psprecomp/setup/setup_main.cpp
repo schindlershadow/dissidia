@@ -39,7 +39,7 @@
 #include "../runtime/src/hle/psp_savemgr.h"
 #include "android.h"
 #include "install.h"
-#include "../runtime/include/psp_app_icon_dissidia.h"
+#include "../runtime/include/psp_app_icon_installer.h"   // the wizard has its own icon, not the game's
 #include "proc.h"
 #include "payload.h"
 #include "third_party/portable-file-dialogs.h"
@@ -209,7 +209,7 @@ struct Browser {
 };
 
 // -------------------------------------------------------------------------------------------------------------- app
-enum class Screen { Welcome, PickIso, PickUndub, Waiting, InstallDir, BrowseDir, TypePath, Options, Build, Done, Failed, Checking, UpdateAvail, Message, Permission, AndroidInstall, Download };
+enum class Screen { Welcome, PickInfo, PickIso, PickUndub, Waiting, InstallDir, BrowseDir, TypePath, Options, Build, Done, Failed, Checking, UpdateAvail, Message, Permission, AndroidInstall, Download };
 // What a file/folder pick is for.
 enum class Pick { Iso, Undub, Dir };
 
@@ -219,6 +219,8 @@ struct App {
     SDL_Texture* tex = nullptr;
     SDL_GameController* pad = nullptr;
     Canvas canvas{SCALE};
+    psp_sddialog::SettingsView view;   // the same screen as the game's Settings menu (sidebar, list, description panel)
+    bool view_opened = false;
     Input in;
     bool quit = false, dirty = true;
 
@@ -254,6 +256,36 @@ struct App {
     Pick pick = Pick::Iso;
     Screen before_pick = Screen::Welcome;
 
+    // Every page is drawn by the game's Settings screen renderer; the Options page has two categories (sidebar): L / R or a tap on one switch.
+    enum OptRow { OR_UPDATES, OR_HD, OR_PACK, OR_JP, OR_ANDROID, OR_SAVES, OR_FOLDER, OR_START, OR_BACK };
+    bool extras_mode = false;   // the Options page opened from "Change extras" on an installed game: only the extras, applied without a rebuild
+    bool extras_run = false;    // the running plan is such an apply
+    bool extras_skip_tex = false;
+    std::vector<OptRow> option_rows() const {
+        std::vector<OptRow> r = {OR_HD};
+        if (opt.hd_textures && setup::feature_available(layout, "hd_textures")) r.push_back(OR_PACK);   // which pack, only when textures are on
+        r.push_back(OR_JP);
+#ifndef __ANDROID__
+        r.push_back(OR_ANDROID);
+        r.push_back(OR_SAVES);
+#endif
+        if (!extras_mode) {
+            r.push_back(OR_UPDATES);
+#ifndef __ANDROID__
+            r.push_back(OR_FOLDER);
+#endif
+        }
+        r.push_back(OR_START);
+        r.push_back(OR_BACK);
+        return r;
+    }
+    void go_options(OptRow focus = OR_START) {   // the Options page with `focus` selected
+        std::vector<OptRow> r = option_rows();
+        int i = 0;
+        for (size_t k = 0; k < r.size(); k++) if (r[k] == focus) i = (int)k;
+        go(Screen::Options, i);
+    }
+
     // build
     setup::Proc proc;
     std::vector<setup::Step> plan;
@@ -279,6 +311,7 @@ struct App {
 
     void go(Screen s, int select = 0) {
         screen = s; sel = select; dirty = true;
+        view.rows_changed();
 #ifdef __ANDROID__
         if (s == Screen::TypePath) SDL_StartTextInput(); else SDL_StopTextInput();   // the soft keyboard only for typing a path
 #endif
@@ -288,6 +321,8 @@ struct App {
     struct Page {
         std::string title, tab;
         std::vector<MenuRow> rows;
+        std::vector<std::string> tabs;   // more than one: drawn as the tab strip, tab_active the shown one
+        int tab_active = 0;
     };
 
     static MenuRow row(const std::string& label, const std::string& help = "", const std::string& value = "") {
@@ -306,15 +341,11 @@ struct App {
         return r;
     }
 
-    // HD textures: Off / LiinkPK's hand-retouched pack (first) / the AI upscaled pack. The help text credits the pack that is selected.
-    MenuRow tex_row(bool available) {
-        MenuRow r = row("HD textures", "", "Not yet");
-        if (!available) { r.help = "Higher resolution textures for the whole game. (Not in this release yet.)"; return r; }
+    // Which HD texture pack (shown while HD textures are on). The help text credits the selected pack.
+    MenuRow tex_pack_row() {
+        MenuRow r = row("Texture pack", "", "");
         r.can_dec = r.can_inc = true;
-        if (!opt.hd_textures) {
-            r.value = "Off";
-            r.help = "No HD textures: the game looks like the PSP original. Left/Right picks a pack: LiinkPK's hand-retouched HD Project (about 0.8 GB) or the AI upscaled pack (about 1.3 GB).";
-        } else if (opt.texture_pack == "ai") {
+        if (opt.texture_pack == "ai") {
             r.value = "AI upscaled";
             r.help = std::string("D012FFRT plus our own AI upscales of the other textures (about 1.3 GB). ") + setup::texture_pack_credit("ai");
         } else {
@@ -340,6 +371,7 @@ struct App {
                     p.rows.push_back(row("Update the game", "This app was updated since the game was built. Builds the game again from the files already on this device (no game file needed), "
                                                             "then installs it. About 5 minutes."));
                 p.rows.push_back(row("Install the game", "The game is built. This installs it as an app (Android asks you to confirm)."));
+                p.rows.push_back(row("Change extras", "Turn the HD textures or the Japanese voices on or off, or pick another texture pack, without building the game again."));
                 p.rows.push_back(row("Build it again", "Pick your game file and build from scratch (your saves are kept)."));
                 p.rows.push_back(row("Check for updates", "Looks for a newer version of this app (it contacts github.com; nothing about you or your game is sent)."));
                 p.rows.push_back(row("Quit"));
@@ -354,6 +386,7 @@ struct App {
             else if (installed()) {
                 p.tab = "Installed";
                 p.rows = {row("Play", "Start the game."),
+                          row("Change extras", "Turn the HD textures, the Japanese voices or the Android version on or off, or pick another texture pack, without rebuilding the game."),
                           row("Check for updates", "Look for a newer release of the game files (not available yet)."),
                           row("Rebuild the game", "Compile the game again from your extracted files. Use this if the game does not start."),
                           row("Install again", "Pick a game file and install from scratch (your saves are kept)."),
@@ -366,6 +399,30 @@ struct App {
                           row("Quit")};
             }
 #endif
+            break;
+        }
+        case Screen::PickInfo: {
+            const bool undub = pick == Pick::Undub;
+#ifdef __ANDROID__
+            const std::string how = "Android's own file picker opens next: browse to the file (SD card, Downloads...) and tap it. The app only reads it; nothing is uploaded.";
+#else
+            const std::string how = "A file dialog opens next: browse to the file and open it. The program only reads it; nothing is uploaded.";
+#endif
+            if (!undub) {
+                p.title = "YOUR GAME FILE";
+                p.tab = "Step 1";
+                p.rows = {row("A Dissidia 012 disc image", "The game is built from your own copy of the PSP game Dissidia 012 [duodecim] Final Fantasy, as a disc image file: a .iso or a .cso (compressed ISO) of the whole disc. Nothing from the game is downloaded or shipped with this app.", ".iso or .cso"),
+                          row("Valid: EU or US release", "The European release (ULES-01505, also the PSN version) and the US release (ULUS-10566) work. It must be Dissidia 012, not an archive: unpack .zip / .7z first.", "EU / US"),
+                          row("Choose the file", how),
+                          row("Back")};
+            } else {
+                p.title = "THE UNDUB FILE";
+                p.tab = "Japanese voices";
+                p.rows = {row("A second disc image", "The Japanese voices and movies come from a Japanese or undub version of Dissidia 012, as a disc image: a .iso or .cso. It is only read once; your own disc stays the base of the game.", ".iso or .cso"),
+                          row("Valid: the undub / Japanese disc", "A Dissidia 012 image that has the Japanese voices, for example the Japanese release or an undub patch of the game. The same game as your own disc, just with different voice and movie files.", "Japanese / undub"),
+                          row("Choose the file", how),
+                          row("Back")};
+            }
             break;
         }
         case Screen::Permission: {
@@ -456,46 +513,77 @@ struct App {
         }
         case Screen::Options: {
             p.title = "OPTIONS";
-            p.tab = "Options";
             bool tex = setup::feature_available(layout, "hd_textures"), jp = setup::feature_available(layout, "jp_audio"),
                  an = setup::feature_available(layout, "android");
-            MenuRow u = toggle_row("Check for updates", "Look for new releases when the game starts (changeable later in the game's settings.ini).", opt.check_updates, true);
-            std::string jpHelp = "Adds the Japanese voices and movies from a second disc image (an undub ISO) that you pick next.";
-            if (!save_sources_scanned) { save_sources = psp_savemgr::detect_sources(true); save_sources_scanned = true; }
-            MenuRow sv = row("Import saves", "", "None found");
-            if (!save_sources.empty()) {
-                sv.help = "Copies your Dissidia 012 saves from PPSSPP or a memory stick into the game, whatever their region. The originals are not changed. You can also do this later in the game (Triangle in the save list).";
-                sv.value = "Off";
-                for (auto& src : save_sources)
-                    if (src.path == opt.import_saves) sv.value = src.label + " (" + std::to_string(psp_savemgr::scan(src.path).size()) + ")";
-                sv.can_dec = sv.can_inc = true;
-            } else sv.help = "No PPSSPP or memory stick saves of Dissidia 012 were found. You can import saves later in the game (Triangle in the save list).";
-            p.rows = {u,
-                      tex_row(tex),
-                      toggle_row("Japanese voices (undub)", jpHelp, opt.jp_audio, jp),
-                      toggle_row("Android version", "Also builds the Android version (an APK for phones and handhelds, 64-bit ARM). Needs a one-time download of Google's Android NDK (about 0.7 GB; by turning this on you accept its license, developer.android.com/studio/terms) and some extra minutes. Afterwards you can install it on a connected device from the last page.", opt.android, an),
-                      sv,
-                      row("Start installing", "Reads " + shorten_left(iso, 40) + " and builds the game in " + shorten_left(workdir, 34) +
-                                                  ". You can cancel and continue later."),
-                      row("Back")};
+            if (!save_sources_scanned) {
+#ifdef __ANDROID__
+                save_sources.clear();
+#else
+                save_sources = psp_savemgr::detect_sources(true);
+#endif
+                save_sources_scanned = true;
+            }
+#ifdef __ANDROID__
+            const std::string tex_note = " The download goes over your connection (WiFi is best) and needs about 3 GB of free space while it unpacks.";
+#else
+            const std::string tex_note;
+#endif
+            for (OptRow k : option_rows()) {
+                switch (k) {
+                case OR_UPDATES:
+                    p.rows.push_back(toggle_row("Check for updates", "Look for new releases when the app starts (changeable later in the game's settings.ini).", opt.check_updates, true));
+                    break;
+                case OR_HD:
+                    p.rows.push_back(toggle_row("HD textures", "Higher resolution textures for the whole game. Turn it on to pick which pack to use." + tex_note, opt.hd_textures, tex));
+                    break;
+                case OR_PACK:
+                    p.rows.push_back(tex_pack_row());
+                    break;
+                case OR_JP:
+                    p.rows.push_back(toggle_row("Japanese voices (undub)", "Adds the Japanese voices and movies from a second disc image (an undub ISO) that you pick next.", opt.jp_audio, jp));
+                    break;
+                case OR_ANDROID:
+                    p.rows.push_back(toggle_row("Android version", "Also builds the Android version (an APK for phones and handhelds, 64-bit ARM). Needs a one-time download of Google's Android NDK (about 0.7 GB; by turning this on you accept its license, developer.android.com/studio/terms) and some extra minutes. Afterwards you can install it on a connected device from the last page.", opt.android, an));
+                    break;
+                case OR_SAVES: {
+                    MenuRow sv = row("Import saves", "", "None found");
+                    if (!save_sources.empty()) {
+                        sv.help = "Copies your Dissidia 012 saves from PPSSPP or a memory stick into the game, whatever their region. The originals are not changed. You can also do this later in the game (Triangle in the save list).";
+                        sv.value = "Off";
+                        for (auto& src : save_sources)
+                            if (src.path == opt.import_saves) sv.value = src.label + " (" + std::to_string(psp_savemgr::scan(src.path).size()) + ")";
+                        sv.can_dec = sv.can_inc = true;
+                    } else sv.help = "No PPSSPP or memory stick saves of Dissidia 012 were found. You can import saves later in the game (Triangle in the save list).";
+                    p.rows.push_back(sv);
+                    break;
+                }
+                case OR_FOLDER:
+                    p.rows.push_back(row("Install folder", "The game's files and your saves go here. Press Confirm to pick another folder.", shorten_left(workdir, 34)));
+                    break;
+                case OR_START:
+                    if (extras_mode) p.rows.push_back(row("Apply changes", "Downloads or adds the extras you turned on and removes the HD textures if you turned them off. The game is not rebuilt. Turning the Japanese voices off keeps the files already added."));
+                    else p.rows.push_back(row("Start installing", "Reads " + shorten_left(iso, 40) + " and builds the game in " + shorten_left(workdir, 34) +
+                                                                ". You can cancel and continue later."));
+                    break;
+                case OR_BACK:
+                    p.rows.push_back(row("Back"));
+                    break;
+                }
+            }
             break;
         }
         case Screen::Build: {
             p.title = android_inst ? "ON YOUR DEVICE" : updating ? "UPDATING" : rebuild_only ? "REBUILDING" : "INSTALLING";
             char pc[16];
             std::snprintf(pc, sizeof pc, "%d%%", (int)(prog.fraction * 100 + 0.5));
-            std::string bar = "[";
-            int fill = (int)(prog.fraction * 20 + 0.5);
-            for (int i = 0; i < 20; i++) bar += i < fill ? '#' : '-';
-            bar += "]";
-            p.tab = pc;
+            p.tab = pc;   // shown in the header after the title
             int64_t t = now_ms();
             std::string stage = prog.stage.empty() ? "Starting..." : prog.stage;
             std::string steps = plan.size() > 1 ? " (" + std::to_string(prog.step + 1) + "/" + std::to_string(plan.size()) + ")" : "";
-            p.rows = {row(stage + steps, "", bar),
+            p.rows = {row(stage + steps, "", pc),
                       row(prog.detail.empty() ? "Working..." : prog.detail, "", setup::elapsed_text(prog, t)),
                       row(setup::eta_text(prog, t), ""),
-                      row("Cancel", (prog.explain.empty() ? "" : prog.explain + " ") + "Cancel stops the installation; starting it again continues where it stopped.")};
+                      row("Cancel")};
             if (sel > 3) sel = 3;
             break;
         }
@@ -550,20 +638,23 @@ struct App {
     int row_count() { return is_browser() ? (int)br.list.size() : (int)page().rows.size(); }
 
     // ---- actions ----
-    void start_plan(bool rebuild, bool update = false, bool android_install = false) {
-        rebuild_only = rebuild || update || android_install;
+    void start_plan(bool rebuild, bool update = false, bool android_install = false, bool extras = false) {
+        extras_run = extras;
+        rebuild_only = rebuild || update || android_install || extras;
         updating = update;
         android_inst = android_install;
         const setup::Options& o = (rebuild || update) ? state.options : opt;
+        if (extras) {}   // plan already built by start_extras()
+        else
 #ifdef __ANDROID__
-        if (!rebuild) plan = setup::plan_install_android(layout, iso, workdir);
+        if (!rebuild) plan = setup::plan_install_android(layout, iso, workdir, opt);
         else if (!android_install && !update) plan = setup::plan_rebuild_android(layout, state.workdir);
         else
 #endif
         if (android_install) plan = setup::plan_android_install(layout, cur_workdir());
         else if (update) plan = setup::plan_update(layout, state.workdir, o, upd);
         else plan = rebuild ? setup::plan_rebuild(layout, state.workdir, o) : setup::plan_install(layout, iso, workdir, o);
-        log_open((rebuild || update) ? state.workdir : workdir);
+        log_open((rebuild || update || extras) ? state.workdir : workdir);
         prog = setup::Progress();
         prog.stage = plan[0].label;
         prog.explain = plan[0].explain;
@@ -577,7 +668,54 @@ struct App {
         go(Screen::Build, 3);
     }
 
+#ifdef __ANDROID__
+    // A step with `downloads` is carried out by the app itself (Android's HTTPS stack; the bundled Python has no DNS / CA store).
+    bool dl_active = false;
+    size_t dl_i = 0;
+    bool dl_step() const { return building && prog.step < (int)plan.size() && !plan[(size_t)prog.step].downloads.empty(); }
+    void dl_begin() {   // starts the next missing file (a finished one from an earlier try is kept)
+        const auto& d = plan[(size_t)prog.step].downloads;
+        std::error_code ec;
+        while (dl_i < d.size() && fs::is_regular_file(d[dl_i].second, ec)) dl_i++;
+        if (dl_i >= d.size()) { dl_active = false; return; }
+        prog.detail = "Starting download " + std::to_string(dl_i + 1) + " of " + std::to_string(d.size()) + "...";
+        setup::android::download(d[dl_i].first, d[dl_i].second);
+        dl_active = true;
+    }
+    // returns true when the step's downloads are all done
+    bool dl_pump() {
+        if (!dl_active) return true;
+        const auto& d = plan[(size_t)prog.step].downloads;
+        std::string st = setup::android::download_status();
+        const setup::Step& stp = plan[(size_t)prog.step];
+        if (st.compare(0, 8, "working:") == 0) {
+            long long b = 0, t = 0;
+            std::sscanf(st.c_str() + 8, "%lld:%lld", &b, &t);
+            double f = t > 0 ? (double)b / (double)t : 0;
+            prog.detail = "File " + std::to_string(dl_i + 1) + " of " + std::to_string(d.size()) + ": " + human_size((uintmax_t)b) + (t > 0 ? " of " + human_size((uintmax_t)t) : "");
+            prog.fraction = std::max(prog.fraction, stp.base + stp.weight * ((double)dl_i + f) / (double)d.size());
+            dirty = true;
+            return false;
+        }
+        if (st == "ok") {
+            dl_i++;
+            dl_begin();
+            dirty = true;
+            return !dl_active;
+        }
+        if (st.compare(0, 6, "failed") == 0) {
+            dl_active = false;
+            fail("The download failed (" + st.substr(st.size() > 8 ? 8 : 0) + "). Check your connection and try again; finished files are kept.");
+            return false;
+        }
+        return false;
+    }
+#endif
+
     void start_step() {
+#ifdef __ANDROID__
+        if (dl_step()) { dl_i = 0; prog.stage = plan[(size_t)prog.step].label; prog.explain = plan[(size_t)prog.step].explain; dl_begin(); return; }
+#endif
         if (!proc.start(plan[(size_t)prog.step].argv, plan[(size_t)prog.step].env, "")) {
             fail("Could not start: " + proc.error());
             return;
@@ -615,8 +753,14 @@ struct App {
             setup::feed_line(prog, plan, line, now_ms());
             dirty = true;
         }
-        if (building && !proc.busy()) {
-            int code = proc.exit_code();
+        bool step_over = building && !proc.busy();
+        int code = 0;
+#ifdef __ANDROID__
+        if (dl_step()) { step_over = dl_pump() && building; code = 0; }
+        else
+#endif
+        if (step_over) code = proc.exit_code();
+        if (step_over) {
             if (code != 0 || !prog.error.empty()) {
                 fail(prog.error.empty() ? "A step failed (exit code " + std::to_string(code) + "); see setup.log in the install folder." : prog.error + ".");
                 return;
@@ -645,8 +789,9 @@ struct App {
                 }
 #ifdef __ANDROID__
                 state.workdir = rebuild_only ? state.workdir : workdir;
-                state.built_fp = setup::android_payload_fingerprint(layout);
+                if (!extras_run) state.built_fp = setup::android_payload_fingerprint(layout);
 #endif
+                if (extras_run) { state.options = opt; state.options.undub_iso.clear(); }
                 setup::save_state(state_file, state);
 #ifdef __ANDROID__
                 if (false)
@@ -656,7 +801,12 @@ struct App {
                     if (setup::create_shortcut(workdir, layout.root, &where, &serr)) shortcut_note = "A menu entry was added: " + where;
                     else shortcut_note = "No menu entry (" + serr + ")";
                 }
-                go(Screen::Done);
+                if (extras_run) {
+                    extras_mode = false;
+                    msg_title = "EXTRAS UPDATED";
+                    msg_text = "The extras are in place.";
+                    go(Screen::Message);
+                } else go(Screen::Done);
             }
             dirty = true;
         }
@@ -825,11 +975,12 @@ struct App {
         return fs::is_directory(dl, ec) ? dl : fs::path(setup::home_dir());
     }
 
-    void begin_pick(Pick k, Screen back) {
+    void begin_pick(Pick k, Screen back, bool explained = false) {
         pick = k;
         before_pick = back;
+        if ((k == Pick::Iso || k == Pick::Undub) && !explained) { go(Screen::PickInfo, 0); return; }   // first say what to pick and what is valid
 #ifdef __ANDROID__
-        if (k == Pick::Iso) {   // Android's own file picker; the built-in browser stays as the fallback (the Waiting page)
+        if (k == Pick::Iso || k == Pick::Undub) {   // Android's own file picker; the built-in browser stays as the fallback (the Waiting page)
             setup::android::pick_file();
             go(Screen::Waiting);
             return;
@@ -857,17 +1008,17 @@ struct App {
         std::error_code ec;
         if (pick == Pick::Dir) {
             workdir = path;
-            go(Screen::InstallDir);
+            if (before_pick == Screen::Options) go(Screen::Options, 0); else go(Screen::InstallDir);
         } else if (pick == Pick::Undub) {
             opt.undub_iso = path;
-            go(Screen::Options, 5);
+            go_options();
             start_install_or_ask();
         } else {
             iso = path;
 #ifdef __ANDROID__
             std::error_code e2;
             fs::create_directories(workdir, e2);   // workdir = <app files>/work (set at start)
-            if (setup::android::has_all_files_access()) start_plan(false); else go(Screen::Permission);
+            if (setup::android::has_all_files_access()) go_options(); else go(Screen::Permission);
             return;
 #endif
             if (workdir.empty()) workdir = !state.workdir.empty() ? state.workdir : setup::default_install_dir();
@@ -884,9 +1035,11 @@ struct App {
                 int fd = std::atoi(st.substr(3, c - 3).c_str());
                 int fl = fcntl(fd, F_GETFD);
                 if (fl >= 0) fcntl(fd, F_SETFD, fl & ~FD_CLOEXEC);   // the build tools inherit it (setup_from_iso.py "fd:N")
-                iso = "fd:" + std::to_string(fd);
-                iso_name = c == std::string::npos ? "game" : st.substr(c + 1);
+                std::string fdpath = "fd:" + std::to_string(fd);
                 setup::android::clear_pick();
+                if (pick == Pick::Undub) { picked(fdpath); return; }   // the second disc image of the undub option
+                iso = fdpath;
+                iso_name = c == std::string::npos ? "game" : st.substr(c + 1);
                 picked(iso);
                 return;
             }
@@ -904,7 +1057,54 @@ struct App {
         }
     }
 
+    void begin_extras() {
+        extras_mode = true;
+        workdir = state.workdir;
+        opt = state.options;
+        opt.undub_iso.clear();   // a saved path (or Android descriptor) from the install is no longer valid
+        go_options(OR_HD);
+    }
+
+    // Applies the extras that differ from what is installed: no rebuild.
+    void start_extras() {
+        const setup::Options& prev = state.options;
+        std::error_code ec;
+        const fs::path tex = fs::path(workdir) / "mods" / "textures";
+        const bool present = fs::is_regular_file(tex / "textures.ini", ec);
+        const bool pack_changed = prev.hd_textures && opt.hd_textures && prev.texture_pack != opt.texture_pack;
+        extras_skip_tex = !(opt.hd_textures && (!prev.hd_textures || pack_changed || !present));
+        if (!opt.hd_textures || pack_changed) {   // turned off, or another pack: the old files must not stay
+            fs::remove_all(tex, ec);
+#ifdef __ANDROID__
+            fs::remove_all(fs::path(setup::android_game_dir()) / "mods" / "textures", ec);
+#endif
+        }
+        setup::Options o = opt;
+        if (prev.jp_audio && o.undub_iso.empty()) o.jp_audio = false;   // already added: nothing to extract
+        if (prev.android && setup::android_build_exists(workdir)) o.android = false;   // its APK is already built
+#ifdef __ANDROID__
+        plan = setup::plan_extras_android(layout, workdir, o, extras_skip_tex);
+#else
+        plan = setup::plan_extras(layout, workdir, o, extras_skip_tex);
+#endif
+        if (plan.empty()) {
+            state.options = opt; state.options.undub_iso.clear();
+            setup::save_state(state_file, state);
+            extras_mode = false;
+            msg_title = "EXTRAS";
+            msg_text = "Nothing needed to be added: the extras you chose are already in place.";
+            go(Screen::Message);
+            return;
+        }
+        start_plan(false, false, false, true);
+    }
+
     void start_install_or_ask() {
+        if (extras_mode) {
+            if (opt.jp_audio && !state.options.jp_audio && opt.undub_iso.empty() && setup::feature_available(layout, "jp_audio")) { begin_pick(Pick::Undub, Screen::Options); return; }
+            start_extras();
+            return;
+        }
         // the undub option needs its disc image first
         if (opt.jp_audio && opt.undub_iso.empty() && setup::feature_available(layout, "jp_audio")) { begin_pick(Pick::Undub, Screen::Options); return; }
         std::error_code ec;
@@ -913,22 +1113,16 @@ struct App {
         start_plan(false);
     }
 
-    void toggle_option(int row_idx, int dir = 1) {
-        switch (row_idx) {
-        case 0: opt.check_updates = !opt.check_updates; break;
-        case 1:   // cycle (Right / select): LiinkPK -> AI upscaled -> Off -> LiinkPK; Left goes the other way
-            if (setup::feature_available(layout, "hd_textures")) {
-                int cur = !opt.hd_textures ? 2 : opt.texture_pack == "ai" ? 1 : 0;
-                cur = (cur + (dir < 0 ? 2 : 1)) % 3;
-                opt.hd_textures = cur != 2;
-                if (cur != 2) opt.texture_pack = cur == 1 ? "ai" : "liink";
-            }
-            break;
-        case 2:
+    void toggle_option(OptRow k, int dir = 1) {
+        switch (k) {
+        case OR_UPDATES: opt.check_updates = !opt.check_updates; break;
+        case OR_HD: if (setup::feature_available(layout, "hd_textures")) opt.hd_textures = !opt.hd_textures; break;
+        case OR_PACK: opt.texture_pack = opt.texture_pack == "ai" ? "liink" : "ai"; break;
+        case OR_JP:
             if (setup::feature_available(layout, "jp_audio")) { opt.jp_audio = !opt.jp_audio; if (!opt.jp_audio) opt.undub_iso.clear(); }
             break;
-        case 3: if (setup::feature_available(layout, "android")) opt.android = !opt.android; break;
-        case 4: {   // Off -> each detected source -> Off
+        case OR_ANDROID: if (setup::feature_available(layout, "android")) opt.android = !opt.android; break;
+        case OR_SAVES: {   // Off -> each detected source -> Off
             size_t i = 0;
             if (!opt.import_saves.empty()) { while (i < save_sources.size() && save_sources[i].path != opt.import_saves) i++; i++; }
             opt.import_saves = i < save_sources.size() ? save_sources[i].path : "";
@@ -940,6 +1134,11 @@ struct App {
         dirty = true;
     }
 
+    OptRow option_at(int i) const {
+        std::vector<OptRow> r = option_rows();
+        return i >= 0 && i < (int)r.size() ? r[(size_t)i] : OR_BACK;
+    }
+
     void confirm() {
         switch (screen) {
         case Screen::Welcome:
@@ -949,8 +1148,9 @@ struct App {
                 int i = sel - (need_rebuild() ? 1 : 0);
                 if (need_rebuild() && sel == 0) { workdir = state.workdir; start_plan(true); }
                 else if (i == 0) { setup::android::install_apk(state.workdir + "/android/dissidia.apk"); go(Screen::AndroidInstall); }
-                else if (i == 1) begin_pick(Pick::Iso, Screen::Welcome);
-                else if (i == 2) begin_check(true);
+                else if (i == 1) begin_extras();
+                else if (i == 2) begin_pick(Pick::Iso, Screen::Welcome);
+                else if (i == 3) begin_check(true);
                 else quit = true;
             } else if (sel == 0) begin_pick(Pick::Iso, Screen::Welcome);
             else if (sel == 1) begin_check(true);
@@ -960,15 +1160,20 @@ struct App {
             if (installed()) {
                 switch (sel) {
                 case 0: play(); break;
-                case 1: begin_check(true); break;
-                case 2: opt = state.options; start_plan(true); break;
-                case 3: begin_pick(Pick::Iso, Screen::Welcome); break;
+                case 1: begin_extras(); break;
+                case 2: begin_check(true); break;
+                case 3: opt = state.options; start_plan(true); break;
+                case 4: begin_pick(Pick::Iso, Screen::Welcome); break;
                 default: quit = true;
                 }
             } else if (sel == 0) {
                 if (workdir.empty()) workdir = setup::default_install_dir();
                 begin_pick(Pick::Iso, Screen::Welcome);
             } else quit = true;
+            break;
+        case Screen::PickInfo:
+            if (sel == 2) begin_pick(pick, before_pick, true);
+            else if (sel == 3) go(before_pick);
             break;
         case Screen::Download:
 #ifdef __ANDROID__
@@ -981,10 +1186,10 @@ struct App {
         case Screen::Permission:
 #ifdef __ANDROID__
             if (sel == 0) {
-                if (setup::android::has_all_files_access()) { if (!iso.empty()) { std::error_code e2; fs::create_directories(workdir, e2); start_plan(false); } else { pick = Pick::Iso; open_browser(); } }
+                if (setup::android::has_all_files_access()) { if (!iso.empty()) { std::error_code e2; fs::create_directories(workdir, e2); go_options(); } else { pick = Pick::Iso; open_browser(); } }
                 else setup::android::request_all_files_access();
             } else if (sel == 1) {
-                if (setup::android::has_all_files_access()) { if (!iso.empty()) { std::error_code e2; fs::create_directories(workdir, e2); start_plan(false); } else { pick = Pick::Iso; open_browser(); } }
+                if (setup::android::has_all_files_access()) { if (!iso.empty()) { std::error_code e2; fs::create_directories(workdir, e2); go_options(); } else { pick = Pick::Iso; open_browser(); } }
                 else { msg_title = "ALLOW ACCESS"; msg_text = "Access to files is not allowed yet. Press \"Allow access to files\" and switch it on for this app."; go(Screen::Message); }
             } else go(Screen::Welcome);
 #endif
@@ -1030,19 +1235,25 @@ struct App {
             break;
         }
         case Screen::InstallDir:
-            if (sel == 0) go(Screen::Options, 5);
+            if (sel == 0) go_options();
             else if (sel == 1) begin_pick(Pick::Dir, Screen::InstallDir);
             else if (sel == 2) { workdir = setup::default_install_dir(); dirty = true; sel = 0; }
             else begin_pick(Pick::Iso, Screen::Welcome);
             break;
-        case Screen::Options:
-            if (sel <= 4) toggle_option(sel);
-            else if (sel == 5) start_install_or_ask();
-            else go(Screen::InstallDir);
+        case Screen::Options: {
+            OptRow k = option_at(sel);
+            if (k == OR_START) start_install_or_ask();
+            else if (k == OR_BACK) cancel();
+            else if (k == OR_FOLDER) { begin_pick(Pick::Dir, Screen::Options); }
+            else toggle_option(k);
             break;
+        }
         case Screen::Build:
             if (sel == 3) {
                 proc.kill();
+#ifdef __ANDROID__
+                if (dl_active) { setup::android::cancel_download(); dl_active = false; }
+#endif
                 building = false;
                 fail("The installation was cancelled.");
             }
@@ -1114,7 +1325,10 @@ struct App {
             sel = 1; confirm();
             break;
         case Screen::PickUndub:
-            go(Screen::Options, 5);
+            go_options();
+            break;
+        case Screen::PickInfo:
+            go(before_pick);
             break;
         case Screen::BrowseDir:
             go(Screen::InstallDir);
@@ -1123,7 +1337,12 @@ struct App {
             go(Screen::Welcome);
             break;
         case Screen::Options:
-            go(Screen::InstallDir);
+#ifdef __ANDROID__
+            extras_mode = false;
+            go(Screen::Welcome);
+#else
+            if (extras_mode) { extras_mode = false; go(Screen::Welcome); } else go(Screen::InstallDir);
+#endif
             break;
         case Screen::Welcome:
         case Screen::Done:
@@ -1142,7 +1361,10 @@ struct App {
     }
 
     void adjust(int dir) {
-        if (screen == Screen::Options && sel <= 4) toggle_option(sel, dir);
+        if (screen == Screen::Options) {
+            OptRow k = option_at(sel);
+            if (k != OR_START && k != OR_BACK && k != OR_FOLDER) toggle_option(k, dir);
+        }
     }
 
     // ---- touch (Android): a tap on a row picks it, a tap on the title bar goes back, a vertical drag moves the selection ----
@@ -1192,21 +1414,23 @@ struct App {
                 return;
             }
             if (screen == Screen::TypePath) return;
-            if (dy < 46) { if (screen != Screen::Welcome) cancel(); return; }   // the title / tab area
-            Page pg = page();
-            int n = (int)pg.rows.size();
-            if (n == 0) return;
-            const float y0 = 68, pitch = n > 4 ? 128.f / (float)n : 35.f;
-            int i = (int)((dy - y0) / pitch);
-            if (dx < 40 || dx > 460 || dy < y0 - 4 || i < 0 || i >= n) return;
+            // hit-test against what the settings renderer drew (its geometry is in the same 480x272 design units)
+            const psp_sddialog::SetGeom& G = view.geom();
+            if (G.back.w > 0 && G.back.has(dx, dy) && screen != Screen::Welcome) { cancel(); return; }
             int top = 0;
             if (is_browser()) {   // page() lists only the visible window of the browser's entries
                 int total = (int)br.list.size();
                 top = std::max(0, std::min(sel - MENU_ROWS / 2, total - MENU_ROWS));
             }
-            sel = top + i;
-            dirty = true;
-            confirm();
+            for (const auto& r : G.rows) {
+                if (!r.r.has(dx, dy)) continue;
+                sel = top + r.idx;
+                dirty = true;
+                if (r.dec.w > 0 && r.dec.has(dx, dy)) adjust(-1);
+                else if (r.inc.w > 0 && r.inc.has(dx, dy)) adjust(+1);
+                else confirm();
+                return;
+            }
         }
     }
 
@@ -1245,6 +1469,53 @@ struct App {
         }
     }
 
+    static std::string nice(const std::string& up) {   // "WHERE TO INSTALL" -> "Where to install"
+        std::string r;
+        for (size_t k = 0; k < up.size(); k++) r += k == 0 ? up[k] : (char)std::tolower((unsigned char)up[k]);
+        return r;
+    }
+
+    // The page as a SetScene for the settings renderer. Rows: no value = an action; On / Off = a toggle; arrows = a choice; the progress rows are info lines.
+    psp_sddialog::SetScene make_scene(const Page& pg, int vis) {
+        using psp_sddialog::SetKind;
+        psp_sddialog::SetScene sc;
+        sc.title = "Setup";
+        sc.brand = "Dissidia 012 Setup";
+        // no sidebar: the page's status (a percentage, the folder being browsed, "Built") goes into the header after the title
+        sc.crumbs.push_back(nice(pg.title));
+        if (!pg.tab.empty() && screen != Screen::Options) sc.crumbs.push_back(is_browser() ? shorten_left(pg.tab, 40) : pg.tab);
+        sc.hide_side = true;
+        sc.cats.push_back({"Setup", 7});
+        const bool progress = screen == Screen::Build;
+        int id = 0;
+        for (const MenuRow& m : pg.rows) {
+            psp_sddialog::SetRow r;
+            r.id = id++ % psp_sddialog::SET_MAX_IDS;
+            r.label = m.label;
+            r.value = m.value;
+            r.disabled = m.disabled;
+            r.can_dec = m.can_dec; r.can_inc = m.can_inc;
+            r.help = m.help.empty() ? std::string() : m.label + "\n" + m.help;
+            if (progress) r.help = (prog.stage.empty() ? std::string("Working") : prog.stage) + "\n" + (prog.explain.empty() ? std::string("Cancelling stops the install; starting it again continues where it stopped.") : prog.explain);   // the same text whichever row is selected
+            if (m.value == "On" || m.value == "Off") { r.kind = SetKind::Toggle; r.on = m.value == "On"; }
+            else if (m.can_dec || m.can_inc) r.kind = SetKind::Choice;
+            else if (progress && r.id == 0) { r.kind = SetKind::Progress; r.progress = (float)prog.fraction; }
+            else if (progress && r.id < 3) r.kind = SetKind::Info;
+            else if (m.value.empty()) r.kind = SetKind::Action;
+            else r.kind = SetKind::Info;
+            sc.rows.push_back(r);
+        }
+        sc.sel = std::min(vis, std::max(0, (int)pg.rows.size() - 1));
+        sc.in_sub = screen != Screen::Welcome;   // Back goes up one step
+#ifdef __ANDROID__
+        sc.device = 2;
+#else
+        sc.device = 1;
+#endif
+        sc.confirm_cross = true;
+        return sc;
+    }
+
     void render_page() {
         canvas.clear(0xFF000000);
         if (screen == Screen::TypePath) {
@@ -1258,7 +1529,9 @@ struct App {
             int top = std::max(0, std::min(sel - MENU_ROWS / 2, total - MENU_ROWS));
             vis = sel - top;
         }
-        render_menu(canvas, pg.title, pg.tab, pg.rows, std::min(vis, std::max(0, (int)pg.rows.size() - 1)), true);
+        if (!view_opened) { view.set_open(true); view_opened = true; }
+        view.render(canvas, make_scene(pg, vis), (double)now_ms());
+        if (view.animating()) dirty = true;   // keep drawing while something moves
     }
 
     void present() {
@@ -1561,14 +1834,20 @@ int main(int argc, char** argv) {
         app.opt.hd_textures = true;
         app.br.open(setup::home_dir(), false);
         int n = 0;
-        auto shot = [&](const char* name) { app.render_page(); write_ppm(app.canvas, shots + "/" + name + ".ppm"); n++; };
+        auto shot = [&](const char* name) { for (int f = 0; f < 90; f++) { app.render_page(); if (!app.view.animating()) break; SDL_Delay(16); } app.render_page(); write_ppm(app.canvas, shots + "/" + name + ".ppm"); n++; };
         app.layout_problem.clear();
         app.go(Screen::Welcome); shot("1_welcome");
         app.pick = Pick::Iso; app.go(Screen::Waiting); shot("2_waiting");
         app.go(Screen::PickIso); shot("2b_pick_iso");
+        app.pick = Pick::Iso; app.go(Screen::PickInfo, 0); shot("2c_pick_info");
+        app.pick = Pick::Undub; app.go(Screen::PickInfo, 0); shot("2d_pick_info_undub");
+        app.pick = Pick::Iso;
         app.go(Screen::InstallDir); shot("3_install_dir");
-        app.go(Screen::Options, 1); shot("4_options");
-        app.go(Screen::Options, 5); shot("4b_options_scrolled");
+        app.go(Screen::Options, 0); shot("4_options");
+        app.opt.texture_pack = "ai"; app.go(Screen::Options, 1); shot("4b_options_pack");
+        app.extras_mode = true; app.go(Screen::Options, 0); shot("4c_options_extras"); app.extras_mode = false;
+        app.opt.hd_textures = false; app.go(Screen::Options, 0); shot("4d_options_nopack");
+        app.opt.hd_textures = true; app.opt.texture_pack = "liink";
         setup::Options o; o.android = true; o.hd_textures = true; o.jp_audio = true; o.undub_iso = "/x.iso";
         app.plan = setup::plan_install(app.layout, app.iso, app.workdir, o);
         app.prog.step = 1; app.prog.stage = "Compiling the game"; app.prog.fraction = 0.42;
@@ -1669,8 +1948,8 @@ int main(int argc, char** argv) {
         app.update_input();
         int64_t t = now_ms();
         if (app.dirty || (app.building && t - app.last_draw > 250)) {
+            app.dirty = false;   // before drawing: the settings view asks for the next frame while it animates
             app.present();
-            app.dirty = false;
             app.last_draw = t;
         }
         SDL_Delay(8);

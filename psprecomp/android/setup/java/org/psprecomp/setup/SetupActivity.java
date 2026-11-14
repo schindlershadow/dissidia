@@ -11,6 +11,7 @@ import android.net.Uri;
 import android.os.ParcelFileDescriptor;
 import android.provider.OpenableColumns;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Environment;
 import android.os.PowerManager;
 import android.provider.Settings;
@@ -32,6 +33,14 @@ public class SetupActivity extends SDLActivity {
     private static volatile String installStatus = "";
     private static PowerManager.WakeLock wakeLock;
     private static BroadcastReceiver receiver;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        UpdateCheckService.schedule(this);   // the daily background check for updates (a notification only)
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED)
+            requestPermissions(new String[] {"android.permission.POST_NOTIFICATIONS"}, 1);   // Android 13+: asks once, for the update notifications
+    }
 
     /** Where the executables (lib*.so) were unpacked: the one folder an app may run files from. */
     public static String nativeLibDir() {
