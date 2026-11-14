@@ -3,6 +3,8 @@
 #include "psp_platform.h"
 
 #include <algorithm>
+#include <atomic>
+#include <thread>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -36,21 +38,46 @@ void walk(const std::string& root, const std::string& rel, std::vector<std::stri
     std::string dir = rel.empty() ? root : root + "/" + rel;
     DIR* d = ::opendir(dir.c_str());
     if (!d) return;
-    std::vector<std::string> names;
+    // The directory entry says whether a name is a file or a folder, so most names need no stat() of their own. On Android's
+    // shared storage a stat() costs about a millisecond, and a voice pack is thousands of files.
+    std::vector<std::pair<std::string, unsigned char>> names;
     while (dirent* e = ::readdir(d)) {
         std::string n = e->d_name;
         if (n == "." || n == ".." || n[0] == '.') continue;
-        names.push_back(n);
+        names.push_back({n, e->d_type});
     }
     ::closedir(d);
     std::sort(names.begin(), names.end());
-    for (auto& n : names) {
+    for (auto& nt : names) {
+        const std::string& n = nt.first;
         std::string r = rel.empty() ? n : rel + "/" + n;
-        struct stat st;
-        if (::stat((root + "/" + r).c_str(), &st) != 0) continue;
-        if (S_ISDIR(st.st_mode)) walk(root, r, out);
-        else if (S_ISREG(st.st_mode)) out->push_back(r);
+        unsigned char t = nt.second;
+        if (t != DT_DIR && t != DT_REG) {   // unknown (some file systems) or a link: ask
+            struct stat st;
+            if (::stat((root + "/" + r).c_str(), &st) != 0) continue;
+            t = S_ISDIR(st.st_mode) ? DT_DIR : S_ISREG(st.st_mode) ? DT_REG : DT_UNKNOWN;
+        }
+        if (t == DT_DIR) walk(root, r, out);
+        else if (t == DT_REG) out->push_back(r);
     }
+}
+
+// File sizes of the scanned files, looked up on several threads (-1 = cannot stat): the file system answers them in parallel.
+std::vector<int64_t> stat_sizes(const std::vector<std::string>& paths) {
+    std::vector<int64_t> sizes(paths.size(), -1);
+    const unsigned n = std::max(1u, std::min(8u, std::thread::hardware_concurrency()));
+    std::atomic<size_t> next{0};
+    auto work = [&] {
+        for (size_t i; (i = next.fetch_add(1)) < paths.size();) {
+            struct stat st;
+            if (::stat(paths[i].c_str(), &st) == 0) sizes[i] = (int64_t)st.st_size;
+        }
+    };
+    std::vector<std::thread> th;
+    for (unsigned i = 1; i < n; ++i) th.emplace_back(work);
+    work();
+    for (auto& t : th) t.join();
+    return sizes;
 }
 
 bool parse_hex8(const std::string& s, uint32_t* out) {
@@ -150,16 +177,21 @@ bool PackageMods::build(const std::vector<uint8_t>& original_index, uint64_t pac
         }
     }
     if (files.empty()) return true;
+    std::vector<std::string> full_paths;
+    full_paths.reserve(files.size());
+    for (const Src& f : files) full_paths.push_back(f.dir + "/" + f.rel);
+    const std::vector<int64_t> file_sizes = stat_sizes(full_paths);
 
     uint64_t next_virtual = (package_size + kSectorSize - 1) / kSectorSize;   // sectors
     uint32_t orig_count = (uint32_t)idx.entries.size();
     uint32_t added = 0;
     std::vector<IndexEntry> new_entries;
 
-    for (const Src& src : files) {
+    for (size_t fi = 0; fi < files.size(); ++fi) {
+        const Src& src = files[fi];
         const std::string& rel = src.rel;
-        struct stat st;
-        if (::stat((src.dir + "/" + rel).c_str(), &st) != 0) continue;
+        if (file_sizes[fi] < 0) continue;
+        struct { int64_t st_size; } st{file_sizes[fi]};
         std::string norm = normalize_asset_path(rel);
         uint32_t crc = 0;
         std::string asset = norm;
