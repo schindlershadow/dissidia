@@ -1886,8 +1886,8 @@ int main(int argc, char** argv) {
         app.update_input();
         int64_t t = now_ms();
         if (app.dirty || (app.building && t - app.last_draw > 250)) {
+            app.dirty = false;   // before drawing: the settings view asks for the next frame while it animates
             app.present();
-            app.dirty = false;
             app.last_draw = t;
         }
         SDL_Delay(8);
