@@ -196,6 +196,26 @@ Measured 2026-11-11 while building the Jecht combo timing tests (`tools/combo_ti
   (20 m) never reaches the dummy, so `place 3` first; HP attack is Square, bravery Circle (not Triangle).
 - Background long runs with `nohup` and send a Gotify message at the end (see ~/CLAUDE.md).
 
+## Skipping the menu walk (`battle_test.py run --direct`)
+
+The picture-by-picture menu walk takes about 100 s to reach the fight. `--direct` replays a recorded pad sequence inside the game
+(`runtime/direct_battle.cpp`) and gets to `[TEST] battle started` in about 30 s (Squall vs Lightning, stage 12, no screenshots until the HUD is up):
+
+    battle_test.py run --work W --script S --out /abs/dir --direct            # tests/replays/quick_battle_walk.txt
+    battle_test.py run ... --direct my_walk.txt --ff-menus 4                  # another recording; --ff-menus defaults to 4 with --direct
+
+- **How**: the game polls the pad once per frame, and the poll number is the one clock that does not change with fast-forward. The first part is rule
+  driven (CROSS 3 polls of every 15 until the save has loaded; the runtime turns `PSPRECOMP_SAVEDATA_AUTO` on for the replay because the save list dialog
+  reads the host pad, not the filtered one), the rest is the recorded rows, each as polls since the save loaded and a pad mask. The runtime logs
+  `[DIRECT] replay finished`; the harness then waits for the HUD, starts the clock as the normal walk does, and fast-forward goes off.
+- **Speed limit**: 4x. The replay finishes at the same poll at 8x and unthrottled too (the poll count is deterministic), but loads run in host time, so the
+  recorded gaps get too short and the game falls back to the menu or never enters the fight. 6x failed in a try as well.
+- **Flags** (test only, off by default): `PSPRECOMP_TEST_DIRECT_BATTLE=<file>` replays a recording; `PSPRECOMP_TEST_PAD_RECORD=1` makes a normal harness walk
+  log its pad (`[PADREC] <poll> <mask>`, and `[PADREC] loaded <poll>`). Another character or stage: record a walk (`battle_test.py run --char X --stage N ...` with
+  `PSPRECOMP_TEST_PAD_RECORD=1`), then `tools/walk_extract.py run_30.log walk.txt` and pass `--direct walk.txt`.
+- The pad filter is the one in `framerate.cpp` (`jecht_grid_filter` calls `dissidia_walk_filter` first), and the save events are two counters in
+  `psp_hle_utility.cpp` (`g_savedata_list_opened`, `g_savedata_completed`).
+
 ## Finding a stat the HUD shows (BRV, HP...) in guest RAM, and what keeps a test fight alive
 
 Notes from the Jecht combo work (2026-11-11), for whoever needs a live value again.

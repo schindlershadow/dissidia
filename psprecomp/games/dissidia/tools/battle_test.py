@@ -197,6 +197,29 @@ def free_port():
         return s.getsockname()[1]
 
 
+def walk_direct(g, ff_menus=4):
+    """boot -> battle with no menu walk: the runtime replays a recorded pad sequence by poll number (PSPRECOMP_TEST_DIRECT_BATTLE,
+    games/dissidia/runtime/direct_battle.cpp), so nothing here depends on screenshots until the fight's HUD is up."""
+    g.wait_log(r'Debug socket listening', 60)
+    if ff_menus != 0:
+        g.cmd('FF 120000 %d' % max(ff_menus, 0))
+    g.wait_log(r'\[DIRECT\] replay finished', 240)
+    seen = 0
+    for _ in range(90):
+        if not g.alive():
+            raise RuntimeError('the game exited')
+        time.sleep(0.5)
+        im = g.shot()
+        dark = sum(1 for p in ((120, 262), (360, 262), (30, 262), (450, 262)) if sum(im.getpixel(p)) < 330)
+        seen = seen + 1 if dark >= 3 else 0
+        if seen >= 2:
+            g.touch_go()
+            g.wait_log(r'\[TEST\] battle started', 20)
+            g.cmd('FF 0')
+            return
+    raise RuntimeError('the battle never started (direct)')
+
+
 def walk_menus(g, char, tries=14, stage=12, ff_menus=0):
     """boot -> battle. Raises when a stage does not come up."""
     t_start = time.time()
@@ -281,11 +304,15 @@ def run(a, fps=None):
     xp, disp = start_xvfb()
     g = Game(os.path.abspath(a.work), fps, a.out, disp, free_port(), script=os.path.abspath(a.script) if a.script else None,
              record=os.path.abspath(a.record) if getattr(a, 'record', None) else None,
-             extra_env=dict(({'PSPRECOMP_TEST_PLAYER_CHAR': str(CHAR_ID[a.char.lower()])} if a.char.lower() in CHAR_ID else {}), **(getattr(a, 'env', None) or {})))
+             extra_env=dict(({'PSPRECOMP_TEST_PLAYER_CHAR': str(CHAR_ID[a.char.lower()])} if a.char.lower() in CHAR_ID else {}),
+                            **dict(({'PSPRECOMP_TEST_DIRECT_BATTLE': os.path.abspath(a.direct)} if getattr(a, 'direct', None) else {}), **(getattr(a, 'env', None) or {}))))
     try:
         g.start()
         t0 = time.time()
-        walk_menus(g, a.char, stage=getattr(a, 'stage', 12), ff_menus=getattr(a, 'ff_menus', 0))
+        if getattr(a, 'direct', None):
+            walk_direct(g, ff_menus=4 if getattr(a, 'ff_menus', None) is None else a.ff_menus)
+        else:
+            walk_menus(g, a.char, stage=getattr(a, 'stage', 12), ff_menus=getattr(a, 'ff_menus', None) or 0)
         print('[battle_test] %d fps: in battle after %.0f s' % (fps, time.time() - t0), file=sys.stderr)
         if getattr(a, 'watch', None):                  # arm the runtime's memory-write watch (debug socket M) `watch_after` s after the clock starts
             time.sleep(a.watch_after)
@@ -678,6 +705,11 @@ def main(argv):
         if name == 'run':
             p.add_argument('--fps', type=int, default=30)
             p.add_argument('--record', help='write the pad input of this session as a test script')
+            p.add_argument('--direct', nargs='?', const=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tests', 'replays', 'quick_battle_walk.txt'),
+                           help='skip the menu walk: replay a recorded pad sequence inside the game (default tests/replays/quick_battle_walk.txt; '
+                                'records Squall vs Lightning, stage 12); needs a runtime with direct_battle.cpp')
+            p.add_argument('--ff-menus', dest='ff_menus', type=int, default=None, help='menu trip at N x real time (--direct default 4; the picture walk default 0)')
+            p.add_argument('--ff', action='store_true', help='fast-forward the test script too (as fast as frames render)')
             p.add_argument('--shots', help='comma separated seconds after the fight starts at which to save a screenshot (battle_<renderer>_<s>.tga), then quit')
             p.add_argument('--watch', help='hex guest address: log which functions change it ([MEM_WATCH] lines)')
             p.add_argument('--watch-after', dest='watch_after', type=float, default=4.0)

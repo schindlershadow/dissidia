@@ -15,6 +15,7 @@
 #include "recomp_module.h"  // generated module facts (issue #47 Phase 2)
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <sys/stat.h>
@@ -25,6 +26,10 @@
 #include <strings.h>
 #include <ctime>
 #include <chrono>
+
+// Save-data events a game module (or a test) can wait on: counts of list dialogs opened and of sceUtilitySavedata
+// calls completed (games/dissidia/runtime/direct_battle.cpp keys its menu-walk replay on them).
+std::atomic<uint32_t> g_savedata_list_opened{0}, g_savedata_completed{0};
 #include <deque>
 #include <map>
 #include <mutex>
@@ -2290,6 +2295,7 @@ static bool sd_ui_step(uint8_t* rdram, uint32_t p, uint32_t mode,
         g_sd_ui.prev_buttons = sd_pad_buttons();
         g_sd_ui.stage = 1;
         g_sd_ui.pub_scale = 0;
+        g_savedata_list_opened.fetch_add(1);
         fprintf(stderr, "[HLE] sceUtilitySavedata: list dialog opened (%zu rows, %s confirms)\n",
                 g_sd_ui.dlg.entries().size(), confirm_cross ? "CROSS" : "CIRCLE");
     }
@@ -2396,6 +2402,7 @@ static void savedata_complete(UtilityDialogState& dlg, uint8_t* rdram) {
     }
     psp_mem_write<int32_t>(
         rdram, dlg.param_addr + UTILITY_COMMON_RESULT_OFFSET, result);
+    if (mode == 4 && result == 0) g_savedata_completed.fetch_add(1);   // the save loaded
     fprintf(stderr,
             "[HLE] sceUtilitySavedata complete: mode=%u result=0x%08X\n",
             mode, static_cast<uint32_t>(result));

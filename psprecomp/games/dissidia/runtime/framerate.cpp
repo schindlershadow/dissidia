@@ -667,7 +667,11 @@ bool human_jecht(uint32_t a) {
 // grid: g_tick % P == 0), and a tap that came and went between two grid updates is latched, so it is seen once, as a 33 ms PSP frame would show it.
 // Only while the human player is Jecht; the other buttons and the stick pass through.
 constexpr uint32_t GRID_MASK = 0x2000u | 0x8000u;
+}  // namespace
+uint32_t dissidia_walk_filter(uint32_t buttons);   // direct_battle.cpp
+namespace {
 uint32_t jecht_grid_filter(uint32_t raw) {
+    raw = dissidia_walk_filter(raw);   // direct_battle.cpp: test-only pad record / replay of the menu walk (a no-op unless asked for)
     static uint32_t held = 0, pend = 0;
     static uint64_t decided = ~0ull;
     bool jecht = false;
