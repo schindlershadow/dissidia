@@ -1,6 +1,6 @@
 # Tag team battles (2 v 2): research notes and plan
 
-Status: **research only, nothing implemented yet** (branch `tag-team`, based on `origin/main` 00b9d41, 14 Nov).
+Status (14 Nov): **2v2 plays**: four fighters fight (the partner and the enemy's second fighter are clones of the existing fighters on the CPU brain), HUD panels and reserve strips, L cycles the lock between the enemies, tag swap (SELECT, `PSPRECOMP_TAGTEAM_SWAP_BUTTON=1`, clone partners only), a settings toggle (Debug > Tag Team (2v2)) and a regression test (`tools/tagteam_test.py`). Not done: KO call-ins / round end rules, partners that are different characters, the real party roster in the reserve, portraits. Branch `tag-team`, based on `origin/main` 00b9d41. The sections below start with the original research and plan, then record each step.
 Everything below comes from reading the recompiled code (`psprecomp dump <analysis> 0xADDR`) and the existing
 runtime hooks. "Confirmed" = read in the code; "inferred" = a guess to check in a run.
 
