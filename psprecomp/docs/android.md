@@ -52,6 +52,15 @@ Status (2026-11-13): verified on a Retroid Pocket 6 (Android 13): extract, build
 verified: a first-ever install on a phone with no earlier game folder (the shared-folder fallback in `runtime/src/psp_android.cpp` needs a core built after that change),
 and the CI job itself.
 
+### Background update notifications
+
+`android/setup/java/.../UpdateCheckService.java` is a JobScheduler job (daily, only with a network, kept across reboots; scheduled when the app starts) that fetches the latest release's
+`manifest.json` and posts a notification when a newer setup app exists, or when the game built on the phone is out of date (the installed app builds it differently: "Update the game"
+on the start page). It needs the notification permission (asked once on Android 13+) and is off when **Check for updates** is off in Options (`check_updates=0` in `install.ini`).
+It only hints: nothing is downloaded, and tapping the notification opens the app, whose own check verifies the manifest's signature before offering anything. Each update is
+announced once. Test: put a `manifest_url.txt` (a `file:` URL of a manifest with a higher version) into the app's files folder and run
+`adb shell cmd jobscheduler run -f org.psprecomp.setup 4711`.
+
 ### Updates of the setup app
 
 The app checks `manifest.json` of the latest GitHub release (the same signed manifest as the PC updater; entry `platforms.android-aarch64`) at start (silently; only the start
