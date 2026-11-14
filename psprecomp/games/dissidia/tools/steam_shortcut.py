@@ -190,10 +190,14 @@ def update_user(cfg, a, launcher, match_dirs, log):
     os.makedirs(grid, exist_ok=True)
     for src, dst in ART:
         s = os.path.join(a.art, src)
+        if not os.path.exists(s):   # a release has no drawn artwork: the game's own icon and background instead
+            alt = {"icon.png": a.icon, "wide.png": a.pic1, "hero.png": a.pic1}.get(src)
+            if alt and os.path.exists(alt):
+                s = alt
         if os.path.exists(s):
             shutil.copyfile(s, os.path.join(grid, dst.format(id=uid)))
         else:
-            log("  warning: %s missing, skipped" % s)
+            log("  note: no %s artwork, skipped" % src)
     with open(os.path.join(grid, "%d.json" % uid), "w") as f:
         json.dump(LOGO_POS, f)
     bak = path + ".before-tredecim"
@@ -209,13 +213,24 @@ def update_user(cfg, a, launcher, match_dirs, log):
 # ------------------------------------------------------------------ Steam process
 
 
+WINDOWS = os.name == "nt"
+STEAM_EXE = None   # the Steam program (set by steam_dirs on Windows)
+
+
 def steam_running():
+    if WINDOWS:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq steam.exe", "/NH"], capture_output=True, text=True).stdout
+        return "steam.exe" in out.lower()
     return subprocess.call(["pgrep", "-x", "steam"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
 
 
 def game_mode():
     return (os.environ.get("XDG_CURRENT_DESKTOP", "").lower() == "gamescope" or os.environ.get("SteamGamepadUI") == "1"
             or os.environ.get("SteamDeck") == "1" and bool(os.environ.get("GAMESCOPE_WAYLAND_DISPLAY")))
+
+
+def steam_cmd():
+    return [STEAM_EXE] if WINDOWS and STEAM_EXE else ["steam"]
 
 
 def stop_steam(yes):
@@ -228,7 +243,7 @@ def stop_steam(yes):
         if r.strip().lower() not in ("", "y", "yes"):
             sys.exit("left unchanged")
     print("closing Steam (steam -shutdown) ...")
-    subprocess.call(["steam", "-shutdown"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.call(steam_cmd() + ["-shutdown"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(120):
         if not steam_running():
             time.sleep(2)                                       # let it finish writing its own files
@@ -239,21 +254,42 @@ def stop_steam(yes):
 
 def start_steam():
     print("starting Steam again")
-    subprocess.Popen(["steam"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     start_new_session=True)
+    if WINDOWS:
+        subprocess.Popen(steam_cmd(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=0x00000008 | 0x00000200)   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    else:
+        subprocess.Popen(["steam"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
 
 # ------------------------------------------------------------------ main
 
 
 def steam_dirs(given):
-    cands = [given] if given else [os.path.expanduser("~/.local/share/Steam"), os.path.expanduser("~/.steam/steam"),
-                                   os.path.expanduser("~/.var/app/com.valvesoftware.Steam/data/Steam")]
+    global STEAM_EXE
+    if given:
+        cands = [given]
+    elif WINDOWS:
+        cands = []
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as k:
+                cands.append(winreg.QueryValueEx(k, "SteamPath")[0])
+        except OSError:
+            pass
+        for env in ("ProgramFiles(x86)", "ProgramFiles"):
+            if os.environ.get(env):
+                cands.append(os.path.join(os.environ[env], "Steam"))
+    else:
+        cands = [os.path.expanduser("~/.local/share/Steam"), os.path.expanduser("~/.steam/steam"),
+                 os.path.expanduser("~/.var/app/com.valvesoftware.Steam/data/Steam")]
     seen, out = set(), []
     for c in cands:
         r = os.path.realpath(c)
         if r not in seen and os.path.isdir(os.path.join(r, "userdata")):
             seen.add(r)
             out.append(r)
+            if WINDOWS and STEAM_EXE is None and os.path.isfile(os.path.join(r, "steam.exe")):
+                STEAM_EXE = os.path.join(r, "steam.exe")
     return out
 
 
@@ -271,6 +307,8 @@ def main():
     ap.add_argument("--match-dir", action="append", default=[])
     ap.add_argument("--launch-options", default=None)
     ap.add_argument("--steam-dir", default=None)
+    ap.add_argument("--icon", default=None, help="icon.png to use when --art has none")
+    ap.add_argument("--pic1", default=None, help="the disc's PIC1.PNG: used for the wide capsule and the hero banner when --art has none (no portrait capsule or logo then)")
     ap.add_argument("--yes", action="store_true", help="close Steam without asking if it is running")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()

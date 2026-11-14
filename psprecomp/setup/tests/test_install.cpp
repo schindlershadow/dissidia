@@ -42,6 +42,11 @@ int main() {
         e.hd_textures = false;
         CHECK(plan_extras(l, "/w", e, false).empty());
     }
+    {   // the Steam shortcut is one optional step (a failure does not fail the install)
+        auto sp = plan_steam(l, "/w");
+        CHECK(sp.size() == 1 && sp[0].optional && !sp[0].is_build);
+        CHECK(sp[0].argv.size() > 3 && sp[0].argv[1].find("steam_shortcut.py") != std::string::npos);
+    }
     o.hd_textures = true;   // available in this release: one more step
     o.android = true;       // not available: no step
     plan = plan_install(l, "x.iso", "/w", o);

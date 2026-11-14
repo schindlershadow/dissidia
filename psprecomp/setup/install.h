@@ -30,6 +30,7 @@ struct Step {
     std::vector<std::string> argv;
     EnvList env;
     std::vector<std::pair<std::string, std::string>> downloads;   // (url, file) fetched by the app itself instead of running argv (Android: the bundled Python has no DNS / CA store)
+    bool optional = false;              // a failure is reported in the end note but does not stop the install
     bool is_build = false;              // output carries "[psp-build] ..." progress lines
     double weight = 0;                  // share of the whole install (all steps sum to 1)
     double base = 0;                    // fraction done when this step starts
@@ -42,6 +43,7 @@ struct Options {
     std::string texture_pack = "liink"; // "liink" = LiinkPK's hand-retouched pack, "ai" = Niosa's D012FFRT + our AI upscales
     bool jp_audio = false;              // undub (Japanese voices); needs undub_iso
     bool android = false;               // also build the Android version
+    bool steam = false;                 // add the game to the Steam library (desktop; Steam is closed and reopened for a moment)
     std::string undub_iso;
     std::string import_saves;           // a SAVEDATA folder to copy the player's Dissidia 012 saves from (empty = none)
 };
@@ -57,6 +59,8 @@ std::vector<Step> plan_install(const Layout& l, const std::string& iso, const st
 // The game build only (rebuild / repair): analysis, recompile, compile (+ the Android build when chosen).
 // Only the extras of `o` (HD textures unless skip_textures, Japanese voices, saves, the Android build) on an installed game: no rebuild.
 std::vector<Step> plan_extras(const Layout& l, const std::string& workdir, const Options& o, bool skip_textures);
+// Adds the installed game to the Steam library as a non-Steam shortcut (steam_shortcut.py; the launcher is the program itself with --launch).
+std::vector<Step> plan_steam(const Layout& l, const std::string& workdir);
 std::vector<Step> plan_rebuild(const Layout& l, const std::string& workdir, const Options& o);
 
 // Installs the Android build (<workdir>/android/dissidia.apk) on a connected device with adb and copies the game's files to it
