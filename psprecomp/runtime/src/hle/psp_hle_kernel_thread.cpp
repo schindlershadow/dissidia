@@ -323,6 +323,8 @@ static void hle_sceKernelDelayThread(
     // plain sceKernelDelayThread (not the CB variant).
     psp_kernel_check_callbacks(rdram, ctx);
     sched_yield_point();
+    if (usec >= 200000) std::fprintf(stderr, "[HLE] sceKernelDelayThread(%u us = %u ms) ra=0x%08X\n", usec, usec / 1000,
+                                     static_cast<uint32_t>(ctx->r[31]));
     std::this_thread::sleep_for(std::chrono::microseconds(usec));
     ctx->r[2] = SCE_OK;
 }
