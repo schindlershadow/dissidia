@@ -203,6 +203,7 @@ struct SetRow {
     std::string label, value;
     std::string help;           // "Title\nBody": the description panel
     std::string badge;          // small chip beside the title in the description panel ("Saved", "Next start", ...)
+    std::string cost;           // estimated performance cost chip ("None", "Low", "Medium", "High", "Very high"); empty = no chip
     bool can_dec = false, can_inc = false;   // Choice / Slider: the arrows
     bool disabled = false;      // greyed out (the help text says why); still selectable
     bool on = false;            // Toggle

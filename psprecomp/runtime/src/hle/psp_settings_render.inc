@@ -821,6 +821,19 @@ struct SettingsDraw {
             P.text(bodyb, 6.8f * fs, bx + bw / 2.f, by + 7.2f, r.badge, rgb(70, 44, 8), 0, 2);
             chip_w = bw + 8.f;
         }
+        if (!r.cost.empty()) {   // estimated performance cost, left of the other chip: green (cheap) to red (expensive)
+            const std::string txt = "Cost: " + r.cost;
+            const int lvl = r.cost == "None" ? 0 : r.cost == "Low" ? 1 : r.cost == "Medium" ? 2 : r.cost == "High" ? 3 : 4;
+            const Col hi[5] = {rgb(176, 226, 190), rgb(176, 226, 190), rgb(250, 226, 140), rgb(250, 190, 120), rgb(246, 150, 140)};
+            const Col lo[5] = {rgb(120, 190, 140), rgb(120, 190, 140), rgb(226, 178, 60), rgb(228, 132, 52), rgb(216, 84, 76)};
+            const Col edge[5] = {rgb(70, 130, 90), rgb(70, 130, 90), rgb(150, 112, 30), rgb(160, 84, 24), rgb(140, 40, 36)};
+            const float bw = P.text_width(bodyb, 6.8f * fs, txt) + 11.f;
+            const float bx = x1 - chip_w - bw, by = detail.y + 6.6f;
+            P.rrect(bx - 0.7f, by - 0.7f, bw + 1.4f, 11.4f, 5.7f, edge[lvl]);
+            P.rrect(bx, by, bw, 10.f, 5.f, Ramp(hi[lvl], lo[lvl], by, by + 10.f));
+            P.text(bodyb, 6.8f * fs, bx + bw / 2.f, by + 7.2f, txt, rgb(30, 40, 30), 0, 2);
+            chip_w += bw + 8.f;
+        }
         P.text(bodyb, 10.4f * fs, x0 + 12.f, detail.y + 16.4f, title, C_NAVY, x1 - x0 - 12.f - chip_w);
         {
             const int nseg = 20;

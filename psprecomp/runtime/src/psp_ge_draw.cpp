@@ -61,7 +61,7 @@ struct GeTarget {
     bool mip_dirty = true;     // drawn into since its mipmaps were last built (see ge_draw_find_target_texture)
 };
 
-// Render scale (PSPRECOMP_RENDER_SCALE, 1..16 or auto): targets are 480*g_rs x 272*g_rs.
+// Render scale (PSPRECOMP_RENDER_SCALE, 1..16 or auto; default 2): targets are 480*g_rs x 272*g_rs.
 static int g_rs = 1;
 // HDR Scene (psp_post.h): the scene targets are fp16 while it is live, so additive effects keep values above 1.0.
 // g_scene_fp16 is the format the targets currently have; ge_draw_sync_scene_format() reallocates them when it changes.
@@ -2238,7 +2238,10 @@ void ge_draw_init() {
                      sizeof(g_screenshot_path) - 1);
     }
 
-    if (const char* rs = std::getenv("PSPRECOMP_RENDER_SCALE")) {
+    // Default render scale: 2x (960x544). PSPRECOMP_RENDER_SCALE (or the saved menu value) overrides it.
+    const char* rs = std::getenv("PSPRECOMP_RENDER_SCALE");
+    if (!rs || !rs[0]) rs = "2";
+    {
         int v = std::atoi(rs);
         if (!std::strcmp(rs, "auto")) {
             // PSPRECOMP_RENDER_SCALE=auto: nearest whole multiple of the

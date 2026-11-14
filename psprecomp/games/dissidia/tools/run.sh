@@ -30,7 +30,7 @@
 #   --stretch                PSPRECOMP_STRETCH=1: fill the window instead of keeping the 480:272 aspect (no bars)
 #   --filter MODE            PSPRECOMP_FILTER: nearest | linear | integer (largest crisp integer multiple, centred).
 #                            Default: crisp when the window is an exact multiple, bilinear otherwise.
-#   --render-scale N|auto    PSPRECOMP_RENDER_SCALE (1..8 or auto, default 1): internal render resolution = N x 480x272
+#   --render-scale N|auto    PSPRECOMP_RENDER_SCALE (1..16 or auto, default 2): internal render resolution = N x 480x272
 #                            (sharper 3D edges, HUD unchanged; cost grows with N^2). auto = drawable height / 272,
 #                            capped at 3. Steam Deck (1280x800): 3 (or 2 to save battery).
 #   --fps 30|60              PSPRECOMP_FPS: battle logic rate (default 30). 60 runs the battle simulation itself at 60

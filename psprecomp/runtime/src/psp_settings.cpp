@@ -599,13 +599,13 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.can_dec = n > 1;
             m.can_inc = n < k_max_rs;
             char hb[256];
-            std::snprintf(hb, sizeof hb, "Internal 3D resolution\nCurrently %d x %d (%dx the PSP's 480 x 272). Higher is sharper and costs more GPU time (Steam Deck: 2x or 3x).", 480 * n, 272 * n, n);
+            std::snprintf(hb, sizeof hb, "Internal 3D resolution\nCurrently %d x %d (%dx the PSP's 480 x 272). Higher is sharper and costs more GPU time; 2x is a good fit for most devices and more is rarely needed.", 480 * n, 272 * n, n);
             m.help = hb;
             break;
         }
         case ROW_WIDE: {
             const bool on = g_pending_wide >= 0 ? g_pending_wide != 0 : ge_draw_widescreen();
-            m.label = "Widescreen";
+            m.label = "Ultrawide";
             if (!on) m.value = "Off";
             else if (g_pending_wide >= 0) m.value = "On";
             else {
@@ -614,7 +614,7 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
                 m.value = buf;
             }
             m.can_dec = on; m.can_inc = !on;
-            m.help = "Wide screens (PSPRECOMP_WIDESCREEN)\nThe battle scene is drawn wider to fill a window or screen wider than 16:9; the HUD stays centred at its normal size and backgrounds stretch. Saved.";
+            m.help = "Ultrawide (PSPRECOMP_WIDESCREEN)\nThe battle scene is drawn wider to fill an ultrawide window or screen (wider than 16:9); the HUD stays centred at its normal size and backgrounds stretch. Saved.";
             break;
         }
         case ROW_FPS: {
@@ -624,7 +624,7 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.value = buf;
             m.can_dec = i > 0;
             m.can_inc = i + 1 < g_fps.count;
-            m.help = "Battle logic rate (multiples of 30)\nBattles run at this many updates a second; the PSP ran 30. Costs CPU and GPU time in proportion. Menus stay at 30.";
+            m.help = "Frame rate (multiples of 30)\nBattles run at this many frames a second; the PSP ran 30. Pick a rate your device can hold: if it cannot reach the target, the game will run slower than normal and stutter. Costs CPU and GPU time in proportion. Menus stay at 30. Saved.";
             break;
         }
         case ROW_RENDERER: {
@@ -1020,7 +1020,7 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.value = k_names[v];
             const bool usable = psp_rt_available() && psp_rt_quality() >= 2;
             m.disabled = !usable;
-            m.can_dec = usable && v > 0; m.can_inc = usable && v < 4;
+            m.can_dec = usable; m.can_inc = usable;   // loops
             m.help = !psp_rt_available() ? std::string("Shadow softness: unavailable\n") + psp_rt_unavailable_reason()
                    : psp_rt_quality() < 2 ? "Shadow softness: needs Ray-Traced Shadows set to Medium or High (Off and Low use at most one hard ray, so there is no soft edge to adjust)."
                    : "Shadow softness (PSPRECOMP_RT_SOFT)\nHow wide the light is for ray-traced shadows. A wider light gives softer edges that sharpen where a shadow meets its caster, like a real shadow; Sharp is almost a point light. Firm is the default. Needs Medium or High ray-traced shadows (Low uses one hard ray). Takes effect at once. Saved.";
@@ -1113,7 +1113,6 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
 bool slider_of(Row r, int* steps, int* cur) {
     auto lin = [&](int lo, int hi, int step, int v) { *steps = (hi - lo) / step + 1; *cur = std::clamp((v - lo) / step, 0, *steps - 1); return true; };
     switch (r) {
-    case ROW_SCALE: return lin(1, k_max_rs, 1, g_pending_rs ? g_pending_rs : ge_draw_render_scale());
     case ROW_BRIGHT: return lin(50, 150, 5, psp_post_brightness());
     case ROW_CONTRAST: return lin(50, 150, 5, psp_post_contrast());
     case ROW_SAT: return lin(0, 200, 5, psp_post_saturation());
@@ -1132,7 +1131,6 @@ bool slider_of(Row r, int* steps, int* cur) {
     case ROW_SSR: *steps = 4; *cur = std::clamp(psp_fx_ssr(), 0, 3); return true;
     case ROW_RT: *steps = 4; *cur = psp_rt_available() ? std::clamp(psp_rt_quality(), 0, 3) : 0; return true;
     case ROW_RT_REFL: *steps = 4; *cur = psp_rt_available() ? std::clamp(psp_rt_refl_quality(), 0, 3) : 0; return true;
-    case ROW_RT_SOFT: *steps = 5; *cur = std::clamp(psp_rt_softness(), 0, 4); return true;
     case ROW_HDR_BOOST: *steps = 4; *cur = std::clamp(psp_hdr_boost(), 0, 3); return true;
     case ROW_HDR_GAMUT: *steps = 5; *cur = std::clamp(psp_hdr_gamut(), 0, 4); return true;
     case ROW_UPSCALE: *steps = 3; *cur = std::clamp(psp_post_upscale(), 0, 2); return true;
@@ -1190,6 +1188,36 @@ void polish_help(std::string& help, std::string& badge) {
     for (char ch : body) if (!(ch == ' ' && !o.empty() && o.back() == ' ')) o += ch;
     help = nl == std::string::npos ? o : title + "\n" + o;
 }
+// Estimated cost of a setting at its current value, shown as a badge on the description: "None", "Low", "Medium", "High" or
+// "Very high". These are rough, relative figures for an average GPU (not measurements): the point is to tell a cheap row from an
+// expensive one. Rows that cost nothing worth mentioning (display, window size, ...) have no badge.
+bool cost_of(Row r, std::string& out) {
+    static const char* const k_lv[] = {"None", "Low", "Medium", "High", "Very high"};
+    auto lv = [&](int i) { out = k_lv[std::clamp(i, 0, 4)]; return true; };
+    switch (r) {
+    case ROW_SCALE: { const int n = g_pending_rs ? g_pending_rs : ge_draw_render_scale(); return lv(n <= 1 ? 1 : n == 2 ? 2 : n == 3 ? 3 : 4); }
+    case ROW_FPS: { const int f = g_fps.get ? g_fps.get() : 30; return lv(f <= 30 ? 1 : f <= 60 ? 2 : f <= 120 ? 3 : 4); }
+    case ROW_WIDE: return lv((g_pending_wide >= 0 ? g_pending_wide != 0 : ge_draw_widescreen()) ? 1 : 0);
+    case ROW_FPSCOUNT: return lv(ge_draw_fps_counter() ? 1 : 0);
+    case ROW_PERF: return lv(ge_draw_perf_overlay() ? 1 : 0);
+    case ROW_AA: return lv(psp_post_aa() > 0 ? 1 : 0);
+    case ROW_SHARP: return lv(psp_post_sharpen() > 0 ? 1 : 0);
+    case ROW_UPSCALE: return lv(psp_post_upscale());
+    case ROW_BRIGHT: return lv(psp_post_brightness() != 100 ? 1 : 0);
+    case ROW_CONTRAST: return lv(psp_post_contrast() != 100 ? 1 : 0);
+    case ROW_SAT: return lv(psp_post_saturation() != 100 ? 1 : 0);
+    case ROW_HDR: return lv(psp_hdr_wanted() ? 1 : 0);
+    case ROW_HDR_SCENE: return lv(psp_hdr_scene_wanted() ? 2 : 0);
+    case ROW_SSAO: return lv(psp_fx_ssao());
+    case ROW_CONTACT: return lv(psp_fx_contact());
+    case ROW_SSR: return lv(psp_fx_ssr());
+    case ROW_RT: return lv(psp_rt_available() && psp_rt_quality() > 0 ? psp_rt_quality() + 1 : 0);
+    case ROW_RT_REFL: return lv(psp_rt_available() && psp_rt_refl_quality() > 0 ? psp_rt_refl_quality() + 1 : 0);
+    case ROW_RT_SOFT: return lv(psp_rt_available() && psp_rt_quality() >= 2 ? 1 : 0);
+    case ROW_ANISO: return lv(ge_texture_aniso() > 1 ? 1 : 0);
+    default: return false;
+    }
+}
 std::vector<psp_sddialog::SetRow> make_set_rows() {
     using psp_sddialog::SetKind;
     const std::vector<psp_sddialog::MenuRow> src = make_rows();
@@ -1214,11 +1242,12 @@ std::vector<psp_sddialog::SetRow> make_set_rows() {
             else if (word("Off")) { o.on = false; o.value = trim_str(v.substr(3)); }
             else { o.on = false; o.value = v; }
         }
-        if (o.kind == SetKind::Slider && (r == ROW_SCALE)) {   // "3x  1440 x 816" is a long value for a slider row: keep the multiplier
+        if (r == ROW_SCALE) {   // "2x  960 x 544" is a long value for a row: keep the multiplier (the description has the size)
             const size_t sp = o.value.find(' ');
             if (sp != std::string::npos) o.value = o.value.substr(0, sp);
         }
         polish_help(o.help, o.badge);
+        cost_of(r, o.cost);
         if (m.value.find("next start") != std::string::npos || m.value.find("next launch") != std::string::npos) o.badge = "Next start";
         out.push_back(std::move(o));
     }
@@ -1502,7 +1531,7 @@ void change(int d) {   // left / right on the selected row
     }
     case ROW_RT_SOFT: {
         if (!psp_rt_available() || psp_rt_quality() < 2) break;
-        const int v = std::min(4, std::max(0, psp_rt_softness() + d));
+        const int v = ((psp_rt_softness() + (d > 0 ? 1 : -1)) % 5 + 5) % 5;   // loops: Very Soft -> Sharp and back
         if (v != psp_rt_softness()) { psp_rt_set_softness(v); save("rt_soft", std::to_string(v)); }
         break;
     }
@@ -1921,7 +1950,7 @@ void confirm_row() {
     case ROW_HDR_SCENE: if (psp_hdr_available() && psp_hdr_wanted() && psp_hdr_encoding() != 0) change(psp_hdr_scene_wanted() ? -1 : 1); return;
     case ROW_SSAO: change(psp_fx_ssao() >= 3 ? -3 : 1); return;
     case ROW_CONTACT: change(psp_fx_contact() >= 3 ? -3 : 1); return;
-    case ROW_RT_SOFT: if (psp_rt_available() && psp_rt_quality() >= 2) change(psp_rt_softness() >= 4 ? -4 : 1); return;
+    case ROW_RT_SOFT: if (psp_rt_available() && psp_rt_quality() >= 2) change(1); return;
     case ROW_RT: if (psp_rt_available()) change(psp_rt_quality() >= 3 ? -3 : 1); return;
     case ROW_RT_REFL: if (psp_rt_available()) change(psp_rt_refl_quality() >= 3 ? -3 : 1); return;
     case ROW_SSR: change(psp_fx_ssr() >= 3 ? -3 : 1); return;
@@ -2398,7 +2427,28 @@ bool psp_settings_handle_event(const SDL_Event& ev) {
     }
 }
 
+// First run (no saved or PSPRECOMP_FPS value): the frame rate starts at the display's refresh rate, rounded down to a multiple of
+// 30 (a refresh rate that is not a whole multiple of 30 gives the next lower rate: 144 Hz -> 120, 75 Hz -> 60; 59.94 Hz counts
+// as 60). Runs once, as soon as the window and the game's frame-rate hook exist.
+static void apply_default_frame_rate() {
+    static bool done = false;
+    if (done || !g_fps.set || g_fps.count < 1) return;
+    SDL_Window* w = win();
+    if (!w) return;
+    done = true;
+    if (const char* e = std::getenv("PSPRECOMP_FPS"); e && e[0]) return;   // chosen by the user (saved menu value or environment)
+    SDL_DisplayMode dm;
+    const int disp = std::max(0, SDL_GetWindowDisplayIndex(w));
+    if (SDL_GetCurrentDisplayMode(disp, &dm) != 0 || dm.refresh_rate <= 0) return;
+    int want = std::max(30, (dm.refresh_rate + 1) / 30 * 30);   // +1: 59.94 -> 60, 89.9 -> 90
+    int best = 0;
+    for (int i = 0; i < g_fps.count; ++i) if (g_fps.rates[i] <= want) best = i;
+    std::fprintf(stderr, "[SETTINGS] display %d Hz: default frame rate %d fps\n", dm.refresh_rate, g_fps.rates[best]);
+    g_fps.set(g_fps.rates[best]);
+}
+
 void psp_settings_tick() {
+    apply_default_frame_rate();
     if (g_request_open.exchange(false) && !g_open.load()) { set_open(true); g_gate_dirty.store(true); }
     if (!g_open.load()) return;
     if (!g_closing && (psp_adhoc_connected() || psp_adhoc_in_session())) {   // a match started while the menu was open (e.g. from a pad press queued before): give the game back
