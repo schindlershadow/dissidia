@@ -268,3 +268,16 @@ actor at the human's address H holds what used to be the partner P's character, 
   those of the human's original character. Blocks allocated after construction (effects, projectiles) are not owned and stay with the address.
   The human's lock mode is re-engaged after a swap (`FUN_08B3B3EC`). Not tried: swapping mid-attack with projectiles out, KO call-ins, the lock
   cycle (L) after a swap (it reads the human by address, so it should work).
+
+## Partners of a different character (14 Nov: not working, needs resource loading)
+
+`PSPRECOMP_TAGTEAM_PARTNER_CHAR=<charId>` / `_ENEMY2_CHAR` make an extra of another character: the character info is found by id in the table
+`FUN_08846C98` searches (`*(*0x089D4968)`: header with the array at +8 and the count at +4, 0x44-byte records, charId = signed byte +6; the
+record also holds the model file stems, e.g. `P_EHT100_1P` Squall, `P_SEV100_1P` Cloud). Result with Cloud as the partner: the actor is built,
+becomes "ready", gets a panel in the HUD, but never starts (script id stays -1) and nothing is drawn: **retail only loads the data of the characters
+in the battle during the loading screen** (the model slots 0x54E, 0x134, 0x408, 0x548 of `FUN_08B45310`, the 0x780000-byte model pool of
+hooks_models.cpp holds the built models of the fighters and their assists; a model larger than the budget fails). A different character
+therefore needs its model / motion / effect / sound files streamed in at the loading stage (extend the retail loader to include the extras
+with room in the pool), or reuse of an already loaded character (the fighters, and the assists' characters). Characters that are already loaded
+(Squall, Lightning here) work, and the swap needs a clone (it exchanges the block lists of two fighters of one character).
+`PSPRECOMP_TAGTEAM_INFODUMP=1` prints the records.

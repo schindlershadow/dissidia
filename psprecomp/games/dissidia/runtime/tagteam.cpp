@@ -153,6 +153,17 @@ void init_hook(uint8_t* rdram, recomp_context* ctx) {   // the per-fighter init:
     g_own_ctx = prev;
 }
 
+// The character info record (0x44 bytes, charId at +6) of a charId: the table FUN_08846C98 searches (*(0x089D4968) -> header: +0 array, +4 count... see the
+// function: base = *(*table) + 8, count = *(*table + 4)). The first record of that charId (the default costume).
+uint32_t info_for_char(int charId) {
+    const uint32_t t = rd(0x089D4968u), h = ok(t, 8) ? rd(t) : 0u;
+    if (!ok(h, 16)) return 0;
+    const uint32_t base = h + 8u, n = rd(h + 4u);
+    for (uint32_t i = 0; i < n && i < 4000; i++) { const uint32_t r = base + 0x44u * i; if (!ok(r, 0x44)) break; if (static_cast<int8_t>(g_ram[(r + 6u) & 0x07FFFFFFu]) == charId) return r; }
+    return 0;
+}
+int g_partner_char = 0, g_enemy2_char = 0;   // PSPRECOMP_TAGTEAM_PARTNER_CHAR / _ENEMY2_CHAR: a different character for the extra (0 = a copy of the fighter it stands beside)
+
 uint32_t spawn_fighter(uint32_t bs, uint32_t side, uint32_t foe, uint32_t cpu_side, uint32_t info_slot, uint32_t slot_actor) {
     const uint32_t sp0 = static_cast<uint32_t>(g_ctx->r[29]);
     g_ctx->r[29] = static_cast<int32_t>(sp0 - 0x200u);   // scratch below the stack pointer, clear of the callees' frames
@@ -163,7 +174,15 @@ uint32_t spawn_fighter(uint32_t bs, uint32_t side, uint32_t foe, uint32_t cpu_si
     if (g_stop < 2) { g_ctx->r[29] = static_cast<int32_t>(sp0); return mem; }
     const uint32_t rec = call(SIDE_REC, side);
     uint32_t before[24]; if (g_log) for (int k = 0; k < 24; k++) before[k] = rd(rec + 4u * k);
-    const uint32_t info = call(CHAR_INFO, rd(bs + 2008u + 4u * info_slot));
+    const int want = static_cast<int>(info_slot) >= 100 ? static_cast<int>(info_slot) - 100 : 0;   // info_slot >= 100: a charId + 100 (an extra of its own character)
+    uint32_t info = want ? info_for_char(want) : 0u;
+    if (want && !info) std::fprintf(stderr, "[TAGTEAM] no info record for charId %d, using the copy\n", want);
+    if (!info) info = call(CHAR_INFO, rd(bs + 2008u + 4u * (want ? 0u : info_slot)));
+    if (g_log && std::getenv("PSPRECOMP_TAGTEAM_INFODUMP")) {
+        for (int id : {15, 31, 13}) { const uint32_t r = info_for_char(id); std::fprintf(stderr, "[TAGTEAM] info record charId %d at %08X:", id, r); if (r) for (uint32_t o = 0; o < 0x44; o += 4) std::fprintf(stderr, " %08X", rd(r + o)); std::fprintf(stderr, "\n"); }
+        std::fprintf(stderr, "[TAGTEAM] info used %08X:", info); if (ok(info, 0x44)) for (uint32_t o = 0; o < 0x44; o += 4) std::fprintf(stderr, " %08X", rd(info + o)); std::fprintf(stderr, "\n");
+        std::fprintf(stderr, "[TAGTEAM] setup records: slot0 %08X slot1 %08X:", rd(bs + 2008u), rd(bs + 2012u)); for (int k = 0; k < 2; k++) { const uint32_t r = rd(bs + 2008u + 4u * k); if (ok(r, 0x40)) { std::fprintf(stderr, " ["); for (uint32_t o = 0; o < 0x40; o += 4) std::fprintf(stderr, " %08X", rd(r + o)); std::fprintf(stderr, "]"); } } std::fprintf(stderr, "\n");
+    }
     std::vector<uint32_t> reg;
     const uint32_t RB = 0x08B64000u, RN = (0x09000000u - RB) / 4;
     const bool regdump = g_log && std::getenv("PSPRECOMP_TAGTEAM_REGDUMP");
@@ -317,7 +336,7 @@ void setup_hook(uint8_t* rdram, recomp_context* ctx) {
     }
     // Slot 0 is side 0 and slot 1 side 1 in the setup, whoever the human is; the CPU brain settings are the CPU slot's.
     const uint32_t cpu_side = human == 0 ? 1 : 0, hum_side = human;
-    if ((g_mask & 1) && g_late) { g_late_q.push_back({cpu_side, hum, cpu_side, cpu_side, cpu}); g_bs = bs; }
+    if ((g_mask & 1) && g_late) { g_late_q.push_back({cpu_side, hum, cpu_side, g_enemy2_char ? static_cast<uint32_t>(100 + g_enemy2_char) : cpu_side, cpu}); g_bs = bs; }
     else if (g_mask & 1) {   // the enemy team's second fighter: a copy of the CPU fighter, foe = the human
         Extra& e = g_extra[g_nextra];
         e.actor = spawn_fighter(bs, cpu_side, hum, cpu_side, cpu_side, cpu); e.side = cpu_side; e.foe = hum; e.slot_actor = cpu; e.started = false;
@@ -327,7 +346,7 @@ void setup_hook(uint8_t* rdram, recomp_context* ctx) {
         const uint32_t P = rd(0x089D6A10u);
         Snap sb, sp, sg;
         if (g_log) { sb = take(bs, 0x2800); if (ok(P, 0x400)) sp = take(P, 0x400); sg = take(0x089D6000u, 0x1000); }
-        if (g_late) { g_late_q.push_back({hum_side, cpu, cpu_side, std::getenv("PSPRECOMP_TAGTEAM_PARTNER_CPU_CHAR") ? cpu_side : hum_side, hum}); g_bs = bs; goto after_partner; }
+        if (g_late) { g_late_q.push_back({hum_side, cpu, cpu_side, std::getenv("PSPRECOMP_TAGTEAM_PARTNER_CPU_CHAR") ? cpu_side : (g_partner_char ? static_cast<uint32_t>(100 + g_partner_char) : hum_side), hum}); g_bs = bs; goto after_partner; }
         Extra& e = g_extra[g_nextra];
         e.actor = spawn_fighter(bs, hum_side, cpu, cpu_side, std::getenv("PSPRECOMP_TAGTEAM_PARTNER_CPU_CHAR") ? cpu_side : hum_side, hum);
         if (g_log) { diff("bs", sb); if (!sp.w.empty()) diff("P", sp); diff("glob", sg); } e.side = hum_side; e.foe = cpu; e.slot_actor = hum; e.started = false;
@@ -790,6 +809,8 @@ void dissidia_tagteam_install(uint8_t* rdram) {
     { const char* l = std::getenv("PSPRECOMP_TAGTEAM_LATE"); g_late = !(l && l[0] == '0'); g_late_wait = !(l && l[0] == '1'); }   // default: spawn after the intro; LATE=1 right when the battle starts, LATE=0 during the intro setup
     g_hud_on = !(std::getenv("PSPRECOMP_TAGTEAM_HUD") && std::getenv("PSPRECOMP_TAGTEAM_HUD")[0] == '0');
     if (const char* b = std::getenv("PSPRECOMP_TAGTEAM_SWAP_BUTTON")) g_swap_mask = static_cast<uint32_t>(std::strtoul(b, nullptr, 16));
+    if (const char* c = std::getenv("PSPRECOMP_TAGTEAM_PARTNER_CHAR")) g_partner_char = std::atoi(c);
+    if (const char* c = std::getenv("PSPRECOMP_TAGTEAM_ENEMY2_CHAR")) g_enemy2_char = std::atoi(c);
     if (const char* m = std::getenv("PSPRECOMP_TAGTEAM_STOP")) g_stop = std::atoi(m);
     g_ram = rdram;
     g_orig_alloc = psp_dispatch_probe_lookup(ALLOC_CORE);
