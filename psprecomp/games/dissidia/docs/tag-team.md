@@ -239,3 +239,32 @@ patching a fixed list. Suggested next step: instead of swapping existing actors,
 snapshot RAM before and after constructing a fighter into slot 0 (the fork's undo machinery does exactly this) and, at swap time,
 write P's "after" values for the retail registrations and H's "before" values for the extra, or give the HUD and camera a single
 fixed "player" actor and swap the character data under it (clones only).
+
+## Tag swap works: content exchange (14 Nov, branch tag-swap2)
+
+`PSPRECOMP_TAGTEAM_SWAP_BUTTON=1` (1 = SELECT) now swaps for real (default `PSPRECOMP_TAGTEAM_SWAP_MODE=4`; 1..3 are the old, broken rebind modes).
+The earlier forks tried to re-point the human's references (slot table, brains, camera slot) to the partner and always left some camera / HUD
+binding behind. The working idea is the opposite: **never move a reference, exchange the character instead**. Everything the game binds
+to "the human" (HUD, camera, pad brain, lock block, pair table, enemies' targets) refers to the fighter's *address*, so after the swap the
+actor at the human's address H holds what used to be the partner P's character, and P holds the old human.
+
+- **Ownership recording.** `alloc_hook` wraps the heap allocator core `FUN_0885C6CC` and records every block allocated while a fighter is
+  built (the actor block, the constructor `FUN_08B39E5C` via `ctor_hook`, the per-fighter init, the vtable slot at `FIGHTER_VT+260` via
+  `init_hook`; for extras `spawn_fighter` sets the context itself). Clones allocate the same sizes in the same order (57 blocks per
+  fighter), so block k of H pairs with block k of P.
+- **Exchange** (`content_swap`): for each pair (except the human brain and the lock block, which stay whole at their address) every
+  word that differs is exchanged; **numbers** swap, **pointers into the owned blocks** are translated to the counterpart block (same offset), and
+  **pointers to anything else** (shared resources, list neighbours, registrations, targets: 359 words the first time, 21 the second) stay with
+  their address. About 24,000 word writes per swap.
+- **Safe point**: `dissidia_tagteam_frame`, called at the start of the camera update (`camera.cpp`, once per frame, outside any fighter's update;
+  the scene tick turned out not to run per frame in battle). The pad filter (`dissidia_tagteam_pad`) takes the button press out of the input.
+- **Result** (headless run, SELECT at 12 s and 19 s, CIRCLE taps after each): camera garbage 1 frame in 700 (baseline 1 in 500), screenshots after each
+  swap show the normal 3D scene with both retail HUD portraits and bars; at 12 s the actor at H took over P's script 10016 and position
+  (1.2, -13) and P took H's script 1 / position (0, 33); each CIRCLE tap then starts script 10008 on H (the pad drives the new character) while P runs
+  its own AI actions; the second swap restores positions exactly; the regression test (`tools/tagteam_test.py --baseline`) still passes.
+- **Limits.** Works for *clones*: the two fighters must own the same block list (the swap logs and aborts if the counts or sizes differ),
+  which is the case for the partner (a copy of the human). A different character as partner owns different blocks, so it needs a
+  per-character exchange of the visible parts only (model, moveset, stats) on top of this; the HUD portraits are bound at setup and stay
+  those of the human's original character. Blocks allocated after construction (effects, projectiles) are not owned and stay with the address.
+  The human's lock mode is re-engaged after a swap (`FUN_08B3B3EC`). Not tried: swapping mid-attack with projectiles out, KO call-ins, the lock
+  cycle (L) after a swap (it reads the human by address, so it should work).

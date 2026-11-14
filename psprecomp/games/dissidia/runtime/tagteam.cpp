@@ -17,6 +17,7 @@
 #include <cstring>
 #include <algorithm>
 #include <string>
+#include <map>
 #include <vector>
 
 extern FuncPtr ovl_battle_lookup(uint32_t vaddr);
@@ -122,12 +123,43 @@ void scan_refs(uint32_t actor, const char* tag) {
 
 // One more fighter, the same steps as the setup's own for `side` (its character is the one in that side's setup data).
 // `cpu_side` is the side whose record holds the CPU brain settings (record +3892 control type, +3894 / +3896 parameters).
+// ---- ownership of a fighter's heap objects (for the content exchange of the tag swap) ----
+// Every guest allocation made while a fighter is being built (its constructor FUN_08B39E5C, its per-fighter init, the actor block
+// itself) is recorded against that actor, in order: clones allocate the same sizes in the same order, so the k-th block of one is the
+// counterpart of the k-th block of the other.
+struct Blk { uint32_t addr, size; };
+std::map<uint32_t, std::vector<Blk>> g_owned;
+uint32_t g_own_ctx = 0;
+FuncPtr g_orig_alloc = nullptr, g_orig_ctor = nullptr, g_orig_init = nullptr;
+constexpr uint32_t ALLOC_CORE = 0x0885C6CCu;       // EBOOT: the heap allocator core (a0 = heap, a1 = size), v0 = block
+constexpr uint32_t FIGHTER_VT = 0x08B3A9A8u;       // the fighter class's vtable (the constructor stores it in actor+1348)
+void alloc_hook(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t size = static_cast<uint32_t>(ctx->r[5]);
+    g_orig_alloc(rdram, ctx);
+    if (g_own_ctx) { const uint32_t p = static_cast<uint32_t>(ctx->r[2]); if (p) g_owned[g_own_ctx].push_back({p, size}); }
+}
+void ctor_hook(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t mem = static_cast<uint32_t>(ctx->r[4]), prev = g_own_ctx;
+    g_ram = rdram;
+    if (!g_owned.count(mem)) g_owned[mem].push_back({mem, 0x12D0u});   // the actor block (allocated by the caller)
+    g_own_ctx = mem;
+    g_orig_ctor(rdram, ctx);
+    g_own_ctx = prev;
+}
+void init_hook(uint8_t* rdram, recomp_context* ctx) {   // the per-fighter init: a0 = actor + a small offset
+    const uint32_t a0 = static_cast<uint32_t>(ctx->r[4]), prev = g_own_ctx;
+    for (auto& kv : g_owned) if (a0 >= kv.first && a0 < kv.first + 0x12D0u) { g_own_ctx = kv.first; break; }
+    g_orig_init(rdram, ctx);
+    g_own_ctx = prev;
+}
+
 uint32_t spawn_fighter(uint32_t bs, uint32_t side, uint32_t foe, uint32_t cpu_side, uint32_t info_slot, uint32_t slot_actor) {
     const uint32_t sp0 = static_cast<uint32_t>(g_ctx->r[29]);
     g_ctx->r[29] = static_cast<int32_t>(sp0 - 0x200u);   // scratch below the stack pointer, clear of the callees' frames
     const uint32_t buf = sp0 - 0x1C0u, lockargs = sp0 - 0x180u;
     uint32_t mem = call(ALLOC, 0x12D0);
     if (!ok(mem, 0x12D0)) { std::fprintf(stderr, "[TAGTEAM] alloc failed\n"); g_ctx->r[29] = static_cast<int32_t>(sp0); return 0; }
+    g_owned[mem].clear(); g_owned[mem].push_back({mem, 0x12D0u}); g_own_ctx = mem;   // everything allocated from here on belongs to this fighter
     if (g_stop < 2) { g_ctx->r[29] = static_cast<int32_t>(sp0); return mem; }
     const uint32_t rec = call(SIDE_REC, side);
     uint32_t before[24]; if (g_log) for (int k = 0; k < 24; k++) before[k] = rd(rec + 4u * k);
@@ -228,6 +260,7 @@ uint32_t spawn_fighter(uint32_t bs, uint32_t side, uint32_t foe, uint32_t cpu_si
     }
     if (g_log && std::getenv("PSPRECOMP_TAGTEAM_SCAN")) { std::fprintf(stderr, "[TAGTEAM] slots: %08X %08X human slot %u\n", rd(bs + 56), rd(bs + 60), rd(bs + 84)); scan_refs(mem, side ? "extra side 1" : "extra side 0"); }
     g_last_undo = undo;
+    g_own_ctx = 0;
     g_ctx->r[29] = static_cast<int32_t>(sp0);
     return mem;
 }
@@ -240,6 +273,15 @@ void diff(const char* tag, const Snap& s) {
 
 void setup_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t bs = static_cast<uint32_t>(ctx->r[4]);
+    g_ram = rdram; g_ctx = ctx;
+    if (!g_orig_ctor) {   // ownership recording for the retail pair (the constructor and the init run inside the original setup)
+        g_orig_ctor = fn(FIGHTER_CTOR);
+        const uint32_t vfn0 = rd(FIGHTER_VT + 256u + 4u);
+        g_orig_init = fn(vfn0);
+        if (g_orig_ctor && g_orig_init) { psp_dispatch_register(FIGHTER_CTOR, ctor_hook); psp_dispatch_register(vfn0, init_hook); if (g_log) std::fprintf(stderr, "[TAGTEAM] ownership hooks: ctor %08X init %08X\n", FIGHTER_CTOR, vfn0); }
+        else std::fprintf(stderr, "[TAGTEAM] ownership hooks NOT installed\n");
+    }
+    g_owned.clear(); g_own_ctx = 0;
     g_orig_setup(rdram, ctx);
     g_ram = rdram; g_ctx = ctx;
     g_nextra = 0; g_bs = 0; g_late_q.clear(); g_late_ready = false;
@@ -521,7 +563,81 @@ void hud_probe(const char* tag) {
     }
 }
 
+// ---- tag swap by content exchange ----
+// The retail HUD, camera, pad, lock block, pair table and the enemies' targets all refer to the two slot fighters by ADDRESS. So the swap
+// leaves every address alone and exchanges the CONTENT of the human's fighter (H) and the partner (P): the actor block and the heap
+// objects each owns (recorded by alloc_hook), word by word, with
+//   - plain numbers exchanged (position, hp, bravery, action state, animation ...),
+//   - pointers into either fighter's owned blocks translated to the counterpart block (offset kept), so the sub-objects of the content
+//     that moved point at the content's new home,
+//   - pointers to anything else (shared resources, list neighbours, registrations, targets) left where they are: they belong to the
+//     ADDRESS (identity), not to the character,
+//   - the human brain and the lock block left in place whole (the pad and the camera slot belong to the address).
+bool isptr(uint32_t w) { return (w & 3u) == 0 && w >= 0x08800000u && w < 0x0C000000u; }
+struct BlkPair { Blk h, p; bool keep; };
+std::vector<BlkPair> g_pairs;
+uint32_t trans(uint32_t v) {
+    for (const BlkPair& b : g_pairs) {
+        if (v >= b.h.addr && v < b.h.addr + b.h.size) return v - b.h.addr + b.p.addr;
+        if (v >= b.p.addr && v < b.p.addr + b.p.size) return v - b.p.addr + b.h.addr;
+    }
+    return v;
+}
+bool content_swap(uint32_t H, uint32_t P) {
+    auto ih = g_owned.find(H), ip = g_owned.find(P);
+    if (ih == g_owned.end() || ip == g_owned.end()) { std::fprintf(stderr, "[TAGTEAM] swap: no ownership record (H %zu, P %zu)\n", ih == g_owned.end() ? 0u : ih->second.size(), ip == g_owned.end() ? 0u : ip->second.size()); return false; }
+    const std::vector<Blk>& bh = ih->second; const std::vector<Blk>& bp = ip->second;
+    if (bh.size() != bp.size()) { std::fprintf(stderr, "[TAGTEAM] swap: H owns %zu blocks, P %zu: not clones\n", bh.size(), bp.size()); return false; }
+    for (size_t k = 0; k < bh.size(); k++) if (bh[k].size != bp[k].size) { std::fprintf(stderr, "[TAGTEAM] swap: block %zu size %u vs %u\n", k, bh[k].size, bp[k].size); return false; }
+    const uint32_t keepH[2] = {rd(H + ACT_BRAIN), rd(H + ACT_LOCKBLK)}, keepP[2] = {rd(P + ACT_BRAIN), rd(P + ACT_LOCKBLK)};
+    g_pairs.clear();
+    int kept = 0;
+    for (size_t k = 0; k < bh.size(); k++) {
+        bool keep = false;
+        for (int i = 0; i < 2; i++) if (bh[k].addr == keepH[i]) { keep = true; if (bp[k].addr != keepP[i]) { std::fprintf(stderr, "[TAGTEAM] swap: kept block %zu pairs %08X with %08X, not %08X\n", k, bh[k].addr, bp[k].addr, keepP[i]); return false; } }
+        if (keep) kept++;
+        g_pairs.push_back({bh[k], bp[k], keep});
+    }
+    if (g_log) std::fprintf(stderr, "[TAGTEAM] swap: %zu block pairs (%d kept: brain %08X/%08X, lock block %08X/%08X)\n", g_pairs.size(), kept, keepH[0], keepP[0], keepH[1], keepP[1]);
+    struct W { uint32_t a, v; };
+    std::vector<W> writes;
+    size_t nnum = 0, ntrans = 0, next = 0;
+    auto f = [&](uint32_t w, bool* ext) { *ext = false; if (!isptr(w)) return w; const uint32_t t = trans(w); if (t != w) return t; *ext = true; return w; };
+    for (const BlkPair& b : g_pairs) {
+        if (b.keep) continue;
+        for (uint32_t o = 0; o < b.h.size; o += 4) {
+            const uint32_t a = b.h.addr + o, c = b.p.addr + o, x = rd(a), y = rd(c);
+            if (x == y) continue;
+            bool ex = false, ey = false;
+            const uint32_t fx = f(x, &ex), fy = f(y, &ey);   // what x / y become after moving to the other block
+            const uint32_t na = ey ? x : fy;                  // an external pointer stays with its address
+            const uint32_t nc = ex ? y : fx;
+            if (ex || ey) next++; else if (isptr(x) || isptr(y)) ntrans++; else nnum++;
+            if (na != x) writes.push_back({a, na});
+            if (nc != y) writes.push_back({c, nc});
+        }
+    }
+    for (const W& w : writes) wr(w.a, w.v);
+    if (g_log) std::fprintf(stderr, "[TAGTEAM] swap: content exchanged: %zu numeric, %zu translated pointer, %zu external-pointer words left with their address, %zu writes\n", nnum, ntrans, next, writes.size());
+    return true;
+}
+
+void swap_content() {
+    if (!g_bs) return;
+    const uint32_t hs = rd(g_bs + 84u), H = rd(g_bs + 56u + 4u * hs);
+    Extra* pe = nullptr;
+    for (int i = 0; i < g_nextra; i++) if (g_extra[i].started && g_extra[i].side == side_of(H) && alive(g_extra[i].actor)) pe = &g_extra[i];
+    if (!pe || !ok(H, 0x12D0) || !alive(H)) { if (g_log) std::fprintf(stderr, "[TAGTEAM] swap: no living partner\n"); return; }
+    const uint32_t P = pe->actor;
+    if (content_swap(H, P)) {
+        if (rd(rd(H + ACT_LOCKBLK) + 264u) != 1) call(LOCK_MODE, rd(H + ACT_LOCKBLK), 1, 0);
+        if (g_log) std::fprintf(stderr, "[TAGTEAM] swap: pad character is now the one that stood at %08X (H %08X, P %08X)\n", P, H, P);
+    }
+}
+
 void swap_roles() {
+    static const int mode0 = std::getenv("PSPRECOMP_TAGTEAM_SWAP_MODE") ? std::atoi(std::getenv("PSPRECOMP_TAGTEAM_SWAP_MODE")) : 4;
+    if (mode0 == 4) { swap_content(); return; }
     if (!g_bs) return;
     const uint32_t hs = rd(g_bs + 84u), slot = g_bs + 56u + 4u * hs, H = rd(slot);
     Extra* pe = nullptr;
@@ -561,7 +677,6 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t brain = static_cast<uint32_t>(ctx->r[4]);
     g_ram = rdram; g_ctx = ctx;
     const uint32_t owner = rd(brain + 4);
-    if (g_swap_req && g_bs && owner == rd(g_bs + 56u + 4u * rd(g_bs + 84u))) { g_swap_req = false; swap_roles(); }   // (the human's brain is about to tick: a safe point)
     if (g_nextra && g_extra[0].started && owner == g_extra[0].actor) hud_update();
     if (g_log && g_bs) {   // the human's lock cycle selector (retail mode handler [1], +28) and its target
         static int last_sel = -99; static uint32_t last_t = 0, last_mode = 99;
@@ -649,6 +764,13 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
 
 }  // namespace
 
+// Called by the scene tick (hooks_main.cpp) before every frame's update: between frames no fighter is mid-update, the safe point for the swap.
+void dissidia_tagteam_frame(uint8_t* rdram, recomp_context* ctx) {
+    if (!g_swap_req) return;
+    g_swap_req = false; g_ram = rdram; g_ctx = ctx;
+    swap_roles();
+}
+
 // Pad filter (framerate.cpp calls it with the buttons of every poll): a rising edge of the swap button becomes a swap request and is
 // taken out of the input.
 uint32_t dissidia_tagteam_pad(uint32_t raw) {
@@ -670,6 +792,8 @@ void dissidia_tagteam_install(uint8_t* rdram) {
     if (const char* b = std::getenv("PSPRECOMP_TAGTEAM_SWAP_BUTTON")) g_swap_mask = static_cast<uint32_t>(std::strtoul(b, nullptr, 16));
     if (const char* m = std::getenv("PSPRECOMP_TAGTEAM_STOP")) g_stop = std::atoi(m);
     g_ram = rdram;
+    g_orig_alloc = psp_dispatch_probe_lookup(ALLOC_CORE);
+    if (g_orig_alloc) psp_dispatch_register(ALLOC_CORE, alloc_hook);
     g_orig_setup = psp_dispatch_probe_lookup(BATTLE_SETUP);
     if (!g_orig_setup) { std::fprintf(stderr, "[TAGTEAM] setup function not found\n"); return; }
     g_orig_flow = psp_dispatch_probe_lookup(FLOW_STEP);

@@ -39,6 +39,7 @@
 #include <cstring>
 
 extern FuncPtr ovl_battle_lookup(uint32_t vaddr);
+extern void dissidia_tagteam_frame(uint8_t* rdram, recomp_context* ctx);   // tagteam.cpp: the tag swap's safe point (the camera step runs once per frame, outside any fighter's update)
 extern FuncPtr ovl_menu_lookup(uint32_t vaddr);
 extern FuncPtr ovl_extra_lookup(uint32_t vaddr);
 bool dissidia_nearest_fighter(const float eye[3], float pos[3]);   // framerate.cpp
@@ -172,6 +173,7 @@ bool pl_pos(float* P) {
 // CAM_UPDATE is a battle-overlay address; the menu/extra overlays map other code there.
 void dissidia_cam_update(uint8_t* rdram, recomp_context* ctx) {
     uint32_t id = overlay_id();
+    if (id == 1) dissidia_tagteam_frame(rdram, ctx);
     if (id != 1) {
         FuncPtr f = id == 2 ? ovl_menu_lookup(CAM_UPDATE) : id == 3 ? ovl_extra_lookup(CAM_UPDATE) : nullptr;
         if (f) f(rdram, ctx);
