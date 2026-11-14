@@ -257,7 +257,8 @@ struct App {
     Screen before_pick = Screen::Welcome;
 
     // Every page is drawn by the game's Settings screen renderer; the Options page has two categories (sidebar): L / R or a tap on one switch.
-    enum OptRow { OR_UPDATES, OR_HD, OR_PACK, OR_JP, OR_ANDROID, OR_SAVES, OR_FOLDER, OR_START, OR_BACK };
+    enum OptRow { OR_UPDATES, OR_HD, OR_PACK, OR_JP, OR_ANDROID, OR_SAVES, OR_STEAM, OR_FOLDER, OR_START, OR_BACK };
+    std::string step_note;      // what an optional step (Steam) reported, shown at the end
     bool extras_mode = false;   // the Options page opened from "Change extras" on an installed game: only the extras, applied without a rebuild
     bool extras_run = false;    // the running plan is such an apply
     bool extras_skip_tex = false;
@@ -268,6 +269,7 @@ struct App {
 #ifndef __ANDROID__
         r.push_back(OR_ANDROID);
         r.push_back(OR_SAVES);
+        r.push_back(OR_STEAM);
 #endif
         if (!extras_mode) {
             r.push_back(OR_UPDATES);
@@ -387,6 +389,7 @@ struct App {
                 p.tab = "Installed";
                 p.rows = {row("Play", "Start the game."),
                           row("Change extras", "Turn the HD textures, the Japanese voices or the Android version on or off, or pick another texture pack, without rebuilding the game."),
+                          row("Add to Steam", "Adds the game to your Steam library as a non-Steam game. Steam closes for a moment and starts again.", setup::feature_available(layout, "steam") ? "" : "Not yet"),
                           row("Check for updates", "Look for a newer release of the game files (not available yet)."),
                           row("Rebuild the game", "Compile the game again from your extracted files. Use this if the game does not start."),
                           row("Install again", "Pick a game file and install from scratch (your saves are kept)."),
@@ -557,6 +560,9 @@ struct App {
                     p.rows.push_back(sv);
                     break;
                 }
+                case OR_STEAM:
+                    p.rows.push_back(toggle_row("Add to Steam", "Adds the game to your Steam library as a non-Steam game, so it starts from Steam (and Big Picture / Steam Deck). Steam closes for a moment and starts again.", opt.steam, setup::feature_available(layout, "steam")));
+                    break;
                 case OR_FOLDER:
                     p.rows.push_back(row("Install folder", "The game's files and your saves go here. Press Confirm to pick another folder.", shorten_left(workdir, 34)));
                     break;
@@ -640,6 +646,7 @@ struct App {
     // ---- actions ----
     void start_plan(bool rebuild, bool update = false, bool android_install = false, bool extras = false) {
         extras_run = extras;
+        step_note.clear();
         rebuild_only = rebuild || update || android_install || extras;
         updating = update;
         android_inst = android_install;
@@ -761,10 +768,18 @@ struct App {
 #endif
         if (step_over) code = proc.exit_code();
         if (step_over) {
+            const bool opt_step = prog.step < (int)plan.size() && plan[(size_t)prog.step].optional;
             if (code != 0 || !prog.error.empty()) {
-                fail(prog.error.empty() ? "A step failed (exit code " + std::to_string(code) + "); see setup.log in the install folder." : prog.error + ".");
-                return;
-            }
+                if (opt_step) {   // e.g. no Steam installed: told at the end, the install itself is fine
+                    std::string why = prog.error.empty() ? prog.last_line : prog.error;
+                    step_note = "Not added to Steam" + (why.empty() ? std::string(".") : ": " + why);
+                    log_line("optional step failed: " + step_note);
+                    prog.error.clear();
+                } else {
+                    fail(prog.error.empty() ? "A step failed (exit code " + std::to_string(code) + "); see setup.log in the install folder." : prog.error + ".");
+                    return;
+                }
+            } else if (opt_step) step_note = "The game was added to your Steam library.";
             prog.fraction = std::max(prog.fraction, setup::step_done_fraction(plan, prog.step));
             if (prog.step + 1 < (int)plan.size()) {
                 prog.step++;
@@ -791,7 +806,7 @@ struct App {
                 state.workdir = rebuild_only ? state.workdir : workdir;
                 if (!extras_run) state.built_fp = setup::android_payload_fingerprint(layout);
 #endif
-                if (extras_run) { state.options = opt; state.options.undub_iso.clear(); }
+                if (extras_run) { state.options = opt; state.options.undub_iso.clear(); state.options.steam = false; opt.steam = false; }
                 setup::save_state(state_file, state);
 #ifdef __ANDROID__
                 if (false)
@@ -800,11 +815,12 @@ struct App {
                     std::string where, serr;
                     if (setup::create_shortcut(workdir, layout.root, &where, &serr)) shortcut_note = "A menu entry was added: " + where;
                     else shortcut_note = "No menu entry (" + serr + ")";
+                    if (!step_note.empty()) shortcut_note += ". " + step_note;
                 }
                 if (extras_run) {
                     extras_mode = false;
-                    msg_title = "EXTRAS UPDATED";
-                    msg_text = "The extras are in place.";
+                    msg_title = "DONE";
+                    msg_text = (step_note.empty() ? std::string("The extras are in place.") : step_note);
                     go(Screen::Message);
                 } else go(Screen::Done);
             }
@@ -1057,6 +1073,14 @@ struct App {
         }
     }
 
+    void begin_steam() {   // only the Steam shortcut, for the installed game
+        if (!setup::feature_available(layout, "steam")) { msg_title = "STEAM"; msg_text = "This release cannot add the game to Steam yet."; go(Screen::Message); return; }
+        workdir = state.workdir;
+        extras_mode = true;   // (the end page then returns to the start page)
+        plan = setup::plan_steam(layout, workdir);
+        start_plan(false, false, false, true);
+    }
+
     void begin_extras() {
         extras_mode = true;
         workdir = state.workdir;
@@ -1122,6 +1146,7 @@ struct App {
             if (setup::feature_available(layout, "jp_audio")) { opt.jp_audio = !opt.jp_audio; if (!opt.jp_audio) opt.undub_iso.clear(); }
             break;
         case OR_ANDROID: if (setup::feature_available(layout, "android")) opt.android = !opt.android; break;
+        case OR_STEAM: if (setup::feature_available(layout, "steam")) opt.steam = !opt.steam; break;
         case OR_SAVES: {   // Off -> each detected source -> Off
             size_t i = 0;
             if (!opt.import_saves.empty()) { while (i < save_sources.size() && save_sources[i].path != opt.import_saves) i++; i++; }
@@ -1161,9 +1186,10 @@ struct App {
                 switch (sel) {
                 case 0: play(); break;
                 case 1: begin_extras(); break;
-                case 2: begin_check(true); break;
-                case 3: opt = state.options; start_plan(true); break;
-                case 4: begin_pick(Pick::Iso, Screen::Welcome); break;
+                case 2: begin_steam(); break;
+                case 3: begin_check(true); break;
+                case 4: opt = state.options; start_plan(true); break;
+                case 5: begin_pick(Pick::Iso, Screen::Welcome); break;
                 default: quit = true;
                 }
             } else if (sel == 0) {
@@ -1827,7 +1853,7 @@ int main(int argc, char** argv) {
     if (!shots.empty()) {   // look check without a window
         std::error_code ec;
         fs::create_directories(shots + "/game", ec);
-        if (FILE* f = std::fopen((shots + "/game/features.ini").c_str(), "wb")) { std::fputs("hd_textures=1\njp_audio=1\nandroid=1\n", f); std::fclose(f); }
+        if (FILE* f = std::fopen((shots + "/game/features.ini").c_str(), "wb")) { std::fputs("hd_textures=1\njp_audio=1\nandroid=1\nsteam=1\n", f); std::fclose(f); }
         app.layout.game_dir = shots + "/game";
         app.workdir = "/home/player/Games/Dissidia012";
         app.iso = "/home/player/Downloads/Dissidia 012 (Europe).iso";

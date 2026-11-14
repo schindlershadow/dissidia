@@ -193,6 +193,7 @@ std::vector<Step> plan_install(const Layout& l, const std::string& iso, const st
     // plan_rebuild() normalised its own steps; restore their relative sizes
     for (size_t i = 1; i < p.size(); i++) p[i].weight = i == 1 ? 0.84 : 0.60;
     append_extras(p, l, workdir, o, false);
+    if (o.steam && feature_available(l, "steam")) for (auto& st : plan_steam(l, workdir)) { st.weight = 0.03; p.push_back(st); }
     finish_plan(p);
     return p;
 }
@@ -206,6 +207,26 @@ std::vector<Step> plan_extras(const Layout& l, const std::string& workdir, const
         p.push_back(a);
     }
     for (auto& st : p) if (st.weight <= 0) st.weight = 0.05;
+    if (o.steam && feature_available(l, "steam")) for (auto& st : plan_steam(l, workdir)) { st.weight = 0.03; p.push_back(st); }
+    finish_plan(p);
+    return p;
+}
+
+static std::string self_exe();
+
+std::vector<Step> plan_steam(const Layout& l, const std::string& workdir) {
+    std::string exe = self_exe();
+    if (!l.root.empty() && is_file(join(l.root, std::string("DissidiaRecomp") + EXE))) exe = join(l.root, std::string("DissidiaRecomp") + EXE);
+    Step st;
+    st.label = "Adding the game to Steam";
+    st.explain = "Adds a shortcut to your Steam library. Steam closes for a moment and starts again.";
+    st.argv = {l.python, join(l.game_dir, "tools/steam_shortcut.py"), exe, "--name", "Dissidia 012 Duodecim Final Fantasy",
+               "--launch-options=--launch", "--yes", "--icon", join(l.game_dir, "icon/icon.png"),
+               "--pic1", join(workdir, "disc0/PSP_GAME/PIC1.PNG")};
+    st.env = {{"PYTHONUNBUFFERED", "1"}};
+    st.weight = 0.03;
+    st.optional = true;
+    std::vector<Step> p{st};
     finish_plan(p);
     return p;
 }
