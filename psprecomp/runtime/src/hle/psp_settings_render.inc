@@ -11,6 +11,9 @@ const SetRect R_BACK{392, 8, 78, 20};
 const SetRect R_SIDE{10, 43, 108, 201};
 const SetRect R_LIST{126, 43, 344, 144};
 const SetRect R_DETAIL{126, 192, 344, 52};
+// without the category sidebar (SetScene::hide_side) the list and the description panel take its place
+const SetRect R_LIST_W{10, 43, 460, 144};
+const SetRect R_DETAIL_W{10, 192, 460, 52};
 const SetRect R_FOOT{10, 249, 460, 21};
 constexpr float ROW_PITCH = 18.5f, HEAD_H = 15.f, LIST_PAD = 3.f;
 
@@ -173,7 +176,7 @@ const SetRect R_KB{44, 46, 392, 198};
 struct PanelImg { int x0 = 0, y0 = 0, w = 0, h = 0; std::vector<uint32_t> px; };
 struct PanelCache {
     bool built[MAX_SCALE + 1] = {};
-    PanelImg img[MAX_SCALE + 1][4];
+    PanelImg img[MAX_SCALE + 1][6];
 };
 void build_panel_img(PanelImg& out, const SetRect& r, float radius, float strength, int scale) {
     Canvas cb(scale), cw(scale);
@@ -202,6 +205,8 @@ const PanelImg& panel_img(int kind, int scale) {
         build_panel_img(pc.img[scale][1], R_LIST, 6.f, 1.f, scale);
         build_panel_img(pc.img[scale][2], R_DETAIL, 6.f, 1.f, scale);
         build_panel_img(pc.img[scale][3], R_KB, 7.f, 1.f, scale);
+        build_panel_img(pc.img[scale][4], R_LIST_W, 6.f, 1.f, scale);
+        build_panel_img(pc.img[scale][5], R_DETAIL_W, 6.f, 1.f, scale);
     }
     return pc.img[scale][kind];
 }
@@ -321,7 +326,7 @@ struct SettingsDraw {
         e_detail = seg(p, 0.30f, 0.90f); e_foot = seg(p, 0.35f, 1.00f);
         v.page_p_ = clamp01(v.page_p_ + dt / 0.45f);
         compute_rows();
-        const float list_h = R_LIST.h;
+        const float list_h = R_LIST.h;   // (same height without the sidebar)
         v.scroll_max_ = std::max(0.f, content_h - list_h);
         const int n = int(S.rows.size());
         const int sel = std::clamp(S.sel, 0, std::max(0, n - 1));
@@ -673,8 +678,8 @@ struct SettingsDraw {
         const float dx = (1.f - e_list) * 44.f;
         const float base_ga = e_list;
         P.ga = base_ga;
-        list = shifted(R_LIST, dx, 0);
-        blit_panel(c, panel_img(1, c.scale), int(std::lround(dx * P.s)), 0, P.ga);
+        list = shifted(S.hide_side ? R_LIST_W : R_LIST, dx, 0);
+        blit_panel(c, panel_img(S.hide_side ? 4 : 1, c.scale), int(std::lround(dx * P.s)), 0, P.ga);
         corner_ticks(P, list, 2.4f, with_a(GOLD, 0.9f));
         V.g_.list = list;
         V.g_.rows.clear();
@@ -775,9 +780,9 @@ struct SettingsDraw {
     void draw_detail() {
         const float dy = (1.f - e_detail) * 26.f;
         P.ga = e_detail;
-        detail = shifted(R_DETAIL, 0, dy);
+        detail = shifted(S.hide_side ? R_DETAIL_W : R_DETAIL, 0, dy);
         V.g_.detail = detail;
-        blit_panel(c, panel_img(2, c.scale), 0, int(std::lround(dy * P.s)), P.ga);
+        blit_panel(c, panel_img(S.hide_side ? 5 : 2, c.scale), 0, int(std::lround(dy * P.s)), P.ga);
         if (T && T->corner[0].valid()) {
             const SdSprite* q = T->corner;
             const float o = 3.5f, px = detail.x, py = detail.y, pw = detail.w, ph = detail.h;
@@ -893,7 +898,7 @@ struct SettingsDraw {
             x += glyph_btn(x, cy, S.confirm_cross) + 3.f; label("Select");
             x += glyph_btn(x, cy, !S.confirm_cross) + 3.f; label((S.in_sub || !S.focus_tabs) ? "Back" : "Close");
             float w;
-            keycap(x, cy, "L", w); x += w + 2.f; keycap(x, cy, "R", w); x += w + 3.f; label("Category");
+            if (!S.hide_side) { keycap(x, cy, "L", w); x += w + 2.f; keycap(x, cy, "R", w); x += w + 3.f; label("Category"); }
             // right: d-pad glyphs
             const float dk = 0.78f;
             if (false) {
@@ -924,7 +929,7 @@ struct SettingsDraw {
             float w;
             keycap(x, cy, "Enter", w); x += w + 3.f; label("Select");
             keycap(x, cy, "Esc", w); x += w + 3.f; label((S.in_sub || !S.focus_tabs) ? "Back" : "Close");
-            keycap(x, cy, "Q", w); x += w + 2.f; keycap(x, cy, "E", w); x += w + 3.f; label("Category");
+            if (!S.hide_side) { keycap(x, cy, "Q", w); x += w + 2.f; keycap(x, cy, "E", w); x += w + 3.f; label("Category"); }
             label_r("Scroll", 0.f);
             label_r("Wheel", 0.f);
             // a small mouse glyph: left button highlighted
@@ -1112,7 +1117,9 @@ struct SettingsDraw {
         draw_background(); tick(0, t0);
         draw_header(); tick(1, t0);
         V.g_.back = back;
-        draw_sidebar(); tick(2, t0);
+        if (S.hide_side) { V.g_.cats.clear(); V.g_.side = SetRect{}; side = SetRect{}; }
+        else draw_sidebar();
+        tick(2, t0);
         draw_list(); tick(3, t0);
         draw_detail(); tick(4, t0);
         draw_footer(); tick(5, t0);

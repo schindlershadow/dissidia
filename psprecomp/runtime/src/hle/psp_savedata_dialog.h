@@ -238,6 +238,7 @@ struct SetScene {
     int device = 0;                           // 0 pad, 1 keyboard / mouse, 2 touch: which hints and cursors to show
     bool confirm_cross = true;
     bool in_sub = false;                      // the page is a sub-menu: Back goes up one level instead of closing
+    bool hide_side = false;                   // no category sidebar: the list and the description panel use the full width (single-page screens such as the setup wizard)
     bool focus_tabs = false;                  // the category list (left) has the focus; Back there closes
     std::string brand = "Dissidia 012 Recompiled";   // the plate in the top right corner (a Back button inside a sub-menu)
     SetKeyboardState kb;

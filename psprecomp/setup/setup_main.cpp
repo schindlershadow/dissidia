@@ -257,49 +257,33 @@ struct App {
     Screen before_pick = Screen::Welcome;
 
     // Every page is drawn by the game's Settings screen renderer; the Options page has two categories (sidebar): L / R or a tap on one switch.
-    int opt_tab = 0;
-    enum OptRow { OR_UPDATES, OR_HD, OR_JP, OR_ANDROID, OR_SAVES, OR_FOLDER, OR_START, OR_BACK };
+    enum OptRow { OR_UPDATES, OR_HD, OR_PACK, OR_JP, OR_ANDROID, OR_SAVES, OR_FOLDER, OR_START, OR_BACK };
     bool extras_mode = false;   // the Options page opened from "Change extras" on an installed game: only the extras, applied without a rebuild
     bool extras_run = false;    // the running plan is such an apply
     bool extras_skip_tex = false;
-    const std::vector<std::string>& option_tabs() const {
-        static const std::vector<std::string> both = {"Extras", "General"}, one = {"Extras"};
-        return extras_mode ? one : both;
-    }
     std::vector<OptRow> option_rows() const {
-        std::vector<OptRow> r;
-        if (opt_tab == 0) {
-            r = {OR_HD, OR_JP};
+        std::vector<OptRow> r = {OR_HD};
+        if (opt.hd_textures && setup::feature_available(layout, "hd_textures")) r.push_back(OR_PACK);   // which pack, only when textures are on
+        r.push_back(OR_JP);
 #ifndef __ANDROID__
-            r.push_back(OR_ANDROID);
-            r.push_back(OR_SAVES);
+        r.push_back(OR_ANDROID);
+        r.push_back(OR_SAVES);
 #endif
-            r.push_back(OR_START);
-            r.push_back(OR_BACK);
-        } else {
-            r = {OR_UPDATES};
+        if (!extras_mode) {
+            r.push_back(OR_UPDATES);
 #ifndef __ANDROID__
             r.push_back(OR_FOLDER);
 #endif
-            r.push_back(OR_START);
-            r.push_back(OR_BACK);
         }
+        r.push_back(OR_START);
+        r.push_back(OR_BACK);
         return r;
     }
-    void go_options(OptRow focus = OR_START) {   // the Options page on the Extras tab with `focus` selected
-        opt_tab = 0;
+    void go_options(OptRow focus = OR_START) {   // the Options page with `focus` selected
         std::vector<OptRow> r = option_rows();
         int i = 0;
         for (size_t k = 0; k < r.size(); k++) if (r[k] == focus) i = (int)k;
         go(Screen::Options, i);
-    }
-    void switch_tab(int dir) {
-        const int n = (int)option_tabs().size();
-        opt_tab = (opt_tab + dir + n) % n;
-        sel = 0;
-        view.page_changed(dir);
-        view.rows_changed();
-        dirty = true;
     }
 
     // build
@@ -357,15 +341,11 @@ struct App {
         return r;
     }
 
-    // HD textures: Off / LiinkPK's hand-retouched pack (first) / the AI upscaled pack. The help text credits the pack that is selected.
-    MenuRow tex_row(bool available) {
-        MenuRow r = row("HD textures", "", "Not yet");
-        if (!available) { r.help = "Higher resolution textures for the whole game. (Not in this release yet.)"; return r; }
+    // Which HD texture pack (shown while HD textures are on). The help text credits the selected pack.
+    MenuRow tex_pack_row() {
+        MenuRow r = row("Texture pack", "", "");
         r.can_dec = r.can_inc = true;
-        if (!opt.hd_textures) {
-            r.value = "Off";
-            r.help = "No HD textures: the game looks like the PSP original. Left/Right picks a pack: LiinkPK's hand-retouched HD Project (about 0.8 GB) or the AI upscaled pack (about 1.3 GB).";
-        } else if (opt.texture_pack == "ai") {
+        if (opt.texture_pack == "ai") {
             r.value = "AI upscaled";
             r.help = std::string("D012FFRT plus our own AI upscales of the other textures (about 1.3 GB). ") + setup::texture_pack_credit("ai");
         } else {
@@ -509,9 +489,6 @@ struct App {
         }
         case Screen::Options: {
             p.title = "OPTIONS";
-            p.tab = option_tabs()[(size_t)opt_tab];
-            p.tabs = option_tabs();
-            p.tab_active = opt_tab;
             bool tex = setup::feature_available(layout, "hd_textures"), jp = setup::feature_available(layout, "jp_audio"),
                  an = setup::feature_available(layout, "android");
             if (!save_sources_scanned) {
@@ -533,8 +510,10 @@ struct App {
                     p.rows.push_back(toggle_row("Check for updates", "Look for new releases when the app starts (changeable later in the game's settings.ini).", opt.check_updates, true));
                     break;
                 case OR_HD:
-                    p.rows.push_back(tex_row(tex));
-                    if (!tex_note.empty() && !p.rows.back().disabled) p.rows.back().help += tex_note;
+                    p.rows.push_back(toggle_row("HD textures", "Higher resolution textures for the whole game. Turn it on to pick which pack to use." + tex_note, opt.hd_textures, tex));
+                    break;
+                case OR_PACK:
+                    p.rows.push_back(tex_pack_row());
                     break;
                 case OR_JP:
                     p.rows.push_back(toggle_row("Japanese voices (undub)", "Adds the Japanese voices and movies from a second disc image (an undub ISO) that you pick next.", opt.jp_audio, jp));
@@ -1116,14 +1095,8 @@ struct App {
     void toggle_option(OptRow k, int dir = 1) {
         switch (k) {
         case OR_UPDATES: opt.check_updates = !opt.check_updates; break;
-        case OR_HD:   // cycle (Right / select): LiinkPK -> AI upscaled -> Off -> LiinkPK; Left goes the other way
-            if (setup::feature_available(layout, "hd_textures")) {
-                int cur = !opt.hd_textures ? 2 : opt.texture_pack == "ai" ? 1 : 0;
-                cur = (cur + (dir < 0 ? 2 : 1)) % 3;
-                opt.hd_textures = cur != 2;
-                if (cur != 2) opt.texture_pack = cur == 1 ? "ai" : "liink";
-            }
-            break;
+        case OR_HD: if (setup::feature_available(layout, "hd_textures")) opt.hd_textures = !opt.hd_textures; break;
+        case OR_PACK: opt.texture_pack = opt.texture_pack == "ai" ? "liink" : "ai"; break;
         case OR_JP:
             if (setup::feature_available(layout, "jp_audio")) { opt.jp_audio = !opt.jp_audio; if (!opt.jp_audio) opt.undub_iso.clear(); }
             break;
@@ -1416,13 +1389,6 @@ struct App {
             // hit-test against what the settings renderer drew (its geometry is in the same 480x272 design units)
             const psp_sddialog::SetGeom& G = view.geom();
             if (G.back.w > 0 && G.back.has(dx, dy) && screen != Screen::Welcome) { cancel(); return; }
-            for (size_t k = 0; k < G.cats.size(); k++)
-                if (G.cats[k].has(dx, dy) && screen == Screen::Options) {
-                    const int n = (int)option_tabs().size();
-                    int d = (int)k - opt_tab;
-                    if (d != 0) { if (d > n / 2) d -= n; else if (d < -n / 2) d += n; switch_tab(d > 0 ? 1 : -1); while (opt_tab != (int)k) switch_tab(d > 0 ? 1 : -1); }
-                    return;
-                }
             int top = 0;
             if (is_browser()) {   // page() lists only the visible window of the browser's entries
                 int total = (int)br.list.size();
@@ -1469,10 +1435,6 @@ struct App {
         if (p & BTN_RIGHT) adjust(+1);
         if (p & BTN_CROSS) confirm();
         if (p & BTN_CIRCLE) cancel();
-        if (screen == Screen::Options) {
-            if (p & BTN_LTRIGGER) switch_tab(-1);
-            if (p & BTN_RTRIGGER) switch_tab(+1);
-        }
         if (is_browser()) {
             if (p & BTN_LTRIGGER) { sel = std::max(0, sel - MENU_ROWS); dirty = true; }
             if (p & BTN_RTRIGGER) { sel = std::min(n - 1, sel + MENU_ROWS); dirty = true; }
@@ -1491,13 +1453,11 @@ struct App {
         psp_sddialog::SetScene sc;
         sc.title = "Setup";
         sc.brand = "Dissidia 012 Setup";
+        // no sidebar: the page's status (a percentage, the folder being browsed, "Built") goes into the header after the title
         sc.crumbs.push_back(nice(pg.title));
-        if (pg.tabs.size() > 1) {
-            for (size_t k = 0; k < pg.tabs.size(); k++) sc.cats.push_back({pg.tabs[k], k == 0 ? 10 : 7});
-            sc.cat = pg.tab_active;
-        } else {
-            sc.cats.push_back({screen == Screen::Build ? "Install" : is_browser() ? "Files" : "Setup", 7});   // the page's own tab text (a percentage, a folder) is too long for the sidebar
-        }
+        if (!pg.tab.empty() && screen != Screen::Options) sc.crumbs.push_back(is_browser() ? shorten_left(pg.tab, 40) : pg.tab);
+        sc.hide_side = true;
+        sc.cats.push_back({"Setup", 7});
         const bool progress = screen == Screen::Build;
         int id = 0;
         for (const MenuRow& m : pg.rows) {
@@ -1850,10 +1810,11 @@ int main(int argc, char** argv) {
         app.pick = Pick::Iso; app.go(Screen::Waiting); shot("2_waiting");
         app.go(Screen::PickIso); shot("2b_pick_iso");
         app.go(Screen::InstallDir); shot("3_install_dir");
-        app.opt_tab = 0; app.go(Screen::Options, 0); shot("4_options");
-        app.go(Screen::Options, 2); shot("4b_options_scrolled");
-        app.opt_tab = 1; app.go(Screen::Options, 0); shot("4c_options_general");
-        app.opt_tab = 0;
+        app.go(Screen::Options, 0); shot("4_options");
+        app.opt.texture_pack = "ai"; app.go(Screen::Options, 1); shot("4b_options_pack");
+        app.extras_mode = true; app.go(Screen::Options, 0); shot("4c_options_extras"); app.extras_mode = false;
+        app.opt.hd_textures = false; app.go(Screen::Options, 0); shot("4d_options_nopack");
+        app.opt.hd_textures = true; app.opt.texture_pack = "liink";
         setup::Options o; o.android = true; o.hd_textures = true; o.jp_audio = true; o.undub_iso = "/x.iso";
         app.plan = setup::plan_install(app.layout, app.iso, app.workdir, o);
         app.prog.step = 1; app.prog.stage = "Compiling the game"; app.prog.fraction = 0.42;
