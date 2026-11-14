@@ -3611,15 +3611,16 @@ static void present_service_window_capture() {
 // state is saved and restored so the GE's own state tracking is not disturbed.
 // The overlay texture drawn with its own alpha over the window (the settings screen's opening circle): a textured quad over the
 // picture rectangle instead of the opaque blit.
+// (The Vulkan layer's GLSL translator reads one in / out / uniform declaration per line: keep them on separate lines.)
 static void draw_overlay_alpha(GLuint tex, const PresentRect& pr) {
     static GLuint prog = 0, vao = 0, vbo = 0;
     static GLint u_tex = -1;
     static bool failed = false;
     if (failed) return;
     if (!prog) {
-        const char* vs_body = "in vec2 a_pos; in vec2 a_uv; out vec2 v_uv;\n"
+        const char* vs_body = "in vec2 a_pos;\nin vec2 a_uv;\nout vec2 v_uv;\n"
                               "void main() { v_uv = a_uv; gl_Position = vec4(a_pos, 0.0, 1.0); }\n";
-        const char* fs_body = "in vec2 v_uv; out vec4 o_col; uniform sampler2D u_tex;\n"
+        const char* fs_body = "in vec2 v_uv;\nout vec4 o_col;\nuniform sampler2D u_tex;\n"
                               "void main() { o_col = texture(u_tex, v_uv); }\n";
         auto compile = [](GLenum type, const char* body) {
             const char* src[2] = {PSP_GLSL_VERSION, body};
@@ -4256,9 +4257,9 @@ static void present_blend_hud(HudBlend& st, const std::string& text, bool& text_
     std::vector<uint32_t>& px = st.px;
     if (failed) return;
     if (!prog) {
-        const char* vs_body = "in vec2 a_pos; in vec2 a_uv; out vec2 v_uv;\n"
+        const char* vs_body = "in vec2 a_pos;\nin vec2 a_uv;\nout vec2 v_uv;\n"
                               "void main() { v_uv = a_uv; gl_Position = vec4(a_pos, 0.0, 1.0); }\n";
-        const char* fs_body = "in vec2 v_uv; out vec4 o_col; uniform sampler2D u_tex; uniform float u_alpha;\n"
+        const char* fs_body = "in vec2 v_uv;\nout vec4 o_col;\nuniform sampler2D u_tex;\nuniform float u_alpha;\n"
                               "void main() { vec4 c = texture(u_tex, v_uv); o_col = vec4(c.rgb, c.a * u_alpha); }\n";
         auto compile = [](GLenum type, const char* body) {
             const char* src[2] = {PSP_GLSL_VERSION, body};
