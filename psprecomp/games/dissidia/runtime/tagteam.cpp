@@ -8,6 +8,7 @@
 #include "psp_game_module.h"
 #include "psp_runtime.h"
 #include "recomp.h"
+#include "psp_settings.h"
 #include "tagteam_hud.h"
 #include "hle/psp_hle.h"
 #include <cstdint>
@@ -54,6 +55,7 @@ constexpr uint32_t ACT_VT = 0x544u, ACT_FLAGS = 0x5B0u, ACT_LOCKBLK = 0x5ACu;
 
 FuncPtr g_orig_setup = nullptr, g_orig_flow = nullptr, g_orig_tick = nullptr, g_orig_lock_other = nullptr, g_orig_refresh = nullptr, g_orig_lock_mode = nullptr, g_orig_rel1 = nullptr, g_orig_rel2 = nullptr;
 bool g_in_ctor = false;   // inside the extra's constructor: the resource releases are skipped (see rel_hook)
+bool g_enabled = false;   // PSPRECOMP_TAGTEAM=1 or Settings > Debug > Tag Team (2v2): the next battle is a tag battle
 bool g_log = false;
 uint8_t* g_ram = nullptr;
 recomp_context* g_ctx = nullptr;
@@ -241,6 +243,7 @@ void setup_hook(uint8_t* rdram, recomp_context* ctx) {
     g_orig_setup(rdram, ctx);
     g_ram = rdram; g_ctx = ctx;
     g_nextra = 0; g_bs = 0; g_late_q.clear(); g_late_ready = false;
+    if (!g_enabled) return;
     if (!ok(bs, 0x2800)) return;
     const uint32_t a0 = rd(bs + 56), a1 = rd(bs + 60), mode = rd(bs + 76), human = rd(bs + 84);
     if (g_log) std::fprintf(stderr, "[TAGTEAM] setup bs=%08X mode=%u slots %08X %08X human slot %u\n", bs, mode, a0, a1, human);
@@ -252,6 +255,11 @@ void setup_hook(uint8_t* rdram, recomp_context* ctx) {
     }
     if (!g_orig_tick) { g_orig_tick = fn(BRAIN_TICK); if (g_orig_tick) psp_dispatch_register(BRAIN_TICK, tick_hook); else std::fprintf(stderr, "[TAGTEAM] brain tick not found\n"); }
     const uint32_t hum = human == 0 ? a0 : a1, cpu = human == 0 ? a1 : a0;
+    if (const char* w = std::getenv("PSPRECOMP_TAGTEAM_WATCH_BS")) {   // arm the write watch on bs + hex offset
+        const uint32_t off = static_cast<uint32_t>(std::strtoul(w, nullptr, 16));
+        psp_mem_watch_set(bs + off);
+        std::fprintf(stderr, "[TAGTEAM] watching bs+%X = %08X\n", off, bs + off);
+    }
     if (const char* w = std::getenv("PSPRECOMP_TAGTEAM_WATCH")) {   // arm the write watch on <human actor> + hex offset
         const uint32_t off = static_cast<uint32_t>(std::strtoul(w, nullptr, 16));
         psp_mem_watch_set(hum + off);
@@ -574,7 +582,7 @@ uint32_t dissidia_tagteam_pad(uint32_t raw) {
 
 void dissidia_tagteam_install(uint8_t* rdram) {
     const char* e = std::getenv("PSPRECOMP_TAGTEAM");
-    if (!e || e[0] == '0') return;
+    g_enabled = e && e[0] && e[0] != '0';
     g_log = std::getenv("PSPRECOMP_TAGTEAM_LOG") != nullptr;
     if (const char* m = std::getenv("PSPRECOMP_TAGTEAM_EXTRAS")) g_mask = std::atoi(m);
     { const char* l = std::getenv("PSPRECOMP_TAGTEAM_LATE"); g_late = !(l && l[0] == '0'); g_late_wait = !(l && l[0] == '1'); }   // default: spawn after the intro; LATE=1 right when the battle starts, LATE=0 during the intro setup
@@ -590,5 +598,7 @@ void dissidia_tagteam_install(uint8_t* rdram) {
     psp_dispatch_register(FLOW_STEP, flow_hook);
     g_orig_rel1 = psp_dispatch_probe_lookup(0x0886CAA0u); g_orig_rel2 = psp_dispatch_probe_lookup(0x0886A140u);
     if (g_orig_rel1 && g_orig_rel2) { psp_dispatch_register(0x0886CAA0u, rel1_hook); psp_dispatch_register(0x0886A140u, rel2_hook); }
-    std::fprintf(stderr, "[TAGTEAM] spike installed\n");
+    psp_settings_add_debug_toggle({"Tag Team (2v2)", "Tag team battle (experimental)\nOn: the next battle adds a partner for you and a second fighter to the CPU's team (2 v 2), L cycles the lock between the two enemies.\nAffects the next battle that starts.",
+                                   +[]() { return g_enabled; }, +[](bool on) { g_enabled = on; }});
+    std::fprintf(stderr, "[TAGTEAM] installed (%s)\n", g_enabled ? "on" : "off, Settings > Debug > Tag Team (2v2)");
 }
