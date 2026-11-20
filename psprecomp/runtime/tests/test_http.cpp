@@ -82,6 +82,32 @@ int main(int argc, char** argv) {
         Request big = get(base + "/big"); big.max_body = 1000;
         r = perform(big);
         CHECK(r.status == 0 && r.error.find("large") != std::string::npos);
+        // streamed to a sink (large downloads): the same bytes, nothing kept in the response, no size limit
+        for (const char* path : {"/chunked", "/big", "/noclen"}) {
+            Request sr = get(base + path);
+            sr.max_body = 10;                                   // ignored for a streamed body
+            std::string got;
+            size_t calls = 0;
+            sr.sink = [&](const uint8_t* d, size_t n) { got.append(reinterpret_cast<const char*>(d), n); calls++; return true; };
+            r = perform(sr);
+            const Response plain = perform(get(base + path));
+            CHECK(r.ok() && r.body.empty() && calls > 0 && got == plain.text());
+        }
+        Request st = get(base + "/trunc");
+        st.sink = [](const uint8_t*, size_t) { return true; };
+        r = perform(st);
+        CHECK(r.status == 0 && r.error.find("cut off") != std::string::npos);
+        Request stop = get(base + "/big");
+        size_t seen = 0;
+        stop.sink = [&](const uint8_t*, size_t n) { seen += n; return seen < 100000; };   // the caller stops it
+        r = perform(stop);
+        CHECK(r.status == 0 && r.error == "stopped" && seen < 3u * 1024 * 1024);
+        Request sred = get(base + "/redir");                    // a redirect is followed, then the target is streamed
+        sred.max_redirects = 2;
+        std::string rg;
+        sred.sink = [&](const uint8_t* d, size_t n) { rg.append(reinterpret_cast<const char*>(d), n); return true; };
+        r = perform(sred);
+        CHECK(r.ok() && rg == "hello");
     }
 
     // redirects

@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <zlib.h>
 #include <cstdio>
@@ -505,5 +506,79 @@ bool psp_texpacks_install(const std::string& mods_dir, const std::string& archiv
     if (ec) { fs::remove_all(tmp, ec); return fail("could not put the pack in place: " + ec.message()); }
     set(100);
     if (name_out) *name_out = name;
+    return true;
+}
+
+bool psp_texpacks_install_parts(const std::string& mods_dir, const std::string& id, const std::string& name, const std::string& kind,
+                                const std::string& credits, const std::vector<PspTexPackPart>& parts, std::atomic<int>* progress,
+                                int pct_from, int pct_to, std::string* err) {
+    auto fail = [&](const std::string& why) { if (err) *err = why; return false; };
+    const fs::path packs = fs::u8path(mods_dir) / "texpacks";
+    const fs::path tmp = packs / (".new-" + id), dest = packs / id;
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
+    fs::create_directories(tmp, ec);
+    if (ec) return fail("could not create " + tmp.u8string() + ": " + ec.message());
+    struct Job { File* f; const ZipEntry* e; fs::path to; };
+    std::vector<std::unique_ptr<File>> files;
+    std::vector<std::vector<ZipEntry>> lists(parts.size());
+    std::vector<Job> jobs;
+    uint64_t total = 0;
+    for (size_t k = 0; k < parts.size(); k++) {
+        const PspTexPackPart& part = parts[k];
+        files.push_back(std::make_unique<File>(part.zip, "rb"));
+        File& z = *files.back();
+        if (!z.f) { fs::remove_all(tmp, ec); return fail("could not open " + part.zip); }
+        const std::string why = zip_list(z, uint64_t(fs::file_size(fs::u8path(part.zip), ec)), &lists[k]);
+        if (!why.empty()) { fs::remove_all(tmp, ec); return fail(why + " (" + fs::u8path(part.zip).filename().u8string() + ")"); }
+        std::map<std::string, const ZipEntry*> by_name;
+        std::vector<std::string> names;
+        for (const ZipEntry& e : lists[k]) { by_name[e.name] = &e; names.push_back(e.name); }
+        std::vector<std::pair<std::string, std::string>> want;
+        if (!part.ids_flat) {
+            for (const auto& w : pack_files(names)) {
+                const std::string low = lower(w.second);
+                bool skip = w.second.empty() || w.second[0] == '.' || low.compare(0, 8, ".github/") == 0;   // repository files
+                for (const std::string& suf : part.skip_suffixes)
+                    if (low.size() >= suf.size() && low.compare(low.size() - suf.size(), suf.size(), suf) == 0) skip = true;
+                if (!skip) want.push_back(w);
+            }
+        } else {
+            for (const std::string& n : names) {
+                const size_t sl = n.find_last_of('/');
+                const std::string base = sl == std::string::npos ? n : n.substr(sl + 1);
+                if (is_id_png(base) && ("/" + n).find("/textures/") != std::string::npos && n.find("..") == std::string::npos)
+                    want.push_back({n, lower(base)});
+            }
+        }
+        for (const auto& w : want) {
+            jobs.push_back({&z, by_name[w.first], tmp / fs::u8path(w.second)});
+            total += by_name[w.first]->usize;
+        }
+    }
+    uint64_t done = 0;
+    for (const Job& j : jobs) {
+        const std::string why = zip_extract(*j.f, *j.e, j.to);
+        if (!why.empty()) { fs::remove_all(tmp, ec); return fail(why); }
+        done += j.e->usize;
+        if (progress) progress->store(pct_from + int(total ? done * uint64_t(pct_to - pct_from) / total : 0));
+    }
+    files.clear();
+    if (!fs::is_regular_file(tmp / "textures.ini", ec)) {
+        bool ids = false;
+        for (fs::directory_iterator it(tmp, ec), end; !ec && it != end && !ids; it.increment(ec)) ids = is_id_png(it->path().filename().u8string());
+        if (!ids) { fs::remove_all(tmp, ec); return fail(kNoPack); }
+    }
+    {
+        std::ofstream j(tmp / ".source.json", std::ios::binary);
+        j << "{\"pack\": " << json_str(kind) << ", \"name\": " << json_str(name) << ", \"installed\": " << now_s() << ", \"files\": " << jobs.size()
+          << ", \"by\": \"settings\"}";
+        std::ofstream c(tmp / "PACK_CREDITS.txt", std::ios::binary);
+        c << credits;
+    }
+    fs::remove_all(dest, ec);
+    fs::rename(tmp, dest, ec);
+    if (ec) { fs::remove_all(tmp, ec); return fail("could not put the pack in place: " + ec.message()); }
+    if (progress) progress->store(pct_to);
     return true;
 }

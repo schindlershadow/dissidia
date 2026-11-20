@@ -406,6 +406,72 @@ Response once(const Request& rq, const Url& u) {
     const std::string te = lower(out.header("Transfer-Encoding"));
     const std::string cl = out.header("Content-Length");
     if (no_body) return out;
+    if (rq.sink && out.ok()) {   // streamed to the caller: only what has not been handed on yet is kept
+        Bytes buf(in.begin() + long(hdr_end), in.end());
+        in.clear();
+        auto more = [&]() -> bool {   // appends what the connection has next; false on an error (or the end, see eof)
+            const long r = c.read(tmp, sizeof tmp, &out.error);
+            if (r < 0) return false;
+            if (r == 0) { eof = true; return true; }
+            buf.insert(buf.end(), tmp, tmp + r);
+            return true;
+        };
+        auto give = [&](const uint8_t* d, size_t n) -> bool {
+            if (n && !rq.sink(d, n)) { out.status = 0; out.error = "stopped"; return false; }
+            return true;
+        };
+        if (te.find("chunked") != std::string::npos) {
+            size_t pos = 0;
+            for (;;) {
+                size_t eol = pos;
+                while (eol + 1 < buf.size() && !(buf[eol] == '\r' && buf[eol + 1] == '\n')) eol++;
+                if (eol + 1 >= buf.size()) {
+                    if (eof) { out.status = 0; out.error = "the response was cut off"; return out; }
+                    if (!more()) { out.status = 0; return out; }
+                    continue;
+                }
+                const std::string line(reinterpret_cast<const char*>(&buf[pos]), eol - pos);
+                char* endp = nullptr;
+                unsigned long long n = std::strtoull(line.c_str(), &endp, 16);
+                if (endp == line.c_str()) { out.status = 0; out.error = "malformed chunked response"; return out; }
+                if (n == 0) return out;
+                pos = eol + 2;
+                while (n) {   // the chunk's data, as it arrives
+                    if (pos >= buf.size()) {
+                        buf.clear();
+                        pos = 0;
+                        if (eof) { out.status = 0; out.error = "the response was cut off"; return out; }
+                        if (!more()) { out.status = 0; return out; }
+                        continue;
+                    }
+                    const size_t take = size_t(std::min<unsigned long long>(n, buf.size() - pos));
+                    if (!give(&buf[pos], take)) return out;
+                    pos += take;
+                    n -= take;
+                }
+                while (buf.size() < pos + 2) {   // the CRLF after the data
+                    if (eof) { out.status = 0; out.error = "the response was cut off"; return out; }
+                    if (!more()) { out.status = 0; return out; }
+                }
+                pos += 2;
+                buf.erase(buf.begin(), buf.begin() + long(pos));
+                pos = 0;
+            }
+        }
+        unsigned long long left = cl.empty() ? ~0ull : std::strtoull(cl.c_str(), nullptr, 10);
+        for (;;) {
+            const size_t take = size_t(std::min<unsigned long long>(left, buf.size()));
+            if (!give(buf.data(), take)) return out;
+            left -= take;
+            buf.clear();
+            if (left == 0) return out;
+            if (eof) {
+                if (!cl.empty()) { out.status = 0; out.error = "the response was cut off"; }
+                return out;
+            }
+            if (!more()) { out.status = 0; return out; }
+        }
+    }
     if (te.find("chunked") != std::string::npos) {
         for (;;) {
             bool bad = false;

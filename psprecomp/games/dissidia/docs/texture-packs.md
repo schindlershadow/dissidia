@@ -158,6 +158,14 @@ The game applies one (`runtime/include/psp_texpacks.h`, chosen by the game modul
 - without a choice (or when the chosen pack was deleted), the newest pack;
 - **Off** in the same row is `hd_textures=0` (`PSPRECOMP_TEX_REPLACE=0`). A change applies at the next start ("(next start)" in the row).
 
+**Download Dissidia Recomp HD** (same page, only while that pack is not installed: neither `texpacks/recomp-hd` nor a pack named so)
+downloads and installs our pack from the game itself (`games/dissidia/runtime/texpack_download.cpp`, the game module's `PspTexPackHook::download`):
+the D012FFRT and dissidia-hd-textures zips from codeload.github.com are streamed to `<mods>/texpacks/.dl-*.zip` (`psp_download_to_file`, the HTTP
+client's body sink: about 1.3 GB, never in memory), built into `texpacks/recomp-hd` by `psp_texpacks_install_parts` (Niosa's pack folder without
+its .psd / .svg / .lnk sources, plus the `textures/<id>.png` files flat: the same layout as `fetch_textures.py --pack ai`) and deleted. Progress
+(downloads 0-80 %, unpacking 80-100 %) and the result share the install status row. Needs a build with mbedTLS (HTTPS); about 3 GB free while it
+unpacks.
+
 **Install a Texture Pack** (same page, always there) opens the system file picker (Android: the document picker, whose pick is copied to
 `<mods>/.picked-texpack` first; without a picker, e.g. Steam Deck game mode, the newest .zip / .7z / .rar in the mods folder) and installs the
 archive on a worker thread with `psp_texpacks_install`, the same rules as `fetch_textures.py --pack file`: a .zip is read in place, one entry at

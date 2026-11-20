@@ -91,7 +91,8 @@ the ~60 fps animation / scale auto-drop (no frame timing taken), held-button lea
   out of it are handed to the game's own moves so its sounds and animations play. The label is drawn in Crimson Text SemiBold
   small capitals; its underline is a copy of another row's underline from the game's own picture (`ge_draw_set_game_layer_copies`).
 
-**Texture Pack** (Graphics): Off or one of the installed packs, applied at the next start; **Install a Texture Pack** (a .zip, on a PC also .7z / .rar,
+**Texture Pack** (Graphics): Off or one of the installed packs, applied at the next start; **Download Dissidia Recomp HD** (while it is not
+installed); **Install a Texture Pack** (a .zip, on a PC also .7z / .rar,
 with the file picker) and **Delete a Texture Pack** (not the one in use);
 see [texture-packs.md](texture-packs.md) "Several packs, one applied".
 

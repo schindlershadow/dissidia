@@ -188,6 +188,8 @@ void texpack_delete_confirm();
 void texpacks_refresh();
 std::string texpack_mods();
 void texpack_install_choose();
+bool texpack_download_wanted();
+void texpack_download_start();
 void texpack_install_tick();
 
 enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_FPSCOUNT, ROW_VSYNC, ROW_WIDE, ROW_TALL, ROW_FOV, ROW_SOFT, ROW_RENDERER, ROW_AA, ROW_SHARP, ROW_BRIGHT, ROW_CONTRAST, ROW_SAT, ROW_HDR, ROW_HDR_BOOST, ROW_HDR_GAMUT, ROW_HDR_PEAK, ROW_HDR_PAPER, ROW_HDR_SCENE, ROW_SSAO, ROW_CONTACT, ROW_RT, ROW_RT_SOFT, ROW_RT_CHAR, ROW_RT_REFL, ROW_RT_REFL_FX, ROW_SSR, ROW_ANISO, ROW_UPSCALE, ROW_VOICE, ROW_TEXPACK, ROW_TOUCH, ROW_TOUCH_EDIT, ROW_PROMPTS, ROW_LR_BUTTONS, ROW_P1_PAD, ROW_KEYS_INFO, ROW_UPDATES, ROW_QUIT,
@@ -205,6 +207,7 @@ enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_FPSCOUNT, ROW_VSYNC, RO
            ROW_MOD_UNINSTALL,                                       // Mods page: delete an installed mod folder (pick, then confirm twice)
            ROW_TEXPACK_DEL,                                         // Graphics page: delete an installed texture pack (pick, then confirm twice)
            ROW_TEXPACK_INSTALL, ROW_TEXPACK_INSTALL_STATUS,         // Graphics page: install a pack archive with the file picker, and how it went
+           ROW_TEXPACK_DOWNLOAD,                                    // Graphics page: download the game's own pack (PspTexPackHook::download)
            ROW_CLOUD_CONFLICTS,                 // Cloud page: saves waiting for a choice (opens Saves)
            ROW_EXT0, ROW_EXT_END = ROW_EXT0 + 219,   // Saves page: the rows psp_saves::Page builds (headers included)
            ROW_SEC_WINDOW, ROW_SEC_PERF, ROW_SEC_QUALITY, ROW_SEC_AA, ROW_SEC_TEX, ROW_SEC_ENGINE, ROW_SEC_COLOUR, ROW_SEC_HDR, ROW_SEC_LIGHT,
@@ -931,6 +934,13 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
                      (psp_filedlg::available() ? std::string() : "\nThis system has no file picker: put the pack's archive in the mods folder (" + texpack_mods() + ") and choose this again.");
             break;
         }
+        case ROW_TEXPACK_DOWNLOAD: {
+            m.label = std::string("Download ") + (g_texpack.download_name ? g_texpack.download_name : "the HD textures");
+            m.value = g_tpi_busy ? std::to_string(g_tpi_pct.load()) + "%" : "";
+            m.help = std::string("Download the HD textures\n") + (g_texpack.download_help ? g_texpack.download_help : "") +
+                     " Downloaded from GitHub and installed next to your other packs; used from the next start.";
+            break;
+        }
         case ROW_TEXPACK_INSTALL_STATUS: {
             std::lock_guard<std::mutex> lk(g_tpi_mu);
             const size_t nl = g_tpi_text.find('\n');
@@ -1591,7 +1601,7 @@ psp_sddialog::SetKind row_kind(Row r) {
     case ROW_DBG0: case ROW_DBG1: case ROW_DBG2: case ROW_DBG3: case ROW_DBG4: case ROW_DBG5:
         return K::Toggle;
     case ROW_FXL_INT: case ROW_FXL_RAD: case ROW_RT_CHAR: return K::Choice;   // Character Shadows: Off / Soft (named values, not a switch)
-    case ROW_TOUCH_EDIT: case ROW_CLOUD_NOW: case ROW_CLOUD_GOOGLE: case ROW_GPU_DEL: case ROW_MOD_INSTALL: case ROW_TEXPACK_INSTALL: return K::Action;
+    case ROW_TOUCH_EDIT: case ROW_CLOUD_NOW: case ROW_CLOUD_GOOGLE: case ROW_GPU_DEL: case ROW_MOD_INSTALL: case ROW_TEXPACK_INSTALL: case ROW_TEXPACK_DOWNLOAD: return K::Action;
     case ROW_MOD_UNINSTALL: case ROW_TEXPACK_DEL: case ROW_TEXPACK: return K::Choice;
     case ROW_QUIT: return K::Danger;
     case ROW_SUB_HDR: case ROW_SUB_RT: return K::Submenu;
@@ -1867,6 +1877,34 @@ void texpack_install_start(const std::string& path) {
         g_tpi_busy = false;
         g_tpi_finished = true;
     }).detach();
+    g_dirty = true;
+}
+// ---- Graphics page: download the game's own pack (PspTexPackHook::download) ------------------------------------------------------------
+bool texpack_download_wanted() {
+    if (!g_texpack.download || !g_texpack.download_id) return false;
+    for (const PspTexPack& p : g_texpacks)
+        if (p.id == g_texpack.download_id || (g_texpack.download_name && p.name == g_texpack.download_name)) return false;
+    return true;
+}
+void texpack_download_start() {
+    if (!g_texpack.download || g_tpi_picking || g_tpi_busy.exchange(true)) return;
+    g_tpi_pct = 0;
+    const std::string what = g_texpack.download_name ? g_texpack.download_name : "the HD textures";
+    { std::lock_guard<std::mutex> lk(g_tpi_mu); g_tpi_text = "Downloading " + what + "..."; }
+    const std::string mods = texpack_mods();
+    auto fn = g_texpack.download;
+    std::thread([fn, mods, what] {
+        std::string err;
+        const bool ok = fn(mods, &g_tpi_pct, &err);
+        std::fprintf(stderr, "[SETTINGS] download of %s: %s\n", what.c_str(), ok ? "installed" : err.c_str());
+        {
+            std::lock_guard<std::mutex> lk(g_tpi_mu);
+            g_tpi_text = ok ? "Installed " + what + ". It is used from the next start." : "Not installed: " + err;
+        }
+        g_tpi_busy = false;
+        g_tpi_finished = true;
+    }).detach();
+    if (page_id() == PAGE_GRAPHICS) { g_sel_page[page_id()] = g_sel; build_rows(); }   // the status row
     g_dirty = true;
 }
 void texpack_install_choose() {
@@ -2364,6 +2402,7 @@ void build_rows() {
         texpacks_refresh();
         add(ROW_SEC_TEX);   // packs: switch, install one from a file, delete
         if (texpack_row_wanted()) add(ROW_TEXPACK);
+        if (texpack_download_wanted()) add(ROW_TEXPACK_DOWNLOAD);
         add(ROW_TEXPACK_INSTALL);
         { std::lock_guard<std::mutex> lk(g_tpi_mu); if (!g_tpi_text.empty()) add(ROW_TEXPACK_INSTALL_STATUS); }
         if (!texpack_deletable().empty()) add(ROW_TEXPACK_DEL);
@@ -2902,6 +2941,7 @@ void confirm_row() {
     case ROW_MOD_INSTALL_STATUS: break;
     case ROW_MOD_INSTALL: mod_install_choose(); return;
     case ROW_TEXPACK_INSTALL: texpack_install_choose(); return;
+    case ROW_TEXPACK_DOWNLOAD: texpack_download_start(); return;
     case ROW_MOD_UNINSTALL: mod_uninstall_confirm(); return;
     case ROW_TEXPACK_DEL: texpack_delete_confirm(); return;
     case ROW_FPSCOUNT: change(ge_draw_fps_counter() ? -1 : 1); return;

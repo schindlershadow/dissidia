@@ -16,6 +16,7 @@
 #pragma once
 
 #include <cstdint>
+#include <atomic>
 #include <string>
 
 union SDL_Event;
@@ -46,6 +47,13 @@ void psp_settings_set_voice_hook(const PspVoiceHook& hook);
 struct PspTexPackHook {
     bool (*available)();
     std::string (*mods_dir)() = nullptr;
+    // A pack the game can download itself (Dissidia: Dissidia Recomp HD, games/dissidia/runtime/texpack_download.cpp): while none of id
+    // `download_id` (or named `download_name`) is installed, the page has a "Download <download_name>" row. `download` runs on a worker
+    // thread and installs it into <mods_dir>/texpacks/<download_id>: progress 0-100 into `pct`; false and `err` when it failed.
+    const char* download_id = nullptr;
+    const char* download_name = nullptr;
+    const char* download_help = nullptr;
+    bool (*download)(const std::string& mods_dir, std::atomic<int>* pct, std::string* err) = nullptr;
 };
 void psp_settings_set_texpack_hook(const PspTexPackHook& hook);
 

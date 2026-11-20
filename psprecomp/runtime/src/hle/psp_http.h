@@ -8,6 +8,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,6 +26,10 @@ struct Request {
     int timeout_ms = 20000;          // per connect / read / write step, not for the whole transfer
     int max_redirects = 0;           // follow 301/302/303/307/308 this many times (Authorization is dropped when the host changes)
     size_t max_body = 64u << 20;     // a larger response is an error
+    // Optional: a 2xx response's body is handed here piece by piece instead of being kept in Response::body (no size limit: large
+    // downloads straight to a file). Returning false stops the transfer (Response::error = "stopped"). Other answers (redirects,
+    // errors) are read as usual.
+    std::function<bool(const uint8_t* data, size_t n)> sink;
 };
 
 struct Response {

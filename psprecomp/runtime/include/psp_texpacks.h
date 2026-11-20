@@ -46,3 +46,17 @@ bool psp_texpacks_install(const std::string& mods_dir, const std::string& archiv
                           std::string* name_out, std::string* err);
 // The folder name an archive's file name gets ("My Pack v2 (US).zip" -> "my-pack-v2-us"); tools/fetch_textures.py pack_id() does the same.
 std::string psp_texpacks_id_for(const std::string& file_name);
+
+// One downloaded archive a pack is built from (psp_texpacks_install_parts; e.g. a game's own pack made of a community pack plus upscales).
+struct PspTexPackPart {
+    std::string zip;                          // a .zip file
+    bool ids_flat = false;                    // false: the folder holding its textures.ini (as psp_texpacks_install); true: only the
+                                              // <16 hex digits>.png files under a "textures/" folder, put flat into the pack
+    std::vector<std::string> skip_suffixes;   // file endings left out (sources: ".psd", ".svg" ...), lower case
+};
+// Builds the pack <mods>/texpacks/<id> from `parts` (in order; later files win), with .source.json ("pack": kind, "name", "installed")
+// and PACK_CREDITS.txt = `credits`, replacing a pack of that id once the new one is complete. `progress` goes from `pct_from` to
+// `pct_to` as the bytes are unpacked. Runs on the caller's thread. false: `err`.
+bool psp_texpacks_install_parts(const std::string& mods_dir, const std::string& id, const std::string& name, const std::string& kind,
+                                const std::string& credits, const std::vector<PspTexPackPart>& parts, std::atomic<int>* progress,
+                                int pct_from, int pct_to, std::string* err);

@@ -235,6 +235,7 @@ set(RUNTIME_SOURCES
     src/psp_ge_texture.cpp
     src/psp_tex_pack.cpp
     src/psp_texpacks.cpp
+    src/psp_download.cpp
     src/psp_fx_manifest.cpp
     src/psp_fx_shader.cpp
     src/psp_fep_log.cpp

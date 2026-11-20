@@ -18,6 +18,7 @@
 #include "psp_platform.h"
 #include "psp_settings.h"
 #include "psp_texpacks.h"
+#include "texpack_download.h"
 #include "hle/psp_hle_io.h"
 #include "psp_fx_shader.h"
 #include "psp_tex_pack.h"
@@ -740,6 +741,7 @@ void dissidia_install_mod_io() {
         return false;
     };
     th.mods_dir = +[]() { return mods_dir(); };
+    dissidia_texpack_download_register(th);   // Download Dissidia Recomp HD when it is not installed (texpack_download.cpp)
     psp_settings_set_texpack_hook(th);
     // Settings > Mods > Install ISO Patch (.xdelta): xdelta_import.cpp
     dissidia_xdelta_register_installer();
