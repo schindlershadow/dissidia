@@ -39,10 +39,13 @@ struct PspVoiceHook {
 };
 void psp_settings_set_voice_hook(const PspVoiceHook& hook);
 
-/// Same idea for a texture pack: while `available` says a pack is installed, the menu has an HD Textures
-/// row (saved as `hd_textures=0|1`, exported as PSPRECOMP_TEX_REPLACE at the next start).
+/// Same idea for texture packs: while `available` says a pack is installed, Settings > Graphics has a Texture Pack row (Off or one of
+/// the installed packs, psp_texpacks.h; saved as `hd_textures=0|1` plus `texture_pack=<id>` / `texture_pack_at=<when>`, exported as
+/// PSPRECOMP_TEX_REPLACE / PSPRECOMP_TEXPACK_ID / PSPRECOMP_TEXPACK_AT at the next start) and a row that deletes a pack. `mods_dir`: the
+/// folder holding texpacks/ (and an older release's textures/).
 struct PspTexPackHook {
     bool (*available)();
+    std::string (*mods_dir)() = nullptr;
 };
 void psp_settings_set_texpack_hook(const PspTexPackHook& hook);
 

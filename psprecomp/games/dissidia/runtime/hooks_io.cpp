@@ -17,6 +17,7 @@
 #include "psp_quit.h"
 #include "psp_platform.h"
 #include "psp_settings.h"
+#include "psp_texpacks.h"
 #include "hle/psp_hle_io.h"
 #include "psp_fx_shader.h"
 #include "psp_tex_pack.h"
@@ -732,15 +733,22 @@ void dissidia_install_mod_io() {
     psp_io_set_policy(policy);
     // The settings menu offers a Voice row once a Japanese voice pack has been extracted (tools/jp_audio.py).
     psp_settings_set_voice_hook({+[]() { return is_dir(work_parent() + "/voice_jp"); }});
-    psp_settings_set_texpack_hook({+[]() {
-        if (is_dir(mods_dir() + "/textures")) return true;
+    PspTexPackHook th{};   // Settings > Graphics > Texture Pack: the installed packs (psp_texpacks.h) or a mod folder's textures/
+    th.available = +[]() {
+        if (!psp_texpacks_list(mods_dir()).empty()) return true;
         for (const std::string& r : mod_roots()) if (is_dir(r + "/textures")) return true;
         return false;
-    }});
+    };
+    th.mods_dir = +[]() { return mods_dir(); };
+    psp_settings_set_texpack_hook(th);
     // Settings > Mods > Install ISO Patch (.xdelta): xdelta_import.cpp
     dissidia_xdelta_register_installer();
-    // Texture packs (runtime/include/psp_tex_pack.h) live under <mods>/textures, and the textures/ of each installed mod folder that is on.
-    psp_texpack_set_dir_provider([]() -> std::string { return mods_dir() + "/textures"; });
+    // Texture packs (runtime/include/psp_tex_pack.h): the one applied of those installed under <mods>/texpacks (psp_texpacks.h: chosen in
+    // Settings, or the newest), and the textures/ of each installed mod folder that is on. Without any pack, <mods>/textures (dumps).
+    psp_texpack_set_dir_provider([]() -> std::string {
+        const std::string d = psp_texpacks_active_dir(mods_dir());
+        return d.empty() ? mods_dir() + "/textures" : d;
+    });
     psp_texpack_set_extra_dirs_provider([]() -> std::vector<std::string> {
         std::vector<std::string> v;
         for (const std::string& r : mod_roots()) if (is_dir(r + "/textures")) v.push_back(r + "/textures");

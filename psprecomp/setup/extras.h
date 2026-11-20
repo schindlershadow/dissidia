@@ -34,7 +34,7 @@ struct ExtraChoice {
     std::string value, label, help;
 };
 
-// A second disc image the extra is built from (picked before the install / Change extras applies it).
+// A second file the extra is built from: a disc image, or a texture pack archive (picked before the install / Change extras applies it).
 struct ExtraDisc {
     std::string key;            // where its path is kept in Options (empty: no disc)
     std::string page_title;     // e.g. "The undub file"
@@ -43,6 +43,10 @@ struct ExtraDisc {
     std::string valid, valid_help;   // "Valid: ...", which releases work
     std::string exts = ".iso or .cso";
     std::string valid_short;    // the desktop page's value column, e.g. "US"
+    std::vector<std::string> patterns = {".iso", ".cso"};   // the file endings the pickers list (lower case; both installers)
+    std::string filter_name = "PSP disc images";            // the desktop file dialog's filter name
+    // Asked only while the extra has this value (one of its choices; e.g. the texture pack's "file"). Empty: whenever it is on.
+    std::string when;
     // Is the picked file the right disc? "" = yes, else what is wrong, in words for the player (both installers show it and ask again).
     // `path` may be "fd:N" (Android picker; the descriptor's offset is not moved).
     std::function<std::string(const std::string& path)> check;
@@ -59,6 +63,9 @@ struct Extra {
     std::string parent;         // shown (and used) only while this switch is on (e.g. the texture pack under HD textures)
     ExtraDisc disc;
     bool desktop = true, android = true;
+    // An action rather than a state (e.g. add a texture pack): asks for its file every time it is turned on, and is shown off again
+    // after it ran (Options::clear_discs resets it, as the installers do once a run is done).
+    bool action = false;
     // Change extras: Once = applied when turned on (with a disc: whenever a disc was picked); its files stay when turned off.
     // Redo = applied again when it or one of its sub-choices changed or its files are gone; removed when turned off.
     enum Reapply { Once, Redo } reapply = Once;

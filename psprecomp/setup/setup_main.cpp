@@ -134,6 +134,7 @@ std::string shorten_left(const std::string& s, size_t n) {
 
 struct Browser {
     bool want_dir = false;
+    std::vector<std::string> exts = {".iso", ".cso"};   // the file endings listed (an extra's file: its ExtraDisc::patterns)
     fs::path cur;
     std::vector<Entry> list;
     int sel = 0;
@@ -181,7 +182,7 @@ struct Browser {
                 dirs.push_back(e);
             } else if (!want_dir && it->is_regular_file(e2)) {
                 std::string ext = lower(it->path().extension().string());
-                if (ext == ".iso" || ext == ".cso") {
+                if (std::find(exts.begin(), exts.end(), ext) != exts.end()) {
                     Entry e; e.name = name; e.path = it->path().string();
                     e.info = human_size(it->file_size(e2));
                     files.push_back(e);
@@ -622,6 +623,7 @@ struct App {
                     state.iso = iso;
                     state.version = "dev";
                     state.options = opt;
+                    state.options.clear_actions();   // an added texture pack is done: the switch is off again next time
                     write_settings();
                 }
                 if (extras_run) { state.options = opt; state.options.clear_discs(); state.options.steam = false; opt.steam = false; }
@@ -722,8 +724,17 @@ struct App {
         if (native_ok()) {
             std::string start = pick_start(k).string();
             if (k == Pick::Dir) dir_dlg = std::make_unique<pfd::select_folder>("Choose the install folder", start);
-            else file_dlg = std::make_unique<pfd::open_file>(k == Pick::Disc && picked_extra() ? "Choose: " + picked_extra()->disc.page_title : std::string("Choose your Dissidia 012 disc image"),
-                                                              start, std::vector<std::string>{"PSP disc images", "*.iso *.ISO *.cso *.CSO", "All files", "*"});
+            else {
+                const setup::Extra* x = k == Pick::Disc ? picked_extra() : nullptr;
+                std::string pat;   // e.g. "*.zip *.ZIP *.7z *.7Z": the extra's file types (a disc image by default)
+                for (const std::string& ext : x ? x->disc.patterns : std::vector<std::string>{".iso", ".cso"}) {
+                    std::string up = ext;
+                    for (char& ch : up) ch = (char)std::toupper((unsigned char)ch);
+                    pat += (pat.empty() ? "*" : " *") + ext + " *" + up;
+                }
+                file_dlg = std::make_unique<pfd::open_file>(x ? "Choose: " + x->disc.page_title : std::string("Choose your Dissidia 012 disc image"), start,
+                                                            std::vector<std::string>{x ? x->disc.filter_name : std::string("PSP disc images"), pat, "All files", "*"});
+            }
             go(Screen::Waiting);
         } else {
             open_browser();
@@ -733,6 +744,7 @@ struct App {
     void open_browser() {
         file_dlg.reset();
         dir_dlg.reset();
+        br.exts = pick == Pick::Disc && picked_extra() ? picked_extra()->disc.patterns : std::vector<std::string>{".iso", ".cso"};
         br.open(pick_start(pick), pick == Pick::Dir);
         go(pick == Pick::Dir ? Screen::BrowseDir : pick == Pick::Disc ? Screen::PickUndub : Screen::PickIso);
     }
@@ -747,7 +759,7 @@ struct App {
             const std::string why = e && e->disc.check ? e->disc.check(path) : "";   // the right game, before anything is installed with it
             if (!why.empty()) {
                 if (e) opt.set(e->disc.key, "");
-                msg_title = "WRONG DISC";
+                msg_title = e && e->disc.patterns.front() == ".iso" ? "WRONG DISC" : "WRONG FILE";
                 msg_text = why;
                 msg_back = Screen::PickInfo;   // OK: choose that file again (msg_pick, pick_extra)
                 msg_pick = pick;
@@ -1444,10 +1456,10 @@ int main(int argc, char** argv) {
         app.pick = Pick::Iso;
         app.go(Screen::InstallDir); shot("3_install_dir");
         app.go(Screen::Options, 0); shot("4_options");
-        app.opt.set("texture_pack", "ai"); app.go(Screen::Options, 1); shot("4b_options_pack");
+        app.opt.set("texture_add", "1"); app.go(Screen::Options, 1); shot("4b_options_pack");
         app.extras_mode = true; app.go(Screen::Options, 0); shot("4c_options_extras"); app.extras_mode = false;
         app.opt.set("hd_textures", "0"); app.go(Screen::Options, 0); shot("4d_options_nopack");
-        app.opt.set("hd_textures", "1"); app.opt.set("texture_pack", "liink");
+        app.opt.set("hd_textures", "1"); app.opt.set("texture_add", "0");
         setup::Options o; o.android = true; o.set("hd_textures", "1"); o.set("jp_audio", "1"); o.set("undub_iso", "/x.iso");
         app.plan = setup::plan_install(app.layout, app.iso, app.workdir, o);
         app.prog.step = 1; app.prog.stage = "Compiling the game"; app.prog.fraction = 0.42;

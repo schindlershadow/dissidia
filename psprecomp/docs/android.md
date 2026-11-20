@@ -35,8 +35,8 @@ Nothing but the APK is downloaded, and no PC or terminal is involved.
    app an open file, so no storage permission is needed to read it. "Use the simple browser instead" (on the page shown while the picker is open) is a built-in fallback (needs "all files access").
 3. The app asks for "all files access" once (the game reads its files from the shared folder `<storage>/Android/media/org.psprecomp.game/game`; since Android 11 no other app
    may write to `Android/data`). Switch it on in the settings page Android opens; back in the app it continues by itself.
-4. **Options** (made from the shared extras list, `setup/extras.cpp`: an extra added for the PC wizard appears here too): **HD textures** (on / off, then **Texture pack**: LiinkPK's, about 0.8 GB, or the AI upscaled one, about 1.3 GB; downloaded by the app itself, then unpacked into the
-   game's mods folder; finished downloads are kept if you retry), **Japanese voices (undub)** and **Bartz: Dissidia 1 moves** (each asks for its second disc image with the same
+4. **Options** (made from the shared extras list, `setup/extras.cpp`: an extra added for the PC wizard appears here too): **HD textures** (Dissidia Recomp HD, about 1.3 GB, downloaded by the app itself, then unpacked into the
+   game's packs folder; finished downloads are kept if you retry), **Add your own texture pack** (a .zip picked with Android's file picker, added next to the other packs; the game's Settings > Graphics > Texture Pack switches between them), **Japanese voices (undub)** and **Bartz: Dissidia 1 moves** (each asks for its second disc image with the same
    picker) and the update check. Later, **Change extras** on the start page opens the same page for the built game and applies it without building again.
 5. **Start building** extracts and decrypts the disc, translates the game to C++ and compiles it (about 5 minutes on a Snapdragon 8 Gen 2), copies the files, then
    **Install the game** asks Android to install it (the app asks for "install unknown apps" once, then continues by itself) and **Play now** starts it.

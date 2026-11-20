@@ -575,11 +575,13 @@ public class SetupActivity extends Activity {
         }
         Options.defaults.clear();
         Options.discKeys.clear();
+        Options.actionKeys.clear();
         for (int i = 0; i < extras.length(); i++) {
             JSONObject x = extras.optJSONObject(i);
             Options.defaults.put(x.optString("key"), x.optString("def"));
             JSONObject d = x.optJSONObject("disc");
             if (d != null) Options.discKeys.add(d.optString("key"));
+            if (x.optBoolean("action")) Options.actionKeys.add(x.optString("key"));
         }
     }
 
@@ -747,7 +749,7 @@ public class SetupActivity extends Activity {
         p.hero = em;
         p.heroHeightDp = 150;
         JSONObject disc = pickKind == PICK_DISC && pickExtra != null ? pickExtra.optJSONObject("disc") : null;
-        String what = disc != null ? "the disc image for " + pickExtra.optString("title") + " (" + disc.optString("exts") + ")" : "your Dissidia 012 disc image (.iso or .cso)";
+        String what = disc != null ? "the file for " + pickExtra.optString("title") + " (" + disc.optString("exts") + ")" : "your Dissidia 012 disc image (.iso or .cso)";
         p.head("Choose a file", "Waiting for the picker", "Pick " + what + " in Android's file picker. If it closed without a file, open it again or browse inside this app.");
         p.card(new Card(this, Card.ACTION, Icons.FOLDER, "Open the file picker", "From the SD card, Download or anywhere else.").style(Card.STYLE_PRIMARY)).onClick(v -> launchPicker());
         p.card(new Card(this, Card.ACTION, Icons.STORAGE, "Use the simple browser instead", "Browse the storage inside this app. Needs the \"all files\" permission.")).onClick(v -> {
@@ -783,14 +785,17 @@ public class SetupActivity extends Activity {
                         }
                         opt.set(disc.optString("key"), "");
                         closeFd(path);   // the picker's descriptor of the refused file
-                        dialog("Wrong disc", why, Icons.WARN,
+                        dialog(isDiscFile(disc) ? "Wrong disc" : "Wrong file", why, Icons.WARN,
                                 new Btn("Choose another file", Icons.FOLDER, Card.STYLE_PRIMARY, () -> go(this::showPickInfo)),
                                 new Btn("Back", Icons.BACK, Card.STYLE_NORMAL, () -> present(this::showOptionsPage, -1, true)));
                     });
                 }, "setup-disc-check").start();
                 return;
             }
-            if (disc != null) opt.set(disc.optString("key"), path);
+            if (disc != null) {
+                opt.set(disc.optString("key"), path);
+                if (disc.optString("key").equals("texture_file")) opt.set("texture_file_name", name);   // the pack is named after the file
+            }
             present(this::showOptionsPage, -1, true);
             startInstallOrAsk();
             return;
@@ -803,6 +808,28 @@ public class SetupActivity extends Activity {
 
     // ---- the simple browser (fallback; needs all-files access)
     private File browseDir;
+
+    /** The file endings the pick lists: an extra's own (its disc "patterns", e.g. .zip for a texture pack), else a disc image. */
+    private List<String> pickPatterns() {
+        JSONObject disc = pickKind == PICK_DISC && pickExtra != null ? pickExtra.optJSONObject("disc") : null;
+        JSONArray a = disc == null ? null : disc.optJSONArray("patterns");
+        List<String> out = new ArrayList<>();
+        if (a != null) for (int i = 0; i < a.length(); i++) out.add(a.optString(i));
+        if (out.isEmpty()) out.addAll(Arrays.asList(".iso", ".cso"));
+        return out;
+    }
+
+    private boolean listed(String name) {
+        String l = name.toLowerCase(Locale.US);
+        for (String e : pickPatterns()) if (l.endsWith(e)) return true;
+        return false;
+    }
+
+    /** An extra's file that is a disc image (undub, Dissidia 1) rather than another kind of file (a texture pack archive). */
+    private static boolean isDiscFile(JSONObject disc) {
+        JSONArray a = disc == null ? null : disc.optJSONArray("patterns");
+        return a == null || a.length() == 0 || ".iso".equals(a.optString(0));
+    }
 
     private void openBrowser() {
         File start = new File("/storage/emulated/0");
@@ -830,22 +857,20 @@ public class SetupActivity extends Activity {
                     if (n.equals("self")) continue;
                     dirs.add(n.equals("emulated") ? new File("/storage/emulated/0") : f);
                 } else if (f.isDirectory()) dirs.add(f);
-                else {
-                    String l = n.toLowerCase(Locale.US);
-                    if (l.endsWith(".iso") || l.endsWith(".cso")) files.add(f);
-                }
+                else if (listed(n)) files.add(f);
             }
         java.util.Comparator<File> byName = (a, b) -> a.getName().compareToIgnoreCase(b.getName());
         files.sort(byName);
         dirs.sort(byName);
-        for (File f : files) p.card(new Card(this, Card.ACTION, Icons.DISC, f.getName(), BuildRunner.size(f.length())).style(Card.STYLE_PRIMARY)).onClick(v -> picked(f.getPath(), f.getName()));
+        final int fileIcon = pickKind == PICK_DISC && pickExtra != null && !isDiscFile(pickExtra.optJSONObject("disc")) ? Icons.FILE : Icons.DISC;
+        for (File f : files) p.card(new Card(this, Card.ACTION, fileIcon, f.getName(), BuildRunner.size(f.length())).style(Card.STYLE_PRIMARY)).onClick(v -> picked(f.getPath(), f.getName()));
         for (File d : dirs) {
             String label = browseDir.getPath().equals("/storage") ? (d.getPath().equals("/storage/emulated/0") ? "Internal storage" : "SD card " + d.getName()) : d.getName();
             p.card(new Card(this, Card.ACTION, d.getParent() != null && d.getParent().equals("/storage") || d.getPath().equals("/storage/emulated/0") ? Icons.STORAGE : Icons.FOLDER, label, null))
                     .onClick(v -> { browseDir = d; go(this::showBrowser); });
         }
         if (files.isEmpty() && dirs.isEmpty())
-            p.card(new Card(this, Card.INFO, Icons.INFO, "No .iso or .cso files here", "Go up, or open another folder."));
+            p.card(new Card(this, Card.INFO, Icons.INFO, "No " + String.join(" or ", pickPatterns()) + " files here", "Go up, or open another folder."));
         show(p, dirOf(p));
     }
 
@@ -1186,14 +1211,21 @@ public class SetupActivity extends Activity {
             st.put("workdir", workdir);
             st.put("iso", iso);
             st.put("version", "dev");
-            opt.putInto(st);
+            Options done = opt.copy();
+            done.clearActions();   // an added texture pack is done: the switch is off again next time
+            done.putInto(st);
+            for (String k : Options.actionKeys) st.remove(k);
+            st.remove("texture_file_name");
             writeSettings();
         }
         if (!r.kind.equals("extras")) st.put("built_fp", Engine.payloadFingerprint());
         else {
             Options o = opt.copy();
             o.clearDiscs();
+            o.clearActions();
             o.putInto(st);
+            for (String k : Options.actionKeys) st.remove(k);
+            st.remove("texture_file_name");
         }
         saveState();
         if (!resumed) BuildService.finished(this, true, r.kind.equals("extras") ? "The extras are in place." : "Open the setup app and install the game.");
@@ -1924,6 +1956,7 @@ public class SetupActivity extends Activity {
     static final class Options {
         static final Map<String, String> defaults = new LinkedHashMap<>();   // from Engine.extrasJson
         static final ArrayList<String> discKeys = new ArrayList<>();
+        static final ArrayList<String> actionKeys = new ArrayList<>();   // extras that are actions (add a texture pack): off again after a run
         private static final List<String> NOT_OPTIONS = Arrays.asList("workdir", "iso", "version", "built_fp");
         final LinkedHashMap<String, String> m = new LinkedHashMap<>();
 
@@ -1964,6 +1997,11 @@ public class SetupActivity extends Activity {
 
         void clearDiscs() {
             for (String k : discKeys) m.put(k, "");
+        }
+
+        void clearActions() {
+            for (String k : actionKeys) m.remove(k);
+            m.remove("texture_file_name");
         }
 
         Options copy() {

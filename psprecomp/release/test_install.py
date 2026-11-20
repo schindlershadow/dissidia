@@ -7,7 +7,8 @@ the release is published. Also usable by hand:
     release/test_install.py --setup DissidiaRecomp-Setup-X-linux-x86_64 --iso 012.iso [--d1-iso d1.iso] --work DIR --ms0 MS0
 
 Modes (--modes, default both):
-  desktop      the Linux install as players run it (system python3), with the Bartz moves extra when --d1-iso is given
+  desktop      the Linux install as players run it (system python3), with the Bartz moves extra when --d1-iso is given and, instead of
+               our HD textures (not downloaded here), Add your own texture pack with a small test .zip (the pack two folders deep)
   android-sim  the same install with Python only runnable through a loader, as on Android: the release gets a non-executable
                python/python (a copy of this host's python3) and PSPRECOMP_TEST_PY_LOADER=ld.so makes the setup start it through
                the loader (setup/proc.cpp wrap_argv). A tool that starts sys.executable directly fails here instead of on phones
@@ -21,12 +22,14 @@ Exit code 0 = every mode passed. The output ends with one RESULT line per mode.
 """
 import argparse
 import glob
+import json
 import os
 import shutil
 import stat
 import subprocess
 import sys
 import time
+import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -91,8 +94,14 @@ def install(mode, a, root, env):
         os.chmod(py, 0o644)   # not executable: only `ld.so python/python ...` runs it, as libpython.so on Android
         env["PSPRECOMP_TEST_PY_LOADER"] = LD_SO
     cmd = [a.setup_exe or os.path.join(root, "DissidiaRecomp"), "--root", root, "--headless", "--iso", a.iso, "--dir", dest]
-    if a.d1_iso and mode == "desktop":
-        cmd += ["--extra", "d1_moves=1", "--extra", "d1_iso=" + a.d1_iso]
+    if mode == "desktop":
+        if a.d1_iso:
+            cmd += ["--extra", "d1_moves=1", "--extra", "d1_iso=" + a.d1_iso]
+        pack = os.path.join(a.work, "own pack.zip")   # an own texture pack file (textures.ini two folders deep, as downloaded packs are)
+        with zipfile.ZipFile(pack, "w") as z:
+            z.writestr("Test Pack v1/ULUS10566/textures.ini", "[options]\nversion = 1\nhash = quick\n\n[hashes]\n")
+            z.writestr("Test Pack v1/ULUS10566/README.txt", "release install test pack\n")
+        cmd += ["--extra", "hd_textures=0", "--extra", "texture_add=1", "--extra", "texture_file=" + pack]
     logfile = os.path.join(a.work, "install_%s.log" % mode)
     try:
         rc = run(cmd, logfile, env=env, timeout=a.timeout)
@@ -101,7 +110,17 @@ def install(mode, a, root, env):
             shutil.rmtree(os.path.dirname(py))
     if rc != 0:
         return False, "install failed (exit %d); %s:\n%s" % (rc, logfile, tail(logfile)), dest
-    return True, "installed", dest
+    packs = os.path.join(dest, "mods", "texpacks")   # several packs side by side (runtime/include/psp_texpacks.h)
+    found = {}
+    for pid in sorted(os.listdir(packs)) if os.path.isdir(packs) else []:
+        try:
+            found[pid] = json.load(open(os.path.join(packs, pid, ".source.json"))).get("pack")
+        except (OSError, ValueError):
+            found[pid] = None
+    want = {"own-pack": "file"} if mode == "desktop" else {"recomp-hd": "ai"}
+    if found != want or not all(os.path.isfile(os.path.join(packs, p, "textures.ini")) for p in want):
+        return False, "installed, but the texture packs are %r, expected %r" % (found, want), dest
+    return True, "installed (texture packs: %s)" % ", ".join(found), dest
 
 
 def play(mode, a, dest, env):

@@ -86,13 +86,13 @@ of the fork.
      EU and US discs, and differs on an undub. A refused pick shows a WRONG DISC page (the Android app: a dialog) whose OK goes back to choosing that file; the checks are the extras' `disc.check`, so both installers run them.
      `tools/d1_moves.py install` refuses a disc whose DISC_ID is not `ULUS10437` too. `tests/test_install.cpp` builds small ISO / CSO
      images; `SETUP_TEST_DISCS="<D1 iso>|<English 012 iso>|<undub iso>"` adds the real ones.
-   - **Options** (one page in the game's Settings-screen look, without the category sidebar: HD textures on / off, then Texture pack when on, Japanese voices, Android version, Import saves, update check, install folder, Start installing): check for updates; HD textures (on / off) and, when on, Texture pack (LiinkPK's hand-retouched pack or the AI upscaled pack; the help line credits the selected pack); Japanese voices (undub; asks for the undub disc image first); **Bartz: Dissidia 1 moves** (`d1_moves=1`; asks for a Dissidia Final Fantasy (2008) disc image, then `tools/d1_moves.py install --d1 <iso> --work <game>` rebuilds the mod's six files from the shipped patches in `game/d1_moves/` and the player's two discs, checks each against its SHA-256, adds the abilities to main.bin and writes `mods/retail_moves.txt`; also offered by Change extras); Android
+   - **Options** (one page in the game's Settings-screen look, without the category sidebar: HD textures on / off, Add your own texture pack, Japanese voices, Android version, Import saves, update check, install folder, Start installing): check for updates; HD textures (on / off) (Dissidia Recomp HD into `mods/texpacks/recomp-hd`); Add your own texture pack (an action: asks for a .zip (.7z / .rar with 7-Zip) and adds it next to the installed packs; off again after the run); Japanese voices (undub; asks for the undub disc image first); **Bartz: Dissidia 1 moves** (`d1_moves=1`; asks for a Dissidia Final Fantasy (2008) disc image, then `tools/d1_moves.py install --d1 <iso> --work <game>` rebuilds the mod's six files from the shipped patches in `game/d1_moves/` and the player's two discs, checks each against its SHA-256, adds the abilities to main.bin and writes `mods/retail_moves.txt`; also offered by Change extras); Android
      version; **Import saves** (cycles Off / each PPSSPP or memory-stick SAVEDATA folder found with Dissidia 012 saves, found by
      `psp_savemgr::detect_sources`; it adds the last install step, `DissidiaRecomp --import-saves FROM --dir WORK`, which copies the
      saves under the installed game's disc ID, re-signed, and never replaces a save that already exists in the install; verified
      2026-11-10 with a headless install from the US ISO, `--headless ... --saves DIR`). A release declares which of the optional features it implements in `game/features.ini` (`hd_textures=1`,
      `jp_audio=1`, `android=1`); until a feature exists its row shows "Not yet" and cannot be switched on. The commands the
-     wizard runs for them are fixed in `install.cpp` (`tools/fetch_textures.py <work> --pack liink|ai`, `tools/jp_audio.py --iso <undub>
+     wizard runs for them are fixed in `install.cpp` (`tools/fetch_textures.py <work> --pack ai|file`, `tools/jp_audio.py --iso <undub>
      --work <work>`, `psp_build.py ... --android`), so those tasks only have to provide the scripts and flip the line.
    - Release layout the wizard expects (see `setup/install.h`): `DissidiaRecomp`, `bin/psprecomp`, `toolchain/`, `sdk/`,
      `game/` (= `games/dissidia`), `python/` on Windows. It remembers the install in the user's pref dir (`install.ini`).
@@ -156,7 +156,7 @@ of the fork.
      `games/dissidia/update_key.pub`, store the seed as the GitHub secret `RELEASE_SIGNING_KEY`; the workflow then signs
      (`release/sign_manifest.py sign`) and fails if the key is committed but the secret is not. Rotating the key needs one release
      signed with the old key that ships the new `update_key.pub`. Tests: `games/dissidia/tools/test_update_signature.py`.
-7. **HD textures** (task 5) hooks in as an options page and a download step (Niosa / D012FFRT pack into `mods/textures`).
+7. **HD textures** (task 5) hooks in as an options page and a download step (Niosa / D012FFRT pack plus our upscales into `mods/texpacks/recomp-hd`).
 8. **Android**: runtime-only app; the PC wizard exports a game bundle (compiled `libpsprecomp_game.so` + data) to copy over. Separate task.
    Findings: zig can target `aarch64-linux-android`, so the same bundle idea cross-compiles the generated code and the core on the PC
    (the player's PC, not the phone; no on-device compiler). The large items are not the toolchain: the renderer uses desktop
@@ -262,7 +262,7 @@ Wine (`WINEDEBUG=-all`, command line only) produced the identical ELF as well.
 - **Window title**: a game module names its window with `psp_set_window_title()` (Dissidia: "Dissidia 012 Duodecim Final Fantasy").
 - **Undub disc images made with xorriso/mkisofs**: file names longer than 8.3 live only in the Rock Ridge `NM` records
   (`PACKAGE_INFO.BIN` is `PACKAGE_.BIN` in the plain ISO 9660 tree). `setup_from_iso.Iso9660` now reads them.
-- **Settings menu**: Voice Language and HD Textures rows appear when `voice_jp/` / `mods/textures/` exist next to `ms0`.
+- **Settings menu**: the Voice Language row appears when `voice_jp/` exists next to `ms0`, Texture Pack (and Delete a Texture Pack) when a pack is installed in `mods/texpacks/` (or an older release's `mods/textures/`).
 - **Saves are shared between regions** (`psp_savedata_set_shared_ids`); see games/dissidia/docs/savedata.md.
 
 

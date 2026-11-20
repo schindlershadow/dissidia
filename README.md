@@ -53,7 +53,7 @@ are read directly. Other formats (ZSO, DAX, `.bin`, PSN `.PBP`) need converting 
 - **High frame rates**: any multiple of 30 up to 240 fps, with game logic, UI and EX Burst timing scaled to match
   ([details](psprecomp/games/dissidia/docs/frame-rate.md)).
 - **Any resolution and screen shape**: render scale, widescreen, ultrawide and tall / folding-phone screens with the HUD moved to the edges.
-- **HD textures**: LiinkPK's hand-retouched pack or an AI-upscaled pack, picked in the setup
+- **HD textures**: the Dissidia Recomp HD pack (downloaded in the setup), plus your own texture pack files (.zip; on a PC also .7z / .rar); install several and switch between them in Settings
   ([texture packs](psprecomp/games/dissidia/docs/texture-packs.md)).
 - **Better lighting**: ray-traced shadows and reflections (Vulkan with a ray-tracing GPU), attacks that light up the stage, SSAO, HDR and anti-aliasing.
 - **Japanese voices and movies** from an undub disc ([audio](psprecomp/games/dissidia/docs/audio.md)).
@@ -135,7 +135,7 @@ third-party mod ports and game artwork.
 - [PPSSPP](https://github.com/hrydgard/ppsspp): VFPU maths (`psprecomp/runtime/src/vfpu_ppsspp`, GPL-2.0+), and the emulator used for every comparison and trace.
 - [DissDlcToolkit](https://github.com/adriangl/DissDlcToolkit) (adriangl): the object-table format and the DLC route.
 - [dissidia-012-sora](https://github.com/MatNyaga/dissidia-012-sora) (MatNyaga): notes on effect-package ids and CPU AI.
-- D012FFRT and [LiinkPK/Dissidia-012-HD-Textures](https://github.com/LiinkPK/Dissidia-012-HD-Textures) (LiinkPK, ajb3art): HD texture packs.
+- [D012FFRT](https://github.com/Niosa/D012FFRT) (Niosa): the community HD texture pack under our upscales.
 - [atracdenc](https://github.com/dcherednik/atracdenc): ATRAC3 encoding for new BGM.
 - Fonts: Cinzel and Crimson Text (SIL Open Font License).
 - Everyone in the Dissidia modding community without whom this work could never have happened.

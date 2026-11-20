@@ -48,7 +48,8 @@ struct Options {
     std::string get(const std::string& key) const;   // the value, else the extra's default ("" for an unknown key)
     bool on(const std::string& key) const { return get(key) == "1"; }
     void set(const std::string& key, const std::string& value) { extras[key] = value; }
-    void clear_discs();                 // forget the picked discs (a path or Android descriptor is only valid once)
+    void clear_discs();                 // forget the picked discs (a path or Android descriptor is only valid once); resets actions too
+    void clear_actions();               // after an install: actions (add a texture pack) are done, their file is forgotten
 };
 // Optional features a release can offer: game/features.ini has one "name=1" line per implemented feature
 // (hd_textures, jp_audio, d1_moves, android). A missing file or line = not in this release yet (the wizard shows the option but
@@ -64,6 +65,11 @@ std::string d1_disc_problem(const std::string& path);
 // The Japanese voices need a Dissidia 012 image whose voices are Japanese (an undub, or the Japanese release; .iso or .cso).
 // "" when `path` is one, else what is wrong with it (another game, the first Dissidia, or a regular English 012).
 std::string undub_disc_problem(const std::string& path);
+// A texture pack archive the player picked (Add your own texture pack): "" when it is a .zip holding a textures.ini (in any
+// folder) or id-named PNGs, or a .7z / .rar a tool on this PC can unpack (fetch_textures.py checks those once unpacked); else what is wrong.
+// `path` may be "fd:N" (Android picker; read with pread, the offset is not moved).
+std::string texture_pack_problem(const std::string& path);
+bool archive_tool_available();   // 7z / 7za / 7zz / bsdtar (Windows: also tar.exe) on the PATH; never on Android
 
 // Opens `path` with the desktop's default program (show_in_folder = false), or the folder that holds it with the file
 // selected where the platform can (Windows Explorer /select, macOS Finder -R; Linux opens the folder). Not on Android.

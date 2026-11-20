@@ -12,7 +12,7 @@ Everything about the game itself, the native build and the modding tools, in one
 - [settings-menu.md](settings-menu.md): the in-game Settings screen (from the title, start and pause menus): every page and row.
 - [frame-rate.md](frame-rate.md): frame rates above 30 (any multiple of 30 up to 240): how the game paces itself and what was patched.
 - [loose-file-mods.md](loose-file-mods.md): how loose files replace `PACKAGE.BIN` entries, the model size budget, package index internals.
-- [texture-packs.md](texture-packs.md): HD texture packs (LiinkPK's and the AI upscaled one): loading, dumping, upscaling.
+- [texture-packs.md](texture-packs.md): HD texture packs (ours and a player's own PPSSPP-style pack): loading, installing, dumping, upscaling.
 - [multiplayer.md](multiplayer.md): Communications mode over UDP (LAN, one machine, internet), options, how the ad-hoc stack is emulated.
 - [savedata.md](savedata.md): saves between regions: `savemgr` list / import / export.
 - [cloud-sync.md](cloud-sync.md): saves between devices through a folder, WebDAV or Google Drive.

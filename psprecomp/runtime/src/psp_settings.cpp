@@ -20,6 +20,7 @@
 #include "psp_gpu_driver.h"
 #include "psp_gl_window.h"
 #include "psp_discord.h"
+#include "psp_texpacks.h"
 #include "psp_file_dialog.h"
 
 #include <SDL.h>
@@ -41,6 +42,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -110,6 +112,16 @@ std::vector<PspDebugToggle> g_dbg_toggles;   // game-supplied Debug page rows
 PspTexPackHook g_texpack{nullptr};
 PspModInstaller g_installer{};
 int g_uninstall_pick = 0;               // which installed mod folder the Uninstall row names
+std::vector<PspTexPack> g_texpacks;     // the installed texture packs (texpacks_refresh)
+int g_texdel_pick = 0;                  // which pack the Delete a Texture Pack row names
+bool g_texdel_armed = false;            // the next Confirm deletes it
+std::string g_texpack_note;             // what the last delete did
+bool g_tpi_picking = false;             // Install a Texture Pack: the file picker is open
+std::atomic<bool> g_tpi_busy{false};    // an archive is being unpacked (worker thread)
+std::atomic<bool> g_tpi_finished{false};// the worker is done: the main thread refreshes the rows
+std::atomic<int> g_tpi_pct{0};
+std::mutex g_tpi_mu;                    // guards g_tpi_text (written by the worker)
+std::string g_tpi_text;                 // "Installing <name>" / the result
 bool g_uninstall_armed = false;         // the next Confirm deletes it          // .label == nullptr: the game installs nothing from files
 bool g_install_picking = false;         // the file picker for it is open
 unsigned g_install_rev = 0;
@@ -168,6 +180,15 @@ bool voice_at_start();
 bool updates_choice();
 bool texpack_choice();
 bool texpack_at_start();
+int texpack_index();
+const std::string& texpack_start_id();
+std::vector<size_t> texpack_deletable();
+void apply_texpack_index(int i);
+void texpack_delete_confirm();
+void texpacks_refresh();
+std::string texpack_mods();
+void texpack_install_choose();
+void texpack_install_tick();
 
 enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_FPSCOUNT, ROW_VSYNC, ROW_WIDE, ROW_TALL, ROW_FOV, ROW_SOFT, ROW_RENDERER, ROW_AA, ROW_SHARP, ROW_BRIGHT, ROW_CONTRAST, ROW_SAT, ROW_HDR, ROW_HDR_BOOST, ROW_HDR_GAMUT, ROW_HDR_PEAK, ROW_HDR_PAPER, ROW_HDR_SCENE, ROW_SSAO, ROW_CONTACT, ROW_RT, ROW_RT_SOFT, ROW_RT_CHAR, ROW_RT_REFL, ROW_RT_REFL_FX, ROW_SSR, ROW_ANISO, ROW_UPSCALE, ROW_VOICE, ROW_TEXPACK, ROW_TOUCH, ROW_TOUCH_EDIT, ROW_PROMPTS, ROW_LR_BUTTONS, ROW_P1_PAD, ROW_KEYS_INFO, ROW_UPDATES, ROW_QUIT,
            ROW_NET_MODE, ROW_NET_SERVER, ROW_NET_ROOM, ROW_NET_PEERS, ROW_NET_STATUS, ROW_NET_UPNP, ROW_NET_UPNP_STATUS, ROW_NET_PING, ROW_DISCORD, ROW_DISCORD_STATUS,   // Network page
@@ -182,6 +203,8 @@ enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_FPSCOUNT, ROW_VSYNC, RO
            ROW_MOD0, ROW_MOD_END = ROW_MOD0 + 31, ROW_MODS_NONE,   // Mods page: one toggle per mod folder, or a note when there are none
            ROW_MOD_INSTALL, ROW_MOD_INSTALL_STATUS,                // Mods page: install a mod from a file (a game module's PspModInstaller)
            ROW_MOD_UNINSTALL,                                       // Mods page: delete an installed mod folder (pick, then confirm twice)
+           ROW_TEXPACK_DEL,                                         // Graphics page: delete an installed texture pack (pick, then confirm twice)
+           ROW_TEXPACK_INSTALL, ROW_TEXPACK_INSTALL_STATUS,         // Graphics page: install a pack archive with the file picker, and how it went
            ROW_CLOUD_CONFLICTS,                 // Cloud page: saves waiting for a choice (opens Saves)
            ROW_EXT0, ROW_EXT_END = ROW_EXT0 + 219,   // Saves page: the rows psp_saves::Page builds (headers included)
            ROW_SEC_WINDOW, ROW_SEC_PERF, ROW_SEC_QUALITY, ROW_SEC_AA, ROW_SEC_TEX, ROW_SEC_ENGINE, ROW_SEC_COLOUR, ROW_SEC_HDR, ROW_SEC_LIGHT,
@@ -888,12 +911,42 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             break;
         }
         case ROW_TEXPACK: {
-            const bool on = texpack_choice();
-            m.label = "HD Textures";
-            m.value = std::string(on ? "On" : "Off") + (on != texpack_at_start() ? "  (next start)" : "");
-            m.can_dec = on;
-            m.can_inc = !on;
-            m.help = "Texture pack\nReplaces the game's textures with the installed HD pack (mods/textures). Takes effect the next time the game starts.";
+            const int i = texpack_index(), n = int(g_texpacks.size());
+            m.label = "Texture Pack";
+            const bool later = i == 0 ? texpack_at_start() : (!texpack_at_start() || g_texpacks[size_t(i - 1)].id != texpack_start_id());
+            m.value = (i == 0 ? std::string("Off") : g_texpacks[size_t(i - 1)].name) + (later ? "  (next start)" : "");
+            m.can_dec = i > 0;
+            m.can_inc = i < n;
+            m.help = "Texture pack\nWhich installed HD texture pack replaces the game's textures, or Off. Install more packs with the setup "
+                     "(HD textures, or Add your own texture pack); a pack installed later is used until you pick another here. Takes effect the next "
+                     "time the game starts.";
+            break;
+        }
+        case ROW_TEXPACK_INSTALL: {
+            m.label = "Install a Texture Pack";
+            m.value = g_tpi_busy ? std::to_string(g_tpi_pct.load()) + "%" : g_tpi_picking ? "choosing..." : "";
+            m.help = "Install a texture pack\nChoose a texture pack you downloaded (a .zip; on a PC also .7z / .rar with 7-Zip installed): a PPSSPP-style "
+                     "pack for Dissidia 012 with a textures.ini, in any folder of the archive. It is added next to the installed packs and used from the "
+                     "next start (switch above)." +
+                     (psp_filedlg::available() ? std::string() : "\nThis system has no file picker: put the pack's archive in the mods folder (" + texpack_mods() + ") and choose this again.");
+            break;
+        }
+        case ROW_TEXPACK_INSTALL_STATUS: {
+            std::lock_guard<std::mutex> lk(g_tpi_mu);
+            const size_t nl = g_tpi_text.find('\n');
+            m.label = g_tpi_busy ? "Installing" : "Result";
+            m.value = g_tpi_text.substr(0, nl);
+            m.help = std::string(g_tpi_busy ? "Installing a texture pack\n" : "Last texture pack install\n") + g_tpi_text;
+            break;
+        }
+        case ROW_TEXPACK_DEL: {
+            const std::vector<size_t> v = texpack_deletable();
+            if (g_texdel_pick >= int(v.size())) g_texdel_pick = 0;
+            m.label = "Delete a Texture Pack";
+            m.value = v.empty() ? "none" : (g_texdel_armed ? "Delete " : "") + g_texpacks[v[size_t(g_texdel_pick)]].name + (g_texdel_armed ? "?" : "");
+            m.can_dec = m.can_inc = v.size() > 1;
+            m.help = "Delete a texture pack\nLeft / right picks an installed pack; Confirm, then Confirm again, deletes its files. The pack in use "
+                     "right now can not be deleted: pick another one above and restart first." + (g_texpack_note.empty() ? std::string() : "\n" + g_texpack_note);
             break;
         }
         case ROW_TOUCH: {
@@ -1533,17 +1586,17 @@ psp_sddialog::SetKind row_kind(Row r) {
     if (const EnvOpt* o = env_row_opt(r)) return o->type == 'c' ? K::Choice : K::Toggle;
     switch (r) {
     case ROW_RT_REFL_FX:
-    case ROW_FPSCOUNT: case ROW_VSYNC: case ROW_WIDE: case ROW_TALL: case ROW_SOFT: case ROW_TEXPACK: case ROW_UPDATES: case ROW_LR_BUTTONS: case ROW_NET_UPNP: case ROW_NET_PING: case ROW_DISCORD: case ROW_HDR: case ROW_HDR_SCENE: case ROW_CLOUD_AUTO:
+    case ROW_FPSCOUNT: case ROW_VSYNC: case ROW_WIDE: case ROW_TALL: case ROW_SOFT: case ROW_UPDATES: case ROW_LR_BUTTONS: case ROW_NET_UPNP: case ROW_NET_PING: case ROW_DISCORD: case ROW_HDR: case ROW_HDR_SCENE: case ROW_CLOUD_AUTO:
     case ROW_CLOUD_REPLAYS: case ROW_PERF: case ROW_FX: case ROW_GLOWSOFT: case ROW_GLOWPASS:
     case ROW_DBG0: case ROW_DBG1: case ROW_DBG2: case ROW_DBG3: case ROW_DBG4: case ROW_DBG5:
         return K::Toggle;
     case ROW_FXL_INT: case ROW_FXL_RAD: case ROW_RT_CHAR: return K::Choice;   // Character Shadows: Off / Soft (named values, not a switch)
-    case ROW_TOUCH_EDIT: case ROW_CLOUD_NOW: case ROW_CLOUD_GOOGLE: case ROW_GPU_DEL: case ROW_MOD_INSTALL: return K::Action;
-    case ROW_MOD_UNINSTALL: return K::Choice;
+    case ROW_TOUCH_EDIT: case ROW_CLOUD_NOW: case ROW_CLOUD_GOOGLE: case ROW_GPU_DEL: case ROW_MOD_INSTALL: case ROW_TEXPACK_INSTALL: return K::Action;
+    case ROW_MOD_UNINSTALL: case ROW_TEXPACK_DEL: case ROW_TEXPACK: return K::Choice;
     case ROW_QUIT: return K::Danger;
     case ROW_SUB_HDR: case ROW_SUB_RT: return K::Submenu;
     case ROW_NET_SERVER: case ROW_NET_ROOM: case ROW_NET_PEERS: case ROW_CLOUD_FOLDER: case ROW_CLOUD_URL: case ROW_CLOUD_USER: case ROW_CLOUD_PASS: return K::Text;
-    case ROW_NET_STATUS: case ROW_NET_UPNP_STATUS: case ROW_DISCORD_STATUS: case ROW_CLOUD_STATUS: case ROW_MODS_NONE: case ROW_KEYS_INFO: case ROW_MOD_INSTALL_STATUS: return K::Info;
+    case ROW_NET_STATUS: case ROW_NET_UPNP_STATUS: case ROW_DISCORD_STATUS: case ROW_CLOUD_STATUS: case ROW_MODS_NONE: case ROW_KEYS_INFO: case ROW_MOD_INSTALL_STATUS: case ROW_TEXPACK_INSTALL_STATUS: return K::Info;
     default: return is_section(r) ? K::Header : K::Choice;
     }
 }
@@ -1756,8 +1809,151 @@ bool texpack_at_start() {
     static const bool v = [] { const char* e = std::getenv("PSPRECOMP_TEX_REPLACE"); return !(e && e[0] == '0'); }();
     return v;
 }
-bool texpack_row_wanted() { return g_texpack.available && g_texpack.available(); }
-void apply_texpack(bool on) { save("hd_textures", on ? "1" : "0"); }
+bool texpack_row_wanted() { return !g_texpacks.empty() || (g_texpack.available && g_texpack.available()); }
+
+// The installed texture packs (psp_texpacks.h), read again whenever the Graphics page is built or a pack was deleted.
+std::string texpack_mods() { return g_texpack.mods_dir ? g_texpack.mods_dir() : std::string(); }
+void texpacks_refresh() { g_texpacks = psp_texpacks_list(texpack_mods()); }
+// The pack this run uses ("" = none / Off): what the environment the game started with picks.
+const std::string& texpack_start_id() {
+    static const std::string id = texpack_at_start() ? psp_texpacks_active_id(texpack_mods()) : std::string();
+    return id;
+}
+// 0 = Off, else 1 + the index in g_texpacks of the pack the saved choice picks (a pack installed after the choice wins over it).
+int texpack_index() {
+    if (!texpack_choice() || g_texpacks.empty()) return 0;
+    auto it = g_saved.find("texture_pack"), at = g_saved.find("texture_pack_at");
+    const char* eid = std::getenv("PSPRECOMP_TEXPACK_ID");
+    const char* eat = std::getenv("PSPRECOMP_TEXPACK_AT");
+    const std::string id = it != g_saved.end() ? it->second : (eid ? eid : "");
+    const int64_t when = std::strtoll(at != g_saved.end() ? at->second.c_str() : (eat ? eat : "0"), nullptr, 10);
+    const PspTexPack p = psp_texpacks_pick(g_texpacks, id, when);
+    for (size_t i = 0; i < g_texpacks.size(); i++)
+        if (g_texpacks[i].id == p.id) return int(i) + 1;
+    return 0;
+}
+void apply_texpack_index(int i) {
+    if (i <= 0 || i > int(g_texpacks.size())) { save("hd_textures", "0"); return; }
+    const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    g_saved["texture_pack"] = g_texpacks[size_t(i - 1)].id;
+    g_saved["texture_pack_at"] = std::to_string(now);   // a pack installed after this moment is used instead (a fresh install)
+    save("hd_textures", "1");
+}
+// The packs that may be deleted: all but the one in use this run (its files are being read).
+std::vector<size_t> texpack_deletable() {
+    std::vector<size_t> v;
+    for (size_t i = 0; i < g_texpacks.size(); i++)
+        if (g_texpacks[i].id != texpack_start_id()) v.push_back(i);
+    return v;
+}
+void build_rows();
+// ---- Graphics page: install a texture pack archive (file picker -> worker thread -> psp_texpacks_install) ------------------------------
+void texpack_install_start(const std::string& path) {
+    if (g_tpi_busy.exchange(true)) return;
+    g_tpi_pct = 0;
+    const std::string shown = std::filesystem::u8path(path).filename().u8string();
+    { std::lock_guard<std::mutex> lk(g_tpi_mu); g_tpi_text = "Installing " + shown + "..."; }
+    const std::string mods = texpack_mods(), scratch = mods + "/.picked-texpack";
+    std::thread([path, shown, mods, scratch] {
+        std::string name, err;
+        const bool ok = psp_texpacks_install(mods, path, shown, &g_tpi_pct, &name, &err);
+        std::fprintf(stderr, "[SETTINGS] texture pack install from %s: %s\n", path.c_str(), ok ? ("ok, " + name).c_str() : err.c_str());
+        std::error_code ec;
+        std::filesystem::remove_all(std::filesystem::u8path(scratch), ec);   // Android's copy of the picked document
+        {
+            std::lock_guard<std::mutex> lk(g_tpi_mu);
+            g_tpi_text = ok ? "Installed " + name + ". It is used from the next start." : "Not installed: " + err;
+        }
+        g_tpi_busy = false;
+        g_tpi_finished = true;
+    }).detach();
+    g_dirty = true;
+}
+void texpack_install_choose() {
+    if (g_tpi_busy || g_tpi_picking) return;
+    const std::string mods = texpack_mods();
+    if (mods.empty()) return;
+    if (psp_filedlg::available()) {
+        psp_filedlg::set_scratch_dir(mods + "/.picked-texpack");   // Android copies the picked document here
+        std::string start_dir;   // packs are usually downloaded: start in Downloads when there is one
+        const char* home = std::getenv("HOME");
+        if (!home || !home[0]) home = std::getenv("USERPROFILE");
+        if (home && home[0]) {
+            std::error_code ec;
+            const std::string d = std::string(home) + "/Downloads";
+            if (std::filesystem::is_directory(std::filesystem::u8path(d), ec)) start_dir = d;
+        }
+        if (psp_filedlg::start(psp_filedlg::Kind::ImportArchive, "Choose a texture pack (.zip, .7z or .rar)", start_dir)) g_tpi_picking = true;
+        g_dirty = true;
+        return;
+    }
+    // no file picker (Steam Deck game mode): the newest .zip / .7z / .rar in the mods folder
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path best;
+    fs::file_time_type best_t{};
+    for (const auto& e : fs::directory_iterator(fs::u8path(mods), ec)) {
+        std::string n = e.path().filename().u8string();
+        for (char& c : n) c = char(std::tolower((unsigned char)c));
+        const bool arch = (n.size() > 4 && n.compare(n.size() - 4, 4, ".zip") == 0) || (n.size() > 3 && n.compare(n.size() - 3, 3, ".7z") == 0) ||
+                          (n.size() > 4 && n.compare(n.size() - 4, 4, ".rar") == 0);
+        if (!arch || !e.is_regular_file(ec)) continue;
+        const auto t = e.last_write_time(ec);
+        if (best.empty() || t > best_t) { best = e.path(); best_t = t; }
+    }
+    if (!best.empty()) { texpack_install_start(best.u8string()); return; }
+    { std::lock_guard<std::mutex> lk(g_tpi_mu); g_tpi_text = "This system has no file picker: put the pack's .zip in " + mods + " and choose this again."; }
+    g_sel_page[page_id()] = g_sel;
+    build_rows();
+    g_dirty = true;
+}
+void texpack_install_tick() {
+    if (g_tpi_picking) {
+        std::string path, err;
+        switch (psp_filedlg::poll(&path, &err)) {
+        case psp_filedlg::State::Done: g_tpi_picking = false; texpack_install_start(path); break;
+        case psp_filedlg::State::Cancelled: g_tpi_picking = false; g_dirty = true; break;
+        case psp_filedlg::State::Failed: {
+            g_tpi_picking = false;
+            { std::lock_guard<std::mutex> lk(g_tpi_mu); g_tpi_text = "The file picker failed: " + err; }
+            if (page_id() == PAGE_GRAPHICS) { g_sel_page[page_id()] = g_sel; build_rows(); }
+            g_dirty = true;
+            break;
+        }
+        default: break;
+        }
+    }
+    static int last_pct = -1;
+    if (g_tpi_busy && g_tpi_pct.load() != last_pct) {
+        last_pct = g_tpi_pct.load();
+        if (page_id() == PAGE_GRAPHICS && std::find(g_rows.begin(), g_rows.end(), ROW_TEXPACK_INSTALL_STATUS) == g_rows.end()) {
+            g_sel_page[page_id()] = g_sel;
+            build_rows();   // the status row appears
+        }
+        g_dirty = true;
+    }
+    if (g_tpi_finished.exchange(false)) {   // the new pack's rows (Texture Pack, Delete), the result
+        if (page_id() == PAGE_GRAPHICS) { g_sel_page[page_id()] = g_sel; build_rows(); }
+        g_dirty = true;
+    }
+}
+
+void texpack_delete_confirm() {
+    const std::vector<size_t> v = texpack_deletable();
+    if (v.empty()) return;
+    if (g_texdel_pick >= int(v.size())) g_texdel_pick = 0;
+    if (!g_texdel_armed) { g_texdel_armed = true; g_dirty = true; return; }
+    g_texdel_armed = false;
+    const PspTexPack p = g_texpacks[v[size_t(g_texdel_pick)]];
+    std::string err;
+    const bool ok = psp_texpacks_remove(texpack_mods(), p.id, &err);
+    std::fprintf(stderr, "[SETTINGS] deleted texture pack %s (%s)%s\n", p.name.c_str(), p.dir.c_str(), ok ? "" : (": " + err).c_str());
+    g_texpack_note = ok ? "Deleted " + p.name + "." : "Could not delete " + p.name + ": " + err;
+    g_texdel_pick = 0;
+    g_sel_page[page_id()] = g_sel;
+    build_rows();
+    g_dirty = true;
+}
 
 // Update check: read by the launcher (setup/install.cpp update_check_enabled) from settings.ini; PSPRECOMP_UPDATE_CHECK=0 forces it off.
 bool updates_choice() {
@@ -1820,6 +2016,13 @@ void change(int d) {   // left / right on the selected row
         return;
     }
     NextStartNote note_;
+    if (g_rows[size_t(g_sel)] == ROW_TEXPACK_DEL) {   // pick another pack (and disarm)
+        const int n = int(texpack_deletable().size());
+        if (n > 0) g_texdel_pick = (g_texdel_pick + d + n) % n;
+        g_texdel_armed = false;
+        g_dirty = true;
+        return;
+    }
     if (g_rows[size_t(g_sel)] == ROW_MOD_UNINSTALL) {   // pick another mod folder (and disarm)
         const int n = int(uninstallable().size());
         if (n > 0) g_uninstall_pick = (g_uninstall_pick + d + n) % n;
@@ -1887,7 +2090,7 @@ void change(int d) {   // left / right on the selected row
     }
     case ROW_GPU_DEL: break;
     case ROW_VOICE: apply_voice(d > 0); break;   // left: English, right: Japanese
-    case ROW_TEXPACK: apply_texpack(d > 0); break;
+    case ROW_TEXPACK: apply_texpack_index(std::min(std::max(texpack_index() + d, 0), int(g_texpacks.size()))); break;
     case ROW_UPDATES: apply_updates(d > 0); break;
     case ROW_DISCORD: apply_discord(d > 0); break;
     case ROW_LR_BUTTONS:
@@ -2158,7 +2361,12 @@ void build_rows() {
     case PAGE_GRAPHICS:
         add(ROW_SEC_QUALITY); add(ROW_SCALE); add(ROW_ANISO); add(ROW_SOFT);
         add(ROW_SEC_AA); add(ROW_AA); add(ROW_SHARP);
-        if (texpack_row_wanted()) { add(ROW_SEC_TEX); add(ROW_TEXPACK); }
+        texpacks_refresh();
+        add(ROW_SEC_TEX);   // packs: switch, install one from a file, delete
+        if (texpack_row_wanted()) add(ROW_TEXPACK);
+        add(ROW_TEXPACK_INSTALL);
+        { std::lock_guard<std::mutex> lk(g_tpi_mu); if (!g_tpi_text.empty()) add(ROW_TEXPACK_INSTALL_STATUS); }
+        if (!texpack_deletable().empty()) add(ROW_TEXPACK_DEL);
         if (renderer_row_wanted()) { add(ROW_SEC_ENGINE); add(ROW_RENDERER); }
         break;
     case PAGE_IMAGE:
@@ -2657,7 +2865,7 @@ void confirm_row() {
         break;
     }
     case ROW_VOICE: apply_voice(!voice_jp_choice()); break;
-    case ROW_TEXPACK: apply_texpack(!texpack_choice()); break;
+    case ROW_TEXPACK: apply_texpack_index((texpack_index() + 1) % (int(g_texpacks.size()) + 1)); break;
     case ROW_UPDATES: apply_updates(!updates_choice()); break;
     case ROW_DISCORD: apply_discord(!psp_discord::enabled()); break;
     case ROW_NET_UPNP: apply_upnp(!psp_upnp_enabled()); break;
@@ -2693,7 +2901,9 @@ void confirm_row() {
     case ROW_CLOUD_STATUS: break;
     case ROW_MOD_INSTALL_STATUS: break;
     case ROW_MOD_INSTALL: mod_install_choose(); return;
+    case ROW_TEXPACK_INSTALL: texpack_install_choose(); return;
     case ROW_MOD_UNINSTALL: mod_uninstall_confirm(); return;
+    case ROW_TEXPACK_DEL: texpack_delete_confirm(); return;
     case ROW_FPSCOUNT: change(ge_draw_fps_counter() ? -1 : 1); return;
     case ROW_VSYNC: change(psp_vsync_wanted() ? -1 : 1); return;
     case ROW_PERF: change(ge_draw_perf_overlay() ? -1 : 1); return;
@@ -3027,6 +3237,8 @@ void psp_settings_load_early() {
         put("PSPRECOMP_VOICE", it->second);
     if ((it = g_saved.find("hd_textures")) != g_saved.end() && (it->second == "0" || it->second == "1"))
         put("PSPRECOMP_TEX_REPLACE", it->second);
+    if ((it = g_saved.find("texture_pack")) != g_saved.end()) put("PSPRECOMP_TEXPACK_ID", it->second);   // psp_texpacks.h
+    if ((it = g_saved.find("texture_pack_at")) != g_saved.end()) put("PSPRECOMP_TEXPACK_AT", it->second);
     if ((it = g_saved.find("discord")) != g_saved.end() && (it->second == "0" || it->second == "1")) put("PSPRECOMP_DISCORD", it->second);
     if ((it = g_saved.find("renderer")) != g_saved.end() && (it->second == "gl" || it->second == "vulkan")) put("PSPRECOMP_RENDERER", it->second);
     if ((it = g_saved.find("gpu_driver")) != g_saved.end()) {
@@ -3286,6 +3498,7 @@ void psp_settings_tick() {
         }
     }
     if (page_id() == PAGE_MODS && g_installer.label) mod_install_tick();
+    if (g_tpi_picking || g_tpi_busy || g_tpi_finished) texpack_install_tick();
     if (page_id() == PAGE_SAVES && g_saves_env && !g_edit.active) {   // file window answers, cloud status, questions
         g_saves.set_sel(g_sel);              // (before tick: an answer from the file window may open another level with its own cursor)
         if (g_saves.tick(t)) saves_sync(0);

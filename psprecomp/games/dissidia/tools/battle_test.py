@@ -74,7 +74,9 @@ class Game:
                 os.environ.get('BT_DISPLAY_MODE', 'window'),   # BT_DISPLAY_MODE=fullscreen: a real-display test the way players run (VRR, pacing)
                 self.fps, self.render_scale, self.widescreen,
                 os.environ.get('BT_VOICE', 'en'),              # BT_VOICE=jp: the Japanese voices (needs voice_jp/ next to the run's ms0, i.e. in --out)
-                1 if os.environ.get('PSPRECOMP_TEXPACK') else 0))
+                1 if os.environ.get('PSPRECOMP_TEXPACK') or os.environ.get('BT_HD_TEXTURES') == '1' else 0))   # BT_HD_TEXTURES=1: the installed packs
+            for line in filter(None, os.environ.get('BT_SETTINGS_EXTRA', '').split(';')):   # e.g. "texture_pack=red-pack;texture_pack_at=3000"
+                f.write(line.strip() + '\n')
         env = dict(os.environ, DISPLAY=self.display, PSPRECOMP_SETTINGS=ini, PSPRECOMP_MS0=ms0, PSPRECOMP_FIGHTER_LOG='1',
                    PSPRECOMP_DEBUG_PORT=str(self.port), PSPRECOMP_SAVEDATA_AUTO='0', PSPRECOMP_TEST_FREEZE_CPU='1')
         env.pop('PSPRECOMP_FPS', None)

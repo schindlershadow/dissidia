@@ -12,6 +12,8 @@
 #include "../extras.h"
 #include "../install.h"
 #include "../third_party/miniz.h"
+#include <algorithm>
+#include "../third_party/miniz.h"
 
 using namespace setup;
 
@@ -154,7 +156,7 @@ int main() {
 
     Options o;
     CHECK(o.on("hd_textures"));   // on by default
-    CHECK(o.get("texture_pack") == "liink");   // LiinkPK's pack is the first choice
+    CHECK(!o.on("texture_add"));   // adding an own texture pack is an action, off until asked for
     o.set("hd_textures", "0");
     auto plan = plan_install(l, "x.iso", "/w", o);
     CHECK(plan.size() == 2);
@@ -168,22 +170,41 @@ int main() {
         prev.set("hd_textures", "0");
         auto ep = plan_extras(l, w, prev, e);
         CHECK(ep.size() == 1 && !ep[0].is_build);           // turned on: the texture download only
-        fs::create_directories(tmp / "w/mods/textures");
+        fs::create_directories(tmp / "w/mods/textures");      // an older release's single pack counts as ours being there: no new download
         { std::ofstream f(tmp / "w/mods/textures/textures.ini"); f << "x"; }
         prev.set("hd_textures", "1");
-        CHECK(plan_extras(l, w, prev, e).empty());           // textures already in place: nothing to do
-        e.set("texture_pack", "ai");                         // another pack: the old one goes, the new one comes
+        CHECK(plan_extras(l, w, prev, e).empty());
+        fs::remove_all(tmp / "w/mods/textures");
+        fs::create_directories(tmp / "w/mods/texpacks/recomp-hd");
+        fs::create_directories(tmp / "w/mods/texpacks/my-pack");
+        CHECK(plan_extras(l, w, prev, e).empty());           // our pack in place: nothing to do
+        e.set("texture_add", "1");                           // add an own pack: asked for first, nothing planned without it
+        CHECK(extras_needing_disc(l, false, e, &prev) == std::vector<std::string>{"texture_add"});
+        CHECK(plan_extras(l, w, prev, e).empty());
+        e.set("texture_file", "/packs/my pack.zip");         // picked: unpacked next to the others (nothing removed)
+        CHECK(extras_needing_disc(l, false, e, &prev).empty());
         ep = plan_extras(l, w, prev, e);
-        CHECK(ep.size() == 1 && ep[0].argv.back() == "ai");
-        CHECK(!fs::exists(tmp / "w/mods/textures"));
-        fs::create_directories(tmp / "w/mods/textures");
-        { std::ofstream f(tmp / "w/mods/textures/textures.ini"); f << "x"; }
-        e.set("texture_pack", "liink");
-        e.set("hd_textures", "0");                           // turned off: removed, nothing added
-        CHECK(plan_extras(l, w, prev, e).empty());
-        CHECK(!fs::exists(tmp / "w/mods/textures"));
+        CHECK(ep.size() == 1 && ep[0].argv.size() >= 4);
+        if (ep.size() == 1 && ep[0].argv.size() >= 4)
+            CHECK(ep[0].argv.back() == "/packs/my pack.zip" && ep[0].argv[ep[0].argv.size() - 3] == "file");
+        CHECK(fs::exists(tmp / "w/mods/texpacks/recomp-hd"));
+        Options after = e;                                   // after the run the switch is off again; turned on again it asks again
+        after.clear_discs();
+        CHECK(!after.on("texture_add") && after.get("texture_file").empty());
+        Options again = after;
+        again.set("texture_add", "1");
+        CHECK(extras_needing_disc(l, false, again, &after) == std::vector<std::string>{"texture_add"});
+        Options inst = e;                                    // a whole install forgets the action too
+        inst.set("texture_file_name", "my pack.zip");
+        inst.clear_actions();
+        CHECK(!inst.on("texture_add") && inst.get("texture_file").empty() && inst.get("texture_file_name").empty() && inst.on("hd_textures"));
+        { std::ofstream(tmp / "w/mods/texpacks/my-pack/textures.ini") << "x"; }
+        Options off;
+        off.set("hd_textures", "0");                         // turned off: our pack goes, the player's stays
+        CHECK(plan_extras(l, w, prev, off).empty());
+        CHECK(!fs::exists(tmp / "w/mods/texpacks/recomp-hd") && fs::exists(tmp / "w/mods/texpacks/my-pack"));
         prev.set("hd_textures", "0");
-        CHECK(plan_extras(l, w, prev, e).empty());
+        CHECK(plan_extras(l, w, prev, off).empty());
     }
     {   // the shared list: every extra has a title and a known kind; sub-choices name an existing parent
         for (const Extra& x : extras()) {
@@ -204,11 +225,48 @@ int main() {
     CHECK(plan.size() == 3);
     {
         auto& a = plan.back().argv;
-        CHECK(a.size() >= 5 && a[a.size() - 2] == "--pack" && a.back() == "liink");
-        o.set("texture_pack", "ai");
-        auto p2 = plan_install(l, "x.iso", "/w", o);
-        CHECK(p2.back().argv.back() == "ai");
-        o.set("texture_pack", "liink");
+        CHECK(a.size() >= 5 && a[a.size() - 2] == "--pack" && a.back() == "ai");
+        Options of = o;                                      // an install that also adds an own pack: both steps
+        of.set("texture_add", "1");
+        of.set("texture_file", "C:/x/pack.7z");
+        auto p2 = plan_install(l, "x.iso", "/w", of);
+        CHECK(p2.size() == 4 && p2.back().argv.back() == "C:/x/pack.7z");
+        if (!p2.empty()) CHECK(std::find(p2.back().argv.begin(), p2.back().argv.end(), "file") != p2.back().argv.end());
+        of.set("texture_file", "");
+        CHECK(extras_needing_disc(l, false, of, nullptr) == std::vector<std::string>{"texture_add"});
+    }
+    {   // the own pack file check (texture_pack_problem): a .zip with a textures.ini in any folder, or id-named PNGs
+        auto zip = [&](const std::string& name, const std::vector<std::string>& files) {   // a stored .zip, each file holding "x"
+            const std::string zp = (tmp / name).string();
+            std::string out, cd;
+            auto u16 = [](std::string& o, uint32_t v) { o += (char)(v & 0xFF); o += (char)(v >> 8 & 0xFF); };
+            auto u32 = [&](std::string& o, uint32_t v) { u16(o, v & 0xFFFF); u16(o, v >> 16); };
+            const uint32_t crc = (uint32_t)mz_crc32(MZ_CRC32_INIT, reinterpret_cast<const unsigned char*>("x"), 1);
+            for (const std::string& f : files) {
+                const uint32_t at = (uint32_t)out.size();
+                u32(out, 0x04034b50); u16(out, 20); u16(out, 0); u16(out, 0); u16(out, 0); u16(out, 0x21);
+                u32(out, crc); u32(out, 1); u32(out, 1); u16(out, (uint32_t)f.size()); u16(out, 0); out += f; out += "x";
+                u32(cd, 0x02014b50); u16(cd, 20); u16(cd, 20); u16(cd, 0); u16(cd, 0); u16(cd, 0); u16(cd, 0x21);
+                u32(cd, crc); u32(cd, 1); u32(cd, 1); u16(cd, (uint32_t)f.size()); u16(cd, 0); u16(cd, 0); u16(cd, 0); u16(cd, 0);
+                u32(cd, 0); u32(cd, at); cd += f;
+            }
+            const uint32_t cd_at = (uint32_t)out.size();
+            out += cd;
+            u32(out, 0x06054b50); u16(out, 0); u16(out, 0); u16(out, (uint32_t)files.size()); u16(out, (uint32_t)files.size());
+            u32(out, (uint32_t)cd.size()); u32(out, cd_at); u16(out, 0);
+            std::ofstream(zp, std::ios::binary) << out;
+            return zp;
+        };
+        CHECK(texture_pack_problem(zip("ok.zip", {"My Pack v2/ULUS10566/textures.ini", "My Pack v2/ULUS10566/a/b.png"})).empty());
+        CHECK(texture_pack_problem(zip("ids.zip", {"pack/0123456789abcdef.png"})).empty());
+        CHECK(texture_pack_problem(zip("mac.zip", {"__MACOSX/p/textures.ini", "p/readme.txt"})).find("no textures.ini") != std::string::npos);
+        CHECK(texture_pack_problem(zip("none.zip", {"photos/cat.png"})).find("no textures.ini") != std::string::npos);
+        { std::ofstream f(tmp / "x.iso", std::ios::binary); f << "not an archive at all"; }
+        CHECK(texture_pack_problem((tmp / "x.iso").string()).find("not a .zip") != std::string::npos);
+        { std::ofstream f(tmp / "p.7z", std::ios::binary); f << std::string("7z\xBC\xAF\x27\x1C\x00\x04", 8); }
+        const std::string w7 = texture_pack_problem((tmp / "p.7z").string());   // accepted when a tool can unpack it, else says how
+        CHECK(archive_tool_available() ? w7.empty() : w7.find("7-Zip") != std::string::npos);
+        CHECK(!texture_pack_problem((tmp / "missing.zip").string()).empty());
     }
     sum = 0;
     for (auto& s : plan) sum += s.weight;

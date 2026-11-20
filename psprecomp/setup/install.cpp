@@ -12,6 +12,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #else
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 #include <cstdint>
@@ -294,6 +295,86 @@ std::string undub_disc_problem(const std::string& path) {
         return "";
     }
     return "";   // no English bank to compare with (a release that names its files differently): not refused here
+}
+
+// ---- a texture pack archive (the texture_add extra: Add your own texture pack) ----
+namespace {
+bool is_texture_id_png(const std::string& base) {   // <16 hex digits>.png: the runtime's id-named textures
+    if (base.size() != 20 || lower(base.substr(16)) != ".png") return false;
+    for (size_t i = 0; i < 16; i++)
+        if (!std::isxdigit(static_cast<unsigned char>(base[i]))) return false;
+    return true;
+}
+size_t pack_read(void* opaque, mz_uint64 ofs, void* buf, size_t n) {
+    std::string s;
+    if (!static_cast<DiscReader*>(opaque)->raw(ofs, n, &s)) return 0;
+    std::memcpy(buf, s.data(), n);
+    return n;
+}
+}  // namespace
+
+// Something on the PATH that unpacks .7z / .rar (fetch_textures.py uses the same list).
+bool archive_tool_available() {
+#ifdef __ANDROID__
+    return false;
+#else
+    for (const char* t : {"7z", "7za", "7zz", "bsdtar"})
+        if (!find_on_path(t).empty()) return true;
+#ifdef _WIN32
+    return !find_on_path("tar").empty();   // Windows 10+ ships bsdtar as tar.exe: it reads .7z and .rar
+#else
+    return false;
+#endif
+#endif
+}
+
+std::string texture_pack_problem(const std::string& path) {
+    DiscReader r(path);
+    std::string head;
+    if (!r.ok() || !r.raw(0, 8, &head)) return "The file could not be read.";
+    uint64_t size = 0;
+#ifndef _WIN32
+    struct stat st;
+    if (r.fd >= 0) { if (fstat(r.fd, &st) == 0) size = static_cast<uint64_t>(st.st_size); }
+    else
+#endif
+    {
+        std::error_code ec;
+        size = static_cast<uint64_t>(fs::file_size(fs::u8path(path), ec));
+    }
+    const bool sevenz = head.compare(0, 6, std::string("7z\xBC\xAF\x27\x1C", 6)) == 0, rar = head.compare(0, 4, "Rar!") == 0;
+    if (sevenz || rar) {
+#ifdef __ANDROID__
+        return std::string("This is a .") + (sevenz ? "7z" : "rar") + " file, which can not be unpacked on a phone. Unpack it on a PC, zip the folder "
+               "again and pick the .zip.";
+#else
+        if (archive_tool_available()) return "";   // checked once it is unpacked (fetch_textures.py)
+        return std::string("This is a .") + (sevenz ? "7z" : "rar") + " file. Install 7-Zip (7-zip.org) to unpack it, or unpack it yourself, "
+               "zip the folder again and pick the .zip.";
+#endif
+    }
+    if (head.compare(0, 2, "PK") != 0) return "This is not a .zip, .7z or .rar file.";
+    mz_zip_archive z{};
+    z.m_pRead = pack_read;
+    z.m_pIO_opaque = &r;
+    if (size == 0 || !mz_zip_reader_init(&z, size, 0)) return "This .zip file is damaged or not a .zip.";
+    bool ini = false;
+    size_t ids = 0;
+    const mz_uint n = mz_zip_reader_get_num_files(&z);
+    for (mz_uint i = 0; i < n && !ini; i++) {
+        char name[1024];
+        if (mz_zip_reader_is_file_a_directory(&z, i) || !mz_zip_reader_get_filename(&z, i, name, sizeof name)) continue;
+        std::string f = name;
+        const size_t sl = f.find_last_of('/');
+        const std::string base = sl == std::string::npos ? f : f.substr(sl + 1);
+        if (f.find("__MACOSX/") != std::string::npos) continue;
+        if (lower(base) == "textures.ini") ini = true;
+        else if (is_texture_id_png(base)) ids++;
+    }
+    mz_zip_reader_end(&z);
+    if (ini || ids) return "";
+    return "This .zip has no textures.ini (and no PNG files named by texture ids), so it is not a texture pack the game can use. Texture packs "
+           "for PPSSPP (Dissidia 012, ULUS10566 / ULES01505) have one.";
 }
 
 bool open_on_desktop(const std::string& path, bool show_in_folder, std::string* error) {

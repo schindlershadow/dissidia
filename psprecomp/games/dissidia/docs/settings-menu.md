@@ -91,11 +91,15 @@ the ~60 fps animation / scale auto-drop (no frame timing taken), held-button lea
   out of it are handed to the game's own moves so its sounds and animations play. The label is drawn in Crimson Text SemiBold
   small capitals; its underline is a copy of another row's underline from the game's own picture (`ge_draw_set_game_layer_copies`).
 
+**Texture Pack** (Graphics): Off or one of the installed packs, applied at the next start; **Install a Texture Pack** (a .zip, on a PC also .7z / .rar,
+with the file picker) and **Delete a Texture Pack** (not the one in use);
+see [texture-packs.md](texture-packs.md) "Several packs, one applied".
+
 **HD texture packs.** The added rows take their look from what the game really draws, so they follow both packs (our id-named
-upscales and PPSSPP-style packs such as LiinkPK's): the runtime keeps the image a watched texture was replaced with
+upscales and PPSSPP-style packs a player installs): the runtime keeps the image a watched texture was replaced with
 (`psp_texpack_watch`), and the rows use the HD pointing hand of the common UI sheet (id `c6f05e9985eebe31`) and, on the title, the
-lettering colour and size of the labels on the HD title sheet (id `585ca08f8a5250d3`; white and about 0.6x on LiinkPK's black
-title). The title bar, hand and underline are the game's own pixels. The pause menu row is the game's own and needs nothing. Ids
+lettering colour and size of the labels on the HD title sheet (id `585ca08f8a5250d3`; e.g. white and about 0.6x on a pack with a
+black title). The title bar, hand and underline are the game's own pixels. The pause menu row is the game's own and needs nothing. Ids
 of retail textures: `tools/texpack_extract.py`.
 
 A loose-file mod that replaces one of the two layout files keeps its own layout (the built-in edit is skipped), and the start

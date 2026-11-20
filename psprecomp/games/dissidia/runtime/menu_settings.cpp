@@ -208,7 +208,7 @@ dissidia::MenuLayer g_layer;
 dissidia::GimImage g_ui_sheet;        // menu/en/menu_lpk_label_gim_0.bin entry 0 (128x128): the pointing hand at (2, 50, 38, 24)
 int g_ui_sheet_state = 0;
 // The same sheet's texture-pack id (psp_texpack_make_id of its texels; tools/texpack_extract.py prints it for the GIM). With an
-// HD pack (our id-named files or a PPSSPP-style pack such as LiinkPK's) the game draws its hand from the replacement, so the
+// HD pack (our id-named files or a PPSSPP-style pack the player installed) the game draws its hand from the replacement, so the
 // rows added here take the image the game got (psp_texpack_watch) and fall back to the original sheet.
 constexpr uint64_t kUiSheetTexId = 0xC6F05E9985EEBE31ull;
 std::vector<uint8_t> g_ui_hd;
@@ -391,7 +391,7 @@ bool title_pad(uint8_t* rdram, recomp_context* ctx, int which) {
 }
 
 // The title sheet (menu/en/menu_lpk_title_gim_0.bin entry 0, 512x512) as the game draws it: its labels give the lettering colour
-// of the added row (navy on retail and on our upscale, white on LiinkPK's black title).
+// of the added row (navy on retail and on our upscale, whatever a PPSSPP-style pack drew, e.g. white on a black title).
 constexpr uint64_t kTitleSheetTexId = 0x585CA08F8A5250D3ull;
 float g_title_ink[3] = {66, 66, 118};
 float g_title_scale = 1.f, g_title_dy = 0.f;   // lettering size and baseline shift of the sheet in use (1, 0 on retail)

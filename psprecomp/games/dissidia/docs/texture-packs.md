@@ -36,7 +36,7 @@ runtime (5650/5551/4444/8888/CLUT4/CLUT8) take part; DXT is not used by this gam
    (`-n realesrgan-x4plus-anime` for the UI art), `waifu2x-ncnn-vulkan -n 1 -s 2`, or ImageMagick
    `convert {in} -filter Lanczos -resize 400% {out}`. The tool installs and downloads nothing. If an upscaler
    drops the alpha channel it is restored from the original when Pillow is available.
-3. Run normally: replacement is on whenever the directory has `<id>.png` files (`PSPRECOMP_TEX_REPLACE=0` turns it off; the in-game settings menu has an **HD Textures** On/Off row whenever `<workdir>/mods/textures` exists, saved as `hd_textures=` in `settings.ini`, applied at the next start). The pack is looked up next to the Memory Stick folder: `<parent of ms0>/mods/textures`, so `PSPRECOMP_MS0` pointing somewhere else moves the pack, the Japanese voice folders and `mods/` with it.
+3. Run normally: replacement is on whenever the directory has `<id>.png` files (`PSPRECOMP_TEX_REPLACE=0` turns it off; the in-game settings menu has a **Texture Pack** row (Off or one of the installed packs, see "Several packs, one applied") whenever `<workdir>/mods/textures` exists, saved as `hd_textures=` in `settings.ini`, applied at the next start). The pack is looked up next to the Memory Stick folder: `<parent of ms0>/mods/textures`, so `PSPRECOMP_MS0` pointing somewhere else moves the pack, the Japanese voice folders and `mods/` with it.
    The file list is read once at start (no per-bind stat); a replacement is decoded on the cache miss and uploaded
    at its own size. UVs are normalised, so TEXSCALE/TEXOFFSET, REPEAT/CLAMP and both draw paths
    (batched GPU-skinning path, the default on every platform, and `PSPRECOMP_GE_FAST=0` for the legacy renderer) work unchanged; render scale is independent.
@@ -72,7 +72,7 @@ disables it; `PSPRECOMP_TEXPACK_LOG=1` logs the first 400 lookups as `[TEXPACK] 
 check a pack against the game (a miss on a texture the pack is known to replace points at one of the unimplemented parts).
 The hash functions are unit-tested (`test_tex_pack_ppsspp`); **no hit has been seen in the real game yet**.
 
-`tools/fetch_textures.py <workdir>` downloads Niosa/D012FFRT from GitHub into `<workdir>/mods/textures` (the installer wizard does this when
+`tools/fetch_textures.py <workdir>` downloads Niosa/D012FFRT from GitHub into `<workdir>/mods/texpacks/recomp-hd` (the installer wizard does this when
 "HD texture pack" is on). The pack has no stated license and is not bundled; it was made for the US release (ULUS10566).
 
 ## Pack entries without a file
@@ -92,7 +92,7 @@ raises the number of PPSSPP lookups logged (default 400 with `PSPRECOMP_TEXPACK_
 
 ## The extra textures repository
 
-`tools/fetch_textures.py` (run by the wizard when "HD texture pack" is on) installs two things into `<workdir>/mods/textures`: Niosa's pack
+`tools/fetch_textures.py` (run by the wizard when "HD texture pack" is on) installs two things into `<workdir>/mods/texpacks/recomp-hd`: Niosa's pack
 (about 200 MB) and our own upscales from https://github.com/schindlershadow/dissidia-hd-textures (3,366 `<id>.png` files, about 1.1 GB, built with
 `texpack_extract.py` and `texpack_upscale.py`; its README and `manifest.json` say what each file is). Total download about 1.3 GB, on disk about
 1.4 GB. If the second download fails the first is still installed; `--no-ids` skips it, `--ids-zip FILE` uses a local archive.
@@ -126,14 +126,46 @@ The 480x272 images (tutorial slides, story and event art, 77 textures) are run w
 1080p screen without being stretched; every other texture above 256 px stays at 2x to keep the pack small.
 
 
-## LiinkPK's Dissidia 012 HD Project (second pack, installer default)
+## PPSSPP packs with `hash=quick`, and installing your own pack
 
-https://github.com/LiinkPK/Dissidia-012-HD-Textures (about 0.8 GB, 2,300 PNGs, hand-retouched: redrawn faces and text). A PPSSPP pack with
-`hash=quick` and mostly wildcard keys (`0000000000000000<hash>`: "any texture with this content hash"), so the runtime implements PPSSPP's
-`StableQuickTexHash` (`psp_texpack_quick_hash`: the SSE2 lane mixer for 16-byte aligned data with a size multiple of 64, add/xor over 32-bit
-words otherwise; alignment comes from the guest address) and PPSSPP's `LookupWildcard` chain (palette-only, no address, address-only, content-only keys).
-`ignoreAddress` is ignored with `hash=quick`, as in PPSSPP. Verified in the real game (title logo, credits, title screen hit).
+Community packs made for PPSSPP often use `hash=quick` and mostly wildcard keys (`0000000000000000<hash>`: "any texture with this content
+hash"), so the runtime implements PPSSPP's `StableQuickTexHash` (`psp_texpack_quick_hash`: the SSE2 lane mixer for 16-byte aligned data with
+a size multiple of 64, add/xor over 32-bit words otherwise; alignment comes from the guest address) and PPSSPP's `LookupWildcard` chain
+(palette-only, no address, address-only, content-only keys). `ignoreAddress` is ignored with `hash=quick`, as in PPSSPP.
 
-The wizard offers it first, next to the AI upscaled pack (Niosa + ours): `fetch_textures.py <work> --pack liink|ai`. Either pack lands in
-`mods/textures`, and `PACK_CREDITS.txt` there names the authors (both packs are also credited on the installer's options page and in the download step).
-Switching packs = running the installer step again; the pack folder is replaced, not merged.
+No third-party pack is offered for download except D012FFRT under our upscales. A player installs a pack they downloaded themselves from
+the installers: **Add your own texture pack** (PC wizard and Android setup app, both from `setup/extras.cpp`), then pick the archive. It is an
+action, not a state: the switch is off again after the run, and turning it on again adds another pack.
+`fetch_textures.py <work> --pack file --zip <archive> [--name <file name>]` (Android: `fd:N` from the picker, `--name` its display name):
+- a `.zip` everywhere; on a PC also `.7z` / `.rar` when 7-Zip (`7z`, `7za`, `7zz`) or `bsdtar` (Windows' own `tar.exe`) is on the PATH;
+- the folder holding the pack's `textures.ini` is installed as it is, at any depth in the archive (the one named after the disc id first,
+  then the shallowest; `__MACOSX` is skipped); an archive of only id-named PNGs (`<16 hex digits>.png`) is installed flat;
+- the installer checks the file when it is picked (`texture_pack_problem`: a zip with a `textures.ini` or id PNGs); a broken or wrong
+  archive never replaces a pack already installed; the player's archive is never deleted, and none of our upscales are added on top
+  (they would win over the pack).
+
+## Several packs, one applied
+
+Each pack has its own folder, `<mods>/texpacks/<id>/`: `recomp-hd` for ours (the **HD textures** switch; turning it off removes only that
+one), a name made from the archive's file name for an own pack ("My Pack v2 (US).zip" -> `my-pack-v2-us`; the same archive again replaces
+it). `.source.json` there has the pack's `name` (what the menu shows) and `installed` (Unix seconds); `PACK_CREDITS.txt` credits it.
+Unfinished installs are dot folders (`.new-<id>`, `.unpack-*`) and are skipped. On Android the packs are moved, not copied, from the setup
+app's work folder to the game's folder (`android_local_install.py`), so they are stored once and a deleted pack does not come back.
+
+The game applies one (`runtime/include/psp_texpacks.h`, chosen by the game module's dir provider in `hooks_io.cpp`):
+- the pack picked in **Settings > Graphics > Texture Pack** (`texture_pack=<id>`, `texture_pack_at=<when>` in settings.ini, exported as
+  `PSPRECOMP_TEXPACK_ID` / `PSPRECOMP_TEXPACK_AT` at start), unless a pack was installed after that moment: a fresh install is applied;
+- without a choice (or when the chosen pack was deleted), the newest pack;
+- **Off** in the same row is `hd_textures=0` (`PSPRECOMP_TEX_REPLACE=0`). A change applies at the next start ("(next start)" in the row).
+
+**Install a Texture Pack** (same page, always there) opens the system file picker (Android: the document picker, whose pick is copied to
+`<mods>/.picked-texpack` first; without a picker, e.g. Steam Deck game mode, the newest .zip / .7z / .rar in the mods folder) and installs the
+archive on a worker thread with `psp_texpacks_install`, the same rules as `fetch_textures.py --pack file`: a .zip is read in place, one entry at
+a time (stored / deflate, Zip64; no size limit, little memory), a .7z / .rar needs 7-Zip or bsdtar on a PC and is refused on Android. The
+progress and the result show in a row below; the new pack is the newest, so it is used from the next start.
+
+**Delete a Texture Pack** (same page, shown while a pack other than the one in use is installed) picks a pack with left / right and deletes
+its folder after Confirm, then Confirm again; the pack in use this run cannot be deleted (its files are being read).
+
+A pack an older release installed to `<mods>/textures` is listed as one more pack ("Installed pack") and moved into `texpacks/` the next
+time `fetch_textures.py` runs (`recomp-hd` when it was ours, else `earlier-pack`). `PSPRECOMP_TEXPACK=<dir>` still forces one folder (tests).

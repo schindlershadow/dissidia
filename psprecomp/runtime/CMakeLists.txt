@@ -234,6 +234,7 @@ set(RUNTIME_SOURCES
     src/psp_ge_vertex.cpp
     src/psp_ge_texture.cpp
     src/psp_tex_pack.cpp
+    src/psp_texpacks.cpp
     src/psp_fx_manifest.cpp
     src/psp_fx_shader.cpp
     src/psp_fep_log.cpp
@@ -484,6 +485,10 @@ add_test(NAME vfpu_atan2 COMMAND test_vfpu_atan2)
 add_executable(test_savedata_crypto tests/test_savedata_crypto.cpp src/hle/psp_savedata_crypto.cpp)
 add_test(NAME savedata_crypto COMMAND test_savedata_crypto)
 # PPSSPP-compatible texture pack keys (hashes + lookup in a throw-away folder).
+add_executable(test_texpacks tests/test_texpacks.cpp src/psp_texpacks.cpp)
+target_include_directories(test_texpacks PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(test_texpacks PRIVATE ZLIB::ZLIB)
+add_test(NAME texpacks COMMAND test_texpacks)
 add_executable(test_tex_pack_ppsspp tests/test_tex_pack_ppsspp.cpp src/psp_tex_pack.cpp)
 target_include_directories(test_tex_pack_ppsspp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(test_tex_pack_ppsspp PRIVATE ZLIB::ZLIB)
