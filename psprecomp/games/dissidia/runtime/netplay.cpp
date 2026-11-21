@@ -80,11 +80,14 @@ void build_names() {
 //   fighter only, +0x388 bit 29, +0x4A4 (garbage in the first frame), +0x510 / +0x514 (1.0 on the local fighter for a
 //   while), +0x5B0 bit 2, +0x700..+0x767 data only the local fighter fills (camera / lock-on), +0xCF4..+0xCFF a
 //   (pointer, id, pointer) slot of a view-side object, +0xD08 (local fighter), +0x1078 byte 1 (pad number).
+// +0xD00: a float frame counter (+2 per frame) that the local player's lock-on resets on its target; with the tag team's lock
+// cycle (L onto a fighter other than the slot opponent) it reset on one machine only (21 Nov, FFA online, play2: 45 frames of
+// fighter1 +0xD00 only, every other word of the block and every hit / KO the same on both copies over 12726 frames).
 // Words holding a guest pointer (0x08800000..0x09FFFFFF) are left out as well: effect and HUD objects are allocated for the
 // local view, so the heap addresses (and whether a slot holds one at all) differ between the players (+0xCF4..+0xCFC).
 uint32_t viewer_mask(uint32_t off) {   // bits of the word at `off` that are hashed
     switch (off) {
-    case 0x2F8: case 0x490: case 0x4A4: case 0x510: case 0x514: case 0x5B0: case 0xD08: case 0x1078: return 0;
+    case 0x2F8: case 0x490: case 0x4A4: case 0x510: case 0x514: case 0x5B0: case 0xD00: case 0xD08: case 0x1078: return 0;
     case 0x380: return ~0x00200000u;
     case 0x388: return ~0x20000000u;
     default: return ((off >= 0x700 && off < 0x768) || (off >= 0xCF4 && off < 0xD00)) ? 0 : ~0u;

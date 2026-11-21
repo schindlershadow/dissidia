@@ -2067,6 +2067,42 @@ with its own off switch `PSPRECOMP_TAGTEAM_AI_<X>=0`; master `PSPRECOMP_TAGTEAM_
 A broken or helped current target is kept (no CLOSER / SPREAD away). Applied like `aim_fix`: lock block (`LOCK_SET`), foe +0x300, target +0x2FC. Only game state and
 the battle clock are read (no local player, no wall clock). Log: `[AITARGET]` with `PSPRECOMP_TAGTEAM_LOG=1`.
 
+## Free-for-all, 1v1v1 / 1v1v1v1 (21 Nov; offline vs CPU, first cut)
+User: "free for all mode", "Both 3 and 4". `PSPRECOMP_TAGTEAM_FFA=3` = the human, the CPU slot fighter and the CPU side's extra (extras mask 1);
+`PSPRECOMP_TAGTEAM_FFA=4` = both extras (mask 3). The game keeps its two sides (the side word must stay 0 / 1: per-side tables), so in a 4-way battle
+two opponents share a game side; friend / foe is per fighter: `foes(a, b)` (any two fighters in FFA, else other sides).
+- Hits: `hitreg_hook` lets a same-side hit through in FFA; the friendly-fire booking (`booked_extra_victim` / `booked_friendly_slot_handler`)
+  puts the damage on the fighter really hit. Seen (`~/dissidia/ffa4_a1`, 4 clones, 105 s): same-side and cross-side BRV / HP hits all booked right.
+- Targeting: `aim_fix`, the score AI (no "mate" in FFA), the rule AI and `refresh_hook` take any opponent.
+- Lock-on: the L cycle walks foe -> every other opponent (`ffa_others`, fighter order) -> the EX core -> foe; `other_enemy` returns the cycle's pick.
+- KO rules: the human's fall ends the battle (a loss; nobody takes his slot). Another slot fighter with a living same-side opponent is swapped with
+  it as before; one without stays down (`g_ffa_down`, the round held) while anybody besides the human still fights. When the human is the last one
+  standing, the held fighter's lethal damage goes back to retail (`[FFA]`), and the retail finish and results run. Seen: `ffa4_ko1`
+  (KOLIST cpu:20,cpu:30,partner:40 with KOLIST_NAT) -> swap, hold, win screen; `ffa4_hko1` (human:20) -> decided, team 0 loses.
+- HUD: FFA defaults to overhead style 1 (user: "the HUD could use the first one + the overhead"); all three styles work (user: "our 3 version of
+  overhead HUD also applied on the free for all"). The overhead bars / mini panels cover every opponent; the bottom "ally" panel shows the opponent
+  that shares the human's game side.
+- Lock cycle seen (`ffa4_lockb2`, L taps from a test script, `tools_dbg/overhead_shots_s.py` + BT_SCRIPT_EXTRA): foe -> extraE (retail took the
+  selector to 1 itself; the steer now remembers that pick) -> extraP (`lock cycle (FFA): -> the next opponent`) -> back to the foe, again.
+- Settings > Debug: "Free-for-all (3)" / "Free-for-all (4)" (with Tag Team on; the next battle). Turning one on picks overhead style 1 when none is on.
+- Online (Communications Mode > Group Battle): the host's setting decides for the whole group. `local_rule_flags()` bit 2 = FFA goes out with the
+  host's roster; `ffa_now()` reads it in a Communications battle (offline: the local setting). The beacon layout version is 6, so a build without
+  FFA keeps the plain 1v1 instead of splitting. KO rules online use battle state only (no "local human"): a fallen slot fighter with a living
+  same-side fighter is swapped with it (handover to that fighter's driver, as in 2v2); without one it stays down while two or more others
+  stand; the last one standing wins.
+  Seen (`~/dissidia/mpffa1`, mp_test.py, two copies LAN, clones, FFA on the host only): B logged "host's rules: ... free-for-all on", both copies 64
+  same-side hits and the same HP / KO lines, the KO swap and the AI handover at t=101.0 on both, NETSYNC 2988 frames compared, 0 mismatched.
+- Played online (`~/dissidia/play2`, two windows on one PC, LAN, both pads driven incl. L): two splits found and fixed.
+  - The BRV panel's settle fix (`panel_send`, retail FUN_08AE3B54) also writes the fighter's data, and each machine's panel shows the fighter it
+    drives, so the fix ran on one machine only (NETSYNC fighter1.blockD00). In a Communications battle the shown number is set directly (HUD only).
+  - Fighter +0xD00 is a float frame counter the local player's lock-on resets on its target; with L on a fighter other than the slot opponent it
+    reset on one machine only. Over 12726 frames it was the only difference (45 frames, every hit / KO equal), so netplay.cpp's check skips it
+    like +0xD08.
+  After both, rebased on tag-slot d2848c9: 6388 frames compared, 0 mismatched (4 min, play), and a run to the end (KOLIST_NAT slot1:40,
+  slot1:55,extra0:70): swap, the fighter held down, the decision at the same frame on both, VICTORY on the host, DEFEATED on the guest.
+- Not yet: two real PCs / the relay, 3 or 4 human players (only 2 players + CPU clone partners were tested online), the result screen's tally
+  for 3 / 4 fighters, FFA with the CPU rows of a party (Add CPU).
+
 ## Score-based CPU targeting, the PPSSPP plugin's (21 Nov; host-only, headless)
 User: "check whether the AI would respond like ours" (the plugin's v0.39 scoring). It did not: `ai_target()` used the rule list above, checked once per 4 s.
 `ai_score_target()` (tagteam.cpp) now runs first and is the default; `PSPRECOMP_TAGTEAM_AI_SCORE=0` = the rule list. Every ~0.25 s (15 battle-clock units) each
