@@ -1,0 +1,592 @@
+[TTLOCK] frame 4140: the battle is decided, the lock-step stands down (no more waiting for input)
+[SNDPOOL] line free obj 09AEA2BC (ours 0) t=138.0
+[SNDPOOL] before free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] after free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] line free obj 09AEA2CC (ours 0) t=138.0
+[SNDPOOL] before free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] after free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[DRAWCHK] t=138.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 102
+[DRAWCHK] t=138.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 102
+[DRAWCHK] t=138.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=138.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[ATRAC] id=1 AT3 ch=2 align=192 state=2 fileSize=48844 endSample=258615 firstOff=1024 loop=-1..-1 buf=0x0E8C06E0
+[DRAWCHK] t=138.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (22.6,-4.9,-18.1) script 203
+[GE_3D_STATS] 3d prims=17100000 null-vertex-ptr=0 null-tex-addr=4938
+[HLE] sceIoSetAsyncCallback(fd=9) asyncPending=0 callbackId=261 callbackArg=0x9 -> notifying=0
+[HLE] sceIoSetAsyncCallback(fd=9, cbId=261, cbArg=0x9) caller=0x00000000
+[HLE] sceIoReadAsync(fd=9, buf=0x099AA8D4, size=47996)
+[HLE] CheckCallback: DISPATCHING cb uid=261 func=0x088637A8 notify_count=295 notify_arg=9 user_arg=0x098F5410
+[HLE] sceIoWaitAsync(fd=9, res_ptr=0x0BFEDE90) -> result=0xBB7C
+[HLE] CheckCallback: RETURNED from cb uid=261 func=0x088637A8 v0=0x00000000
+[ATRAC] release id=0 (streamed, at sample 1940847 of 4883822, loops 1)
+[HLE] sceIoClose(fd=9) caller=0x00000000
+[HLE] sceIoSetAsyncCallback(fd=4) asyncPending=0 callbackId=263 callbackArg=0x4 -> notifying=0
+[HLE] sceIoSetAsyncCallback(fd=4, cbId=263, cbArg=0x4) caller=0x00000000
+[HLE] sceIoLseekAsync(fd=4, offset=0x000000003D937000, whence=0)
+[HLE] sceIoLseekAsync: fd=4 host_fd=31 offset=1033072640 whence=0 -> pos=1033072640 asyncPending_before=0
+[HLE] CheckCallback: DISPATCHING cb uid=263 func=0x08863968 notify_count=189 notify_arg=4 user_arg=0x098F5410
+[HLE] sceIoWaitAsync(fd=4, res_ptr=0x0BFEDE90) -> result=0x3D937000
+[HLE] sceIoSetAsyncCallback(fd=4) asyncPending=0 callbackId=261 callbackArg=0x4 -> notifying=0
+[HLE] sceIoSetAsyncCallback(fd=4, cbId=261, cbArg=0x4) caller=0x00000000
+[HLE] sceIoReadAsync(fd=4, buf=0x09B90FC0, size=263740)
+[HLE] CheckCallback: RETURNED from cb uid=263 func=0x08863968 v0=0x00000000
+[HLE] CheckCallback: DISPATCHING cb uid=261 func=0x088637A8 notify_count=296 notify_arg=4 user_arg=0x098F5410
+[HLE] sceIoWaitAsync(fd=4, res_ptr=0x0BFEDE90) -> result=0x4063C
+[HLE] sceIoSetAsyncCallback(fd=4) asyncPending=0 callbackId=263 callbackArg=0x4 -> notifying=0
+[HLE] sceIoSetAsyncCallback(fd=4, cbId=263, cbArg=0x4) caller=0x00000000
+[HLE] sceIoLseekAsync(fd=4, offset=0x000000003B989000, whence=0)
+[HLE] sceIoLseekAsync: fd=4 host_fd=31 offset=999854080 whence=0 -> pos=999854080 asyncPending_before=0
+[HLE] CheckCallback: RETURNED from cb uid=261 func=0x088637A8 v0=0x00000000
+[HLE] CheckCallback: DISPATCHING cb uid=263 func=0x08863968 notify_count=190 notify_arg=4 user_arg=0x098F5410
+[HLE] sceIoWaitAsync(fd=4, res_ptr=0x0BFEDE90) -> result=0x3B989000
+[HLE] sceIoSetAsyncCallback(fd=4) asyncPending=0 callbackId=261 callbackArg=0x4 -> notifying=0
+[HLE] sceIoSetAsyncCallback(fd=4, cbId=261, cbArg=0x4) caller=0x00000000
+[HLE] sceIoReadAsync(fd=4, buf=0x0F3500C0, size=17548)
+[HLE] CheckCallback: RETURNED from cb uid=263 func=0x08863968 v0=0x00000000
+[HLE] CheckCallback: DISPATCHING cb uid=261 func=0x088637A8 notify_count=297 notify_arg=4 user_arg=0x098F5410
+[HLE] sceIoWaitAsync(fd=4, res_ptr=0x0BFEDE90) -> result=0x448C
+[HLE] CheckCallback: RETURNED from cb uid=261 func=0x088637A8 v0=0x00000000
+[GE_3D_STATS] 3d prims=17150000 null-vertex-ptr=0 null-tex-addr=4951
+[DECODE_CACHE] 36788 hits, 76 misses, 76 entries, 3.5 MB
+[FPS] 15.3 GE frames/s (77 in 5.0s)
+[DRAWCHK] t=138.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[XAS] t=139.00s extra 09E20240: assist 09E2CA40 released (its master is down)
+[TAGTEAM] released assist 09E2CA40 taken off the world list before its block is freed (prev 09D573A0 next 09D4CE80)
+[DRAWCHK] t=139.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=139.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 102
+[DRAWCHK] t=139.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=139.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[GE_3D_STATS] 3d prims=17200000 null-vertex-ptr=0 null-tex-addr=4964
+[DRAWCHK] t=139.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (22.6,-4.4,-18.1) script 203
+[GE_3D_STATS] 3d prims=17250000 null-vertex-ptr=0 null-tex-addr=4978
+[DRAWCHK] t=139.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[AGAUGE] t=140.0s summary: slotH 9198 slotC 4623 extraP 2000(down) extraE 2000(down) extraE 2000(down) extraP 2000(down) extraE 2000(down) extraP 2000(down) extraP 2000(down) extraE 2000
+[GE_3D_STATS] 3d prims=17300000 null-vertex-ptr=0 null-tex-addr=4991
+[TAGTEAM] brain tick 09D11200 (owner 09D0CF90) enabled=1 state=0 call#4201 tgt2FC=09D17D60 foe300=09D17D60 partner1108=09D46090 lockT=00000000 act380=22002002
+[DRAWCHK] t=140.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[TAGTEAM] brain tick 09D1C5C0 (owner 09D17D60) enabled=1 state=0 call#4201 tgt2FC=09D0CF90 foe300=09D0CF90 partner1108=09D4CE80 lockT=00000000 act380=20002002
+[DRAWCHK] t=140.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 102
+[DRAWCHK] t=140.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=140.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=140.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (22.6,-4.2,-18.1) script 203
+[GE_3D_STATS] 3d prims=17350000 null-vertex-ptr=0 null-tex-addr=5006
+[DRAWCHK] t=140.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=17400000 null-vertex-ptr=0 null-tex-addr=5018
+[TAGTEAM] actor 09E2CA40 freed: 3 of its 30 tracked blocks were still allocated and are freed too
+[DRAWCHK] t=141.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=141.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 102
+[DRAWCHK] t=141.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=141.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=141.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (22.6,-3.3,-18.1) script 203
+[GE_3D_STATS] 3d prims=17450000 null-vertex-ptr=0 null-tex-addr=5030
+[FPS] 17.1 GE frames/s (86 in 5.0s)
+[DRAWCHK] t=141.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=17500000 null-vertex-ptr=0 null-tex-addr=5042
+[DRAWCHK] t=142.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=142.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[GE_3D_STATS] 3d prims=17550000 null-vertex-ptr=0 null-tex-addr=5054
+[DRAWCHK] t=142.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=142.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=142.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (22.6,-2.0,-18.1) script 203
+[GE_3D_STATS] 3d prims=17600000 null-vertex-ptr=0 null-tex-addr=5064
+[HOMING] t=142.53s 09E20240 (char 31) attack script 200: foe 09D0CF90 tgt 09D0CF90 lockT 09D0CF90 dist 24.5 foe alive 1 on stage 1
+[DRAWCHK] t=142.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=17650000 null-vertex-ptr=0 null-tex-addr=5076
+[DRAWCHK] t=143.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=143.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=143.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=143.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=143.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (22.6,-0.8,-18.1) script 201
+[GE_3D_STATS] 3d prims=17700000 null-vertex-ptr=0 null-tex-addr=5087
+[GE_3D_STATS] 3d prims=17750000 null-vertex-ptr=0 null-tex-addr=5098
+[DRAWCHK] t=143.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[SNDPOOL] line free obj 09AEA2BC (ours 0) t=143.8
+[SNDPOOL] before free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] after free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] line free obj 09AEA2CC (ours 0) t=143.8
+[SNDPOOL] before free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] after free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[TAGTEAM] t=143.8s lock mode call: block 09E02660 mode 1 -> 3 flag 0 (sel 0) cyc 0 core 0 target slotC
+[ATRAC] id=0 AT3+ ch=2 align=376 state=2 fileSize=263740 endSample=1432362 firstOff=2917 loop=162076..1435279 buf=0x09B90FC0
+[TAGTEAM] t=143.8s human lock: sel 0 -> 0, mode 3, target 00000000 -> 00000000 (+0x2FC 09D17D60 foe 09D17D60)
+[GE_3D_STATS] 3d prims=17800000 null-vertex-ptr=0 null-tex-addr=5110
+[DRAWCHK] t=144.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=144.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=144.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=144.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=144.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (23.6,0.7,-17.6) script 201
+[HOMING] t=144.13s 09E20240 (char 31) attack script 101: foe 09D0CF90 tgt 09D0CF90 lockT 09D0CF90 dist 29.5 foe alive 0 on stage 1
+[FPS] 16.5 GE frames/s (83 in 5.0s)
+[GE_3D_STATS] 3d prims=17850000 null-vertex-ptr=0 null-tex-addr=5122
+[DRAWCHK] t=144.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=17900000 null-vertex-ptr=0 null-tex-addr=5134
+[DRAWCHK] t=145.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=145.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=145.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=145.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=145.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=17950000 null-vertex-ptr=0 null-tex-addr=5146
+[GE_3D_STATS] 3d prims=18000000 null-vertex-ptr=0 null-tex-addr=5158
+[DRAWCHK] t=145.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=18050000 null-vertex-ptr=0 null-tex-addr=5170
+[DRAWCHK] t=146.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=146.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=146.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=146.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=146.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=18100000 null-vertex-ptr=0 null-tex-addr=5186
+[DRAWCHK] t=146.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[DRAWCHK] t=147.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[GE_3D_STATS] 3d prims=18150000 null-vertex-ptr=0 null-tex-addr=5202
+[DRAWCHK] t=147.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=147.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=147.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=147.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[FPS] 18.9 GE frames/s (95 in 5.0s)
+[GE_3D_STATS] 3d prims=18200000 null-vertex-ptr=0 null-tex-addr=5216
+[ATRAC] id=1 AT3 ch=1 align=192 state=2 fileSize=17548 endSample=91276 firstOff=1024 loop=-1..-1 buf=0x0F3500C0
+[DRAWCHK] t=147.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE] DrawSync timeout: 1 lists still pending
+[GE_3D_STATS] 3d prims=18250000 null-vertex-ptr=0 null-tex-addr=5229
+[DRAWCHK] t=148.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=148.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=148.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=148.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=148.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=18300000 null-vertex-ptr=0 null-tex-addr=5240
+[DRAWCHK] t=148.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=18350000 null-vertex-ptr=0 null-tex-addr=5252
+[DRAWCHK] t=149.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=149.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=149.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=149.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=149.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=18400000 null-vertex-ptr=0 null-tex-addr=5265
+[GE_3D_STATS] 3d prims=18450000 null-vertex-ptr=0 null-tex-addr=5280
+[DRAWCHK] t=149.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[KOLIST] t=150.0s slot0 -> slotH 09D0CF90 HP 0
+[AGAUGE] t=150.0s summary: slotH 9198 slotC 4623 extraP 2000(down) extraE 2000(down) extraE 2000(down) extraP 2000(down) extraE 2000(down) extraP 2000(down) extraP 2000(down) extraE 2000
+[TAGTEAM] brain tick 09D11200 (owner 09D0CF90) enabled=1 state=0 call#4501 tgt2FC=09D17D60 foe300=09D17D60 partner1108=09D46090 lockT=00000000 act380=22002002
+[DRAWCHK] t=150.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=150.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=150.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=150.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=150.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=18500000 null-vertex-ptr=0 null-tex-addr=5295
+[FPS] 17.4 GE frames/s (87 in 5.0s)
+[GE_3D_STATS] 3d prims=18550000 null-vertex-ptr=0 null-tex-addr=5312
+[DRAWCHK] t=150.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[DRAWCHK] t=151.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=151.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=151.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=151.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=151.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=18600000 null-vertex-ptr=0 null-tex-addr=5326
+[GE_3D_STATS] 3d prims=18650000 null-vertex-ptr=0 null-tex-addr=5340
+[DRAWCHK] t=151.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[DRAWCHK] t=152.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[GE] DrawSync timeout: 1 lists still pending
+[GE_3D_STATS] 3d prims=18700000 null-vertex-ptr=0 null-tex-addr=5352
+[DRAWCHK] t=152.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=152.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=152.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=152.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=18750000 null-vertex-ptr=0 null-tex-addr=5364
+[DRAWCHK] t=152.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=18800000 null-vertex-ptr=0 null-tex-addr=5376
+[KOLIST] t=153.0s extra0: no such fighter
+[DRAWCHK] t=153.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=153.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=153.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=153.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=153.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=18850000 null-vertex-ptr=0 null-tex-addr=5387
+[DECODE_CACHE] 40884 hits, 76 misses, 76 entries, 3.5 MB
+[FPS] 19.2 GE frames/s (96 in 5.0s)
+[GE_3D_STATS] 3d prims=18900000 null-vertex-ptr=0 null-tex-addr=5400
+[DRAWCHK] t=153.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[DRAWCHK] t=154.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=154.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[GE_3D_STATS] 3d prims=18950000 null-vertex-ptr=0 null-tex-addr=5414
+[DRAWCHK] t=154.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=154.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=154.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=19000000 null-vertex-ptr=0 null-tex-addr=5429
+[DRAWCHK] t=154.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[DRAWCHK] t=155.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[GE] DrawSync timeout: 1 lists still pending
+[DRAWCHK] t=155.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=155.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=155.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=155.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=19050000 null-vertex-ptr=0 null-tex-addr=5446
+[GE_3D_STATS] 3d prims=19100000 null-vertex-ptr=0 null-tex-addr=5461
+[DRAWCHK] t=155.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[DRAWCHK] t=156.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=156.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=156.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=156.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[GE_3D_STATS] 3d prims=19150000 null-vertex-ptr=0 null-tex-addr=5474
+[DRAWCHK] t=156.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=19200000 null-vertex-ptr=0 null-tex-addr=5487
+[DRAWCHK] t=156.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[FPS] 19.0 GE frames/s (95 in 5.0s)
+[GE_3D_STATS] 3d prims=19250000 null-vertex-ptr=0 null-tex-addr=5498
+[DRAWCHK] t=157.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=157.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=157.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=157.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=157.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=19300000 null-vertex-ptr=0 null-tex-addr=5510
+[DRAWCHK] t=157.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=19350000 null-vertex-ptr=0 null-tex-addr=5523
+[DRAWCHK] t=158.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[GE] DrawSync timeout: 1 lists still pending
+[DRAWCHK] t=158.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=158.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=158.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=158.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=19400000 null-vertex-ptr=0 null-tex-addr=5536
+[GE_3D_STATS] 3d prims=19450000 null-vertex-ptr=0 null-tex-addr=5552
+[DRAWCHK] t=158.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[DRAWCHK] t=159.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=159.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=159.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=159.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=159.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=19500000 null-vertex-ptr=0 null-tex-addr=5569
+[DRAWCHK] t=159.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=19550000 null-vertex-ptr=0 null-tex-addr=5584
+[AGAUGE] t=160.0s summary: slotH 9198 slotC 4623 extraP 2000(down) extraE 2000(down) extraE 2000(down) extraP 2000(down) extraE 2000(down) extraP 2000(down) extraP 2000(down) extraE 2000
+[TAGTEAM] brain tick 09D11200 (owner 09D0CF90) enabled=1 state=0 call#4801 tgt2FC=09D17D60 foe300=09D17D60 partner1108=09D46090 lockT=00000000 act380=22002002
+[DRAWCHK] t=160.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=160.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[FPS] 19.9 GE frames/s (100 in 5.0s)
+[DRAWCHK] t=160.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=160.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=160.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=19600000 null-vertex-ptr=0 null-tex-addr=5598
+[GE_3D_STATS] 3d prims=19650000 null-vertex-ptr=0 null-tex-addr=5610
+[DRAWCHK] t=160.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[DRAWCHK] t=161.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[GE_3D_STATS] 3d prims=19700000 null-vertex-ptr=0 null-tex-addr=5622
+[GE] DrawSync timeout: 1 lists still pending
+[DRAWCHK] t=161.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=161.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=161.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=161.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=19750000 null-vertex-ptr=0 null-tex-addr=5634
+[DRAWCHK] t=161.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=19800000 null-vertex-ptr=0 null-tex-addr=5645
+[DRAWCHK] t=162.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=162.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=162.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=162.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=162.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=19850000 null-vertex-ptr=0 null-tex-addr=5658
+[GE_3D_STATS] 3d prims=19900000 null-vertex-ptr=0 null-tex-addr=5671
+[DRAWCHK] t=162.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[DRAWCHK] t=163.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=163.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=163.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=163.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=163.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[FPS] 18.3 GE frames/s (92 in 5.0s)
+[GE_3D_STATS] 3d prims=19950000 null-vertex-ptr=0 null-tex-addr=5686
+[DRAWCHK] t=163.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=20000000 null-vertex-ptr=0 null-tex-addr=5703
+[DRAWCHK] t=164.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=164.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=164.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=164.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=164.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=20050000 null-vertex-ptr=0 null-tex-addr=5718
+[GE] DrawSync timeout: 1 lists still pending
+[DRAWCHK] t=164.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=20100000 null-vertex-ptr=0 null-tex-addr=5732
+[KOLIST] t=165.0s slot1 -> slotC 09D17D60 HP 0
+[DRAWCHK] t=165.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=165.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=165.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=165.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=165.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=20150000 null-vertex-ptr=0 null-tex-addr=5745
+[GE_3D_STATS] 3d prims=20200000 null-vertex-ptr=0 null-tex-addr=5756
+[DRAWCHK] t=165.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=20250000 null-vertex-ptr=0 null-tex-addr=5768
+[DRAWCHK] t=166.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=166.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=166.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=166.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=166.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=20300000 null-vertex-ptr=0 null-tex-addr=5780
+[FPS] 19.6 GE frames/s (98 in 5.0s)
+[DRAWCHK] t=166.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=20350000 null-vertex-ptr=0 null-tex-addr=5794
+[DRAWCHK] t=167.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=167.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=167.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=167.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=167.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=20400000 null-vertex-ptr=0 null-tex-addr=5810
+[DRAWCHK] t=167.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=20450000 null-vertex-ptr=0 null-tex-addr=5826
+[KOLIST] t=168.0s extra1: no such fighter
+[DRAWCHK] t=168.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=168.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=168.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=168.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=168.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE] DrawSync timeout: 1 lists still pending
+[GE_3D_STATS] 3d prims=20500000 null-vertex-ptr=0 null-tex-addr=5842
+[DECODE_CACHE] 44980 hits, 76 misses, 76 entries, 3.5 MB
+[DRAWCHK] t=168.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=20550000 null-vertex-ptr=0 null-tex-addr=5856
+[DRAWCHK] t=169.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=169.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=169.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=169.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=169.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=20600000 null-vertex-ptr=0 null-tex-addr=5868
+[FPS] 19.1 GE frames/s (96 in 5.0s)
+[GE_3D_STATS] 3d prims=20650000 null-vertex-ptr=0 null-tex-addr=5880
+[DRAWCHK] t=169.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[AGAUGE] t=170.0s summary: slotH 9198 slotC 4623 extraP 2000(down) extraE 2000(down) extraE 2000(down) extraP 2000(down) extraE 2000(down) extraP 2000(down) extraP 2000(down) extraE 2000
+[GE_3D_STATS] 3d prims=20700000 null-vertex-ptr=0 null-tex-addr=5892
+[TAGTEAM] brain tick 09D11200 (owner 09D0CF90) enabled=1 state=0 call#5101 tgt2FC=09D17D60 foe300=09D17D60 partner1108=09D46090 lockT=00000000 act380=22002002
+[DRAWCHK] t=170.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=170.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=170.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=170.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=170.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=20750000 null-vertex-ptr=0 null-tex-addr=5903
+[DRAWCHK] t=170.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=20800000 null-vertex-ptr=0 null-tex-addr=5915
+[DRAWCHK] t=171.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=171.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=171.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=171.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=171.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=20850000 null-vertex-ptr=0 null-tex-addr=5928
+[GE] DrawSync timeout: 1 lists still pending
+[DRAWCHK] t=171.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=20900000 null-vertex-ptr=0 null-tex-addr=5944
+[DRAWCHK] t=172.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=172.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=172.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=172.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=172.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=20950000 null-vertex-ptr=0 null-tex-addr=5960
+[FPS] 17.6 GE frames/s (88 in 5.0s)
+[DRAWCHK] t=172.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=21000000 null-vertex-ptr=0 null-tex-addr=5976
+[DRAWCHK] t=173.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=173.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=173.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=173.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=173.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=21050000 null-vertex-ptr=0 null-tex-addr=5990
+[DRAWCHK] t=173.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=21100000 null-vertex-ptr=0 null-tex-addr=6003
+[DRAWCHK] t=174.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=174.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=174.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=174.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=174.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=21150000 null-vertex-ptr=0 null-tex-addr=6014
+[GE_3D_STATS] 3d prims=21200000 null-vertex-ptr=0 null-tex-addr=6026
+[DRAWCHK] t=174.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=21250000 null-vertex-ptr=0 null-tex-addr=6038
+[DRAWCHK] t=175.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=175.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=175.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=175.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=175.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE] DrawSync timeout: 1 lists still pending
+[GE_3D_STATS] 3d prims=21300000 null-vertex-ptr=0 null-tex-addr=6052
+[FPS] 18.6 GE frames/s (93 in 5.0s)
+[DRAWCHK] t=175.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=21350000 null-vertex-ptr=0 null-tex-addr=6066
+[DRAWCHK] t=176.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=176.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAW] Screenshot saved: ~/dissidia/tt/net10m/shots/c2b_post1_h1.tga (480x272)
+[DRAWCHK] t=176.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=176.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=176.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=21400000 null-vertex-ptr=0 null-tex-addr=6083
+[DRAWCHK] t=176.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=21450000 null-vertex-ptr=0 null-tex-addr=6098
+[DRAWCHK] t=177.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=177.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=177.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=177.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=177.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=21500000 null-vertex-ptr=0 null-tex-addr=6113
+[DRAWCHK] t=177.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=21550000 null-vertex-ptr=0 null-tex-addr=6126
+[DRAWCHK] t=178.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=178.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=178.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=178.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=178.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[GE_3D_STATS] 3d prims=21600000 null-vertex-ptr=0 null-tex-addr=6138
+[HLE] sceUtilitySavedata complete: mode=11 result=0x00000000
+[GE_3D_STATS] 3d prims=21650000 null-vertex-ptr=0 null-tex-addr=6150
+[DRAWCHK] t=178.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[HLE] sceUtilitySavedata mode=1 dir='ULUS10566GameData00' -> ~/dissidia/tt/net10m/h1/ms0/PSP/SAVEDATA/ULUS10566GameData00
+[HLE] sceUtilitySavedata: saved ULUS10566GameData00/DISSIDIA.BIN (257224 bytes, encrypted+key)
+[HLE] sceUtilitySavedata complete: mode=1 result=0x00000000
+[GE] DrawSync timeout: 1 lists still pending
+[FPS] 18.4 GE frames/s (99 in 5.4s)
+[GE_3D_STATS] 3d prims=21700000 null-vertex-ptr=0 null-tex-addr=6160
+[DRAWCHK] t=179.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=179.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=179.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=179.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=179.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (24.1,0.0,-17.4) script 1
+[TAGTEAM] group battle: job powers record 0 after the booking: 00000001000000010000 03 FFFFFF00 FFFFFF00
+[TAGTEAM] group battle: job powers record 1 after the booking: 00000001000000000000 05 FFFFFF00 FFFFFF00
+[TAGTEAM] group battle: booked; tally rows written from the ledger: r0.0=0/02/L57 r0.1=3/02/L100 r0.2=0/02/L100 r0.3=2/00/L100 r0.4=0/02/L100 r1.0=0/02/L100 r1.1=4/02/L100 r1.2=0/02/L100 r1.3=0/02/L100 r1.4=0/02/L100
+[GE_3D_STATS] 3d prims=21750000 null-vertex-ptr=0 null-tex-addr=6172
+[NPANEL] released
+[SNDPOOL] line free obj 09AEA2BC (ours 0) t=179.4
+[SNDPOOL] before free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] after free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] line free obj 09AEA2CC (ours 0) t=179.4
+[SNDPOOL] before free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] after free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] line free obj 09AEA2BC (ours 0) t=179.4
+[SNDPOOL] before free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] after free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] line free obj 09AEA2CC (ours 0) t=179.4
+[SNDPOOL] before free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] after free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[FILESTATE] at the teardown: 594(r0) 544(r0) 1385(r0) 581(r0) 541(r0) 1413(r0) 1417(r0) 1418(r0) 1419(r0) 1420(r0) 614(r0) 615(r0) 616(r0) 617(r0) 635(r0) 127(r0) 128(r0) 129(r0) 193(r0) 584(r0) 542(r0) 655(r0) 656(r0) 657(r0) 658(r0) 659(r0) 568(r0) 538(r0) 576(r0) 540(r0) 596(r0) 545(r0) [32 objects]
+[MEMSUM] at the teardown: model pool used 13459 of 32256 KB, effect pool free 15907 KB (largest 15865 KB) of 24053 KB, texture overflow used 288 of 768 KB, sound heap free 7879 KB (largest 7783 KB) of 12508 KB
+[MEMSUM] at the teardown: battle heap (FIELD::MEMORY 0x09B90000) used 2258 of 6614 KB
+[MEMSUM] at the teardown: small object heap (0x0BD2F000) used 16200 of 34528 B
+[SNDPOOL] teardown: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[TAGTEAM] t=179.4s battle teardown (fighter 09E20240 destroyed): tag team state dropped
+[TAGTEAM] actor 09E20240 freed: 6 of its 71 tracked blocks were still allocated and are freed too
+[TAGTEAM] teardown: fighter 09E0C480 destroyed, 6 to go
+[TAGTEAM] actor 09E0C480 freed: 6 of its 71 tracked blocks were still allocated and are freed too
+[TAGTEAM] actor 09D0CF90 freed: 16 of its 42 tracked blocks were still allocated and are freed too
+[TAGTEAM] teardown: fighter 09DEADB0 destroyed, 5 to go
+[TAGTEAM] actor 09DEADB0 freed: 6 of its 68 tracked blocks were still allocated and are freed too
+[TAGTEAM] teardown: fighter 09DCCFD0 destroyed, 4 to go
+[TAGTEAM] actor 09DCCFD0 freed: 6 of its 68 tracked blocks were still allocated and are freed too
+[TAGTEAM] teardown: fighter 09DAF880 destroyed, 3 to go
+[TAGTEAM] actor 09DAF880 freed: 6 of its 70 tracked blocks were still allocated and are freed too
+[TAGTEAM] teardown: fighter 09D8D1D0 destroyed, 2 to go
+[TAGTEAM] actor 09D8D1D0 freed: 6 of its 70 tracked blocks were still allocated and are freed too
+[TAGTEAM] actor 09D17D60 freed: 16 of its 43 tracked blocks were still allocated and are freed too
+[TAGTEAM] teardown: fighter 09D62460 destroyed, 1 to go
+[TAGTEAM] actor 09D62460 freed: 6 of its 75 tracked blocks were still allocated and are freed too
+[TAGTEAM] teardown: fighter 09D573A0 destroyed, 0 to go
+[TAGTEAM] actor 09D573A0 freed: 6 of its 75 tracked blocks were still allocated and are freed too
+[HLE] sceIoOpen("DISC0:/PSP_GAME/USRDIR/DATA/OVL_MENU_APP.ELF", 0x1, 0x0) caller=0x00000000 path_ptr=0x0BFFE620
+[HLE] sceIoClose(fd=10) caller=0x00000000
+[HLE] sceIoOpen("DISC0:/PSP_GAME/USRDIR/DATA/OVL_MENU_APP.ELF", 0x1, 0x0) caller=0x00000000 path_ptr=0x0BFFE620
+[HLE] sceIoClose(fd=11) caller=0x00000000
+[OVL] resident overlay id=2 (menu)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1DB5F000, whence=0) caller=0x00000000 sp=0x0BFFE810
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=498462720 (0x1DB5F000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:03067000, whence=0) caller=0x00000000 sp=0x0BFFE750
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=50753536 (0x3067000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:03086000, whence=0) caller=0x00000000 sp=0x0BFFE750
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=50880512 (0x3086000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:030D7000, whence=0) caller=0x00000000 sp=0x0BFFE750
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=51212288 (0x30D7000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:030E3000, whence=0) caller=0x00000000 sp=0x0BFFE750
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=51261440 (0x30E3000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:03100000, whence=0) caller=0x00000000 sp=0x0BFFE7E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=51380224 (0x3100000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1DA42000, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=497295360 (0x1DA42000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1D9D7800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=496859136 (0x1D9D7800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1DA3C000, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=497270784 (0x1DA3C000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1D9D1800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=496834560 (0x1D9D1800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1DA22800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=497166336 (0x1DA22800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1D9B9800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=496736256 (0x1D9B9800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1DA2E800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=497215488 (0x1DA2E800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1D9C5800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=496785408 (0x1D9C5800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1DA43800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=497301504 (0x1DA43800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1D9D9000, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=496865280 (0x1D9D9000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1DA66000, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=497442816 (0x1DA66000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1D9CA000, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=496803840 (0x1D9CA000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1DA6D800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=497473536 (0x1DA6D800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1D9D1800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=496834560 (0x1D9D1800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1DA54000, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=497369088 (0x1DA54000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1D9B9800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=496736256 (0x1D9B9800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1DA60000, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=497418240 (0x1DA60000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1D9C5800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=496785408 (0x1D9C5800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1DA75000, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=497504256 (0x1DA75000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1D9D9000, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=496865280 (0x1D9D9000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:06C24000, whence=0) caller=0x00000000 sp=0x0BFFE6F0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=113393664 (0x6C24000)
+[ATRAC] id=0 AT3+ ch=2 align=560 state=2 fileSize=220244 endSample=800943 firstOff=3552 loop=465809..804495 buf=0x08C18000
+[FILESTATE] before the leftover unload: 594(r0) 544(r0) 1385(r0) 584(r0) 542(r0) 655(r0) 656(r0) 657(r0) 658(r0) 659(r0) 568(r0) 538(r0) 576(r0) 540(r0) 596(r0) 545(r0) [16 objects]
+[MEMSUM] before the leftover unload: model pool used 9392 of 32256 KB, effect pool free 17615 KB (largest 15865 KB) of 24053 KB, texture overflow used 0 of 768 KB, sound heap free 8760 KB (largest 7783 KB) of 12508 KB
+[MEMSUM] before the leftover unload: battle heap (FIELD::MEMORY 0x09B90000) used 0 of 6614 KB
+[MEMSUM] before the leftover unload: small object heap (0x0BD2F000) used 0 of 34528 B
+[LOADCHK] unload char 24: object 0F3F6AE0 id 568 refs 0
+[UNLOAD] char 24: file id 568 object 0F3F6AE0 (refs 0) released; data blocks (mgr heap 0F3B7000, staging 0B810000): +8=0F3F6BE0 +16=0F3F6C40 +24=0F3FCFA0 +28=0F3F6CB0 +32=0F3F7040 +36=0F3FE060 +48=0F3FE650 +136=0F400720 +140=0F4014D0 +144=0F4016F0 +164=0F402E30 +200=0F403130
+[UNLOAD] world list had 0 objects
+[UNLOAD] t=179.4s char 24 (KAIN) unloaded: 1 of 2 file objects released, 0 still loaded
+[MEMSUM] after the unload: model pool used 7732 of 32256 KB, effect pool free 18767 KB (largest 15865 KB) of 24053 KB, texture overflow used 0 of 768 KB, sound heap free 9408 KB (largest 7832 KB) of 12508 KB
+[MEMSUM] after the unload: battle heap (FIELD::MEMORY 0x09B90000) used 0 of 6614 KB
+[MEMSUM] after the unload: small object heap (0x0BD2F000) used 0 of 34528 B
+[LOADCHK] unload char 26: object 0F407A00 id 576 refs 0
+[UNLOAD] char 26: file id 576 object 0F407A00 (refs 0) released; data blocks (mgr heap 0F3B7000, staging 0B810000): +8=0F407B00 +16=0F407B60 +24=0F40F950 +28=0F407BD0 +32=0F408100 +36=0F4107B0 +48=0F410C50 +136=0F412E60 +140=0F414D50 +144=0F415220 +164=0F416890 +200=0F416E00
+[UNLOAD] world list had 0 objects
+[UNLOAD] t=179.4s char 26 (TIFA) unloaded: 1 of 2 file objects released, 0 still loaded
+[MEMSUM] after the unload: model pool used 6304 of 32256 KB, effect pool free 19919 KB (largest 15865 KB) of 24053 KB, texture overflow used 0 of 768 KB, sound heap free 10041 KB (largest 7832 KB) of 12508 KB
+[MEMSUM] after the unload: battle heap (FIELD::MEMORY 0x09B90000) used 0 of 6614 KB
+[MEMSUM] after the unload: small object heap (0x0BD2F000) used 0 of 34528 B
+[LOADCHK] unload char 28: object 0F3E3D20 id 584 refs 0
+[UNLOAD] char 28: file id 584 object 0F3E3D20 (refs 0) released; data blocks (mgr heap 0F3B7000, staging 0B810000): +8=0F3E3E20 +16=0F3E3E80 +24=0F3E91A0 +28=0F3E3EF0 +32=0F3E4290 +36=0F3E9440 +48=0F3E9850 +136=0F3EABE0 +140=0F3EBDB0 +144=0F3EC020 +164=0F3EC1D0 +200=0F3EC370
+[LOADCHK] unload char 28: object 0F3EC610 id 655 refs 0
+[UNLOAD] char 28: file id 655 object 0F3EC610 (refs 0) released; data blocks (mgr heap 0F3B7000, staging 0B810000): +24=0F3ECBB0 +28=0F3EC710 +32=0F3EC780 +144=0F3ECF50
+[LOADCHK] unload char 28: object 0F3EDA90 id 656 refs 0
+[UNLOAD] char 28: file id 656 object 0F3EDA90 (refs 0) released; data blocks (mgr heap 0F3B7000, staging 0B810000): +24=0F3EE070 +28=0F3EDB90 +32=0F3EDBF0 +144=0F3EE1D0
+[LOADCHK] unload char 28: object 0F3EE7D0 id 657 refs 0
+[UNLOAD] char 28: file id 657 object 0F3EE7D0 (refs 0) released; data blocks (mgr heap 0F3B7000, staging 0B810000): +24=0F3EEE20 +28=0F3EE8D0 +32=0F3EE960 +144=0F3EEF80
+[LOADCHK] unload char 28: object 0F3EFDD0 id 658 refs 0
+[UNLOAD] char 28: file id 658 object 0F3EFDD0 (refs 0) released; data blocks (mgr heap 0F3B7000, staging 0B810000): +24=0F3F0560 +28=0F3EFED0 +32=0F3EFF60 +144=0F3F0820
+[LOADCHK] unload char 28: object 0F3F1390 id 659 refs 0
+[UNLOAD] char 28: file id 659 object 0F3F1390 (refs 0) released; data blocks (mgr heap 0F3B7000, staging 0B810000): +24=0F3F1A00 +28=0F3F1490 +32=0F3F1510 +144=0F3F2160
+[UNLOAD] world list had 0 objects
+[UNLOAD] t=179.4s char 28 (YUNA) unloaded: 6 of 7 file objects released, 0 still loaded
+[MEMSUM] after the unload: model pool used 4469 of 32256 KB, effect pool free 20937 KB (largest 16489 KB) of 24053 KB, texture overflow used 0 of 768 KB, sound heap free 10684 KB (largest 7832 KB) of 12508 KB
+[MEMSUM] after the unload: battle heap (FIELD::MEMORY 0x09B90000) used 0 of 6614 KB
+[MEMSUM] after the unload: small object heap (0x0BD2F000) used 0 of 34528 B
+[LOADCHK] unload char 31: object 0F41B600 id 596 refs 0
+[UNLOAD] char 31: file id 596 object 0F41B600 (refs 0) released; data blocks (mgr heap 0F3B7000, staging 0B810000): +8=0F41B700 +16=0F41B760 +24=0F422950 +28=0F41B870 +32=0F41BD40 +36=0F423510 +48=0F4237C0 +136=0F426950 +140=0F428430 +144=0F428B60 +164=0F42CF20 +200=0F42D2A0
+[UNLOAD] world list had 0 objects
+[UNLOAD] t=179.4s char 31 (LIGHTNING) unloaded: 1 of 2 file objects released, 0 still loaded
+[MEMSUM] after the unload: model pool used 2997 of 32256 KB, effect pool free 22089 KB (largest 21097 KB) of 24053 KB, texture overflow used 0 of 768 KB, sound heap free 11326 KB (largest 11326 KB) of 12508 KB
+[MEMSUM] after the unload: battle heap (FIELD::MEMORY 0x09B90000) used 0 of 6614 KB
+[MEMSUM] after the unload: small object heap (0x0BD2F000) used 0 of 34528 B
+[FILESTATE] after the leftover unload: 594(r0) 544(r0) 1385(r0) [3 objects]
+[MEMSUM] after the leftover unload: model pool used 2997 of 32256 KB, effect pool free 22089 KB (largest 21097 KB) of 24053 KB, texture overflow used 0 of 768 KB, sound heap free 11326 KB (largest 11326 KB) of 12508 KB
+[MEMSUM] after the leftover unload: battle heap (FIELD::MEMORY 0x09B90000) used 0 of 6614 KB
+[MEMSUM] after the leftover unload: small object heap (0x0BD2F000) used 0 of 34528 B

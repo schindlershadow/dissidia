@@ -1,0 +1,423 @@
+[GE_3D_STATS] 3d prims=650000 null-vertex-ptr=0 null-tex-addr=286
+[GE_3D_STATS] 3d prims=700000 null-vertex-ptr=0 null-tex-addr=305
+[TAGTEAM] brain tick 09CE7920 (owner 09CE30C0) enabled=1 state=0 call#301 tgt2FC=09CD90D0 foe300=09CD90D0 partner1108=09D11650 lockT=00000000 act380=02000068
+[TAGTEAM] brain tick 09CDD340 (owner 09CD90D0) enabled=1 state=0 call#301 tgt2FC=09CE30C0 foe300=09CE30C0 partner1108=09D0A860 lockT=00000000 act380=02000002
+[TAGTEAM] entrance of 09D1BB70 cut short by the entrance of 09D25E50
+[TAGTEAM] entrance of 09D25E50: intro line li_battle_102 loaded
+[TAGTEAM] intro line playing
+[TAGTEAM] voice bank code of char 31: record gst130, scan gst130
+[TAGTEAM] voice banks of char 31: record 0F3F2270 linked by its fighter (use count 1), 2 bank(s) registered, 0 without a slot
+[TAGTEAM] assist bank of char 31 skipped: 0 sound bank slots free
+[TAGTEAM] entrance of 09D25E50: pose, script now 1100
+[TAGTEAM] banter of 09D25E50 (LIGHTNING): pose + intro line + close-up for 2.5s
+[GE_3D_STATS] 3d prims=750000 null-vertex-ptr=0 null-tex-addr=324
+[GE_3D_STATS] 3d prims=800000 null-vertex-ptr=0 null-tex-addr=344
+[GE] spline patches: 512 KiB vertex scratch at 0x0BD37700
+[GE_XFER_NONVRAM] 0x0D330680(0,32,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,48,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(0,0,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,0,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[GE] DrawSync timeout: 1 lists still pending
+[GE_3D_STATS] 3d prims=850000 null-vertex-ptr=0 null-tex-addr=362
+[GE_XFER_NONVRAM] 0x0D330680(0,64,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,96,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[TAGTEAM] t=12.10s HP damage by extraP 09D1BB70 goes to the fighter it hit: extraE 09D3D780 (not slotC 09CE30C0), damage taken 8612 -> 8612
+[GE_XFER_NONVRAM] 0x0D330680(40,64,stride 64) -> 0x0D317A80(0,86,stride 128) 16x32 bpp=2
+[GE_3D_STATS] 3d prims=900000 null-vertex-ptr=0 null-tex-addr=378
+[GE_XFER_NONVRAM] 0x0D330680(0,96,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,144,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[GE_3D_STATS] 3d prims=950000 null-vertex-ptr=0 null-tex-addr=392
+[TAGTEAM] entrance of 09D25E50 cut short by the entrance of 09D31580
+[TAGTEAM] entrance of 09D31580: intro line tf_battle_90 loaded
+[TAGTEAM] intro line playing
+[TAGTEAM] voice bank code of char 26: record sev110, scan sev110
+[TAGTEAM] voice banks of char 26: record 0F404270 linked by its fighter (use count 1), 2 bank(s) registered, 0 without a slot
+[TAGTEAM] assist bank of char 26 skipped: 0 sound bank slots free
+[TAGTEAM] entrance of 09D31580: pose, script now 1100
+[TAGTEAM] banter of 09D31580 (TIFA): pose + intro line + close-up for 2.5s
+[GE_XFER_NONVRAM] 0x0D330680(0,32,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,48,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(40,0,stride 64) -> 0x0D317A80(0,86,stride 128) 16x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(0,0,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,0,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[GE_3D_STATS] 3d prims=1000000 null-vertex-ptr=0 null-tex-addr=408
+[GE_3D_STATS] 3d prims=1050000 null-vertex-ptr=0 null-tex-addr=428
+[GE_XFER_NONVRAM] 0x0D330680(0,96,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,144,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(40,64,stride 64) -> 0x0D317A80(0,86,stride 128) 16x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(0,32,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,48,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(40,0,stride 64) -> 0x0D317A80(0,86,stride 128) 16x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(0,0,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,0,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[GE_3D_STATS] 3d prims=1100000 null-vertex-ptr=0 null-tex-addr=450
+[GE_3D_STATS] 3d prims=1150000 null-vertex-ptr=0 null-tex-addr=470
+[TAGTEAM] entrance of 09D31580 cut short by the entrance of 09D3D780
+[TAGTEAM] entrance of 09D3D780: intro line yu_battle_142 loaded
+[TAGTEAM] intro line playing
+[TAGTEAM] entrance of 09D3D780: pose, script now 1100
+[TAGTEAM] banter of 09D3D780 (YUNA): pose + intro line + close-up for 2.5s
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,96,stride 64) -> 0x0D3C6200(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(32,96,stride 64) -> 0x0D3C6200(40,80,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,224,stride 64) -> 0x0D3C6200(0,100,stride 128) 16x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,32,stride 64) -> 0x0D3C6200(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(32,32,stride 64) -> 0x0D3C6200(40,80,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,128,stride 64) -> 0x0D3C6200(0,100,stride 128) 16x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,0,stride 64) -> 0x0D3C6200(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(32,0,stride 64) -> 0x0D3C6200(40,80,stride 128) 24x32 bpp=2
+[GE_3D_STATS] 3d prims=1200000 null-vertex-ptr=0 null-tex-addr=492
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,32,stride 64) -> 0x0D3C6200(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(32,32,stride 64) -> 0x0D3C6200(40,80,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,0,stride 64) -> 0x0D3C6200(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(32,0,stride 64) -> 0x0D3C6200(40,80,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,96,stride 64) -> 0x0D3C6200(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(32,96,stride 64) -> 0x0D3C6200(40,80,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,224,stride 64) -> 0x0D3C6200(0,100,stride 128) 16x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,32,stride 64) -> 0x0D3C6200(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(32,32,stride 64) -> 0x0D3C6200(40,80,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,128,stride 64) -> 0x0D3C6200(0,100,stride 128) 16x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,0,stride 64) -> 0x0D3C6200(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(32,0,stride 64) -> 0x0D3C6200(40,80,stride 128) 24x32 bpp=2
+[GE_3D_STATS] 3d prims=1250000 null-vertex-ptr=0 null-tex-addr=513
+[GE_3D_STATS] 3d prims=1300000 null-vertex-ptr=0 null-tex-addr=534
+[TAGTEAM] brain tick 09D40EC0 (owner 09D3D780) enabled=1 state=0 call#301 tgt2FC=09CD90D0 foe300=09CD90D0 partner1108=00000000 lockT=09CD90D0 act380=02000002 <- EXTRA
+[TAGTEAM] brain tick 09D36BE0 (owner 09D31580) enabled=1 state=0 call#301 tgt2FC=09CD90D0 foe300=09CD90D0 partner1108=00000000 lockT=09CD90D0 act380=02000088 <- EXTRA
+[TAGTEAM] brain tick 09D2A9E0 (owner 09D25E50) enabled=1 state=0 call#301 tgt2FC=09CE30C0 foe300=09CE30C0 partner1108=00000000 lockT=09CE30C0 act380=00000048 <- EXTRA
+[TAGTEAM] brain tick 09D1F2B0 (owner 09D1BB70) enabled=1 state=0 call#301 tgt2FC=09CE30C0 foe300=09CE30C0 partner1108=00000000 lockT=09CE30C0 act380=02001D88 <- EXTRA
+[GE_XFER_NONVRAM] 0x0CC17C00(0,96,stride 64) -> 0x0CBE6A00(0,18,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CC17C00(32,96,stride 64) -> 0x0CBE6A00(40,40,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CC17C00(48,224,stride 64) -> 0x0CBE6A00(0,64,stride 128) 16x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CFC3B00(0,160,stride 64) -> 0x0CFAAF00(0,100,stride 128) 16x32 bpp=2
+[GE_3D_STATS] 3d prims=1350000 null-vertex-ptr=0 null-tex-addr=552
+[GE_XFER_NONVRAM] 0x0CFC3B00(0,32,stride 64) -> 0x0CFAAF00(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CFC3B00(32,32,stride 64) -> 0x0CFAAF00(40,80,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CFC3B00(0,0,stride 64) -> 0x0CFAAF00(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CFC3B00(32,0,stride 64) -> 0x0CFAAF00(40,80,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,32,stride 64) -> 0x0D3C6200(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(32,32,stride 64) -> 0x0D3C6200(40,80,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,0,stride 64) -> 0x0D3C6200(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(32,0,stride 64) -> 0x0D3C6200(40,80,stride 128) 24x32 bpp=2
+[GE_3D_STATS] 3d prims=1400000 null-vertex-ptr=0 null-tex-addr=566
+[GE_XFER_NONVRAM] 0x0D330680(0,32,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,48,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(0,0,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,0,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,32,stride 64) -> 0x0D3C6200(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(32,32,stride 64) -> 0x0D3C6200(40,80,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,0,stride 64) -> 0x0D3C6200(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(32,0,stride 64) -> 0x0D3C6200(40,80,stride 128) 24x32 bpp=2
+[GE_3D_STATS] 3d prims=1450000 null-vertex-ptr=0 null-tex-addr=580
+[GE_XFER_NONVRAM] 0x0D330680(0,128,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,192,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[GE_3D_STATS] 3d prims=1500000 null-vertex-ptr=0 null-tex-addr=596
+[GE_XFER_NONVRAM] 0x0CA25800(0,32,stride 64) -> 0x0C9E4000(2,16,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CA25800(24,32,stride 64) -> 0x0C9E4000(26,0,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CA25800(0,0,stride 64) -> 0x0C9E4000(2,16,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CA25800(24,0,stride 64) -> 0x0C9E4000(26,0,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CFC3B00(0,128,stride 64) -> 0x0CFAAF00(0,100,stride 128) 16x32 bpp=2
+[GE_3D_STATS] 3d prims=1550000 null-vertex-ptr=0 null-tex-addr=610
+[GE_XFER_NONVRAM] 0x0CC17C00(0,32,stride 64) -> 0x0CBE6A00(0,18,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CC17C00(32,32,stride 64) -> 0x0CBE6A00(40,40,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CC17C00(32,160,stride 64) -> 0x0CBE6A00(0,64,stride 128) 16x32 bpp=2
+[TAGTEAM] t=20.0s job powers of the fall: record 0 member 1 (job 0) block 0000000000000000000000FFFFFF00FFFFFF00 -> 0000000100000000000001FFFFFF00FFFFFF00
+[TAGTEAM] t=20.0s ledger: KO of LAGUNA (team 1) by YUNA (team 0, last HP hit)
+[TAGTEAM] brain tick 09CE7920 (owner 09CE30C0) enabled=1 state=0 call#601 tgt2FC=09CD90D0 foe300=09CD90D0 partner1108=09D11650 lockT=00000000 act380=02000002
+[TAGTEAM] brain tick 09CDD340 (owner 09CD90D0) enabled=1 state=0 call#601 tgt2FC=09CE30C0 foe300=09CE30C0 partner1108=09D0A860 lockT=00000000 act380=00000048
+[GE_XFER_NONVRAM] 0x0CC17C00(0,96,stride 64) -> 0x0CBE6A00(0,18,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CC17C00(32,96,stride 64) -> 0x0CBE6A00(40,40,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CC17C00(32,224,stride 64) -> 0x0CBE6A00(0,64,stride 128) 16x32 bpp=2
+[GE_3D_STATS] 3d prims=1600000 null-vertex-ptr=0 null-tex-addr=626
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,160,stride 64) -> 0x0D3C6200(0,100,stride 128) 16x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,32,stride 64) -> 0x0D3C6200(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(32,32,stride 64) -> 0x0D3C6200(40,80,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CFC3B00(0,32,stride 64) -> 0x0CFAAF00(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CFC3B00(32,32,stride 64) -> 0x0CFAAF00(40,80,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,0,stride 64) -> 0x0D3C6200(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(32,0,stride 64) -> 0x0D3C6200(40,80,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,128,stride 64) -> 0x0D3C6200(0,100,stride 128) 16x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CFC3B00(0,0,stride 64) -> 0x0CFAAF00(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CFC3B00(32,0,stride 64) -> 0x0CFAAF00(40,80,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CFC3B00(0,160,stride 64) -> 0x0CFAAF00(0,100,stride 128) 16x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(0,0,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,0,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[GE_XFER_NONVRAM] 0x0CC17C00(48,224,stride 64) -> 0x0CBE6A00(0,64,stride 128) 16x32 bpp=2
+[GE_3D_STATS] 3d prims=1650000 null-vertex-ptr=0 null-tex-addr=642
+[GE_XFER_NONVRAM] 0x0D330680(0,32,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,48,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(0,0,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,0,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[GE_3D_STATS] 3d prims=1700000 null-vertex-ptr=0 null-tex-addr=656
+[GE_XFER_NONVRAM] 0x0D330680(0,64,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CA25800(48,96,stride 64) -> 0x0C9E4000(0,70,stride 128) 16x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,160,stride 64) -> 0x0D3C6200(0,100,stride 128) 16x32 bpp=2
+[TAGTEAM] t=21.6s KO of slot 1 fighter 09CE30C0, team mate 09D3D780, reserve 2 (down 0 script 1210 hp 10299 dmg 10298 stock 1 rev 0)
+[TAGTEAM] rebuild 09CE30C0: char 27 -> 28 (brain 09CE7920 lock 09CE56F0 ctrl 08C15CA0 assist 09D11650 foe 09CD90D0 stock 1 pos -9.8,4.0,-44.5)
+[TAGTEAM] objlist before the destructor: A 09CE30C0 +916 08C00FD0 node 08C00FF8 on list 0 (head 09CDCEE8 tail 09D689A8)
+[TAGTEAM] release (two handles) of 08C00FD0 skipped
+[TAGTEAM] release (one handle) of 08C00FD0 skipped
+[TAGTEAM] rebuild 09CE30C0: 0 blocks of the old character left by the destructor freed
+[TAGTEAM] world list before: head 09D3D780 tail 09D07E80: 09D3D780 09D31580 09D25E50 09D1BB70 09CE30C0 09CD90D0 09D5C8C0 09D54EA0 09D4DF50 09D48450 09D11650 09D0A860 09D67F90 09D666E0 09D65080 09CF8670 09CF7190 09CF5CB0 09CF47D0 09CF32F0 09CF1E10 09CF1580 09CF0CF0 09CF0460
+[TAGTEAM] world before: A 09CE30C0 flags 00207060 00000001 (mask 00000001 00000000) queue head 00000000 tail 00000000:
+[TAGTEAM] world list: 09CE30C0 unlinked (prev 09D1BB70 next 09CD90D0)
+[TAGTEAM] world list unlinked: head 09D3D780 tail 09D07E80: 09D3D780 09D31580 09D25E50 09D1BB70 09CD90D0 09D5C8C0 09D54EA0 09D4DF50 09D48450 09D11650 09D0A860 09D67F90 09D666E0 09D65080 09CF8670 09CF7190 09CF5CB0 09CF47D0 09CF32F0 09CF1E10 09CF1580 09CF0CF0 09CF0460 09CEFBD0
+[TAGTEAM] heap name 089C88B8: OBJDATA
+[TAGTEAM] heap name 089E076C: 
+[TAGTEAM] heap name 089C93E0: GRAPHICS::GRAPHICS
+[TAGTEAM] heap name 089CAC10: SOUND MANAGER
+[TAGTEAM] heap name 089CAF0C: EFFECT SYSTEM MEMORY
+[TAGTEAM] heap name 089C9ED0: SYSTEM MEMORY SMALL
+[TAGTEAM] heap name 089CBA28: FUNCTION
+[TAGTEAM] heap name 089CBDD4: MENU MANAGER
+[TAGTEAM] heap name 089C9564: MODEL_MANAGER
+[TAGTEAM] heap name 089C9574: MODEL PACKET
+[TAGTEAM] load_character(28): file id 584 already loaded -> object 0F3E3250
+[TAGTEAM] load_character(28): file id 542 already loaded -> object 0F3EB9D0
+[TAGTEAM] release (two handles) of 08C0110C skipped
+[TAGTEAM] release (one handle) of 08C0110C skipped
+[TAGTEAM] world list after the constructor: head 09CE30C0 tail 09D07E80: 09CE30C0 09D3D780 09D31580 09D25E50 09D1BB70 09CD90D0 09D5C8C0 09D54EA0 09D4DF50 09D48450 09D11650 09D0A860 09D67F90 09D666E0 09D65080 09CF8670 09CF7190 09CF5CB0 09CF47D0 09CF32F0 09CF1E10 09CF1580 09CF0CF0 09CF0460
+[TAGTEAM] world after the constructor: A 09CE30C0 flags 00007000 00000000 (mask 00000001 00000000) queue head 00000000 tail 00000000:
+[TAGTEAM] rebuild 09CE30C0: new lock block 09D6AAF0 kept (old 09CE56F0 freed by the constructor); camera manager words changed by it: 16 +200:C0C32000>C05BF5CE +204:40DDC000>40CAD919 +208:C2320000>C2321BE9 +210:C0E1BDDF>C13C3540 +214:40D4716E>40E248CB +218:C2320000>C2358DFD +240:3F882B93>3F800000 +244:3F882B93>00000000 +248:3F882B93>3F800000 +24C:3F882B93>00000000 +250:3F882B93>3F800000 +254:3F882B93>00000000 +258:3F882B93>3F800000 +25C:3F882B93>00000000 +260:00000000>00000001 +6D4:09CE56F0>09D6AAF0
+[TAGTEAM] objlist after the constructor: A 09CE30C0 +916 08C00FD0 node 08C00FF8 on list 0 (head 09CDCEE8 tail 09D6B6F8)
+[TAGTEAM] rebuild 09CE30C0: fighter list order put back (12 fighters, head 09CD90D0 tail 09D5C8C0)
+[TAGTEAM] character record for char 28: the owner's save record (side 1, level 100, hash EA437F37)
+[TAGTEAM] rebuild 09CE30C0: built as char 28 (new lock block 09D6AAF0, 0 registration words to take back when ready, 0 object-list links kept), waiting for its files
+[TAGTEAM] t=21.6s slot 1 now holds the team mate; the KO'd character is down at 09D3D780
+[TAGTEAM] portrait menu/jp/battle/chara_image/p_ten110_1p.gim from the package (17696 bytes, buffer 09A19D00 heap 099BA640): sprite 08B8A060 picture 0D4ABE10 FFFF0001 0000FFFF 00000000 08B978EC 00000000 FFFF0000 001DFFFF 00000000 00000000 00000000 FFFF0000
+[TAGTEAM] portrait of char 28: sprite 08B8A060 (picture 08B97900)
+[TAGTEAM] t=21.60s side 1 portrait -> char 28 (picture 08B97900)
+[TAGTEAM] world frame: A 09CE30C0 flags 00007000 00000000 (mask 00000001 00000000) queue head 00000000 tail 00000000:
+[TAGTEAM] rebuild 09CE30C0: new lock block 09D6AAF0 +0x100 0 -> 0, +0x126 0 -> 1 (the old block's)
+[TAGTEAM] rebuild 09CE30C0: lock player's (no override): block 09D6AAF0 mode 1 +252 00000000 +276 0 +356 0 +0x100 0 +0x120 08C15CA0 (ctrl 08C15CA0) +0x126 1, target 09CD90D0 foe 09CD90D0 (was foe 09CD90D0; old block +252 00000000 +276 0 +356 0 +0x120 08C15CA0)
+[TAGTEAM] t=21.6s rebuild 09CE30C0: char 28 stands (script 1, hp 956 brv 0FC50C0A)
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,128,stride 64) -> 0x0D3C6200(0,100,stride 128) 16x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CFC3B00(0,0,stride 64) -> 0x0CFAAF00(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CFC3B00(32,0,stride 64) -> 0x0CFAAF00(40,80,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,0,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[TAGTEAM] objlist watch: A 09CE30C0 +916 08C00FD0 node 08C00FF8 on list 0 (head 09CDCEE8 tail 09D6B6F8)
+[GE_XFER_NONVRAM] 0x0D330680(24,96,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[GE_XFER_NONVRAM] 0x0CA25800(0,96,stride 64) -> 0x0C9E4000(2,16,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CA25800(24,96,stride 64) -> 0x0C9E4000(26,0,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(0,32,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(0,64,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CA25800(0,32,stride 64) -> 0x0C9E4000(2,16,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CA25800(24,32,stride 64) -> 0x0C9E4000(26,0,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CA25800(48,0,stride 64) -> 0x0C9E4000(0,70,stride 128) 16x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CA25800(0,0,stride 64) -> 0x0C9E4000(2,16,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CA25800(24,0,stride 64) -> 0x0C9E4000(26,0,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(0,0,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,0,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[GE_3D_STATS] 3d prims=1750000 null-vertex-ptr=0 null-tex-addr=674
+[GE_XFER_NONVRAM] 0x0CFC3B00(0,0,stride 64) -> 0x0CFAAF00(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CFC3B00(32,0,stride 64) -> 0x0CFAAF00(40,80,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(0,32,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,48,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(0,0,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,0,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[GE_3D_STATS] 3d prims=1800000 null-vertex-ptr=0 null-tex-addr=690
+[TAGTEAM] released assist 09D5C8C0 taken off the world list before its block is freed (prev 09CD90D0 next 09D54EA0)
+[GE_XFER_NONVRAM] 0x0CFC3B00(0,128,stride 64) -> 0x0CFAAF00(0,100,stride 128) 16x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CA25800(0,96,stride 64) -> 0x0C9E4000(2,16,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CA25800(24,96,stride 64) -> 0x0C9E4000(26,0,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CA25800(48,96,stride 64) -> 0x0C9E4000(0,70,stride 128) 16x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(0,64,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,96,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[GE_3D_STATS] 3d prims=1850000 null-vertex-ptr=0 null-tex-addr=706
+[GE_XFER_NONVRAM] 0x0CA25800(0,32,stride 64) -> 0x0C9E4000(2,16,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CA25800(24,32,stride 64) -> 0x0C9E4000(26,0,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CA25800(48,0,stride 64) -> 0x0C9E4000(0,70,stride 128) 16x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CA25800(0,0,stride 64) -> 0x0C9E4000(2,16,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CA25800(24,0,stride 64) -> 0x0C9E4000(26,0,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CFC3B00(0,32,stride 64) -> 0x0CFAAF00(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CFC3B00(32,32,stride 64) -> 0x0CFAAF00(40,80,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CFC3B00(0,0,stride 64) -> 0x0CFAAF00(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CFC3B00(32,0,stride 64) -> 0x0CFAAF00(40,80,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(0,0,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,0,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[GE_XFER_NONVRAM] 0x0CFC3B00(0,160,stride 64) -> 0x0CFAAF00(0,100,stride 128) 16x32 bpp=2
+[TAGTEAM] objlist watch: A 09CE30C0 +916 08C00FD0 node 08C00FF8 on list 0 (head 09CDCEE8 tail 09D731E8)
+[GE_3D_STATS] 3d prims=1900000 null-vertex-ptr=0 null-tex-addr=724
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,32,stride 64) -> 0x0D3C6200(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(32,32,stride 64) -> 0x0D3C6200(40,80,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(0,0,stride 64) -> 0x0D3C6200(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D3DEE00(32,0,stride 64) -> 0x0D3C6200(40,80,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(0,64,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,96,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[GE_XFER_NONVRAM] 0x0CA25800(48,96,stride 64) -> 0x0C9E4000(0,70,stride 128) 16x32 bpp=2
+[GE_3D_STATS] 3d prims=1950000 null-vertex-ptr=0 null-tex-addr=740
+[GE_XFER_NONVRAM] 0x0CFC3B00(0,0,stride 64) -> 0x0CFAAF00(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CFC3B00(32,0,stride 64) -> 0x0CFAAF00(40,80,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CA25800(48,0,stride 64) -> 0x0C9E4000(0,70,stride 128) 16x32 bpp=2
+[TAGTEAM] actor 09D5C8C0 freed: 3 of its 30 tracked blocks were still allocated and are freed too
+[GE_3D_STATS] 3d prims=2000000 null-vertex-ptr=0 null-tex-addr=758
+[GE_XFER_NONVRAM] 0x0D330680(0,0,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,0,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[GE_XFER_NONVRAM] 0x0CFC3B00(0,0,stride 64) -> 0x0CFAAF00(0,40,stride 128) 32x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CFC3B00(32,0,stride 64) -> 0x0CFAAF00(40,80,stride 128) 24x32 bpp=2
+[GE_3D_STATS] 3d prims=2050000 null-vertex-ptr=0 null-tex-addr=776
+[GE_XFER_NONVRAM] 0x0CFC3B00(0,128,stride 64) -> 0x0CFAAF00(0,100,stride 128) 16x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CFC3B00(0,160,stride 64) -> 0x0CFAAF00(0,100,stride 128) 16x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(0,96,stride 64) -> 0x0D317A80(1,32,stride 128) 24x32 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(24,144,stride 64) -> 0x0D317A80(35,106,stride 128) 16x48 bpp=2
+[GE_XFER_NONVRAM] 0x0D330680(40,64,stride 64) -> 0x0D317A80(0,86,stride 128) 16x32 bpp=2
+[GE_XFER_NONVRAM] 0x0CA25800(0,96,stride 64) -> 0x0C9E4000(2,16,stride 128) 24x32 bpp=2
+[TAGTEAM] objlist watch: A 09CE30C0 +916 08C00FD0 node 08C00FF8 on list 0 (head 09CDCEE8 tail 09D74CB8)
+[GE_3D_STATS] 3d prims=2100000 null-vertex-ptr=0 null-tex-addr=793
+[GE_3D_STATS] 3d prims=2150000 null-vertex-ptr=0 null-tex-addr=810
+[GE_3D_STATS] 3d prims=2200000 null-vertex-ptr=0 null-tex-addr=826
+[GE_3D_STATS] 3d prims=2250000 null-vertex-ptr=0 null-tex-addr=844
+[GE_3D_STATS] 3d prims=2300000 null-vertex-ptr=0 null-tex-addr=862
+[GE_3D_STATS] 3d prims=2350000 null-vertex-ptr=0 null-tex-addr=878
+[TAGTEAM] objlist watch: A 09CE30C0 +916 08C00FD0 node 08C00FF8 on list 0 (head 09CDCEE8 tail 09D76318)
+[TAGTEAM] brain tick 09D36BE0 (owner 09D31580) enabled=1 state=0 call#601 tgt2FC=09CD90D0 foe300=09CD90D0 partner1108=00000000 lockT=09CD90D0 act380=02202000 <- EXTRA
+[TAGTEAM] brain tick 09D2A9E0 (owner 09D25E50) enabled=1 state=0 call#601 tgt2FC=09CE30C0 foe300=09CE30C0 partner1108=00000000 lockT=09CE30C0 act380=00000088 <- EXTRA
+[TAGTEAM] brain tick 09D1F2B0 (owner 09D1BB70) enabled=1 state=0 call#601 tgt2FC=09CE30C0 foe300=09CE30C0 partner1108=00000000 lockT=09CE30C0 act380=02000048 <- EXTRA
+[GE_3D_STATS] 3d prims=2400000 null-vertex-ptr=0 null-tex-addr=893
+[GE_3D_STATS] 3d prims=2450000 null-vertex-ptr=0 null-tex-addr=908
+[GE_3D_STATS] 3d prims=2500000 null-vertex-ptr=0 null-tex-addr=924
+[GE_3D_STATS] 3d prims=2550000 null-vertex-ptr=0 null-tex-addr=938
+[GE_3D_STATS] 3d prims=2600000 null-vertex-ptr=0 null-tex-addr=954
+[GE_3D_STATS] 3d prims=2650000 null-vertex-ptr=0 null-tex-addr=968
+[TAGTEAM] t=29.6s CALLIN queued: KAIN (char 24) for side 1, anchor 09CE30C0 foe 09CD90D0
+[TAGTEAM] heap name 089C88B8: OBJDATA
+[TAGTEAM] heap name 089E076C: 
+[TAGTEAM] heap name 089C93E0: GRAPHICS::GRAPHICS
+[TAGTEAM] heap name 089CAC10: SOUND MANAGER
+[TAGTEAM] heap name 089CAF0C: EFFECT SYSTEM MEMORY
+[TAGTEAM] heap name 089C9ED0: SYSTEM MEMORY SMALL
+[TAGTEAM] heap name 089CBA28: FUNCTION
+[TAGTEAM] heap name 089CBDD4: MENU MANAGER
+[TAGTEAM] heap name 089C9564: MODEL_MANAGER
+[TAGTEAM] heap name 089C9574: MODEL PACKET
+[MODELS] slot 0x238: heap 0x0B810000 holds 2615296 B, staging slot raised from 2506752 B
+[TAGTEAM] load_character(24): file id 568 loaded -> object 0F41BC10
+[TAGTEAM] load_character(24): file id 538 already loaded -> object 0F4283A0
+[TAGTEAM] heap name 089C88B8: OBJDATA
+[TAGTEAM] heap name 089E076C: 
+[TAGTEAM] heap name 089C93E0: GRAPHICS::GRAPHICS
+[TAGTEAM] heap name 089CAC10: SOUND MANAGER
+[TAGTEAM] heap name 089CAF0C: EFFECT SYSTEM MEMORY
+[TAGTEAM] heap name 089C9ED0: SYSTEM MEMORY SMALL
+[TAGTEAM] heap name 089CBA28: FUNCTION
+[TAGTEAM] heap name 089CBDD4: MENU MANAGER
+[TAGTEAM] heap name 089C9564: MODEL_MANAGER
+[TAGTEAM] heap name 089C9574: MODEL PACKET
+[TAGTEAM] load_character(24): file id 568 already loaded -> object 0F41BC10
+[TAGTEAM] load_character(24): file id 538 already loaded -> object 0F4283A0
+[TAGTEAM] lock block 09D6AAF0 hidden from the constructor in 1 camera slot(s)
+[TAGTEAM] camera slot 09AE9344: 09D7BDF0 to go back to the retail lock block 09D6AAF0 when the extra starts
+[TAGTEAM] camera manager 09AE8C70: 13 words and 0 words of the old lock block to put back when the extra starts
+[TAGTEAM] character record for char 24: the owner's save record (side 1, level 100, hash 12802359)
+[TAGTEAM] spawn side 1: actor 09D786B0 (info 09B04E44 brain 09D7E110) foe 09CD90D0, cpu record side 1 type 0 params 65535 65535
+[TAGTEAM] spawn side 1: no CPU record, default brain 0 6
+[TAGTEAM] objlist watch: A 09CE30C0 +916 08C00FD0 node 08C00FF8 on list 0 (head 09CDCEE8 tail 09D7DCB8)
+[TAGTEAM] brain tick 09D7E110 (owner 09D786B0) enabled=1 state=0 call#1 tgt2FC=00000000 foe300=09CD90D0 partner1108=00000000 lockT=00000000 act380=00000002 <- EXTRA
+[TAGTEAM] extra 09D786B0: 14 registration words taken back (0 object-list links kept)
+[TAGTEAM] START_ACTION(09D787E0, 1) -> 0, script now 1
+[TAGTEAM] entrance of 09D786B0: intro line ca_battle_103 loaded
+[TAGTEAM] voice bank code of char 24: record for110, scan for110
+[TAGTEAM] voice banks of char 24: record 0F41BC10 linked by its fighter (use count 1), 2 bank(s) registered, 0 without a slot
+[TAGTEAM] assist bank of char 24 skipped: 0 sound bank slots free
+[TAGTEAM] entrance of 09D786B0: voice record of 21060050: 0F397340, params 09B4E198: 808530258 21010048 21010034 21010035 21010050 3204448256 16915993 925469 4294903295 65536
+[TAGTEAM] entrance of 09D786B0: call line voice 21060050
+[TAGTEAM] entrance of 09D786B0: warp-in then pose, script now 240
+[TAGTEAM] stats 09CE30C0: +10A8 450 1169 9568 100 7 status 09D726B0 +0x14 0FC515A6 +0x18 45264000 +0x1C 44FB84DA
+[TAGTEAM] stats 09D786B0: +10A8 450 1036 10171 100 23 status 09D84C70 +0x14 040C040C +0x18 44FA0000 +0x1C 44FA0000
+[TAGTEAM] extra 09D786B0: controller object -> private copy 09D85190 of 08C15C50
+[TAGTEAM] flags 09CD90D0: +5B0 B5 +380 00000048 brain 09CDD340 +54 1
+[TAGTEAM] flags 09D786B0: +5B0 30 +380 02000002 brain 09D7E110 +54 1
+[TAGTEAM] extra 09D786B0 (side 1) started, target 00000000 foe 09CD90D0
+[MODELS] slot 0x54F: heap 0x0B810000 holds 2615296 B, staging slot raised from 2506752 B
+[GE_3D_STATS] 3d prims=2700000 null-vertex-ptr=0 null-tex-addr=984
+[TAGTEAM] damage handler 09D1AE90 block size 310 (header word 00000320)
+[TAGTEAM] extra 09D786B0 words pointing at the slot's module/handler: | slot:
+[TAGTEAM] damage module for extra 09D786B0: module 09D8D0A0 (from 09D1AD20) handler 09D8D2B0 (from 09D1AE90)
+[TAGTEAM] t=30.0s ledger: KO of VAAN (team 0) by YUNA (team 1, facing slot fighter)
+[TAGTEAM] brain tick 09CE7920 (owner 09CE30C0) enabled=1 state=0 call#901 tgt2FC=09CD90D0 foe300=09CD90D0 partner1108=09D11650 lockT=00000000 act380=02000000
+[TAGTEAM] brain tick 09CDD340 (owner 09CD90D0) enabled=1 state=0 call#901 tgt2FC=09CE30C0 foe300=09CE30C0 partner1108=09D0A860 lockT=00000000 act380=0000004A
+[GE_3D_STATS] 3d prims=2750000 null-vertex-ptr=0 null-tex-addr=998
+[GE_3D_STATS] 3d prims=2800000 null-vertex-ptr=0 null-tex-addr=1012
+[TAGTEAM] intro line playing
+[TAGTEAM] entrance of 09D786B0: pose, script now 1100
+[GE_3D_STATS] 3d prims=2850000 null-vertex-ptr=0 null-tex-addr=1028
+[GE_3D_STATS] 3d prims=2900000 null-vertex-ptr=0 null-tex-addr=1043
+[TAGTEAM] t=31.6s KO of slot 0 fighter 09CD90D0, team mate 09D25E50, reserve 2 (down 0 script 1210 hp 5951 dmg 5950 stock 1 rev 0)
+[TAGTEAM] rebuild 09CD90D0: char 30 -> 31 (brain 09CDD340 lock 09CDAD80 ctrl 08C15C50 assist 09D0A860 foe 09CE30C0 stock 1 pos -29.0,0.0,-43.7)
+[TAGTEAM] objlist before the destructor: A 09CD90D0 +916 08C00D58 node 08C00D80 on list 0 (head 09CDCEE8 tail 09D8A888)
+[TAGTEAM] release (two handles) of 08C00D58 skipped
+[TAGTEAM] release (one handle) of 08C00D58 skipped
+[TAGTEAM] rebuild 09CD90D0: 0 blocks of the old character left by the destructor freed
+[TAGTEAM] world list before: head 09D786B0 tail 09D07E80: 09D786B0 09CE30C0 09D3D780 09D31580 09D25E50 09D1BB70 09CD90D0 09D85280 09D54EA0 09D4DF50 09D48450 09D11650 09D0A860 09D77050 09CF8670 09CF7190 09CF5CB0 09CF47D0 09CF32F0 09CF1E10 09CF1580 09CF0CF0 09CF0460 09CEFBD0
+[TAGTEAM] world before: A 09CD90D0 flags 00007000 00000001 (mask 00000001 00000000) queue head 00000000 tail 00000000:
+[TAGTEAM] world list: 09CD90D0 unlinked (prev 09D1BB70 next 09D85280)
+[TAGTEAM] world list unlinked: head 09D786B0 tail 09D07E80: 09D786B0 09CE30C0 09D3D780 09D31580 09D25E50 09D1BB70 09D85280 09D54EA0 09D4DF50 09D48450 09D11650 09D0A860 09D77050 09CF8670 09CF7190 09CF5CB0 09CF47D0 09CF32F0 09CF1E10 09CF1580 09CF0CF0 09CF0460 09CEFBD0 09CEF340
+[TAGTEAM] heap name 089C88B8: OBJDATA
+[TAGTEAM] heap name 089E076C: 
+[TAGTEAM] heap name 089C93E0: GRAPHICS::GRAPHICS
+[TAGTEAM] heap name 089CAC10: SOUND MANAGER
+[TAGTEAM] heap name 089CAF0C: EFFECT SYSTEM MEMORY
+[TAGTEAM] heap name 089C9ED0: SYSTEM MEMORY SMALL
+[TAGTEAM] heap name 089CBA28: FUNCTION
+[TAGTEAM] heap name 089CBDD4: MENU MANAGER
+[TAGTEAM] heap name 089C9564: MODEL_MANAGER
+[TAGTEAM] heap name 089C9574: MODEL PACKET
+[TAGTEAM] load_character(31): file id 596 already loaded -> object 0F3F2270
+[TAGTEAM] load_character(31): file id 545 already loaded -> object 0F404100
+[TAGTEAM] release (two handles) of 08C00E94 skipped
+[TAGTEAM] release (one handle) of 08C00E94 skipped
+[TAGTEAM] world list after the constructor: head 09CD90D0 tail 09D07E80: 09CD90D0 09D786B0 09CE30C0 09D3D780 09D31580 09D25E50 09D1BB70 09D85280 09D54EA0 09D4DF50 09D48450 09D11650 09D0A860 09D77050 09CF8670 09CF7190 09CF5CB0 09CF47D0 09CF32F0 09CF1E10 09CF1580 09CF0CF0 09CF0460 09CEFBD0
+[TAGTEAM] world after the constructor: A 09CD90D0 flags 00007000 00000000 (mask 00000001 00000000) queue head 00000000 tail 00000000:
+[TAGTEAM] rebuild 09CD90D0: new lock block 09D8EAE0 kept (old 09CDAD80 freed by the constructor); camera manager words changed by it: 16 +150:C2014C00>C2077C7F +154:40238000>40E027EC +158:C2300000>C22DB13B +160:C1FAEFB5>C1C33B92 +164:4010F8A2>40A19690 +168:C2300000>C230B9DC +190:3F882B93>3F800000 +194:3F882B93>00000000 +198:3F882B93>3F800000 +19C:3F882B93>00000000 +1A0:3F882B93>3F800000 +1A4:3F882B93>00000000 +1A8:3F882B93>3F800000 +1AC:3F882B93>00000000 +1B0:00000000>00000001 +6D0:09CDAD80>09D8EAE0
+[TAGTEAM] objlist after the constructor: A 09CD90D0 +916 08C00D58 node 08C00D80 on list 0 (head 09CFAB78 tail 09D90A88)
+[TAGTEAM] rebuild 09CD90D0: fighter list order put back (13 fighters, head 09CD90D0 tail 09D85280)
+[TAGTEAM] character record for char 31: the owner's save record (side 0, level 100, hash EE5DC39E)
+[TAGTEAM] rebuild 09CD90D0: built as char 31 (new lock block 09D8EAE0, 0 registration words to take back when ready, 0 object-list links kept), waiting for its files
+[TAGTEAM] t=31.6s slot 0 now holds the team mate; the KO'd character is down at 09D25E50
+[TAGTEAM] portrait menu/jp/battle/chara_image/p_gst130_1p.gim from the package (17696 bytes, buffer 09A19D00 heap 099BA640): sprite 08B8A008 picture 0D6F7350 FFFF0001 0000FFFF 00000000 08B97914 00000000 FFFF0000 001DFFFF 00000000 00000000 00000000 FFFF0000
+[TAGTEAM] portrait of char 31: sprite 08B8A008 (picture 08B97928)
+[TAGTEAM] t=31.60s side 0 portrait -> char 31 (picture 08B97928)
+[GE] DrawSync timeout: 1 lists still pending
+[GE_NAV] unknown cmd at pc=0x04D8CBE4; last CALL/JUMP transfers (oldest first):
+[GE_NAV]   J at=0x098A58D4 -> 0x098A5E54 depth=0
+[GE_NAV]   C at=0x098A5E60 -> 0x098A5E20 depth=1
+[GE_NAV]   C at=0x098A5ED4 -> 0x0CA04A00 depth=1
+[GE_NAV]   C at=0x098A5EDC -> 0x041C97C0 depth=1
+[GE_NAV]   C at=0x098A5EEC -> 0x098A5DEC depth=1
+[GE_NAV]   C at=0x098A5EF8 -> 0x098A5E20 depth=1
+[GE_NAV]   C at=0x098A5F00 -> 0x041CBDE4 depth=1
+[GE_NAV]   J at=0x041CBE2C -> 0x04D8C82C depth=1
+[GE] Unknown cmd 0xD1 data=0x79FABB at pc=0x04D8CBE4
+[GE_NAV] unknown cmd at pc=0x04D8CC30; last CALL/JUMP transfers (oldest first):
+[GE_NAV]   J at=0x098A58D4 -> 0x098A5E54 depth=0
+[GE_NAV]   C at=0x098A5E60 -> 0x098A5E20 depth=1
+[GE_NAV]   C at=0x098A5ED4 -> 0x0CA04A00 depth=1
+[GE_NAV]   C at=0x098A5EDC -> 0x041C97C0 depth=1
+[GE_NAV]   C at=0x098A5EEC -> 0x098A5DEC depth=1
+[GE_NAV]   C at=0x098A5EF8 -> 0x098A5E20 depth=1
+[GE_NAV]   C at=0x098A5F00 -> 0x041CBDE4 depth=1
+[GE_NAV]   J at=0x041CBE2C -> 0x04D8C82C depth=1
+[GE] Unknown cmd 0xB7 data=0x9EBE0E at pc=0x04D8CC30
+[GE_NAV] unknown cmd at pc=0x041CC6EC; last CALL/JUMP transfers (oldest first):
+[GE_NAV]   C at=0x098A5EDC -> 0x041C97C0 depth=1
+[GE_NAV]   C at=0x098A5EEC -> 0x098A5DEC depth=1
+[GE_NAV]   C at=0x098A5EF8 -> 0x098A5E20 depth=1
+[GE_NAV]   C at=0x098A5F00 -> 0x041CBDE4 depth=1
+[GE_NAV]   J at=0x041CBE2C -> 0x04D8C82C depth=1
+[GE_NAV]   C at=0x098A5F10 -> 0x098A5E20 depth=1
+[GE_NAV]   C at=0x098A5F30 -> 0x0C9F4400 depth=1
+[GE_NAV]   C at=0x098A5F38 -> 0x041CC6D4 depth=1
+[GE] Unknown cmd 0x0D data=0x5B9DB4 at pc=0x041CC6EC
+[GE] Unknown cmd 0x11 data=0x948366 at pc=0x041CC70C
+[GE] OFFSETADDR 0x27862200 at pc=0x041CC71C
+[TAGTEAM] t=31.6s human lock: sel 0 -> 0, mode 0, target 00000000 -> 00000000 (+0x2FC 00000000 foe 09CE30C0)
+[TAGTEAM] world frame: A 09CD90D0 flags 00007000 00000000 (mask 00000001 00000000) queue head 00000000 tail 00000000:
+[TAGTEAM] rebuild 09CD90D0: new lock block 09D8EAE0 +0x100 0 -> 0, +0x126 0 -> 1 (the old block's)
+[TAGTEAM] rebuild 09CD90D0: lock player's (no override): block 09D8EAE0 mode 1 +252 00000000 +276 0 +356 0 +0x100 0 +0x120 08C15C50 (ctrl 08C15C50) +0x126 1, target 09CE30C0 foe 09CE30C0 (was foe 09CE30C0; old block +252 00000000 +276 0 +356 0 +0x120 08C15C50)
+[TAGTEAM] t=31.6s rebuild 09CD90D0: char 31 stands (script 1, hp 9844 brv 04340434)
+[GE] Hit command limit (4194304) without END at pc=0x015DB408
+[GE] DrawSync timeout: 1 lists still pending
+[TAGTEAM] t=31.7s human lock: sel 0 -> 0, mode 1, target 00000000 -> 00000000 (+0x2FC 09CE30C0 foe 09CE30C0)
+[TAGTEAM] objlist watch: A 09CD90D0 +916 08C00D58 node 08C00D80 on list 0 (head 09CFAB78 tail 09D90A88)
+[GE] Hit command limit (4194304) without END at pc=0x01633888
+[GE] DrawSync timeout: 2 lists still pending
+[GE] Hit command limit (4194304) without END at pc=0x015DB408
+[GE] DrawSync timeout: 3 lists still pending

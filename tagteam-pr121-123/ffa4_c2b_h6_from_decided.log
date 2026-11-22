@@ -1,0 +1,363 @@
+[TTLOCK] frame 4140: the battle is decided, the lock-step stands down (no more waiting for input)
+[SNDPOOL] line free obj 09AEA2BC (ours 0) t=138.0
+[SNDPOOL] before free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] after free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] line free obj 09AEA2CC (ours 0) t=138.0
+[SNDPOOL] before free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] after free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[DRAWCHK] t=138.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 102
+[FPS] 14.8 GE frames/s (74 in 5.0s)
+[DRAWCHK] t=138.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 102
+[DRAWCHK] t=138.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=138.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[ATRAC] id=1 AT3 ch=2 align=192 state=2 fileSize=48844 endSample=258615 firstOff=1024 loop=-1..-1 buf=0x0E8C06E0
+[DRAWCHK] t=138.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (22.6,-4.9,-18.1) script 203
+[HLE] sceIoSetAsyncCallback(fd=9) asyncPending=0 callbackId=261 callbackArg=0x9 -> notifying=0
+[HLE] sceIoSetAsyncCallback(fd=9, cbId=261, cbArg=0x9) caller=0x00000000
+[HLE] sceIoReadAsync(fd=9, buf=0x099AA6A4, size=48556)
+[HLE] CheckCallback: DISPATCHING cb uid=261 func=0x088637A8 notify_count=296 notify_arg=9 user_arg=0x098F5410
+[HLE] sceIoWaitAsync(fd=9, res_ptr=0x0BFEDE90) -> result=0xBDAC
+[HLE] CheckCallback: RETURNED from cb uid=261 func=0x088637A8 v0=0x00000000
+[HLE] sceIoSetAsyncCallback(fd=9) asyncPending=0 callbackId=261 callbackArg=0x9 -> notifying=0
+[HLE] sceIoSetAsyncCallback(fd=9, cbId=261, cbArg=0x9) caller=0x00000000
+[HLE] sceIoReadAsync(fd=9, buf=0x0999E580, size=1844)
+[HLE] CheckCallback: DISPATCHING cb uid=261 func=0x088637A8 notify_count=297 notify_arg=9 user_arg=0x098F5410
+[HLE] sceIoWaitAsync(fd=9, res_ptr=0x0BFEDE90) -> result=0x734
+[HLE] CheckCallback: RETURNED from cb uid=261 func=0x088637A8 v0=0x00000000
+[GE_3D_STATS] 3d prims=20800000 null-vertex-ptr=0 null-tex-addr=4560
+[ATRAC] release id=0 (streamed, at sample 3012952 of 4403543, loops 1)
+[HLE] sceIoClose(fd=9) caller=0x00000000
+[HLE] sceIoSetAsyncCallback(fd=4) asyncPending=0 callbackId=263 callbackArg=0x4 -> notifying=0
+[HLE] sceIoSetAsyncCallback(fd=4, cbId=263, cbArg=0x4) caller=0x00000000
+[HLE] sceIoLseekAsync(fd=4, offset=0x000000003D9FE800, whence=0)
+[HLE] sceIoLseekAsync: fd=4 host_fd=31 offset=1033889792 whence=0 -> pos=1033889792 asyncPending_before=0
+[HLE] CheckCallback: DISPATCHING cb uid=263 func=0x08863968 notify_count=189 notify_arg=4 user_arg=0x098F5410
+[HLE] sceIoWaitAsync(fd=4, res_ptr=0x0BFEDE90) -> result=0x3D9FE800
+[HLE] sceIoSetAsyncCallback(fd=4) asyncPending=0 callbackId=261 callbackArg=0x4 -> notifying=0
+[HLE] sceIoSetAsyncCallback(fd=4, cbId=261, cbArg=0x4) caller=0x00000000
+[HLE] sceIoReadAsync(fd=4, buf=0x09B90FC0, size=282404)
+[HLE] CheckCallback: RETURNED from cb uid=263 func=0x08863968 v0=0x00000000
+[HLE] CheckCallback: DISPATCHING cb uid=261 func=0x088637A8 notify_count=298 notify_arg=4 user_arg=0x098F5410
+[HLE] sceIoWaitAsync(fd=4, res_ptr=0x0BFEDE90) -> result=0x44F24
+[HLE] sceIoSetAsyncCallback(fd=4) asyncPending=0 callbackId=263 callbackArg=0x4 -> notifying=0
+[HLE] sceIoSetAsyncCallback(fd=4, cbId=263, cbArg=0x4) caller=0x00000000
+[HLE] sceIoLseekAsync(fd=4, offset=0x000000003B6ED000, whence=0)
+[HLE] sceIoLseekAsync: fd=4 host_fd=31 offset=997117952 whence=0 -> pos=997117952 asyncPending_before=0
+[HLE] CheckCallback: RETURNED from cb uid=261 func=0x088637A8 v0=0x00000000
+[HLE] CheckCallback: DISPATCHING cb uid=263 func=0x08863968 notify_count=190 notify_arg=4 user_arg=0x098F5410
+[HLE] sceIoWaitAsync(fd=4, res_ptr=0x0BFEDE90) -> result=0x3B6ED000
+[HLE] sceIoSetAsyncCallback(fd=4) asyncPending=0 callbackId=261 callbackArg=0x4 -> notifying=0
+[HLE] sceIoSetAsyncCallback(fd=4, cbId=261, cbArg=0x4) caller=0x00000000
+[HLE] sceIoReadAsync(fd=4, buf=0x0F351140, size=13324)
+[HLE] CheckCallback: RETURNED from cb uid=263 func=0x08863968 v0=0x00000000
+[HLE] CheckCallback: DISPATCHING cb uid=261 func=0x088637A8 notify_count=299 notify_arg=4 user_arg=0x098F5410
+[HLE] sceIoWaitAsync(fd=4, res_ptr=0x0BFEDE90) -> result=0x340C
+[HLE] CheckCallback: RETURNED from cb uid=261 func=0x088637A8 v0=0x00000000
+[DRAWCHK] t=138.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=20850000 null-vertex-ptr=0 null-tex-addr=4573
+[XAS] t=139.00s extra 09E20240: assist 09E2CA40 released (its master is down)
+[TAGTEAM] released assist 09E2CA40 taken off the world list before its block is freed (prev 09D573A0 next 09D4CE80)
+[DRAWCHK] t=139.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=139.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 102
+[DRAWCHK] t=139.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=139.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=139.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (22.6,-4.4,-18.1) script 203
+[GE_3D_STATS] 3d prims=20900000 null-vertex-ptr=0 null-tex-addr=4586
+[DRAWCHK] t=139.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=20950000 null-vertex-ptr=0 null-tex-addr=4600
+[AGAUGE] t=140.0s summary: slotC 9198 slotH 4623 extraE 2000(down) extraP 2000(down) extraP 2000(down) extraE 2000(down) extraP 2000(down) extraE 2000(down) extraE 2000(down) extraP 2000
+[TAGTEAM] brain tick 09D11200 (owner 09D0CF90) enabled=1 state=0 call#4201 tgt2FC=09D17D60 foe300=09D17D60 partner1108=09D46090 lockT=00000000 act380=22002002
+[DRAWCHK] t=140.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[TAGTEAM] brain tick 09D1C5C0 (owner 09D17D60) enabled=1 state=0 call#4201 tgt2FC=09D0CF90 foe300=09D0CF90 partner1108=09D4CE80 lockT=00000000 act380=20002002
+[DRAWCHK] t=140.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 102
+[DRAWCHK] t=140.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=140.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=140.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (22.6,-4.2,-18.1) script 203
+[GE_3D_STATS] 3d prims=21000000 null-vertex-ptr=0 null-tex-addr=4615
+[GE_3D_STATS] 3d prims=21050000 null-vertex-ptr=0 null-tex-addr=4629
+[DRAWCHK] t=140.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[FPS] 16.5 GE frames/s (83 in 5.0s)
+[TAGTEAM] actor 09E2CA40 freed: 3 of its 30 tracked blocks were still allocated and are freed too
+[DRAWCHK] t=141.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=141.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 102
+[GE_3D_STATS] 3d prims=21100000 null-vertex-ptr=0 null-tex-addr=4642
+[DRAWCHK] t=141.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=141.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=141.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (22.6,-3.3,-18.1) script 203
+[GE_3D_STATS] 3d prims=21150000 null-vertex-ptr=0 null-tex-addr=4654
+[DRAWCHK] t=141.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=21200000 null-vertex-ptr=0 null-tex-addr=4664
+[DRAWCHK] t=142.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=142.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=142.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=142.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=142.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (22.6,-2.0,-18.1) script 203
+[GE_3D_STATS] 3d prims=21250000 null-vertex-ptr=0 null-tex-addr=4676
+[HOMING] t=142.53s 09E20240 (char 31) attack script 200: foe 09D0CF90 tgt 09D0CF90 lockT 09D0CF90 dist 24.5 foe alive 1 on stage 1
+[GE_3D_STATS] 3d prims=21300000 null-vertex-ptr=0 null-tex-addr=4686
+[DRAWCHK] t=142.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=21350000 null-vertex-ptr=0 null-tex-addr=4698
+[DRAWCHK] t=143.03s 09D8D1D0 char 24: world flags 00007000 obj-list node 08C04B10 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (3.0,-4.0,-51.0) script 1
+[DRAWCHK] t=143.03s 09E0C480 char 31: world flags 00007000 obj-list node 08C058A4 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (3.0,-4.0,-41.0) script 1
+[DRAWCHK] t=143.10s 09DEADB0 char 26: world flags 00007040 obj-list node 08C04620 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (4999.2,0.0,5000.0) script 1
+[DRAWCHK] t=143.10s 09DCCFD0 char 26: world flags 00007000 obj-list node 08C05278 model file 0F407A00 (refs 0, data 0F407B00) D_ file 0F416F50 (refs 0) pos (5000.8,0.0,5000.2) script 1
+[DRAWCHK] t=143.10s 09E20240 char 31: world flags 00007000 obj-list node 08C054F0 model file 0F41B600 (refs 0, data 0F41B700) D_ file 0F42D490 (refs 0) pos (22.6,-0.8,-18.1) script 201
+[GE_3D_STATS] 3d prims=21400000 null-vertex-ptr=0 null-tex-addr=4710
+[FPS] 16.2 GE frames/s (81 in 5.0s)
+[DRAWCHK] t=143.70s 09DAF880 char 24: world flags 00007000 obj-list node 08C043A8 model file 0F3F6AE0 (refs 0, data 0F3F6BE0) D_ file 0F403270 (refs 0) pos (4999.1,-2.4,5000.0) script 1
+[GE_3D_STATS] 3d prims=21450000 null-vertex-ptr=0 null-tex-addr=4722
+[SNDPOOL] line free obj 09AEA2BC (ours 0) t=143.8
+[SNDPOOL] before free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] after free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] line free obj 09AEA2CC (ours 0) t=143.8
+[SNDPOOL] before free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] after free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[TAGTEAM] t=143.8s lock mode call: block 09D830B0 mode 1 -> 3 flag 0 (sel 0) cyc 0 core 0 target slotC
+[ATRAC] id=0 AT3+ ch=2 align=560 state=2 fileSize=282404 endSample=1028930 firstOff=2893 loop=326225..1031823 buf=0x09B90FC0
+[ATRAC] id=1 AT3 ch=1 align=192 state=2 fileSize=13324 endSample=69056 firstOff=1024 loop=-1..-1 buf=0x0F351140
+[TAGTEAM] t=143.8s human lock: sel 0 -> 0, mode 3, target 00000000 -> 00000000 (+0x2FC 09D0CF90 foe 09D0CF90)
+[GE] DrawSync timeout: 1 lists still pending
+[HOMING] t=143.80s 09E20240 (char 31) attack script 101: foe 09D0CF90 tgt 09D0CF90 lockT 09D0CF90 dist 24.5 foe alive 1 on stage 1
+[GE_3D_STATS] 3d prims=21500000 null-vertex-ptr=0 null-tex-addr=4734
+[GE_3D_STATS] 3d prims=21550000 null-vertex-ptr=0 null-tex-addr=4748
+[GE_3D_STATS] 3d prims=21600000 null-vertex-ptr=0 null-tex-addr=4764
+[GE_3D_STATS] 3d prims=21650000 null-vertex-ptr=0 null-tex-addr=4778
+[GE_3D_STATS] 3d prims=21700000 null-vertex-ptr=0 null-tex-addr=4794
+[FPS] 18.5 GE frames/s (93 in 5.0s)
+[GE_3D_STATS] 3d prims=21750000 null-vertex-ptr=0 null-tex-addr=4808
+[GE_3D_STATS] 3d prims=21800000 null-vertex-ptr=0 null-tex-addr=4822
+[GE] DrawSync timeout: 1 lists still pending
+[GE_3D_STATS] 3d prims=21850000 null-vertex-ptr=0 null-tex-addr=4837
+[GE_3D_STATS] 3d prims=21900000 null-vertex-ptr=0 null-tex-addr=4853
+[GE_3D_STATS] 3d prims=21950000 null-vertex-ptr=0 null-tex-addr=4868
+[GE_3D_STATS] 3d prims=22000000 null-vertex-ptr=0 null-tex-addr=4884
+[DECODE_CACHE] 36783 hits, 81 misses, 81 entries, 3.7 MB
+[GE_3D_STATS] 3d prims=22050000 null-vertex-ptr=0 null-tex-addr=4900
+[FPS] 20.1 GE frames/s (101 in 5.0s)
+[TAGTEAM] brain tick 09D1C5C0 (owner 09D17D60) enabled=1 state=0 call#4501 tgt2FC=09D0CF90 foe300=09D0CF90 partner1108=09D4CE80 lockT=00000000 act380=20002002
+[GE_3D_STATS] 3d prims=22100000 null-vertex-ptr=0 null-tex-addr=4916
+[GE] DrawSync timeout: 1 lists still pending
+[GE_3D_STATS] 3d prims=22150000 null-vertex-ptr=0 null-tex-addr=4932
+[GE_3D_STATS] 3d prims=22200000 null-vertex-ptr=0 null-tex-addr=4948
+[GE_3D_STATS] 3d prims=22250000 null-vertex-ptr=0 null-tex-addr=4964
+[GE_3D_STATS] 3d prims=22300000 null-vertex-ptr=0 null-tex-addr=4980
+[GE_3D_STATS] 3d prims=22350000 null-vertex-ptr=0 null-tex-addr=4996
+[FPS] 19.2 GE frames/s (96 in 5.0s)
+[GE_3D_STATS] 3d prims=22400000 null-vertex-ptr=0 null-tex-addr=5010
+[GE] DrawSync timeout: 1 lists still pending
+[GE_3D_STATS] 3d prims=22450000 null-vertex-ptr=0 null-tex-addr=5025
+[GE_3D_STATS] 3d prims=22500000 null-vertex-ptr=0 null-tex-addr=5040
+[GE_3D_STATS] 3d prims=22550000 null-vertex-ptr=0 null-tex-addr=5054
+[GE_3D_STATS] 3d prims=22600000 null-vertex-ptr=0 null-tex-addr=5070
+[GE_3D_STATS] 3d prims=22650000 null-vertex-ptr=0 null-tex-addr=5086
+[GE_3D_STATS] 3d prims=22700000 null-vertex-ptr=0 null-tex-addr=5100
+[FPS] 19.2 GE frames/s (96 in 5.0s)
+[GE] DrawSync timeout: 1 lists still pending
+[GE_3D_STATS] 3d prims=22750000 null-vertex-ptr=0 null-tex-addr=5114
+[GE_3D_STATS] 3d prims=22800000 null-vertex-ptr=0 null-tex-addr=5130
+[GE_3D_STATS] 3d prims=22850000 null-vertex-ptr=0 null-tex-addr=5146
+[GE_3D_STATS] 3d prims=22900000 null-vertex-ptr=0 null-tex-addr=5161
+[GE_3D_STATS] 3d prims=22950000 null-vertex-ptr=0 null-tex-addr=5177
+[GE_3D_STATS] 3d prims=23000000 null-vertex-ptr=0 null-tex-addr=5193
+[GE] DrawSync timeout: 1 lists still pending
+[FPS] 16.3 GE frames/s (96 in 5.9s)
+[GE_3D_STATS] 3d prims=23050000 null-vertex-ptr=0 null-tex-addr=5210
+[TAGTEAM] brain tick 09D1C5C0 (owner 09D17D60) enabled=1 state=0 call#4801 tgt2FC=09D0CF90 foe300=09D0CF90 partner1108=09D4CE80 lockT=00000000 act380=20002002
+[GE_3D_STATS] 3d prims=23100000 null-vertex-ptr=0 null-tex-addr=5225
+[GE_3D_STATS] 3d prims=23150000 null-vertex-ptr=0 null-tex-addr=5241
+[GE_3D_STATS] 3d prims=23200000 null-vertex-ptr=0 null-tex-addr=5256
+[GE_3D_STATS] 3d prims=23250000 null-vertex-ptr=0 null-tex-addr=5272
+[GE] DrawSync timeout: 1 lists still pending
+[GE_3D_STATS] 3d prims=23300000 null-vertex-ptr=0 null-tex-addr=5288
+[FPS] 19.8 GE frames/s (99 in 5.0s)
+[GE_3D_STATS] 3d prims=23350000 null-vertex-ptr=0 null-tex-addr=5302
+[GE_3D_STATS] 3d prims=23400000 null-vertex-ptr=0 null-tex-addr=5316
+[GE_3D_STATS] 3d prims=23450000 null-vertex-ptr=0 null-tex-addr=5332
+[GE_3D_STATS] 3d prims=23500000 null-vertex-ptr=0 null-tex-addr=5348
+[DECODE_CACHE] 40879 hits, 81 misses, 81 entries, 3.7 MB
+[GE_3D_STATS] 3d prims=23550000 null-vertex-ptr=0 null-tex-addr=5362
+[GE] DrawSync timeout: 1 lists still pending
+[GE_3D_STATS] 3d prims=23600000 null-vertex-ptr=0 null-tex-addr=5376
+[GE_3D_STATS] 3d prims=23650000 null-vertex-ptr=0 null-tex-addr=5391
+[FPS] 20.3 GE frames/s (102 in 5.0s)
+[GE_3D_STATS] 3d prims=23700000 null-vertex-ptr=0 null-tex-addr=5406
+[GE_3D_STATS] 3d prims=23750000 null-vertex-ptr=0 null-tex-addr=5422
+[GE_3D_STATS] 3d prims=23800000 null-vertex-ptr=0 null-tex-addr=5438
+[GE_3D_STATS] 3d prims=23850000 null-vertex-ptr=0 null-tex-addr=5454
+[GE_3D_STATS] 3d prims=23900000 null-vertex-ptr=0 null-tex-addr=5470
+[HLE] sceUtilitySavedata complete: mode=11 result=0x00000000
+[HLE] sceUtilitySavedata mode=1 dir='ULUS10566GameData00' -> ~/dissidia/tt/net10m/h6/ms0/PSP/SAVEDATA/ULUS10566GameData00
+[HLE] sceUtilitySavedata: saved ULUS10566GameData00/DISSIDIA.BIN (257224 bytes, encrypted+key)
+[HLE] sceUtilitySavedata complete: mode=1 result=0x00000000
+[GE_3D_STATS] 3d prims=23950000 null-vertex-ptr=0 null-tex-addr=5486
+[GE] DrawSync timeout: 1 lists still pending
+[FPS] 18.3 GE frames/s (92 in 5.0s)
+[GE_3D_STATS] 3d prims=24000000 null-vertex-ptr=0 null-tex-addr=5502
+[TAGTEAM] brain tick 09D1C5C0 (owner 09D17D60) enabled=1 state=0 call#5101 tgt2FC=09D0CF90 foe300=09D0CF90 partner1108=09D4CE80 lockT=00000000 act380=20002002
+[GE_3D_STATS] 3d prims=24050000 null-vertex-ptr=0 null-tex-addr=5518
+[GE_3D_STATS] 3d prims=24100000 null-vertex-ptr=0 null-tex-addr=5534
+[GE_3D_STATS] 3d prims=24150000 null-vertex-ptr=0 null-tex-addr=5550
+[GE_3D_STATS] 3d prims=24200000 null-vertex-ptr=0 null-tex-addr=5565
+[GE_3D_STATS] 3d prims=24250000 null-vertex-ptr=0 null-tex-addr=5579
+[GE_3D_STATS] 3d prims=24300000 null-vertex-ptr=0 null-tex-addr=5594
+[FPS] 22.8 GE frames/s (115 in 5.1s)
+[GE_3D_STATS] 3d prims=24350000 null-vertex-ptr=0 null-tex-addr=5608
+[GE_3D_STATS] 3d prims=24400000 null-vertex-ptr=0 null-tex-addr=5624
+[GE_3D_STATS] 3d prims=24450000 null-vertex-ptr=0 null-tex-addr=5640
+[GE_3D_STATS] 3d prims=24500000 null-vertex-ptr=0 null-tex-addr=5654
+[GE_3D_STATS] 3d prims=24550000 null-vertex-ptr=0 null-tex-addr=5668
+[GE_3D_STATS] 3d prims=24600000 null-vertex-ptr=0 null-tex-addr=5684
+[GE_3D_STATS] 3d prims=24650000 null-vertex-ptr=0 null-tex-addr=5699
+[FPS] 19.8 GE frames/s (99 in 5.0s)
+[GE_3D_STATS] 3d prims=24700000 null-vertex-ptr=0 null-tex-addr=5715
+[GE_3D_STATS] 3d prims=24750000 null-vertex-ptr=0 null-tex-addr=5730
+[GE_3D_STATS] 3d prims=24800000 null-vertex-ptr=0 null-tex-addr=5746
+[GE_3D_STATS] 3d prims=24850000 null-vertex-ptr=0 null-tex-addr=5763
+[GE_3D_STATS] 3d prims=24900000 null-vertex-ptr=0 null-tex-addr=5779
+[DRAW] Screenshot saved: ~/dissidia/tt/net10m/shots/c2b_post1_h6.tga (480x272)
+[FPS] 15.8 GE frames/s (89 in 5.6s)
+[GE_3D_STATS] 3d prims=24950000 null-vertex-ptr=0 null-tex-addr=5795
+[TAGTEAM] group battle: job powers record 0 after the booking: 00000001000000010000 03 FFFFFF00 FFFFFF00
+[TAGTEAM] group battle: job powers record 1 after the booking: 00000001000000000000 05 FFFFFF00 FFFFFF00
+[TAGTEAM] group battle: booked; tally rows written from the ledger: r0.0=0/02/L57 r0.1=3/02/L100 r0.2=0/02/L100 r0.3=2/00/L100 r0.4=0/02/L100 r1.0=0/02/L100 r1.1=4/02/L100 r1.2=0/02/L100 r1.3=0/02/L100 r1.4=0/02/L100
+[SNDPOOL] line free obj 09AEA2BC (ours 0) t=143.8
+[SNDPOOL] before free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] after free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] line free obj 09AEA2CC (ours 0) t=143.8
+[SNDPOOL] before free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] after free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] line free obj 09AEA2BC (ours 0) t=143.8
+[SNDPOOL] before free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] after free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] line free obj 09AEA2CC (ours 0) t=143.8
+[SNDPOOL] before free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[SNDPOOL] after free: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[FILESTATE] at the teardown: 594(r0) 544(r0) 1385(r0) 581(r0) 541(r0) 1413(r0) 1417(r0) 1418(r0) 1419(r0) 1420(r0) 614(r0) 615(r0) 616(r0) 617(r0) 635(r0) 127(r0) 128(r0) 129(r0) 193(r0) 584(r0) 542(r0) 655(r0) 656(r0) 657(r0) 658(r0) 659(r0) 568(r0) 538(r0) 576(r0) 540(r0) 596(r0) 545(r0) [32 objects]
+[MEMSUM] at the teardown: model pool used 13459 of 32256 KB, effect pool free 15907 KB (largest 15865 KB) of 24053 KB, texture overflow used 288 of 768 KB, sound heap free 7879 KB (largest 7783 KB) of 12508 KB
+[MEMSUM] at the teardown: battle heap (FIELD::MEMORY 0x09B90000) used 2258 of 6614 KB
+[MEMSUM] at the teardown: small object heap (0x0BD2F000) used 16200 of 34528 B
+[SNDPOOL] teardown: slots 00000000 00000000 0A205800 015BA7C0 00000040 0A205800 0000001E 09A92400 09A92400 00000000 00000000 00000000 00000000 00000000 00000000 00000000 | banter ctx 09AEA250: [+108 00000000 00000000 00000000 00000000] [+124 00000000 00000000 00000000 00000000] | intro [00000000 00000000 00000000 00000000]
+[TAGTEAM] t=143.8s battle teardown (fighter 09E20240 destroyed): tag team state dropped
+[TAGTEAM] actor 09E20240 freed: 6 of its 71 tracked blocks were still allocated and are freed too
+[TAGTEAM] teardown: fighter 09E0C480 destroyed, 6 to go
+[TAGTEAM] actor 09E0C480 freed: 6 of its 71 tracked blocks were still allocated and are freed too
+[TAGTEAM] actor 09D0CF90 freed: 16 of its 42 tracked blocks were still allocated and are freed too
+[TAGTEAM] teardown: fighter 09DEADB0 destroyed, 5 to go
+[TAGTEAM] actor 09DEADB0 freed: 6 of its 68 tracked blocks were still allocated and are freed too
+[TAGTEAM] teardown: fighter 09DCCFD0 destroyed, 4 to go
+[TAGTEAM] actor 09DCCFD0 freed: 6 of its 68 tracked blocks were still allocated and are freed too
+[TAGTEAM] teardown: fighter 09DAF880 destroyed, 3 to go
+[TAGTEAM] actor 09DAF880 freed: 6 of its 70 tracked blocks were still allocated and are freed too
+[TAGTEAM] teardown: fighter 09D8D1D0 destroyed, 2 to go
+[TAGTEAM] actor 09D8D1D0 freed: 6 of its 70 tracked blocks were still allocated and are freed too
+[TAGTEAM] actor 09D17D60 freed: 16 of its 43 tracked blocks were still allocated and are freed too
+[TAGTEAM] teardown: fighter 09D62460 destroyed, 1 to go
+[TAGTEAM] actor 09D62460 freed: 6 of its 75 tracked blocks were still allocated and are freed too
+[TAGTEAM] teardown: fighter 09D573A0 destroyed, 0 to go
+[TAGTEAM] actor 09D573A0 freed: 6 of its 75 tracked blocks were still allocated and are freed too
+[HLE] sceIoOpen("DISC0:/PSP_GAME/USRDIR/DATA/OVL_MENU_APP.ELF", 0x1, 0x0) caller=0x00000000 path_ptr=0x0BFFE620
+[HLE] sceIoClose(fd=10) caller=0x00000000
+[HLE] sceIoOpen("DISC0:/PSP_GAME/USRDIR/DATA/OVL_MENU_APP.ELF", 0x1, 0x0) caller=0x00000000 path_ptr=0x0BFFE620
+[HLE] sceIoClose(fd=11) caller=0x00000000
+[OVL] resident overlay id=2 (menu)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1DB5F000, whence=0) caller=0x00000000 sp=0x0BFFE810
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=498462720 (0x1DB5F000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:03067000, whence=0) caller=0x00000000 sp=0x0BFFE750
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=50753536 (0x3067000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:03086000, whence=0) caller=0x00000000 sp=0x0BFFE750
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=50880512 (0x3086000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:030D7000, whence=0) caller=0x00000000 sp=0x0BFFE750
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=51212288 (0x30D7000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:030E3000, whence=0) caller=0x00000000 sp=0x0BFFE750
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=51261440 (0x30E3000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:03100000, whence=0) caller=0x00000000 sp=0x0BFFE7E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=51380224 (0x3100000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1DA34800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=497240064 (0x1DA34800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1D9CA000, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=496803840 (0x1D9CA000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1DA3C000, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=497270784 (0x1DA3C000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1D9D1800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=496834560 (0x1D9D1800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1DA22800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=497166336 (0x1DA22800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1D9B9800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=496736256 (0x1D9B9800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1DA2E800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=497215488 (0x1DA2E800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1D9C5800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=496785408 (0x1D9C5800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1DA43800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=497301504 (0x1DA43800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1D9D9000, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=496865280 (0x1D9D9000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1DA73800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=497498112 (0x1DA73800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1D9D7800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=496859136 (0x1D9D7800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1DA6D800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=497473536 (0x1DA6D800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1D9D1800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=496834560 (0x1D9D1800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1DA54000, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=497369088 (0x1DA54000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1D9B9800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=496736256 (0x1D9B9800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1DA60000, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=497418240 (0x1DA60000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1D9C5800, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=496785408 (0x1D9C5800)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1DA75000, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=497504256 (0x1DA75000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:1D9D9000, whence=0) caller=0x00000000 sp=0x0BFFE4E0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=496865280 (0x1D9D9000)
+[IO_DIAG] sceIoLseek(fd=4, r4=4, r5=6, offset=0x00000000:3D9FE800, whence=0) caller=0x00000000 sp=0x0BFFE6F0
+[IO_DIAG] sceIoLseek(fd=4, whence=0) -> pos=1033889792 (0x3D9FE800)
+[ATRAC] id=0 AT3+ ch=2 align=560 state=2 fileSize=282404 endSample=1028930 firstOff=2893 loop=326225..1031823 buf=0x08C18000
+[FILESTATE] before the leftover unload: 594(r0) 544(r0) 1385(r0) 584(r0) 542(r0) 655(r0) 656(r0) 657(r0) 658(r0) 659(r0) 568(r0) 538(r0) 576(r0) 540(r0) 596(r0) 545(r0) [16 objects]
+[MEMSUM] before the leftover unload: model pool used 9392 of 32256 KB, effect pool free 17615 KB (largest 15865 KB) of 24053 KB, texture overflow used 0 of 768 KB, sound heap free 8760 KB (largest 7783 KB) of 12508 KB
+[MEMSUM] before the leftover unload: battle heap (FIELD::MEMORY 0x09B90000) used 0 of 6614 KB
+[MEMSUM] before the leftover unload: small object heap (0x0BD2F000) used 0 of 34528 B
+[LOADCHK] unload char 24: object 0F3F6AE0 id 568 refs 0
+[UNLOAD] char 24: file id 568 object 0F3F6AE0 (refs 0) released; data blocks (mgr heap 0F3B7000, staging 0B810000): +8=0F3F6BE0 +16=0F3F6C40 +24=0F3FCFA0 +28=0F3F6CB0 +32=0F3F7040 +36=0F3FE060 +48=0F3FE650 +136=0F400720 +140=0F4014D0 +144=0F4016F0 +164=0F402E30 +200=0F403130
+[UNLOAD] world list had 0 objects
+[UNLOAD] t=143.8s char 24 (KAIN) unloaded: 1 of 2 file objects released, 0 still loaded
+[MEMSUM] after the unload: model pool used 7732 of 32256 KB, effect pool free 18767 KB (largest 15865 KB) of 24053 KB, texture overflow used 0 of 768 KB, sound heap free 9408 KB (largest 7832 KB) of 12508 KB
+[MEMSUM] after the unload: battle heap (FIELD::MEMORY 0x09B90000) used 0 of 6614 KB
+[MEMSUM] after the unload: small object heap (0x0BD2F000) used 0 of 34528 B
+[LOADCHK] unload char 26: object 0F407A00 id 576 refs 0
+[UNLOAD] char 26: file id 576 object 0F407A00 (refs 0) released; data blocks (mgr heap 0F3B7000, staging 0B810000): +8=0F407B00 +16=0F407B60 +24=0F40F950 +28=0F407BD0 +32=0F408100 +36=0F4107B0 +48=0F410C50 +136=0F412E60 +140=0F414D50 +144=0F415220 +164=0F416890 +200=0F416E00
+[UNLOAD] world list had 0 objects
+[UNLOAD] t=143.8s char 26 (TIFA) unloaded: 1 of 2 file objects released, 0 still loaded
+[MEMSUM] after the unload: model pool used 6304 of 32256 KB, effect pool free 19919 KB (largest 15865 KB) of 24053 KB, texture overflow used 0 of 768 KB, sound heap free 10041 KB (largest 7832 KB) of 12508 KB
+[MEMSUM] after the unload: battle heap (FIELD::MEMORY 0x09B90000) used 0 of 6614 KB
+[MEMSUM] after the unload: small object heap (0x0BD2F000) used 0 of 34528 B
+[LOADCHK] unload char 28: object 0F3E3D20 id 584 refs 0
+[UNLOAD] char 28: file id 584 object 0F3E3D20 (refs 0) released; data blocks (mgr heap 0F3B7000, staging 0B810000): +8=0F3E3E20 +16=0F3E3E80 +24=0F3E91A0 +28=0F3E3EF0 +32=0F3E4290 +36=0F3E9440 +48=0F3E9850 +136=0F3EABE0 +140=0F3EBDB0 +144=0F3EC020 +164=0F3EC1D0 +200=0F3EC370
+[LOADCHK] unload char 28: object 0F3EC610 id 655 refs 0
+[UNLOAD] char 28: file id 655 object 0F3EC610 (refs 0) released; data blocks (mgr heap 0F3B7000, staging 0B810000): +24=0F3ECBB0 +28=0F3EC710 +32=0F3EC780 +144=0F3ECF50
+[LOADCHK] unload char 28: object 0F3EDA90 id 656 refs 0
+[UNLOAD] char 28: file id 656 object 0F3EDA90 (refs 0) released; data blocks (mgr heap 0F3B7000, staging 0B810000): +24=0F3EE070 +28=0F3EDB90 +32=0F3EDBF0 +144=0F3EE1D0
+[LOADCHK] unload char 28: object 0F3EE7D0 id 657 refs 0
+[UNLOAD] char 28: file id 657 object 0F3EE7D0 (refs 0) released; data blocks (mgr heap 0F3B7000, staging 0B810000): +24=0F3EEE20 +28=0F3EE8D0 +32=0F3EE960 +144=0F3EEF80
+[LOADCHK] unload char 28: object 0F3EFDD0 id 658 refs 0
+[UNLOAD] char 28: file id 658 object 0F3EFDD0 (refs 0) released; data blocks (mgr heap 0F3B7000, staging 0B810000): +24=0F3F0560 +28=0F3EFED0 +32=0F3EFF60 +144=0F3F0820
+[LOADCHK] unload char 28: object 0F3F1390 id 659 refs 0
+[UNLOAD] char 28: file id 659 object 0F3F1390 (refs 0) released; data blocks (mgr heap 0F3B7000, staging 0B810000): +24=0F3F1A00 +28=0F3F1490 +32=0F3F1510 +144=0F3F2160
+[UNLOAD] world list had 0 objects
+[UNLOAD] t=143.8s char 28 (YUNA) unloaded: 6 of 7 file objects released, 0 still loaded
+[MEMSUM] after the unload: model pool used 4469 of 32256 KB, effect pool free 20937 KB (largest 16489 KB) of 24053 KB, texture overflow used 0 of 768 KB, sound heap free 10684 KB (largest 7832 KB) of 12508 KB
+[MEMSUM] after the unload: battle heap (FIELD::MEMORY 0x09B90000) used 0 of 6614 KB
+[MEMSUM] after the unload: small object heap (0x0BD2F000) used 0 of 34528 B
+[LOADCHK] unload char 31: object 0F41B600 id 596 refs 0
+[UNLOAD] char 31: file id 596 object 0F41B600 (refs 0) released; data blocks (mgr heap 0F3B7000, staging 0B810000): +8=0F41B700 +16=0F41B760 +24=0F422950 +28=0F41B870 +32=0F41BD40 +36=0F423510 +48=0F4237C0 +136=0F426950 +140=0F428430 +144=0F428B60 +164=0F42CF20 +200=0F42D2A0
+[UNLOAD] world list had 0 objects
+[UNLOAD] t=143.8s char 31 (LIGHTNING) unloaded: 1 of 2 file objects released, 0 still loaded
+[MEMSUM] after the unload: model pool used 2997 of 32256 KB, effect pool free 22089 KB (largest 21097 KB) of 24053 KB, texture overflow used 0 of 768 KB, sound heap free 11326 KB (largest 11326 KB) of 12508 KB
+[MEMSUM] after the unload: battle heap (FIELD::MEMORY 0x09B90000) used 0 of 6614 KB
+[MEMSUM] after the unload: small object heap (0x0BD2F000) used 0 of 34528 B
+[FILESTATE] after the leftover unload: 594(r0) 544(r0) 1385(r0) [3 objects]
+[MEMSUM] after the leftover unload: model pool used 2997 of 32256 KB, effect pool free 22089 KB (largest 21097 KB) of 24053 KB, texture overflow used 0 of 768 KB, sound heap free 11326 KB (largest 11326 KB) of 12508 KB
+[MEMSUM] after the leftover unload: battle heap (FIELD::MEMORY 0x09B90000) used 0 of 6614 KB
+[MEMSUM] after the leftover unload: small object heap (0x0BD2F000) used 0 of 34528 B
