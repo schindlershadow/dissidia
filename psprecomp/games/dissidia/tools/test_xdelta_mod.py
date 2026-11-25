@@ -213,7 +213,7 @@ def make_disc(pkg_entries, extra=None, disc_id='ULUS10566'):
 
 def test_import_and_layout():
     tmp = tempfile.mkdtemp(prefix='xdelta_test_')
-    old_layouts = X.LAYOUTS
+    old_layouts, old_table = X.LAYOUTS, X.LAYOUT_TABLE
     try:
         e1, e2, e3 = b'one' * 300, b'two' * 900, b'three' * 100
         base_files = make_disc([('obj/a.gmo', e1), ('obj/b.objx', e2), ('menu/c.bin', e3)])
@@ -222,6 +222,7 @@ def test_import_and_layout():
         open(base_path, 'wb').write(base)
         # the layout table of this "retail" disc
         X.LAYOUTS = os.path.join(tmp, 'layouts.json')
+        X.LAYOUT_TABLE = os.path.join(tmp, 'disc_layouts.inc')   # never the runtime's table (it shipped a test disc once, issue #124)
         assert X.main(['layout', base_path]) == 0
         lay = json.load(open(X.LAYOUTS))['discs'][0]
         assert lay['id'] == 'ULUS10566' and 'PSP_GAME/USRDIR/DATA/PACKAGE.BIN' in lay['files'], lay['id']
@@ -309,6 +310,7 @@ def test_import_and_layout():
         assert os.path.isfile(os.path.join(work, 'mods', 'from-iso', 'package_tail.bin'))
     finally:
         X.LAYOUTS = old_layouts
+        X.LAYOUT_TABLE = old_table
         shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -379,6 +381,15 @@ def test_run_time_code_helpers():
     XC.guard_sites(keep, {0x08800000: ('FUN_08800000', body)}, [0x08800004], seg, 'test')
     out = keep[0x08800000][1]
     assert 'L_08800004:\n    if ((uint32_t)MEM_W(rdram, 0x08800004U) != 0x0E271616U) { switch (dissidia_xmod_site(rdram, ctx, 0x08800004U)) { case 1: goto L_0880000C; case 2: return;' in out, out
+
+
+
+def test_shipped_layout_table():
+    # runtime/disc_layouts.inc (the in-game importer's base discs) is the retail table: generated from disc_layouts.json, the
+    # full 1.75 GB discs. A test disc there made every real patch fail to install (issue #124: "203 block(s) do not match").
+    text = open(X.LAYOUT_TABLE).read()
+    assert text == X.layout_table_text(X.load_layouts()), 'runtime/disc_layouts.inc is stale: run xdelta_mod.py layout-table'
+    assert '{"ULUS10566", 1754529792ull' in text and '{"ULES01505", 1754529792ull' in text, 'not the retail discs'
 
 
 if __name__ == '__main__':

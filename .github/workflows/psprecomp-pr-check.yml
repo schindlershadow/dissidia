@@ -76,6 +76,11 @@ jobs:
         id: localbundle
         if: runner.environment == 'self-hosted'
         run: python3 release/ci_bundle.py restore --platform ${{ matrix.platform }} --key ${{ hashFiles('psprecomp/toolchain/**') }} --work work
+      # The ISO patch importer's tests (Python, standard library only): among them, that the shipped retail disc table is not a test
+      # disc (issue #124: every real patch failed to install).
+      - name: ISO patch (xdelta) tool tests
+        if: matrix.platform == 'linux-x86_64'
+        run: python3 games/dissidia/tools/test_xdelta_mod.py
       - name: Core and wizard for ${{ matrix.platform }}
         run: |
           BUNDLE=""
