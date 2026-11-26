@@ -2537,7 +2537,10 @@ bool dissidia_nearest_fighter(const float eye[3], float pos[3]) {
 }
 
 float dissidia_battle_age() { return g_battle_age; }   // ticks (1/60 s) since the battle started running (camera.cpp)
-float dissidia_logic_tick_len() { return g_ticks; }   // 1/60 s per game logic frame (tagteam.cpp: its own battle clock)
+float dissidia_logic_tick_len() { return g_ticks; }
+// tagteam_hud.cpp (HUD smoothing): the gameplay-frame number (the interpolation tag's gen) of the frame that just ran; false = no 30 Hz logic interpolation.
+// Called from dissidia_tagteam_frame_end, before this frame end publishes the tag of the coming frame.
+bool dissidia_hud_gen(uint32_t* gen) { if (!l30_active() || !(g_l30_list_tag.phase > -1.0f)) return false; *gen = g_l30_list_tag.gen; return true; }   // 1/60 s per game logic frame (tagteam.cpp: its own battle clock)
 
 // The fighter a person controls (its brain, actor +0x5C4, is in human mode: brain +0x54 != 0), 0 if none is known (camera.cpp).
 uint32_t dissidia_player_actor() {
@@ -2637,7 +2640,11 @@ void dissidia_framerate_install(uint8_t* rdram) {
             // battle HUD archive, the same for every fighter and stage)
             static const uint32_t follow[] = {0xC33070u, 0xC7EA30u};
             ge_draw_set_hud_fixed_tex(follow, 2);
+            // The lock-on ring is no longer at 0xC33070 (0x81D0F0 in current runs, 1v1 and tag team): found by its content, so it follows the fighter
+            // on the frame-interpolated scene (psp_ge_draw.cpp IP2D) and stays on the picture on tall windows. PSPRECOMP_TAGTEAM_HUDSMOOTH_OLD=1 = not.
         }
+        static const uint64_t follow_hash[] = {0xe5465917458e8746ull};
+        if (!std::getenv("PSPRECOMP_TAGTEAM_HUDSMOOTH_OLD")) ge_draw_set_hud_fixed_tex_hash(follow_hash, 1, rdram);
     }
     const char* e = std::getenv("PSPRECOMP_FPS");
     if (e && std::atoi(e) >= kUnlocked) g_target = kUnlocked;

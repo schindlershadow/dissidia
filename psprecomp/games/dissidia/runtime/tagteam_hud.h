@@ -78,3 +78,9 @@ void tagteam_hud_hp_hit(const TagHudHit& h);
 // Which actor each big (retail) panel shows, by HUD side (0 = left); 0 = unknown. Called every tick with the fighters.
 void tagteam_hud_big_panels(uint32_t left_actor, uint32_t right_actor);
 bool tagteam_fx_project(const float p[3], float& sx, float& sy);   // tagteam_fx.cpp
+
+// View smoothing (26 Nov): called once per frame before tagteam_hud_pos / tagteam_layer_frame. on = 30 Hz logic interpolation is running, gen = the gameplay
+// frame the frame that just ran belongs to, slow_rate = the battle's slow-motion rate (1 = normal; the HUD's pulse clock follows it).
+void tagteam_hud_view(bool on, uint32_t gen, float slow_rate);
+// A fighter's feet (actor + 0x80) as the renderer's interpolated scene has them (the position to project with ge_draw_last_view_proj); false = no actor / memory.
+bool tagteam_hud_pos(uint32_t actor, float p[3]);

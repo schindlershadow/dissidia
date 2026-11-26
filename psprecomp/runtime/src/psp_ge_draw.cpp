@@ -128,10 +128,26 @@ void ge_draw_set_hud_fixed_tex(const uint32_t* addrs, int n) {
     g_hud_fixed_n = std::clamp(n, 0, 8);
     for (int i = 0; i < g_hud_fixed_n; i++) g_hud_fixed[i] = addrs[i] & 0xFFFFFFu;
 }
+// The same textures by content (ge_draw_set_hud_fixed_tex_hash): the battle HUD archive is not at one address in every run (the lock-on ring was at
+// 0xC33070 when the table above was made, and is at 0x81D0F0 now, in 1v1 and in the tag team alike), so the ring stopped following. FNV-1a of the
+// first 256 bytes of the texture's memory.
+static uint64_t g_hud_fixed_hash[8];
+static int g_hud_fixed_hash_n = 0;
+static const uint8_t* g_hud_fixed_ram = nullptr;
+void ge_draw_set_hud_fixed_tex_hash(const uint64_t* hashes, int n, const uint8_t* rdram) {
+    g_hud_fixed_hash_n = std::clamp(n, 0, 8); g_hud_fixed_ram = rdram;
+    for (int i = 0; i < g_hud_fixed_hash_n; i++) g_hud_fixed_hash[i] = hashes[i];
+}
 static bool hud_fixed_tex(const GeState& st) {
     if (!st.texture_enable) return false;
     const uint32_t a = st.tex_addr[0] & 0xFFFFFFu;
     for (int i = 0; i < g_hud_fixed_n; i++) if (g_hud_fixed[i] == a) return true;
+    if (g_hud_fixed_hash_n > 0 && g_hud_fixed_ram && a >= 0x040000u && a < 0x1000000u) {
+        uint64_t hv = 1469598103934665603ull; const uint32_t ba = (a | 0x08000000u) & 0x07FFFFFFu;
+        if (ba + 256u > 0x08000000u) return false;
+        for (uint32_t k = 0; k < 256; k += 4) { uint32_t w; std::memcpy(&w, g_hud_fixed_ram + ba + k, 4); hv = (hv ^ w) * 1099511628211ull; }
+        for (int i = 0; i < g_hud_fixed_hash_n; i++) if (g_hud_fixed_hash[i] == hv) return true;
+    }
     return false;
 }
 // Field of view changed on the game's side (psp_ge_draw.h): the 2D marks that follow a fighter (lock-on ring, target pointer) were placed by
@@ -1383,6 +1399,11 @@ static float g_dbg_eye[3] = {0, 0, 0}, g_dbg_fwd[3] = {0, 0, 1};
 // tall screen included): game modules project world points onto the screen with them
 // (effects drawn on the game layer at a fighter's position).
 static float g_last_view[12] = {}, g_last_proj[16] = {}; static bool g_last_vp_ok = false;
+static std::atomic<uint64_t> g_last_vp_tag{0};   // (gen << 32 | phase bits) of the display list the last view / projection came from
+bool ge_draw_last_view_proj_tag(uint32_t* gen, float* phase) {   // interpolation tag of that list (phase -1: not interpolated)
+    const uint64_t v = g_last_vp_tag.load(); const uint32_t pb = static_cast<uint32_t>(v); float ph; std::memcpy(&ph, &pb, 4);
+    *gen = static_cast<uint32_t>(v >> 32); *phase = ph; return g_last_vp_ok;
+}
 bool ge_draw_last_view_proj(float view[12], float proj[16]) { std::memcpy(view, g_last_view, sizeof g_last_view); std::memcpy(proj, g_last_proj, sizeof g_last_proj); return g_last_vp_ok; }
 void ge_draw_last_eye(float eye[3], float fwd[3]) { for (int i = 0; i < 3; i++) { eye[i] = g_dbg_eye[i]; fwd[i] = g_dbg_fwd[i]; } }   // view blocker fade (ge_draw_set_view_blocker)
 static float vb_fade_factor(uint8_t* rdram, const GeState& st, int n, int prim);
@@ -2770,6 +2791,7 @@ static void ge_draw_prim_one(uint8_t* rdram, int prim_type, int count);
 
 // ---- Frame interpolation (ge_interp_set_frame, psp_ge_draw.h) ----
 namespace {
+static void ip_note_vp_tag();
 struct IpMats { float w[12], v[12], p[16], b[96], tg[12], uv[4]; };   // uv: texture scale u/v, offset u/v (scrolling textures)
 std::mutex g_ip_set_mu;
 GeInterpTag g_ip_set;                  // the tag the game thread set for the frame it is building
@@ -2794,6 +2816,7 @@ uint64_t ip_key(const GeState& st, int prim_type, int count, bool loose = false)
     mix(st.tex_addr[0]);   // not the render target: the game alternates two framebuffers every frame
     return h;
 }
+static void ip_note_vp_tag() { uint32_t pb; std::memcpy(&pb, &g_ip_phase, 4); g_last_vp_tag.store((uint64_t(g_ip_gen) << 32) | pb); }   // ge_draw_last_view_proj_tag
 void ip_lerp(float* dst, const float* a, const float* b, float t, int n) { for (int i = 0; i < n; i++) dst[i] = a[i] + (b[i] - a[i]) * t; }
 bool ip_far(const float* a, const float* b) {   // world positions more than 3 m apart: a teleport, do not blend
     const float dx = a[9] - b[9], dy = a[10] - b[10], dz = a[11] - b[11];
@@ -3574,7 +3597,7 @@ static void main_camera_vote(const GeState& st) {
     tall_proj(proj, draw_tall_y(st));
     const bool same = n > 0 && !std::memcmp(vp, proj, sizeof vp) && !std::memcmp(vv, st.view_matrix, sizeof vv);
     if (same) { if (n < 1000) n++; } else if (n > 0) n--; else { std::memcpy(vp, proj, sizeof vp); std::memcpy(vv, st.view_matrix, sizeof vv); n = 1; }
-    if (same && n >= 8) { std::memcpy(g_last_view, vv, sizeof g_last_view); std::memcpy(g_last_proj, vp, sizeof g_last_proj); g_last_vp_ok = true; }
+    if (same && n >= 8) { std::memcpy(g_last_view, vv, sizeof g_last_view); std::memcpy(g_last_proj, vp, sizeof g_last_proj); g_last_vp_ok = true; ip_note_vp_tag(); }
 }
 static void fx_track(const GeState& st, uint8_t* rdram, int prim_type, int count) {
     {   // effects draws (blended, depth tested, not depth writing) are also drawn into the SSR effects layer (fxl_*)
@@ -3635,7 +3658,7 @@ static void fx_track(const GeState& st, uint8_t* rdram, int prim_type, int count
             if (const float wx = draw_wide_x(st); wx != 1.0f) { proj[0] *= wx; proj[4] *= wx; proj[8] *= wx; proj[12] *= wx; }
             tall_proj(proj, draw_tall_y(st));
             const bool same = v.n > 0 && !std::memcmp(v.proj, proj, sizeof v.proj) && !std::memcmp(v.view, st.view_matrix, sizeof v.view);
-            if (same && v.n >= 8 && is_main_key(g_targets[cur].key)) { std::memcpy(g_last_view, v.view, sizeof g_last_view); std::memcpy(g_last_proj, v.proj, sizeof g_last_proj); g_last_vp_ok = true; }   // ge_draw_last_view_proj
+            if (same && v.n >= 8 && is_main_key(g_targets[cur].key)) { std::memcpy(g_last_view, v.view, sizeof g_last_view); std::memcpy(g_last_proj, v.proj, sizeof g_last_proj); g_last_vp_ok = true; ip_note_vp_tag(); }   // ge_draw_last_view_proj
             if (same) v.n++;
             else if (v.n > 0) v.n--;
             else {
@@ -3706,7 +3729,7 @@ static void fx_track(const GeState& st, uint8_t* rdram, int prim_type, int count
         std::memcpy(s.view, g_fx_vote[i].view, sizeof s.view);
         s.near_z = g_fx_vote[i].near_z; s.far_z = g_fx_vote[i].far_z;
         s.clear_z = g_fx_clearz[i];
-        std::memcpy(g_last_view, s.view, sizeof g_last_view); std::memcpy(g_last_proj, s.proj, sizeof g_last_proj); g_last_vp_ok = true;   // ge_draw_last_view_proj
+        std::memcpy(g_last_view, s.view, sizeof g_last_view); std::memcpy(g_last_proj, s.proj, sizeof g_last_proj); g_last_vp_ok = true; ip_note_vp_tag();   // ge_draw_last_view_proj
         { static int dbg = 0; if (psp_rt_available() && dbg++ % 600 == 0) std::fprintf(stderr, "[RT] scene complete: %zu captured triangles, rt %d\n", g_rt_tris[i].size() / 9, (int)psp_rt_available()); }
         if (psp_rt_scene_wanted() && (!g_rt_tris[i].empty() || !g_rt_persist[i].empty())) rt_persist_merge(i, s.proj, s.view);
         if (psp_rt_scene_wanted()) rt_static_refresh(i);
