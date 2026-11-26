@@ -66,6 +66,18 @@ Nothing is replaced silently: when a save already exists you choose *Replace* or
 `PSPRECOMP_SAVEMGR=0` removes the Triangle key; `PSPRECOMP_FILE_DIALOG=none` always uses the in-game browser instead of the system's
 dialog.
 
+## Opening Settings > Saves is not read on the UI thread (26 Nov)
+
+Opening the category used to read every save and every backup folder on the UI thread (`psp_savebackup::list` parses each save of each
+backup: with a long history that is thousands of files, and on a phone's shared storage (FUSE) each costs a millisecond or more, so the
+screen froze for seconds). Now `Page::reset()` starts a background load (this game's saves and the backup list); the top level shows
+"Loading..." as the value of *This game's saves* / *Restore a backup* until it is back, and *Restore a backup* shows "Loading backups..."
+the same way, so the menu stays drawn and usable (the Import rows already filled in from their own thread). `psp_savebackup::list` also
+keeps what it read of each backup folder (keyed by the folder's modification time; a folder younger than 3 s is not kept), so opening again
+does not read the backups again, and `read_save` uses one `stat` instead of two. Host numbers (`tests/bench_saves_open.cpp`, 20 saves,
+54 backups of 20 saves): UI thread 28 ms -> 0.1 ms, 37 000 -> 16 000 file system calls for the first open. `PSPRECOMP_SAVES_SYNC_OLD=1`
+restores the old behaviour (read on the UI thread, no cache).
+
 ## Backups
 
 Every save that is about to be replaced - by a cloud download, by *Use the cloud save* in a conflict, by an import or by a restore - is

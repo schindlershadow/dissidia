@@ -14,6 +14,9 @@
 - ~~FFA: every pick through the game's real Player Select (LOOK / SET, "Play as this character?"), never Party Select / CPU Select; no forced cursor / injected presses in the tag menus~~ DONE 26 Nov (tree ttffap, branch tt-ffaplayer, "Batch forty-one"). Open: FFA tag-ins of CPU slots are still not played (a KO'd CPU slot takes another fighter of the line-up, pre-existing), the Add CPU Cross (see there).
 - ~~Out-of-bounds fighters (user, 26 Nov: "if a player is outside the map and they should not be, teleport them back")~~ DONE 26 Nov (branch tt-oobfix, redone with the stage collision as tt-oobfix2, see "Batch: out-of-bounds teleport").
 - **Pre-battle "Round N / VS" page (user, 25 Nov): shows the real tag line-up (tree ttvs, branch tt-vsscreen).** Done on the host and with two linked copies: see "Batch forty". Open: Opponent Info (the page after it) still shows the retail target; rules text is not on the page; devices not run.
+
+- **[FIXED 26 Nov (branch tt-savesmenu), verify on the RP6] Settings > Saves slow to open and freezes the screen** (user report): cause = `Page::reset()` / the top rows read every save of every backup folder synchronously (`psp_savebackup::list`, thousands of files, slow on Android FUSE). Fix: background load with "Loading..." rows, per-backup read cache, one stat per save; see savedata.md "Opening Settings > Saves"; opt-out `PSPRECOMP_SAVES_SYNC_OLD=1`. Host: UI thread 28 ms -> 0.1 ms. Not measured on the RP6 (needs the new APK).
+
 - **User play-test 25 Nov evening (RP6):**
   - ~~Battle Lobby: hovering "Enter Battle" shows no stage preview (should show the lobby's stage).~~ Fixed 25 Nov ("Batch twenty-nine").
   - ~~Opening Communications mode opened the battle menu.~~ Fixed 25 Nov, reproduced on the host ("Batch twenty-nine").
