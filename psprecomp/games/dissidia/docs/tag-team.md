@@ -3,7 +3,7 @@
 ## TODO (kept up to date; newest first)
 
 - ~~FFA: every pick through the game's real Player Select (LOOK / SET, "Play as this character?"), never Party Select / CPU Select; no forced cursor / injected presses in the tag menus~~ DONE 26 Nov (tree ttffap, branch tt-ffaplayer, "Batch forty-one"). Open: FFA tag-ins of CPU slots are still not played (a KO'd CPU slot takes another fighter of the line-up, pre-existing), the Add CPU Cross (see there).
-- ~~Out-of-bounds fighters (user, 26 Nov: "if a player is outside the map and they should not be, teleport them back")~~ DONE 26 Nov (branch tt-oobfix, see "Batch: out-of-bounds teleport").
+- ~~Out-of-bounds fighters (user, 26 Nov: "if a player is outside the map and they should not be, teleport them back")~~ DONE 26 Nov (branch tt-oobfix, redone with the stage collision as tt-oobfix2, see "Batch: out-of-bounds teleport").
 - **Pre-battle "Round N / VS" page (user, 25 Nov): shows the real tag line-up (tree ttvs, branch tt-vsscreen).** Done on the host and with two linked copies: see "Batch forty". Open: Opponent Info (the page after it) still shows the retail target; rules text is not on the page; devices not run.
 - **User play-test 25 Nov evening (RP6):**
   - ~~Battle Lobby: hovering "Enter Battle" shows no stage preview (should show the lobby's stage).~~ Fixed 25 Nov ("Batch twenty-nine").
@@ -107,16 +107,20 @@ runtime hooks. "Confirmed" = read in the code; "inferred" = a guess to check in 
 Goal: Budokai Tenkaichi style tag battles. Two fighters per side on the stage at once, the rest of the party roster
 comes in when a fighter is KO'd, the existing lock-on cycling switches between the enemy fighters.
 
-## Batch: out-of-bounds teleport (26 Nov, branch tt-oobfix)
+## Batch: out-of-bounds teleport (26 Nov, branches tt-oobfix, redone as tt-oobfix2)
 
-The game has no stage-bounds query (walls are collision geometry), so "the map" is what the battle learned: the ground samples of `ground_track()`.
-`oob_tick()` (tagteam.cpp, called every battle tick from `ko_oneround`) checks every fighter of `all_fighters()` (slot fighters + started extras, any side / mode incl. FFA / PvE):
-NaN position, y more than 25 m below the lowest usable sample, or more than 45 m from any usable sample. After 0.5 s (30 ticks) of that the fighter is put on the
-nearest usable sample (fallback: nearest to a team mate, then the side's start spot), `start_script(1)` (drops speed, stand state), `[OOB] ...` logged.
-Not touched: parked (|x| or |z| >= 1000: Assist Off partners, fallen extras, waiting call-ins), KO'd / falling / defeated / AI-gated, `g_park`, the Assist Off pair, a fighter in the running EX Burst / chase pair; nothing runs during EX Burst / finish / entrance / intro, before 20 samples are known, or once the battle is decided.
-Battle state only (deterministic online). Opt-out `PSPRECOMP_TAGTEAM_OOB_OFF=1`. Test aid `PSPRECOMP_TAGTEAM_OOB_TEST="<sec>:<y|x|nan|park>[:<fighter index>]"` forces it once.
-Test (1v1 + clones, headless): `x` (+300 m) -> `[OOB] ... outside the known map at (298,0,11): back to the nearest floor (13,0,8)` 0.5 s later; `park` (5000,5000) untouched; `y` / `nan`: the game re-derives
-the height from the floor each frame, so those self-heal before the check matters (the check stays as a net for stages where it does not). No false positives in 40 s fights.
+The first version (tt-oobfix, "far from walked floor") was rejected by the user ("outside the map can have a floor; check the map data for the invisible walls"). tt-oobfix2 uses the stage's real collision.
+- **Where the walls are.** Retail stops fighters with a sphere sweep against the stage collision (`FUN_0883B470` -> `FUN_0889CF04(world, out, start vec4 (x,y,z,radius), delta vec3, hitpos vec3, mask 0x36, 1, 0, stack 0)`,
+  world = `FUN_08899300()`; returns 1 on a hit; `stage_sweep()` in tagteam.cpp calls it). Invisible walls and real walls are both collision geometry (no separate limit table found). Probed outward from the fighters' centre
+  (`PSPRECOMP_TAGTEAM_OOB_PROBE=<sec>`): Quick Battle stage 12 / stage 1: a circle of radius 43.1 (sphere centre) around the origin; stage id 0: a walled room (walls 9.6 / 12.6 m from the centre); id 16: walls 27 - 43 m.
+- **Rule** (`oob_tick`, every 10 battle ticks per fighter, deterministic: collision + battle state only): out of the map when (a) NaN position, (b) y > 10 m below the lowest known floor with no floor under it
+  (`stage_floor_y` answers none), or (c) at least 3 of 8 compass sweeps (150 m, at the floor height + 1.2 m) hit nothing (no wall outward) AND a sweep towards every other fighter is blocked by collision (walled off from everyone).
+  The "sample far from walked floor" rule is gone. An open stage (no walls) never triggers (c).
+- After 0.5 s (30 ticks) out the fighter is put on the nearest known standing spot that is walled in (<= 1 open direction; else a team mate's spot, else the side's start), `start_script(1)`, `[OOB]` logged.
+- Not touched: parked (|x| or |z| >= 1000), KO'd / falling / AI-gated, `g_park`, Assist Off pair, EX Burst participants / chase pair, nothing during EX Burst / finish / entrance / intro, battle decided, fewer than 20 samples.
+- Opt-out `PSPRECOMP_TAGTEAM_OOB_OFF=1`. Test aid `PSPRECOMP_TAGTEAM_OOB_TEST="<sec>:<y|x|edge|wall|nan|park>[:<fighter index>]"` (edge = just beyond the stage-12 wall, wall = next to it inside).
+- Test: stage 12 `edge` (48 m): back inside 0.57 s later; `wall` (40 m inside): untouched; `park`: untouched; `x` (+300 m): returned on stage ids 0, 16 and 12. No false `[OOB]` in the other fights.
+  `y` / `nan` self-heal (the game re-derives y from the floor). Menu-walk runs of other stages are flaky under host load (no extras spawned in several tries), so ids 0, 12, 16 are the stages checked.
 
 ## What the battle looks like today (confirmed)
 

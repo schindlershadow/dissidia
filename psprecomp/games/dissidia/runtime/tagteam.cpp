@@ -6817,23 +6817,77 @@ void tagduel_swap_tick() {
 // Battle state only (deterministic online). PSPRECOMP_TAGTEAM_OOB_OFF=1: off. PSPRECOMP_TAGTEAM_OOB_TEST="<sec>:<y|x|nan|park>[:<extra index>]" test aid (forces it once).
 void start_script(uint32_t P, uint32_t id); void place_at(uint32_t P, float x, float y, float z, const char* why);
 bool oob_ao8_involved(uint32_t a); bool chase_pair_holds(uint32_t a); bool exb_busy(); bool entrance_busy(); bool intro_done(); bool exb_in(uint32_t a);
+// The game's own movement sweep (FUN_0889CF04, what FUN_0883B470 runs for every fighter step against the stage collision: walls, invisible walls, floors):
+// world, out(hit info), start = vec4 (x, y, z, sphere radius), delta vec3, out2 (3 floats), mask 0x36, 1, 0, stack arg 0. Returns 1 when the sphere hits something on the way.
+bool stage_sweep(float x, float y, float z, float r, float dx, float dy, float dz, float* hit, uint32_t* info) {
+    const FuncPtr w = fn(0x08899300u), q = fn(0x0889CF04u); if (!w || !q || !g_ctx) return false;
+    const recomp_context saved = *g_ctx;
+    const uint32_t base = (static_cast<uint32_t>(saved.r[29]) - 0x600u) & ~0xFu, st = base + 0x40u, dl = base + 0x60u, o2 = base + 0x80u, out = base + 0x100u;
+    g_ctx->r[29] = static_cast<int32_t>(base); w(g_ram, g_ctx); const uint32_t world = static_cast<uint32_t>(g_ctx->r[2]);
+    bool h = false;
+    if (world) {
+        wrf(st, x); wrf(st + 4, y); wrf(st + 8, z); wrf(st + 12, r); wrf(dl, dx); wrf(dl + 4, dy); wrf(dl + 8, dz); wrf(o2, 0); wrf(o2 + 4, 0); wrf(o2 + 8, 0);
+        for (uint32_t i = 0; i < 0x100; i += 4) wr(out + i, 0);
+        wr(base, 0);   // the stack argument
+        g_ctx->r[4] = static_cast<int32_t>(world); g_ctx->r[5] = static_cast<int32_t>(out); g_ctx->r[6] = static_cast<int32_t>(st); g_ctx->r[7] = static_cast<int32_t>(dl);
+        g_ctx->r[8] = static_cast<int32_t>(o2); g_ctx->r[9] = 0x36; g_ctx->r[10] = 1; g_ctx->r[11] = 0;
+        q(g_ram, g_ctx); h = (g_ctx->r[2] & 0xFF) == 1;
+        if (hit) { hit[0] = rdf(o2); hit[1] = rdf(o2 + 4); hit[2] = rdf(o2 + 8); }
+        if (info) for (int i = 0; i < 16; i++) info[i] = rd(out + 4u * i);
+    }
+    *g_ctx = saved;
+    return h;
+}
+void oob_probe(float age) {
+    static const char* e = std::getenv("PSPRECOMP_TAGTEAM_OOB_PROBE"); static uint32_t done = ~0u; if (!e || done == g_battle_gen || age < std::atof(e) * 60.f) return;
+    uint32_t f[6]; const int n = all_fighters(f); if (n < 1) return; done = g_battle_gen;
+    float cx = 0, cy = 0, cz = 0; for (int i = 0; i < n; i++) { cx += rdf(f[i] + 0x80u); cy += rdf(f[i] + 0x84u); cz += rdf(f[i] + 0x88u); } cx /= n; cy /= n; cz /= n;
+    const float r = rdf(rd(f[0] + 928u) + 24u);
+    std::fprintf(stderr, "[OOBPROBE] stage id %u centre (%.1f,%.1f,%.1f) radius %g n %d\n", rd(0x08B98854u), cx, cy, cz, r, n);
+    for (int k = 0; k < 24; k++) { const float a = k * 6.2831853f / 24.f, dx = std::cos(a) * 200.f, dz = std::sin(a) * 200.f; float h[3] = {0, 0, 0}; uint32_t inf[16];
+        const bool hit = stage_sweep(cx, cy + 1.2f, cz, r, dx, 0.f, dz, h, inf);
+        std::fprintf(stderr, "[OOBPROBE] dir %2d hit %d at (%.1f,%.1f,%.1f) dist %.1f info", k, hit, h[0], h[1], h[2], std::hypot(h[0] - cx, h[2] - cz)); for (int i = 0; i < 12; i++) std::fprintf(stderr, " %08X", inf[i]); std::fprintf(stderr, "\n"); }
+}
+// How walled-in a point is: the number of the 8 compass directions (150 m, at the floor's height + 1.2 m, the fighter's own sweep sphere) that hit no collision at all.
+// The stage's invisible walls and real walls are collision geometry (the sweep stops every fighter at them), so a point inside the arena has them all around it
+// (0 misses on a closed stage); beyond the wall there is nothing outward.
+int oob_misses(float x, float gy, float z, float r) {
+    int miss = 0;
+    for (int k = 0; k < 8; k++) { const float an = k * 0.7853982f; if (!stage_sweep(x, gy + 1.2f, z, r, std::cos(an) * 150.f, 0.f, std::sin(an) * 150.f, nullptr, nullptr)) miss++; }
+    return miss;
+}
+float oob_floor(float x, float y, float z) { const float f = stage_floor_y(x, y + 3.f, z); return (std::isfinite(f) && f > -50.f) ? f : NAN; }
+// out of the map: >= 3 of 8 compass sweeps open (no wall outward) AND every other fighter is walled off from it (a sweep towards it hits collision on the way)
+bool oob_outside(uint32_t a, const uint32_t* f, int n, float x, float y, float z, float r) {
+    const float fl = oob_floor(x, y, z), gy = std::isfinite(fl) ? fl : y;
+    if (oob_misses(x, gy, z, r) < 3) return false;
+    int others = 0;
+    for (int i = 0; i < n; i++) { const uint32_t o = f[i]; if (o == a) continue; const float ox = rdf(o + 0x80u), oy = rdf(o + 0x84u), oz = rdf(o + 0x88u);
+        if (!std::isfinite(ox) || !std::isfinite(oy) || !std::isfinite(oz) || std::fabs(ox) >= 1000.f || std::fabs(oz) >= 1000.f) continue;   // (a parked one is no reference)
+        others++; const float dx = ox - x, dz = oz - z, dy = (oy - y); float h[3]; const bool hit = stage_sweep(x, gy + 1.2f, z, r, dx, dy, dz, h, nullptr);
+        const float want = std::sqrt(dx * dx + dz * dz); if (!(hit && std::hypot(h[0] - x, h[2] - z) < want - 2.f)) return false; }   // a clear line to somebody: inside
+    return others > 0;
+}
 void oob_tick(float age) {
+    oob_probe(age);
     static const bool off = std::getenv("PSPRECOMP_TAGTEAM_OOB_OFF") != nullptr; if (off || !g_bs || !tag_live()) return;
-    static std::map<uint32_t, float> since; static uint32_t gen = ~0u; static bool tested = false;
-    if (gen != g_battle_gen) { gen = g_battle_gen; since.clear(); tested = false; }
+    static std::map<uint32_t, float> since; static uint32_t gen = ~0u; static bool tested = false; static float next_chk = 0.f;
+    if (gen != g_battle_gen) { gen = g_battle_gen; since.clear(); tested = false; next_chk = 0.f; }
     uint32_t f[6]; const int n = all_fighters(f);
     if (const char* t = std::getenv("PSPRECOMP_TAGTEAM_OOB_TEST"); t && !tested) {
         float sec = 0.f; char mode[8] = {0}; int ix = 0; const int c = std::sscanf(t, "%f:%7[a-z]:%d", &sec, mode, &ix);
         if (c >= 2 && age >= sec * 60.f && n > 0) { tested = true; const uint32_t a = f[std::min(std::max(ix, 0), n - 1)];
             if (!std::strcmp(mode, "y")) wrf(a + 0x84u, rdf(a + 0x84u) - 200.f);
             else if (!std::strcmp(mode, "x")) wrf(a + 0x80u, rdf(a + 0x80u) + 300.f);
+            else if (!std::strcmp(mode, "edge")) { wrf(a + 0x80u, 48.f); wrf(a + 0x88u, 0.f); }   // just beyond the circular wall (radius 43 of the test stage)
+            else if (!std::strcmp(mode, "wall")) { wrf(a + 0x80u, 40.f); wrf(a + 0x88u, 0.f); }   // inside, next to it: must NOT trigger
             else if (!std::strcmp(mode, "nan")) wr(a + 0x84u, 0x7FC00000u);
             else if (!std::strcmp(mode, "park")) { wrf(a + 0x80u, 5000.f); wrf(a + 0x88u, 5000.f); }
             std::fprintf(stderr, "[OOB] t=%.2fs TEST: %08X forced %s -> (%.1f,%.1f,%.1f)\n", age / 60.f, a, mode, rdf(a + 0x80u), rdf(a + 0x84u), rdf(a + 0x88u)); }
     }
     if (g_decided || exb_busy() || entrance_busy() || !intro_done() || g_gsamp.size() < 20) { since.clear(); return; }
+    if (age < next_chk) return; next_chk = age + 10.f;   // every 10 ticks (battle age, the same on every machine)
     float miny = 1e30f; for (const auto& kv : g_gsamp) if (sample_ok(kv.first, kv.second, true)) miny = std::min(miny, kv.second.y);
-    if (miny > 1e29f) { since.clear(); return; }
     for (int i = 0; i < n; i++) {
         const uint32_t a = f[i];
         const float x = rdf(a + 0x80u), y = rdf(a + 0x84u), z = rdf(a + 0x88u); const bool fin = std::isfinite(x) && std::isfinite(y) && std::isfinite(z);
@@ -6842,18 +6896,26 @@ void oob_tick(float age) {
         for (const auto& pk : g_park) if (pk.first == a) skip = true;
         if (fin && (std::fabs(x) >= 1000.f || std::fabs(z) >= 1000.f)) skip = true;   // parked
         bool out = false; const char* why = "";
-        if (!skip) { if (!fin) { out = true; why = "NaN position"; }
-            else if (y < miny - 25.f) { out = true; why = "below the floor"; }
-            else { GPos q{}; const float d = nearest_sample(x, z, &q); if (d > 45.f) { out = true; why = "outside the known map"; } } }
+        if (!skip) {
+            if (!fin) { out = true; why = "NaN position"; }
+            else { const float rad = (ok(rd(a + 928u), 0x20) && std::isfinite(rdf(rd(a + 928u) + 24u)) && rdf(rd(a + 928u) + 24u) > 0.f) ? rdf(rd(a + 928u) + 24u) : 0.9f;
+                if (miny < 1e29f && y < miny - 10.f && !std::isfinite(oob_floor(x, y, z))) { out = true; why = "below the stage, no floor under it"; }
+                else if (oob_outside(a, f, n, x, y, z, rad)) { out = true; why = "outside the stage's wall"; } }
+        }
         if (!out) { since.erase(a); continue; }
         auto it = since.find(a); if (it == since.end()) { since[a] = age; continue; }
         if (age - it->second < 30.f) continue;
         since.erase(a);
-        GPos q{};
-        float d = fin ? nearest_sample(x, z, &q) : -1.f;
-        if (d < 0.f) { const uint32_t o = f[(i + 1) % n]; const float ox = rdf(o + 0x80u), oz = rdf(o + 0x88u); d = (n > 1 && o != a && std::isfinite(ox) && std::isfinite(oz) && std::fabs(ox) < 1000.f && std::fabs(oz) < 1000.f) ? nearest_sample(ox, oz, &q) : -1.f; }
-        if (d < 0.f) { if (g_side_start_set[side_of(a) & 1u]) q = g_side_start[side_of(a) & 1u]; else continue; }
-        std::fprintf(stderr, "[OOB] t=%.2fs %s %08X (c%d, script %d) %s at (%.1f,%.1f,%.1f): back to the nearest floor (%.1f,%.1f,%.1f)\n", age / 60.f, role_of(a), a, actor_char(a), sc, why, x, y, z, q.x, q.y, q.z);
+        // the spot: the nearest known standing spot that is walled in (<= 1 open direction), tried nearest first; else a team mate / the side's start
+        GPos q{}; bool found = false;
+        { std::vector<std::pair<float, GPos>> cand; for (const auto& kv : g_gsamp) if (sample_ok(kv.first, kv.second, true)) cand.push_back({fin ? std::hypot(kv.second.x - x, kv.second.z - z) : 0.f, kv.second});
+          std::sort(cand.begin(), cand.end(), [](const std::pair<float, GPos>& u, const std::pair<float, GPos>& v) { return u.first < v.first; });
+          const float rad2 = 0.9f; for (size_t c = 0; c < cand.size() && c < 400 && !found; c += (c < 20 ? 1 : 20)) if (oob_misses(cand[c].second.x, cand[c].second.y, cand[c].second.z, rad2) <= 1) { q = cand[c].second; found = true; } }
+        if (!found) for (int j = 1; j < n && !found; j++) { const uint32_t o = f[(i + j) % n]; const float ox = rdf(o + 0x80u), oz = rdf(o + 0x88u); GPos g{};
+            if (std::isfinite(ox) && std::isfinite(oz) && std::fabs(ox) < 1000.f && std::fabs(oz) < 1000.f && grounded_now(o, &g)) { q = g; found = true; } }
+        if (!found && g_side_start_set[side_of(a) & 1u]) { q = g_side_start[side_of(a) & 1u]; found = true; }
+        if (!found) continue;
+        std::fprintf(stderr, "[OOB] t=%.2fs %s %08X (c%d, script %d) %s at (%.1f,%.1f,%.1f): back inside, to (%.1f,%.1f,%.1f)\n", age / 60.f, role_of(a), a, actor_char(a), sc, why, x, y, z, q.x, q.y, q.z);
         place_at(a, q.x, q.y, q.z, "oob"); start_script(a, 1);
     }
 }
