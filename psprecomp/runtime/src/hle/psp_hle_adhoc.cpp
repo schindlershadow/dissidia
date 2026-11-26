@@ -36,6 +36,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include <cstring>
 #include <deque>
 #include <functional>
@@ -120,6 +121,8 @@ struct Peer {
 constexpr uint16_t PING_PORT = 0xD1D2;
 struct PingStat {
     double srtt_ms = -1;                    // smoothed round trip
+    double var_ms = 0;                      // smoothed deviation of the round trip from srtt_ms (jitter; as TCP's RTTVAR)
+    uint32_t asked = 0, answered = 0;       // pings sent to / answered by this player since it joined (psp_adhoc_ping_loss_permille)
     uint32_t seq = 0;
     std::map<uint32_t, int64_t> outstanding;   // seq -> sent at
     std::deque<bool> window;                // the last answers: true answered, false lost (2 s)
@@ -506,6 +509,8 @@ void handle_pdp(const Mac& src, const uint8_t* body, size_t len) {
             if (it == st.outstanding.end()) return;
             const double rtt = (now_us() - it->second) / 1000.0;
             st.outstanding.erase(it);
+            st.answered++;
+            st.var_ms = st.srtt_ms < 0 ? 0.0 : st.var_ms * 0.75 + std::fabs(rtt - st.srtt_ms) * 0.25;
             st.srtt_ms = st.srtt_ms < 0 ? rtt : st.srtt_ms * 0.75 + rtt * 0.25;
             st.ever = true;
             st.window.push_back(true);
@@ -1011,7 +1016,7 @@ void net_check(int64_t t) {
         put16(b, PING_PORT); put16(b, PING_PORT);
         b.push_back(0); put32(b, ++st.seq);
         for (int i = 0; i < 8; i++) b.push_back(0);
-        st.outstanding[st.seq] = t;
+        st.outstanding[st.seq] = t; if (st.ever) st.asked++;   // (counted once the player has answered a first time)
         send_to_mac(mac, T_PDP, b);
         if (!st.ever) continue;
         st.high = st.srtt_ms > 150 ? st.high + 1 : 0;
@@ -1331,6 +1336,7 @@ bool ensure_net() {
         psp_plat::set_nonblocking(g_sock);
 #ifdef __ANDROID__
         psp_android_wifi_multicast_lock();   // LAN broadcasts reach us (Wi-Fi power save filters them otherwise)
+        psp_android_wifi_low_latency_lock();   // and the radio does not sleep between packets (jitter)
 #endif
         if (const char* sp = std::getenv("PSPRECOMP_ADHOC_SPAN")) g_span = std::clamp(std::atoi(sp), 1, 64);
         for (int i = 0; i < g_span && !g_my_port; i++) {
@@ -2270,6 +2276,25 @@ int psp_adhoc_ping_ms() {
     for (auto& [mac, st] : g_ping)
         if (st.ever && st.srtt_ms >= 0 && same_group(mac)) worst = std::max(worst, st.srtt_ms);
     return worst < 0 ? -1 : (int)(worst + 0.5);
+}
+// Lost pings of the worst path since those players joined, in 1/1000 (a ping is lost when either direction loses it); 0 with fewer than
+// 30 pings sent (half a minute in the room) or no ping at all. The last two pings are not counted (their answers may be on the way).
+int psp_adhoc_ping_loss_permille() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (!g_connected) return 0;
+    int worst = 0;
+    for (auto& [mac, st] : g_ping)
+        if (st.ever && same_group(mac) && st.asked >= 32) worst = std::max(worst, (int)(1000.0 * std::max(0.0, double(st.asked - 2) - st.answered) / (st.asked - 2)));
+    return worst;
+}
+// The jitter of the slowest player's path: how far single round trips are from the smoothed one, on average (ms); -1 with no ping.
+int psp_adhoc_ping_jitter_ms() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (!g_connected) return -1;
+    double worst = -1, var = -1;
+    for (auto& [mac, st] : g_ping)
+        if (st.ever && st.srtt_ms >= 0 && same_group(mac) && st.srtt_ms + 2 * st.var_ms > worst) { worst = st.srtt_ms + 2 * st.var_ms; var = st.var_ms; }
+    return var < 0 ? -1 : (int)(var + 0.5);
 }
 // ---- side channel for game modules (see handle_pdp) ----
 void psp_adhoc_local_mac(uint8_t out[6]) { std::lock_guard<std::mutex> lk(g_mu); std::memcpy(out, g_mac.data(), 6); }

@@ -1118,12 +1118,12 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.help = "Direct peers\nExtra addresses to contact directly, in addition to the local network: host or host:port, comma separated. Press Cross to edit. Saved.";
             break;
         case ROW_NET_DELAY: {
-            const int d = psp_netplay_input_delay();
+            const int d = psp_netplay_delay_setting();
             m.label = "Network Delay";
-            m.value = std::to_string(d) + (d == 1 ? " frame" : " frames");
-            m.can_dec = d > PSP_NETPLAY_MIN_DELAY;
+            m.value = d == PSP_NETPLAY_AUTO_DELAY ? "Auto" : std::to_string(d) + (d == 1 ? " frame" : " frames");
+            m.can_dec = d > PSP_NETPLAY_AUTO_DELAY;
             m.can_inc = d < PSP_NETPLAY_MAX_DELAY;
-            m.help = "Network delay for online battles\nYour button presses take effect this many battle frames later (one frame is 33 ms at 30 fps), and in return the other player's input has that much longer to arrive, so the battle does not stall at higher pings. A rough guide: one frame per 70 ms of round-trip ping at 30 fps (per 35 ms at 60 fps); 3 frames each handled a 200 ms round trip in tests. Both players should pick the same value (the delays of both players add up). Cannot be changed during an online session. Saved.";
+            m.help = "Network delay for online battles\nYour button presses take effect this many battle frames later (one frame is 33 ms at 30 fps), and in return the other player's input has that much longer to arrive, so the battle does not stall at higher pings. A rough guide: one frame per 70 ms of round-trip ping at 30 fps (per 35 ms at 60 fps); 3 frames each handled a 200 ms round trip in tests. Both players should pick the same value (the delays of both players add up). Auto (the default) picks it at the start of every battle from the measured ping, so a good connection gets 1 frame and a slow one gets what it needs. Cannot be changed during an online session. Saved.";
             break;
         }
         case ROW_NET_STATUS:
@@ -2335,7 +2335,7 @@ void change(int d) {   // left / right on the selected row
         }
         break;
     case ROW_NET_DELAY: {
-        const int v = std::clamp(psp_netplay_input_delay() + d, PSP_NETPLAY_MIN_DELAY, PSP_NETPLAY_MAX_DELAY);
+        const int v = std::clamp(psp_netplay_delay_setting() + d, PSP_NETPLAY_AUTO_DELAY, PSP_NETPLAY_MAX_DELAY);   // 0 = Auto
         psp_netplay_set_input_delay(v);
         save("net_input_delay", std::to_string(v));
         break;
@@ -3239,7 +3239,7 @@ void confirm_row() {
     case ROW_NET_SERVER: edit_begin(0); return;
     case ROW_NET_ROOM: edit_begin(1); return;
     case ROW_NET_PEERS: edit_begin(2); return;
-    case ROW_NET_DELAY: change(psp_netplay_input_delay() >= PSP_NETPLAY_MAX_DELAY ? PSP_NETPLAY_MIN_DELAY - PSP_NETPLAY_MAX_DELAY : 1); return;   // cycles round
+    case ROW_NET_DELAY: change(psp_netplay_delay_setting() >= PSP_NETPLAY_MAX_DELAY ? PSP_NETPLAY_AUTO_DELAY - PSP_NETPLAY_MAX_DELAY : 1); return;   // cycles round (Auto, 1 .. 8)
     case ROW_NET_STATUS: break;
     case ROW_CLOUD_PROVIDER: change(g_cloud.provider == psp_cloud_svc::Provider::Google ? -3 : 1); return;   // cycles round
     case ROW_CLOUD_FOLDER: edit_begin(3); return;

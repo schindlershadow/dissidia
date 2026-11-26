@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -20,7 +21,8 @@ std::atomic<uint64_t> g_frame{0};
 std::atomic<bool> g_battle{false};
 const bool g_trace = [] { const char* e = std::getenv("PSPRECOMP_NET_TRACE"); return e && e[0] && e[0] != '0'; }();
 
-std::atomic<int> g_delay{-1};        // -1: not read from the environment yet
+std::atomic<int> g_delay{-1};        // the setting: -1 not read from the environment yet, 0 Auto, 1..8 fixed
+std::atomic<int> g_auto_delay{PSP_NETPLAY_DEFAULT_DELAY};   // what Auto chose at the last battle start
 std::atomic<int> g_check{-1};
 
 // ---- desync check ----
@@ -98,17 +100,41 @@ void psp_netplay_frame_end(bool battle) {
 }
 uint64_t psp_netplay_frame() { return g_frame.load(std::memory_order_relaxed); }
 
-int psp_netplay_input_delay() {
+int psp_netplay_delay_setting() {
     int d = g_delay.load(std::memory_order_relaxed);
     if (d < 0) {
         const char* e = std::getenv("PSPRECOMP_NET_DELAY");
         if (!e || !*e) e = std::getenv("PSPRECOMP_NET_INPUT_DELAY");   // the old name
-        d = std::clamp(e ? std::atoi(e) : PSP_NETPLAY_DEFAULT_DELAY, PSP_NETPLAY_MIN_DELAY, PSP_NETPLAY_MAX_DELAY);
+        d = (!e || !*e || !std::strcmp(e, "auto")) ? PSP_NETPLAY_AUTO_DELAY : std::clamp(std::atoi(e), PSP_NETPLAY_AUTO_DELAY, PSP_NETPLAY_MAX_DELAY);
         g_delay.store(d, std::memory_order_relaxed);
     }
     return d;
 }
-void psp_netplay_set_input_delay(int frames) { g_delay.store(std::clamp(frames, PSP_NETPLAY_MIN_DELAY, PSP_NETPLAY_MAX_DELAY), std::memory_order_relaxed); }
+int psp_netplay_input_delay() {
+    const int d = psp_netplay_delay_setting();
+    return d == PSP_NETPLAY_AUTO_DELAY ? g_auto_delay.load(std::memory_order_relaxed) : d;
+}
+void psp_netplay_set_input_delay(int frames) { g_delay.store(std::clamp(frames, PSP_NETPLAY_AUTO_DELAY, PSP_NETPLAY_MAX_DELAY), std::memory_order_relaxed); }
+
+int psp_netplay_delay_for(int rtt_ms, int jitter_ms) {
+    const double need = std::max(0, rtt_ms) + 4.0 * std::max(0, jitter_ms) + 12.0;   // ms the two delays together have to cover
+    const int lost = rtt_ms > 20 ? 1 : 0;   // not a LAN: one frame more, so that a lost packet (its words come with the next, a frame later) is not a wait
+    return std::clamp(static_cast<int>(std::ceil(need / (2000.0 / 30.0))) + lost, PSP_NETPLAY_MIN_DELAY, PSP_NETPLAY_MAX_DELAY);
+}
+int psp_netplay_pick_delay() {
+    const int set = psp_netplay_delay_setting();
+    if (set != PSP_NETPLAY_AUTO_DELAY) return set;
+    const int rtt = psp_adhoc_ping_ms(), jit = psp_adhoc_ping_jitter_ms();
+    const int loss = psp_adhoc_ping_loss_permille();
+    // A path that loses packets (1 % of the pings or more): one frame more. A lost packet's words come with the next one, a frame
+    // later, and with jitter on top the delay for a clean path is one frame short for it (measured 26 Nov, 80 ms + 30 ms jitter +
+    // 2 % loss: starting at 4 the fight held or waited for input all through; the old lead of 5 did not).
+    const int d = rtt < 0 ? PSP_NETPLAY_DEFAULT_DELAY : std::min(PSP_NETPLAY_MAX_DELAY, psp_netplay_delay_for(rtt, jit) + (loss >= 10 ? 1 : 0));
+    g_auto_delay.store(d, std::memory_order_relaxed);
+    if (rtt < 0) std::fprintf(stderr, "[NETPLAY] network delay Auto: %d frames (no ping from the other player yet)\n", d);
+    else std::fprintf(stderr, "[NETPLAY] network delay Auto: %d frame(s) for a round trip of %d ms, jitter %d ms, %.1f %% of the pings lost\n", d, rtt, std::max(0, jit), loss / 10.0);
+    return d;
+}
 
 bool psp_netplay_sync_check() {
     int c = g_check.load(std::memory_order_relaxed);

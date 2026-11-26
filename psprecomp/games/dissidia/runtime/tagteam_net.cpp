@@ -24,6 +24,9 @@
 //   PSPRECOMP_TTLOCK_LOG=1          log the lock-step (start, drivers, calls / waits every 5 s, [TTSYNC] every fighter every 30 frames)
 //   PSPRECOMP_TTLOCK_PADTEST=1      single player: tag extras flagged human are driven by the local pad (mirror of the player)
 //   PSPRECOMP_TTLOCK_FOLLOW=1       the camera follows the extra this machine drives (splits the battle today: camera-dependent movement)
+//   PSPRECOMP_TTLOCK_SHORTWAIT_MS=<ms>  how long a frame waits for a late word before the game waits a whole frame (default 25, 0 = no short wait)
+//   PSPRECOMP_TTLOCK_ADAPT=0        the input lead grows with every wait and never gets shorter (the old behaviour);
+//   PSPRECOMP_TTLOCK_SHRINK_MIN=<n> words of ours every other player must hold ahead for 3 s before the lead is shortened by one (default 3)
 //   PSPRECOMP_TTLOCK_TIMEOUT=<s>    seconds without a needed peer's input before this machine leaves the battle (default 10, 0 = wait forever)
 //   PSPRECOMP_TTLOCK_LAT=1          log every delivered frame in which a stream's buttons change ([TTLAT], for the latency measurement)
 //   PSPRECOMP_TTNET_LOWHP=<slot>:<frame>   test aid: that slot fighter's live HP -> 1 at that lock-step frame
@@ -37,12 +40,15 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <string>
+#include <thread>
 #include <vector>
 
 bool dissidia_tagteam_decided();               // tagteam.cpp: the battle is decided (a side has nobody left; made from lock-step state, the same frame on every machine)
@@ -99,6 +105,75 @@ Stream g_streams[MAX_STREAMS];
 uint32_t g_wait_since = 0; bool g_wait_logged = false;
 bool g_decided_logged = false;
 std::vector<Mac> g_roster_acked; uint32_t g_roster_calls = 0; bool g_roster_wait_logged = false;   // the host: members that have its roster
+// The input lead (how many frames the own input runs ahead of the battle = the input delay the player feels). Retail's rule: the pad is
+// sampled also in a call that has to wait, so every wait makes the lead one frame longer (up to MAX_LEAD - 1 above the delay). Nothing
+// ever made it shorter. Measured 26 Nov (two copies on one PC, no added lag, delay 2): the lead went from 2 to 5 frames within 25 s of
+// every battle and stayed (167 ms of input delay on a perfect link). Why it always grew: two machines never run at exactly the same
+// speed, so the faster one creeps ahead until it uses the other's words the moment they arrive, and from then on it waits now and then
+// for good. Its OWN lead does not help it (a lead gives the OTHER players time), so growing it on those waits only added input delay.
+// Now every packet tells its receiver how many of the receiver's words the sender holds from its current frame on ("slack", the tail
+// 'S' + count; an older build ignores it and sends none), and the lead uses it both ways:
+//  - a wait does not make the lead longer while every other player reports at least 2 of our words in hand (our lead is not the reason);
+//  - when every other player has held at least g_shrink_min of ours for 3 s without a wait, one pad sample is left out: one frame shorter;
+//  - the tail's third byte says how often, in its last 5 s, the sender had to hold a frame for OUR word for LATE_MS or longer (the short
+//    wait below, or a whole waited frame). g_late_min (2) or more: our words arrive visibly late there, so the lead gets one frame longer.
+//    (Two in 5 s, not more: on a link that loses a packet every second or two each loss is one such hold, and with "4 in 2 s" the
+//    lead never reacted: measured 26 Nov, 80 ms + 30 ms jitter + 2 % loss.) The lead is then one frame longer
+//    (this call's pad sample is used for two frames). Holds shorter than LATE_MS are not counted: the faster of two machines always
+//    takes the other's words the moment they arrive, which costs nothing and must not make anybody's lead longer;
+//  - but a machine that keeps holding frames for a player who has 3 or more of ITS words in hand, while it has at most one of that
+//    player's in hand itself most of the time, is simply AHEAD of that player (the time the two leads give together is there, it is all
+//    on the other side). It does not report that as late: it gives up one frame itself (one wait of 33 ms), which moves one frame of
+//    that time to its own side. (Measured 26 Nov: without this, at 80 ms one copy held 205 frames in 70 s and the other's lead went
+//    from 3 to 5. "Most of the time" matters: at 140 ms + jitter both copies get a late word now and then while both hold plenty, and
+//    with only the first half of the test they gave up nine frames between them, each one a pause.)
+// The floor is the Network Delay setting (1 with Auto; Auto starts a battle at the delay chosen from the ping).
+// With a player whose build sends no reports the lead behaves as before. PSPRECOMP_TTLOCK_ADAPT=0: as before with everyone.
+struct Report { int64_t ms; int have, late; };
+constexpr int64_t LATE_MS = 8;
+std::map<std::array<uint8_t, 6>, std::deque<int64_t>> g_late;   // when we had to hold a frame LATE_MS or longer for that player's word (last 5 s)
+std::map<std::array<uint8_t, 6>, std::deque<Report>> g_mine;   // what we reported to every player in the last 2 s: how many of ITS words we held
+std::map<std::array<uint8_t, 6>, std::deque<Report>> g_slack;   // the last 3 s of every player's reports
+std::chrono::steady_clock::time_point g_quiet_t0;                // the last wait or change of the lead
+int g_floor = 2, g_start = 2, g_shrink_min = 3, g_shrink_s = 10, g_late_min = 2; bool g_adapt = true, g_shorten = false; uint32_t g_shrinks = 0, g_kept = 0, g_grows = 0, g_slips = 0;
+// When the lead was last made longer. A report counts the holds of the sender's last 5 s, so the next lengthening waits until those
+// holds are out of the reports (5 s + the trip): with only the 2.5 s quiet rule the same two holds made the lead longer twice
+// (measured 26 Nov, 80 ms + 30 ms jitter + 2 % loss: 5 -> 7 frames for two late words in the whole battle).
+int64_t g_grow_ms = -1000000;
+int64_t now_ms() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+void slack_reset() { g_slack.clear(); g_late.clear(); g_mine.clear(); g_quiet_t0 = std::chrono::steady_clock::now(); }
+int late_count(const std::array<uint8_t, 6>& m) {   // holds for that player's words in the last 5 s
+    auto it = g_late.find(m); if (it == g_late.end()) return 0;
+    const int64_t from = now_ms() - 5000; while (!it->second.empty() && it->second.front() < from) it->second.pop_front();
+    return static_cast<int>(std::min<size_t>(it->second.size(), 255));
+}
+// the reports of one player in the last `ms`: how many and the smallest (false: none)
+bool slack_of(const std::array<uint8_t, 6>& m, int64_t ms, int* count, int* least) {
+    auto it = g_slack.find(m); if (it == g_slack.end()) return false;
+    const int64_t from = now_ms() - ms; int n = 0, mn = 255;
+    for (auto r = it->second.rbegin(); r != it->second.rend() && r->ms >= from; ++r) { n++; mn = std::min(mn, r->have); }
+    *count = n; *least = mn; return n > 0;
+}
+std::string slack_text() {   // log: every player's reports of the last 3 s (how many / the smallest)
+    std::string t; for (auto& [m, q] : g_slack) { int n = 0, mn = 0; if (!slack_of(m, 3000, &n, &mn)) continue; char b[64]; std::snprintf(b, sizeof b, "; %02x:%02x holds %d+ of ours (%d reports)", m[4], m[5], mn, n); t += b; }
+    return t;
+}
+// This machine runs ahead of that player: it has had 3 or more of our words in hand for a second, and we had at most one of its
+// words in hand in at least half of our packets of the last 2 s.
+bool ahead_of(const std::array<uint8_t, 6>& m) {
+    int c = 0, least = 0;
+    if (!slack_of(m, 1000, &c, &least) || c < 10 || least < 3) return false;
+    auto it = g_mine.find(m); if (it == g_mine.end()) return false;
+    const int64_t from = now_ms() - 2000; int n = 0, low = 0;
+    for (auto r = it->second.rbegin(); r != it->second.rend() && r->ms >= from; ++r) { n++; if (r->have <= 1) low++; }
+    return n >= 20 && low * 2 >= n;
+}
+// The pace of the delivered frames (the smoothness the player sees): the time between two deliveries, per 5 s and over the battle.
+struct Pace { int64_t last_us = 0; double sum = 0, sq = 0; uint32_t n = 0, hitches = 0; double max = 0;
+    void add(int64_t us) { if (last_us) { const double d = (us - last_us) / 1000.0; sum += d; sq += d * d; n++; if (d > max) max = d; if (d > 50.0) hitches++; } last_us = us; }
+    double sd() const { if (n < 2) return 0; const double m = sum / n; return std::sqrt(std::max(0.0, sq / n - m * m)); } };
+Pace g_pace5, g_pace;
+int64_t g_shortwait_us = 25000; uint32_t g_shortwaits = 0;   // the short wait for a late word before a frame is given up (PSPRECOMP_TTLOCK_SHORTWAIT_MS); frames it saved
 double g_timeout_s = 10.0;   // a peer that sends nothing for this long (wall clock) while the lock-step needs its input has left: PSPRECOMP_TTLOCK_TIMEOUT
 std::chrono::steady_clock::time_point g_wait_t0;
 // ---- The pause menu (Start) and the forfeit ----
@@ -151,7 +226,7 @@ uint32_t guest_call(recomp_context* ctx, FuncPtr f, uint32_t a0, uint32_t a1 = 0
 }
 
 void reset(uint32_t obj) {
-    g_running = true; g_obj = obj; g_F = rd(obj + OFF_FRAME); g_seq = g_F; g_waits = 0; g_delivered = 0; g_wait_since = 0; g_wait_logged = false; g_decided_logged = false;
+    g_running = true; g_obj = obj; g_F = rd(obj + OFF_FRAME); g_seq = g_F; g_waits = 0; g_shortwaits = 0; g_delivered = 0; g_wait_since = 0; g_wait_logged = false; g_decided_logged = false;
     g_local = Ring{}; g_remote.clear(); for (LowHp& l : g_lowhp) l.done = false;
     g_pm_state = 0; g_pm_sel = 0; g_pm_prev = g_pm_mask = 0; g_pm_stick_prev = 0; g_my_forfeit = 0; g_forfeit_at.clear(); g_forfeit_done.clear();
     for (int k = 0; k < 2; k++) { g_streams[k].s.clear(); g_streams[k].last = 0; }   // the extras' pads (2+) are registered by tagteam.cpp when they are made
@@ -160,6 +235,9 @@ void reset(uint32_t obj) {
     uint8_t src[6], buf[128]; while (psp_adhoc_side_recv(CH_INPUT, src, buf, sizeof buf) >= 0) {}   // the last battle's leftovers
     { uint8_t rb[1024]; while (psp_adhoc_side_recv(CH_ROSTER, src, rb, sizeof rb) >= 0) {} }   // (the host sends its roster again until each member answers)
     g_roster_acked.clear(); g_roster_calls = 0; g_roster_wait_logged = false;
+    g_start = psp_netplay_pick_delay();   // Network Delay "Auto": this battle's first delay from the ping now
+    g_floor = psp_netplay_delay_setting() == PSP_NETPLAY_AUTO_DELAY ? PSP_NETPLAY_MIN_DELAY : g_start;   // the lead never goes below it
+    g_shrinks = 0; g_kept = 0; g_grows = 0; g_slips = 0; g_grow_ms = -1000000; slack_reset(); g_pace5 = Pace{}; g_pace = Pace{};
     // The slot fighters' first drivers come from the game's own session: on a fighter's machine (+64 = 0) it is player +68 and the peer
     // is the other one; on a spectator's (+64 = 1) peer i is player i. Player k plays slot k (docs: players and slots).
     const uint32_t mode = rd(obj + OFF_MODE), me = rd(obj + OFF_LOCAL_IDX), n = rd(obj + OFF_PEER_COUNT);
@@ -173,7 +251,7 @@ void reset(uint32_t obj) {
     }
     std::fprintf(stderr, "[TTLOCK] battle %u: own lock-step from frame %u (game object %08X: %s, local player %u, %u peer(s)); slot 0 %s, slot 1 %s; input delay %d\n",
                  dissidia_tagteam_battle_gen(), g_F, obj, mode == 0 ? "fighter" : "spectator", me, n,
-                 g_streams[0].s.empty() ? "-" : mac_str(g_streams[0].s[0].mac).c_str(), g_streams[1].s.empty() ? "-" : mac_str(g_streams[1].s[0].mac).c_str(), psp_netplay_input_delay());
+                 g_streams[0].s.empty() ? "-" : mac_str(g_streams[0].s[0].mac).c_str(), g_streams[1].s.empty() ? "-" : mac_str(g_streams[1].s[0].mac).c_str(), g_start);
     for (int k = 0; k < 2; k++) if (g_streams[k].pad && rd(g_streams[k].pad + 80u) != 1u) {
         std::fprintf(stderr, "[TTLOCK] pad slot %d was not in lock-step mode (+80 = %u): set\n", k, rd(g_streams[k].pad + 80u));
         wr(g_streams[k].pad + 80u, 1u);
@@ -188,9 +266,11 @@ void receive() {
         if (cnt <= 0 || cnt > WINDOW || n < 8 + 2 * cnt) continue;
         if (first > g_F + 256u) continue;   // not this battle (a far-ahead frame number: the previous battle's packets)
         Mac m; std::memcpy(m.data(), src, 6);
-        if (n >= 8 + 2 * cnt + 4) { uint32_t ff; std::memcpy(&ff, buf + 8 + 2 * cnt, 4); if (ff && !g_forfeit_at.count(m)) { g_forfeit_at[m] = ff; std::fprintf(stderr, "[TTPAUSE] %s forfeits at lock-step frame %u (this machine is at %u)\n", mac_str(m).c_str(), ff, g_F); } }
+        const int fo = (n >= 8 + 2 * cnt + 3 && buf[8 + 2 * cnt] == 'S') ? 8 + 2 * cnt + 3 : 8 + 2 * cnt;   // forfeit word: after the 'S' trailer (or right after the words from a build without it)
+        if (n >= fo + 4) { uint32_t ff; std::memcpy(&ff, buf + fo, 4); if (ff && !g_forfeit_at.count(m)) { g_forfeit_at[m] = ff; std::fprintf(stderr, "[TTPAUSE] %s forfeits at lock-step frame %u (this machine is at %u)\n", mac_str(m).c_str(), ff, g_F); } }
         Ring& r = g_remote[m];
         for (int i = 0; i < cnt; i++) { uint16_t w; std::memcpy(&w, buf + 8 + 2 * i, 2); if (first + i + RING > g_F) r.put(first + i, w); }
+        if (n >= 8 + 2 * cnt + 2 && buf[8 + 2 * cnt] == 'S') { auto& q = g_slack[m]; const int64_t t = now_ms(); q.push_back({t, buf[8 + 2 * cnt + 1], n >= 8 + 2 * cnt + 3 ? buf[8 + 2 * cnt + 2] : 0}); while (!q.empty() && q.front().ms < t - 1000ll * std::max(3, g_shrink_s)) q.pop_front(); }   // how many of OUR words that player holds
     }
 }
 
@@ -216,12 +296,20 @@ void roster_step() {
 void send_window() {
     if (g_seq == 0) return;
     const uint32_t first = g_seq > WINDOW ? g_seq - WINDOW : 0; const int cnt = static_cast<int>(g_seq - first);
-    uint8_t b[8 + 2 * WINDOW + 4]; b[0] = 'T'; b[1] = 'L'; b[2] = 1; b[3] = static_cast<uint8_t>(cnt); std::memcpy(b + 4, &first, 4);
+    uint8_t b[8 + 2 * WINDOW + 3 + 4]; b[0] = 'T'; b[1] = 'L'; b[2] = 1; b[3] = static_cast<uint8_t>(cnt); std::memcpy(b + 4, &first, 4);
     for (int i = 0; i < cnt; i++) { const uint16_t w = g_local.w[(first + i) % RING]; std::memcpy(b + 8 + 2 * i, &w, 2); }
-    int len = 8 + 2 * cnt;
-    if (g_my_forfeit) { std::memcpy(b + len, &g_my_forfeit, 4); len += 4; }   // (older receivers ignore the trailing word)
+    // trailer: 'S' + held count + late count (3 bytes), then this player's forfeit frame (4 bytes, only once confirmed); older receivers ignore both
+    const int len = 8 + 2 * cnt + 3 + (g_my_forfeit ? 4 : 0);
+    if (g_my_forfeit) std::memcpy(b + 8 + 2 * cnt + 3, &g_my_forfeit, 4);
     uint8_t macs[16][6]; const int n = psp_adhoc_group_macs(macs, nullptr, 16);
-    for (int i = 0; i < n && i < 16; i++) psp_adhoc_side_send(macs[i], CH_INPUT, b, len);
+    for (int i = 0; i < n && i < 16; i++) {
+        // the tail: how many of the receiver's words we hold from our current frame on (its room to shorten its input lead)
+        Mac m; std::memcpy(m.data(), macs[i], 6);
+        int have = 0; if (const Ring* r = ring_of(m)) while (have < 200 && r->has(g_F + static_cast<uint32_t>(have))) have++;
+        b[8 + 2 * cnt] = 'S'; b[8 + 2 * cnt + 1] = static_cast<uint8_t>(have); { auto& q = g_mine[m]; const int64_t t = now_ms(); q.push_back({t, have, 0}); while (!q.empty() && q.front().ms < t - 2000) q.pop_front(); }
+        b[8 + 2 * cnt + 2] = static_cast<uint8_t>(g_adapt && ahead_of(m) ? 0 : late_count(m));
+        psp_adhoc_side_send(macs[i], CH_INPUT, b, len);
+    }
 }
 
 // The pause menu's state machine, fed with the pad this sample read (edges). Returns true while this player's input must be neutral.
@@ -284,20 +372,58 @@ void dispatch_hook(uint8_t* rdram, recomp_context* ctx) {
         wr(obj + OFF_FRAME, g_F);
         ctx->r[2] = 0; return;
     }
-    const int delay = psp_netplay_input_delay();
-    dissidia_netplay_note_delay(delay);
+    const int delay = g_delivered == 0 ? g_start : g_floor;   // the lead the next frame needs: the battle starts at g_start, later the floor
+    dissidia_netplay_note_delay(g_start);
     if (g_log) {   // calls / deliveries / waits per 5 s of wall time
         static uint32_t calls = 0, d0 = 0, w0 = 0; static auto t0 = std::chrono::steady_clock::now(); calls++;
         const auto now = std::chrono::steady_clock::now();
-        if (now - t0 > std::chrono::seconds(5)) { std::fprintf(stderr, "[TTLOCK] 5 s: %u calls, %u frames delivered, %u waits, frame %u, lead %d\n", calls, g_delivered - d0, g_waits - w0, g_F, static_cast<int>(g_seq - g_F)); calls = 0; d0 = g_delivered; w0 = g_waits; t0 = now; }
+        if (now - t0 > std::chrono::seconds(5)) {
+            std::fprintf(stderr, "[TTLOCK] 5 s: %u calls, %u frames delivered, %u waits, frame %u, lead %d, %u late words waited for, lead shortened %u / lengthened %u times, kept at %u waits, %u frames given up (floor %d); pace: %.1f ms between frames, sd %.1f, longest %.0f, %u over 50 ms (battle: sd %.1f, %u over 50 ms)%s\n",
+                         calls, g_delivered - d0, g_waits - w0, g_F, static_cast<int>(g_seq - g_F), g_shortwaits, g_shrinks, g_grows, g_kept, g_slips, g_floor,
+                         g_pace5.n ? g_pace5.sum / g_pace5.n : 0.0, g_pace5.sd(), g_pace5.max, g_pace5.hitches, g_pace.sd(), g_pace.hitches, slack_text().c_str());
+            const int64_t keep_last = g_pace5.last_us; g_pace5 = Pace{}; g_pace5.last_us = keep_last;
+            calls = 0; d0 = g_delivered; w0 = g_waits; t0 = now; }
     }
     receive();
     roster_step();
+    // The lead and the other players' reports (see g_slack above).
+    bool shorten = false, keep = false, lengthen = false;
+    const uint32_t cap = g_F + static_cast<uint32_t>(std::max(std::max(g_start, g_floor) + 3, 2 + MAX_LEAD));   // the longest lead: 5 frames as before (delay 2 + 3), or 2 above where the battle started
+    const bool after_wait = g_wait_since != 0;                       // the last call delivered no frame
+    const bool enough = g_seq > g_F + static_cast<uint32_t>(delay);  // the lead the next frame needs is there without a new sample
+    if (g_adapt && g_delivered > 0 && !g_slack.empty()) {
+        bool mine = false;   // only a player who drives a fighter is waited for
+        for (int st = 0; st < MAX_STREAMS && !mine; st++) { Mac m; if (driver_at(st, g_F, &m) && m == g_me) mine = true; }
+        uint8_t macs[16][6]; const int n = mine ? psp_adhoc_group_macs(macs, nullptr, 16) : 0;
+        if (n > 0) {
+            const auto since = std::chrono::steady_clock::now() - g_quiet_t0;
+            shorten = g_shorten && enough && !after_wait && since >= std::chrono::seconds(g_shrink_s) && g_seq >= g_F + static_cast<uint32_t>(g_floor + 1);
+            keep = enough && after_wait;
+            for (int i = 0; i < n && i < 16; i++) {
+                Mac m; std::memcpy(m.data(), macs[i], 6); int cnt = 0, least = 0;
+                if (!slack_of(m, 1000ll * g_shrink_s, &cnt, &least) || cnt < 15 * g_shrink_s || least < g_shrink_min) shorten = false;   // (an older build never reports)
+                if (!slack_of(m, 1000, &cnt, &least) || cnt < 10 || least < 2) keep = false;
+                auto it = g_slack.find(m);
+                if (it != g_slack.end() && !it->second.empty() && now_ms() - it->second.back().ms < 500 && it->second.back().late >= g_late_min) lengthen = true;
+            }
+            lengthen = lengthen && since >= std::chrono::milliseconds(2500) && now_ms() - g_grow_ms >= 5500 && g_seq + 1 < cap;
+            if (lengthen) shorten = keep = false;
+            if (shorten || lengthen) {
+                const int lead = static_cast<int>(g_seq - g_F);
+                if (shorten) g_shrinks++; else { g_grows++; g_grow_ms = now_ms(); }
+                g_quiet_t0 = std::chrono::steady_clock::now();
+                if (g_log || g_shrinks + g_grows <= 6) std::fprintf(stderr, "[TTLOCK] frame %u: input lead %d -> %d frames (%s)\n", g_F, lead, lead + (shorten ? -1 : 1),
+                                                                    shorten ? "every player held our input well ahead for a while" : "our input kept arriving late at another player");
+            }
+            if (keep) g_kept++;
+        }
+    }
     // sample the local pad for frame g_seq (the input runs at most MAX_LEAD - 1 frames ahead beyond the input delay, as retail)
-    if (g_seq < g_F + static_cast<uint32_t>(delay + MAX_LEAD)) {
+    if (!shorten && !keep && g_seq < cap) {
         const uint16_t w = sample_local(ctx);
         if (g_lat && g_seq > 0 && w != g_local.w[(g_seq - 1) % RING]) std::fprintf(stderr, "[TTLAT] sampled %04X for frame %u while the battle is at frame %u (latency %u frames)\n", w, g_seq, g_F, g_seq - g_F);
         g_local.put(g_seq, w); g_seq++;
+        if (lengthen) { g_local.put(g_seq, w); g_seq++; }
     }
     send_window();
     // deliver frame F when the own input has run `delay` frames ahead and every driver's word for F is here
@@ -305,12 +431,42 @@ void dispatch_hook(uint8_t* rdram, recomp_context* ctx) {
     Mac missing{};
     const bool roster = dissidia_tagteam_roster_ready();   // a member waits for the host's roster before its first frame
     if (!roster) { ready = false; if (!g_roster_wait_logged) { g_roster_wait_logged = true; std::fprintf(stderr, "[TTLOCK] frame %u: waiting for the host's roster\n", g_F); } }
-    for (int s = 0; s < MAX_STREAMS && ready; s++) {
-        Mac m; if (!driver_at(s, g_F, &m)) continue;
-        const Ring* r = ring_of(m); if (!r || !r->has(g_F)) { ready = false; missing = m; }
+    auto drivers_here = [&]() {   // every driver's word for frame F is here (else: who is missing)
+        for (int s = 0; s < MAX_STREAMS; s++) {
+            Mac m; if (!driver_at(s, g_F, &m)) continue;
+            const Ring* r = ring_of(m); if (!r || !r->has(g_F)) { missing = m; return false; }
+        }
+        return true;
+    };
+    if (ready && !drivers_here()) {
+        // A short wait before the frame is given up, as the pad link of plain battles has (comm_battle.cpp): a word that is a few ms
+        // late no longer costs a whole frame (33 ms of standstill), only its own lateness. The own window goes out again every 8 ms
+        // meanwhile (the peer may be waiting for it). PSPRECOMP_TTLOCK_SHORTWAIT_MS (default 25, 0 = the old behaviour).
+        const auto t0 = std::chrono::steady_clock::now(); auto sent = t0;
+        const Mac late_one = missing;   // the player whose word is not here
+        ready = false;
+        while (g_shortwait_us > 0) {
+            std::this_thread::sleep_for(std::chrono::microseconds(500));
+            receive();
+            if (drivers_here()) { ready = true; g_shortwaits++; break; }
+            const auto now = std::chrono::steady_clock::now();
+            if (std::chrono::duration_cast<std::chrono::microseconds>(now - t0).count() >= g_shortwait_us) break;
+            if (std::chrono::duration_cast<std::chrono::microseconds>(now - sent).count() >= 8000) { send_window(); sent = now; }
+        }
+        // a frame held LATE_MS or longer (or given up) for that player's word: told to it in the next packets (late_count)
+        if (!ready || std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count() >= LATE_MS) g_late[late_one].push_back(now_ms());
+    }
+    if (ready && g_adapt && g_delivered > 0 && std::chrono::steady_clock::now() - g_quiet_t0 >= std::chrono::milliseconds(2500)) {
+        // ahead of a player (see g_slack above): this frame is given up once
+        for (auto& [m, q] : g_late) {
+            if (late_count(m) < g_late_min || !ahead_of(m)) continue;   // (2 holds in 5 s, as for a longer lead: each hold is a pause, and one frame given up ends them)
+            g_slips++; q.clear(); ready = false; missing = m;
+            if (g_log || g_slips <= 4) std::fprintf(stderr, "[TTLOCK] frame %u: one frame given up (this copy ran ahead of %s)\n", g_F, mac_str(m).c_str());
+            break;
+        }
     }
     if (!ready) {
-        g_waits++;
+        g_waits++; g_quiet_t0 = std::chrono::steady_clock::now();
         if (!g_wait_since) { g_wait_since = g_delivered + 1; g_wait_t0 = std::chrono::steady_clock::now(); }
         else if (g_timeout_s > 0 && std::chrono::duration<double>(std::chrono::steady_clock::now() - g_wait_t0).count() > g_timeout_s) {
             // A peer that stops sending (left, crashed, long stall): treat it like the pad link does (comm_battle.cpp quit()): the battle
@@ -327,6 +483,7 @@ void dispatch_hook(uint8_t* rdram, recomp_context* ctx) {
         ctx->r[2] = 1; return;
     }
     g_wait_since = 0; g_wait_logged = false;
+    { const int64_t us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); g_pace5.add(us); g_pace.add(us); }
     // A forfeit announced for this frame (or an earlier one this machine only just heard of): applied here, before the frame's words are delivered, on every machine.
     for (const auto& [fm, ff] : g_forfeit_at) {
         if (g_F < ff || std::find(g_forfeit_done.begin(), g_forfeit_done.end(), fm) != g_forfeit_done.end()) continue;
@@ -477,6 +634,12 @@ void dissidia_ttnet_install(uint8_t* rdram) {
     g_padtest = std::getenv("PSPRECOMP_TTLOCK_PADTEST") != nullptr;
     g_lat = std::getenv("PSPRECOMP_TTLOCK_LAT") != nullptr;
     if (const char* e = std::getenv("PSPRECOMP_TTLOCK_TIMEOUT")) g_timeout_s = std::atof(e);
+    if (const char* e = std::getenv("PSPRECOMP_TTLOCK_SHORTWAIT_MS")) g_shortwait_us = std::clamp(std::atoi(e), 0, 100) * 1000ll;
+    if (const char* e = std::getenv("PSPRECOMP_TTLOCK_ADAPT")) g_adapt = e[0] && e[0] != '0';
+    if (const char* e = std::getenv("PSPRECOMP_TTLOCK_SHRINK_MIN")) g_shrink_min = std::clamp(std::atoi(e), 1, 250);
+    if (const char* e = std::getenv("PSPRECOMP_TTLOCK_SHORTEN")) g_shorten = e[0] && e[0] != '0';
+    if (const char* e = std::getenv("PSPRECOMP_TTLOCK_SHRINK_S")) g_shrink_s = std::clamp(std::atoi(e), 1, 120);
+    if (const char* e = std::getenv("PSPRECOMP_TTLOCK_LATE_MIN")) g_late_min = std::clamp(std::atoi(e), 1, 1000);
     g_log2 = std::getenv("PSPRECOMP_TTLOCK_LOG2") != nullptr;
     g_pm_off = std::getenv("PSPRECOMP_TTPAUSE_OFF") != nullptr;
     g_padevery = std::getenv("PSPRECOMP_TTLOCK_PADEVERY") != nullptr;

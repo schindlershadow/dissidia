@@ -29,7 +29,7 @@ between players. Nobody has to forward a port or know anyone's address.
   | Server | the relay: a host name or `host:port` (default `party.schindlershadow.com:27500`); Cross edits |
   | Room | blank = the public room; Cross edits |
   | Direct Peers | LAN only: extra addresses to contact directly; Cross edits |
-  | Network Delay | 1-8 battle frames (default 2); see "Input delay" below |
+  | Network Delay | **Auto** (default) or 1-8 battle frames; see "Input delay" below |
   | Status | `Connected, 3 online`, `No answer from the server yet`, `Cannot find ...`, `LAN: 2 nearby` |
 
   Editing text: type on a keyboard (Enter saves, Esc cancels), or with a controller pick a letter with left / right,
@@ -76,13 +76,13 @@ forwarded by hand. Only the router on the local network is contacted.
 **Expect latency to matter.** The game runs a lock-step battle over reliable streams, and nothing here delays or
 predicts input. It was built for a few milliseconds of WiFi latency. A relay adds the trip to the server on top of the
 direct path; how much round-trip time the game tolerates has not been measured, so try a nearby partner first.
-**Expect latency to matter.** Battles run on our pad link (see "Battles: our pad link"): the default network delay of 2 frames
-covers a round trip up to about 130 ms without waiting. Raise the Network Delay for slower connections.
+**Expect latency to matter.** Battles run on our pad link (see "Battles: our pad link"). The default network delay, Auto,
+picks the delay from the measured ping at the start of every battle; a fixed 1-8 still works as before.
 
 ### Input delay
 
-There is ONE network delay: Settings > Network > **Network Delay** (`PSPRECOMP_NET_DELAY=1..8`, default 2; saved as
-`net_input_delay`; the old name `PSPRECOMP_NET_INPUT_DELAY` is still read when the new one is not set).
+There is ONE network delay: Settings > Network > **Network Delay** (`PSPRECOMP_NET_DELAY=auto|1..8`, default Auto; saved as
+`net_input_delay`, 0 = Auto; the old name `PSPRECOMP_NET_INPUT_DELAY` is still read when the new one is not set).
 `runtime/src/hle/psp_netplay.cpp` (`psp_netplay_input_delay`) holds it; both online battle engines use it:
 
 - plain battles: `comm_battle.cpp` (read again at every battle start, so a change in the menu applies to the next fight);
@@ -92,6 +92,39 @@ With N frames your own presses take effect N battle frames later and the other p
 arrive. The delays of both players add up; a rough guide is one frame per 70 ms of round-trip ping at 30 fps, the same
 value on both sides (the two copies work with different values too, each pad is labelled by its frame). There is no
 "Off" any more: 0 was the game's own exchange, which main's pad link replaces.
+
+**Auto** (26 Nov). At every battle start `psp_netplay_pick_delay()` reads the ad-hoc pings of the slowest path
+(`psp_hle_adhoc.cpp`: the smoothed round trip, its jitter as TCP's RTTVAR, and the share of pings lost since the players
+joined) and takes the smallest delay whose budget (two delays = 66.7 ms per frame at the 30 Hz logic) covers round trip +
+4 x jitter + 12 ms; one frame more off a LAN (round trip over 20 ms: a lost packet's words come a frame later with the next
+one), and one more when 1 % or more of the pings were lost. With no ping yet it is 2. The log says what it chose:
+`[NETPLAY] network delay Auto: 4 frame(s) for a round trip of 110 ms, jitter 8 ms, 0.0 % of the pings lost`.
+Plain battles keep it for the whole fight. The tag lock-step starts there and then follows the link (`tagteam_net.cpp`):
+
+- the lead (the input delay felt) grows only when the other machine reports that our words keep arriving late (two holds
+  of 8 ms or more in its last 5 s; at most once per 5.5 s, so the same holds are not counted twice), up to 3 above the start;
+- the retail rule that a waited frame samples the pad anyway (the lead climbed to 5 even on a LAN) is replaced: no new
+  sample after a wait while every peer still holds 2 or more of our words;
+- a late word is waited for up to 25 ms (resending every 8 ms) before a whole frame is given up;
+- a copy that runs ahead (it keeps holding frames for a player that has plenty of its words) gives up one frame itself,
+  which moves the slack to its own side;
+- shortening in the middle of a fight is off (it made a jittery link worse): `PSPRECOMP_TTLOCK_SHORTEN=1`.
+
+Measured with two copies on one PC (`PSPRECOMP_NET_LAG_MS` / `_JITTER_MS` / `_LOSS`, 60 s of moves, 30 fps, tag battle;
+"over 50 ms" = delivered frames more than 50 ms apart in the whole battle, copy A / copy B; 0 mismatched frames everywhere):
+
+| Link | Old: lead | Old: over 50 ms | Auto: lead | Auto: over 50 ms |
+|---|---|---|---|---|
+| clean (LAN) | 2 -> 5 | 27 / 25 (6 / 8 at full PC speed) | 1 | 4 / 7 |
+| 80 ms round trip | 2 -> 4 | 3 / 3 | 3 | 13 / 13 (2 / 3 at full PC speed) |
+| 80 ms + 30 ms jitter + 2 % loss (several runs each) | 2 -> 5 | 4 to 28 | 4-5 | 3 to 15 |
+| 140 ms + 20 ms jitter | 2 -> 6 | 24 / 37 (9 / 22 at full PC speed) | 4-5 | 2 / 6 |
+
+Frames over 50 ms also come from the PC itself: whenever the two copies dropped below 150 game frames per 5 s both had them,
+whatever the netcode (old code included); compare runs only where the PC kept full speed.
+
+Android: the ad-hoc layer also takes a `WIFI_MODE_FULL_LOW_LATENCY` Wi-Fi lock while online
+(`psp_android_wifi_low_latency_lock`, `PSPRECOMP_ADHOC_NOWIFILOCK=1` = off; the manifest has `WAKE_LOCK`). Not tested on a phone.
 
 ### Desync check (tag team battles)
 
@@ -200,7 +233,10 @@ fight.
 | Variable | Meaning |
 |---|---|
 | `PSPRECOMP_NET_LINK=0` | the game's own exchange |
-| `PSPRECOMP_NET_DELAY=<frames>` | input delay, default 2 (about 67 ms; covers a round trip up to about 130 ms without waiting), 1 to 8 |
+| `PSPRECOMP_NET_DELAY=auto\|<frames>` | input delay: Auto (default, from the ping at battle start) or 1 to 8 frames |
+| `PSPRECOMP_TTLOCK_ADAPT=0` | tag lock-step: the old fixed lead (retail sampling, no reports) |
+| `PSPRECOMP_TTLOCK_SHORTWAIT_MS=<ms>` | tag lock-step: how long a late word is waited for before a frame is given up (25; 0 = off) |
+| `PSPRECOMP_TTLOCK_LATE_MIN=<n>`, `_SHORTEN=1`, `_SHRINK_S=<s>`, `_SHRINK_MIN=<n>` | tag lock-step lead tuning (2 late holds; shortening off; 10 s; 3 words) |
 | `PSPRECOMP_NET_LINK_LOG=1` | log the link (linked, every 900 frames: checks agreed, frames waited, how a fight ended) |
 | `PSPRECOMP_NET_LINK_DROP=<percent>` | drop that share of the pad packets sent (tests) |
 

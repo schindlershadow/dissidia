@@ -50,7 +50,7 @@ class Copy:
         shutil.copytree(os.path.join(self.work, 'ms0'), ms0)
         ini = os.path.join(self.out, 'settings_%s.ini' % self.side)
         with open(ini, 'w') as f:
-            f.write('display=window\nfps=30\nrender_scale=1\nwidescreen=0\nvoice=en\ncheck_updates=0\nhd_textures=0\nnet_mode=lan\n')
+            f.write('display=window\nfps=%d\nrender_scale=1\nwidescreen=0\nvoice=en\ncheck_updates=0\nhd_textures=0\nnet_mode=lan\n' % int(os.environ.get('MP_FPS', '30')))   # MP_FPS=60: both copies at 60 fps (30 Hz logic)
             if self.env.get('MP_FILL'):
                 f.write('tagteam_lobby=1,2,1,5,0,0,0,0,0\n')
         env = dict(os.environ, PSPRECOMP_SETTINGS=ini, PSPRECOMP_MS0=ms0, PSPRECOMP_ADHOC_MODE='lan', PSPRECOMP_ADHOC_NICK=self.side,

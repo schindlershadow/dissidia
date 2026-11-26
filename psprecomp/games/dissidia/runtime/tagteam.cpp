@@ -4443,7 +4443,9 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
         }
     }
     if (g_log && g_bs && std::getenv("PSPRECOMP_TAGTEAM_KO")) {   // debugging: "<who>:<seconds>" puts a fighter on 1 HP and 0 bravery so the next hit KOs it (who = human, cpu, enemy2, partner)
-        static bool done = false; static uint32_t target = 0; static int lasthp = -1;
+        static bool done = false; static uint32_t target = 0; static int lasthp = -1; static float last_age = 0.f;
+        if (dissidia_battle_age() / 60.0f + 1.f < last_age) { done = false; target = 0; lasthp = -1; }   // a new battle (the age restarts): armed again, so a session of several battles can be tested
+        last_age = dissidia_battle_age() / 60.0f;
         char who[16] = {}; float at = 0; std::sscanf(std::getenv("PSPRECOMP_TAGTEAM_KO"), "%15[a-z0-9]:%f", who, &at);
         if (!done && dissidia_battle_age() / 60.0f >= at && g_nextra) {
             uint32_t a = 0;
