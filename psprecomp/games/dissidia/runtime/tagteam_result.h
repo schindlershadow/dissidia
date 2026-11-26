@@ -18,6 +18,7 @@ struct FfaResRow {
     int slot = -1;        // 0..3 = P1..P4 in the single player set-up, else the order of the line-up
     bool you = false;     // this machine's player
     bool cpu = true;      // the AI plays it
+    bool forfeit = false; // his player forfeited / retired (not a KO)
     bool alive = false;   // still in the fight when the battle was decided
     std::string who;      // "You", a player's name, "CPU"
     std::vector<int> victims;   // the characters he knocked out, in order

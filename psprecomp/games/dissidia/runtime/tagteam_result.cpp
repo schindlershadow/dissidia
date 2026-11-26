@@ -101,7 +101,7 @@ float ready_t(int n) { return banner_t(n) + 950.f; }
 void face_crop(int ch, float x, float y, float w, float h, float a, bool strip) {   // the menus' face: the strip (wide) or its square face part
     int iw = 0, ih = 0; const uint32_t* px = ch > 0 ? dissidia_tagteam_face_px(dissidia_tagteam_char_code(ch), &iw, &ih) : nullptr;
     if (!px) { g_L.band(x, y, x + w, y + h, [&](float, float) { return LayerColor{30, 34, 70, 0.6f * a}; }); return; }
-    const int sh = std::min(ih, 26), sw = strip ? std::min(iw, std::max(8, static_cast<int>(static_cast<float>(sh) * w / h + 0.5f))) : std::min(iw, sh);
+    const int sh = std::min(ih, 26), sw = strip ? std::min(iw, std::max(8, static_cast<int>(static_cast<float>(sh) * w / h + 0.5f))) : std::min(iw, 60);   // (small boxes: the left 60 px of the strip, where every character's face is; callers give them that 60:26 shape)
     g_L.image(px, iw, ih, 0, 0, sw, sh, x, y, w, h, a);
 }
 
@@ -132,12 +132,12 @@ void draw_row(const FfaResRow& r, int n, float t, float a_all) {
     // the portrait (and the tag-in who came in)
     const float fx = x0 + 62.f;
     face_crop(r.ch, fx, y + 4.f, r.tag ? 62.f : 84.f, 22.f, a, true);
-    if (r.tag) { face_crop(r.tag, fx + 64.f, y + 4.f, 22.f, 22.f, a, false); g_L.band(fx + 63.f, y + 4.f, fx + 64.f, y + 26.f, [&](float, float) { return LayerColor{230, 230, 255, 0.8f * a}; }); }
+    if (r.tag) { face_crop(r.tag, fx + 64.f, y + 4.f, 48.f, 22.f, a, false); g_L.band(fx + 63.f, y + 4.f, fx + 64.f, y + 26.f, [&](float, float) { return LayerColor{230, 230, 255, 0.8f * a}; }); }
     g_L.band(fx, y + 3.f, fx + (r.tag ? 86.f : 84.f), y + 4.f, [&](float, float) { return LayerColor{214, 218, 246, 0.8f * a}; });
     // name, level, who, outfit
-    const float nx = fx + 94.f;
+    const float nx = fx + (r.tag ? 118.f : 94.f);
     std::string nm = dissidia_tagteam_char_name(r.ch); if (r.tag) nm += " > " + dissidia_tagteam_char_name(r.tag);
-    label(nm, 9.4f, nx, y + 14.f, LayerColor{255, 255, 255, a}, 150.f);
+    label(nm, 9.4f, nx, y + 14.f, LayerColor{255, 255, 255, a}, r.tag ? 130.f : 150.f);
     float lx = nx;
     spr(p0(), 85, 174, 105, 190, lx, y + 20.f, 11.f, 9.f, a); lx += 12.f;
     if (r.level > 0) lx += digits(r.level, 2, lx, y + 20.f, 9.f, a) + 5.f;
@@ -154,9 +154,10 @@ void draw_row(const FfaResRow& r, int n, float t, float a_all) {
     { const int dv = static_cast<int>(std::lround(static_cast<float>(r.dmg) * ce)); const float w = digits(dv, 1, 0, 0, 11.f, 0.f, true); digits(dv, 1, dxr - w, y + 14.f, 11.f, a); }
     const float fx2 = x0 + 410.f;   // the victims' faces, "by" the one who got him
     int shown = 0;
-    for (size_t q = 0; q < r.victims.size() && shown < 3; q++, shown++) face_crop(r.victims[q], fx2 + 15.f * static_cast<float>(shown), y + 4.f, 13.f, 13.f, a * (cu >= 1.f || q * 3 < static_cast<size_t>(cu * 9) ? 1.f : 0.f), false);
+    for (size_t q = 0; q < r.victims.size() && shown < 3; q++, shown++) face_crop(r.victims[q], fx2 - 6.f + 25.f * static_cast<float>(shown), y + 5.f, 23.f, 10.f, a * (cu >= 1.f || q * 3 < static_cast<size_t>(cu * 9) ? 1.f : 0.f), false);
     if (r.alive) label(first ? "WINNER" : "In the fight", 5.2f, x0 + 470.f - 4.f, y + 31.f, first ? LayerColor{255, 226, 120, a} : LayerColor{214, 220, 250, a}, 56.f, true);
-    else if (r.by > 0) { label("KO'd by", 4.8f, x0 + 470.f - 18.f, y + 27.f, LayerColor{200, 206, 255, a}, 36.f, true); face_crop(r.by, x0 + 453.f, y + 20.f, 13.f, 13.f, a, false); }
+    else if (r.forfeit) label("Forfeited", 5.6f, x0 + 470.f - 4.f, y + 31.f, LayerColor{255, 190, 150, a}, 56.f, true);
+    else if (r.by > 0) { label("KO'd by", 4.8f, x0 + 444.f, y + 29.f, LayerColor{200, 206, 255, a}, 36.f, true); face_crop(r.by, x0 + 447.f, y + 22.f, 25.f, 11.f, a, false); }
     else label("Knocked out", 5.2f, x0 + 466.f, y + 31.f, LayerColor{214, 220, 250, a}, 56.f, true);
 }
 
