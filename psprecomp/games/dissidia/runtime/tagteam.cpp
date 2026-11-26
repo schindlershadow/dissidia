@@ -10031,7 +10031,12 @@ void hitreact2_hook(uint8_t* rdram, recomp_context* ctx) {
         const uint32_t o = rd(h + 16u);
         if (o && (o == srd(g_bs + 56u) || o == srd(g_bs + 60u))) {
             if (sbreak_active(o, h)) { sbreak_guard(o, h); if (xbrv(o) == 0u) { brk_note_skip(o, brk_last_hitter(o, nullptr), "own-handler reaction while broken"); ctx->r[2] = 0; return; } }
-            else if (rd(h + 8u) == 0u && xbrv(o) > 0u && brk_unhit_reaction(o)) { brk_note_skip(o, 0, "reaction on a fighter nobody hit (a hit landed on another fighter)"); ctx->r[2] = 0; return; }
+            else if (rd(h + 8u) == 0u && xbrv(o) > 0u && brk_unhit_reaction(o)) {
+                // unproven (a hit the hit registry missed, e.g. a projectile, would lose its reaction): logged only; PSPRECOMP_TAGTEAM_BREAK_UNHIT_GUARD=1 drops it
+                static const bool drop = [] { const char* e = std::getenv("PSPRECOMP_TAGTEAM_BREAK_UNHIT_GUARD"); return e && e[0] == '1'; }();
+                brk_note_skip(o, 0, drop ? "reaction on a fighter nobody hit (a hit landed on another fighter)" : "WOULD SKIP (log only): reaction on a fighter nobody hit (a hit landed on another fighter)");
+                if (drop) { ctx->r[2] = 0; return; }
+            }
         }
     }
     if (g_log && std::getenv("PSPRECOMP_TAGTEAM_HITREACTLOG") && ok(h, 0x310) && g_bs) { const uint32_t vo = rd(h + 16u); if (vo == srd(g_bs + 56u) || vo == srd(g_bs + 60u)) { static int c = 0; if (c++ < 200) { std::fprintf(stderr, "[HITREACT0] t=%.2fs reaction in %s's own handler (no extra victim found), last hits:", dissidia_battle_age() / 60.0f, role_of(vo)); uint32_t f[8]; const int nf = hit_attackers(f); for (int i = 0; i < nf; i++) { uint32_t vv = 0; int ag = -1; hit_last(f[i], vv, ag); if (ag >= 0 && ag < 30) std::fprintf(stderr, " %s->%s(%d)", role_of(f[i]), ok(vv, 0x12D0) ? role_of(vv) : "?", ag); } std::fprintf(stderr, " step %08X\n", g_xstep_att); } } }
