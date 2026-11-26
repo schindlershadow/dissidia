@@ -8658,6 +8658,7 @@ void panel_send(uint32_t side, int32_t amount) { if (!amount) return;
 uint32_t hud_panel_fighter(uint32_t side);
 void steady_break_sync(uint32_t side, uint32_t from, uint32_t to);
 void steady_break_reconcile(uint32_t side, uint32_t sd, uint32_t P, uint32_t pg);
+void break_word_reconcile(uint32_t side, uint32_t P);
 void hudref_hook(uint8_t* rdram, recomp_context* ctx) {
     TtStep tt_step_("hudref_hook");
     g_ram = rdram; g_ctx = ctx; g_hud = static_cast<uint32_t>(ctx->r[4]);
@@ -8757,6 +8758,7 @@ void hudref_hook(uint8_t* rdram, recomp_context* ctx) {
         }
         if (lastP[sd] && lastP[sd] != P) steady_break_sync(side, lastP[sd], P);
         steady_break_reconcile(side, sd, P, pg);
+        break_word_reconcile(side, P);
         lastP[sd] = P;
         if (g_log && std::getenv("PSPRECOMP_TAGTEAM_HUDLOCKLOG")) { static int n[2] = {}; if ((n[sd]++ % 15) == 0) std::fprintf(stderr, "[HUDPANEL] t=%.2fs side %u %s shown %d real %d\n", dissidia_battle_age() / 60.0f, side, role_of(P), static_cast<int32_t>(rd(pg + 4u)), real); }
     }
@@ -9641,6 +9643,8 @@ void sideflag_hook(uint8_t* rdram, recomp_context* ctx) {
 // stops the effect at sub+88. An extra's handler copy holds the SLOT fighter's element (a copied pointer): its break showed "BREAK" over the player's number. Both calls
 // are skipped for an extra's copy unless that extra is the side's panel fighter (the lock-on panel) at the start; an end is let through when its start was.
 FuncPtr g_orig_brkshow = nullptr, g_orig_brkhide = nullptr; std::set<uint32_t> g_brkshow_x;   // extras whose break word was let onto a panel
+uint32_t g_word_sub[2] = {};   // per side: the break sub whose word is up on the big panel (0 = none)
+uint32_t brkword_side(uint32_t sub);
 std::set<uint32_t> g_brkdrop_slot;   // slot fighters whose break word start was kept off the big panel (an extra was on it)
 extern std::map<uint32_t, uint32_t> g_slot_hdl;
 // a fighter that is in a break right now: an extra marked broken (from its break to its refill), a slot fighter whose damage handler is in state 3 / 4
@@ -9673,6 +9677,7 @@ void brkshow_hook(uint8_t* rdram, recomp_context* ctx) {
         for (const auto& kv : g_extra_hdl) if (kv.second + 680u == sub) g_brkshow_x.insert(kv.first);
         for (const auto& kv : g_slot_hdl) if (kv.second + 680u == sub) g_brkdrop_slot.erase(kv.first);
     }
+    { const uint32_t sd = brkword_side(sub); if (sd < 2u) g_word_sub[sd] = sub; }   // the word is up on that side's big panel (break_word_reconcile)
     g_orig_brkshow(rdram, ctx);
 }
 void brkhide_hook(uint8_t* rdram, recomp_context* ctx) {
@@ -9685,7 +9690,37 @@ void brkhide_hook(uint8_t* rdram, recomp_context* ctx) {
         if (x) { if (!g_brkshow_x.count(x)) { ctx->r[2] = 0; return; } g_brkshow_x.erase(x); }
         else for (const auto& kv : g_slot_hdl) if (kv.second + 680u == sub && g_brkdrop_slot.erase(kv.first)) { ctx->r[2] = 0; return; }   // a slot fighter's break word that was kept off the big panel: its end is kept off too
     }
+    { const uint32_t sd = brkword_side(sub); if (sd < 2u && g_word_sub[sd] == sub) g_word_sub[sd] = 0; }
     g_orig_brkhide(rdram, ctx);
+}
+// The big panel's "BREAK" word (the break sub-object's UI elements, shown by FUN_08ADFC84 at break state 4, put back by FUN_08ADFCC4 at the break's end) belongs to the fighter
+// the panel shows. It is panel state: the break's end is the only thing that hides it, so when the broken fighter on the panel never gets there (the extra on the lock-on panel was
+// KO'd in its break, then the lock went to the other enemy) it stayed over the new fighter's number for seconds (RP6 26 Nov, Terra "broken" after her partner died; host repro:
+// XHSTATE=enemy2:12:3 + KOLIST=enemy2:16: BREAK over Lightning's 1219 from 16 to ~22 s). Each hud update the word is compared with the panel fighter's handler state (4 = the
+// word's state): up for a fighter that is not in it -> hidden through the sub that showed it; not up for a fighter in it (its show was kept off while an extra was on the
+// panel) -> shown. View only (UI elements). PSPRECOMP_TAGTEAM_PANELBREAK_WORD_OLD=1 / _PANELBREAK_ANY=1: off.
+uint32_t brkword_side(uint32_t sub) {   // the side of the fighter owning break sub sub (handler + 680), 2 if it is none
+    if (sub < 680u) return 2u; const uint32_t h = sub - 680u; if (!ok(h, 0x310) || rd(h + 4u) != 0x08AE7B50u) return 2u;
+    const uint32_t o = rd(h + 16u); return ok(o, 0x12D0) && side_of(o) < 2u ? side_of(o) : 2u;
+}
+void break_word_reconcile(uint32_t side, uint32_t P) {
+    static uint32_t gen = ~0u; if (gen != g_battle_gen) { gen = g_battle_gen; g_word_sub[0] = g_word_sub[1] = 0; }
+    static const bool off = std::getenv("PSPRECOMP_TAGTEAM_PANELBREAK_WORD_OLD") || std::getenv("PSPRECOMP_TAGTEAM_PANELBREAK_ANY");
+    if (off || side > 1 || !g_orig_brkshow || !g_orig_brkhide || !g_bs || !g_nextra || !ok(P, 0x12D0)) return;
+    uint32_t h = 0; if (auto it = g_extra_hdl.find(P); it != g_extra_hdl.end()) h = it->second; else if (auto jt = g_slot_hdl.find(P); jt != g_slot_hdl.end()) h = jt->second;
+    const bool want = ok(h, 0x310) && rd(h + 4u) == 0x08AE7B50u && rd(h + 16u) == P && rd(h + 8u) == 4u;
+    const uint32_t up = g_word_sub[side];
+    if (up && !want) {
+        const recomp_context saved = *g_ctx; g_ctx->r[4] = static_cast<int32_t>(up);
+        g_word_sub[side] = 0; { uint32_t o = ok(up - 680u, 0x20) ? rd(up - 680u + 16u) : 0u; g_brkshow_x.erase(o); }   // the owner's own end is then dropped (it never started on a panel any more)
+        g_orig_brkhide(g_ram, g_ctx); *g_ctx = saved;
+        if (g_log) std::fprintf(stderr, "[HUDBREAK] t=%.2fs side %u: break word hidden, the panel shows %s (not in the break's word state) {%s}\n", dissidia_battle_age() / 60.0f, side, role_of(P), brv_line());
+    } else if (!up && want) {
+        const uint32_t sub = h + 680u; const recomp_context saved = *g_ctx; g_ctx->r[4] = static_cast<int32_t>(sub);
+        g_word_sub[side] = sub; if (g_extra_hdl.count(P)) g_brkshow_x.insert(P); else g_brkdrop_slot.erase(P);
+        g_orig_brkshow(g_ram, g_ctx); *g_ctx = saved;
+        if (g_log) std::fprintf(stderr, "[HUDBREAK] t=%.2fs side %u: break word shown, the panel fighter %s is in the break {%s}\n", dissidia_battle_age() / 60.0f, side, role_of(P), brv_line());
+    }
 }
 // FUN_089E358C(hud+24, side, amount, ...): the HP-damage "ghost" on a side's big panel: the HP damage an HP attack dealt pulses (purple, three times) over the side's
 // BRV number. Its only caller is the HP damage step FUN_08AEFF40 (ra 08AEFFC8), so the team mate's HP hits pulsed over the
