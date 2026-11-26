@@ -659,6 +659,7 @@ uint32_t g_natko_vic = 0; int g_natko_frames = 0;   // debug: NATKO victim trace
 struct CycState { int cyc = 0; uint32_t target = 0; };
 std::map<uint32_t, CycState> g_cycs;
 CycState& cyc_of(uint32_t a) { return g_cycs[a]; }
+float g_lock_press_t = -1e9f;               // battle age of the last L / R press (lock_mode_hook): the governor stays away for 1 s after it
 std::string g_lock_whys;                  // [LOCKCHG] reasons noted by our own lock writers since the last poll ("a+b")
 void lock_why(const char* w) { if (g_lock_whys.find(w) == std::string::npos && g_lock_whys.size() < 200) { if (!g_lock_whys.empty()) g_lock_whys += '+'; g_lock_whys += w; } }
 bool g_lock_bypass = false;               // set while our own code puts a lock block's mode back: the L-press cycle in lock_mode_hook must not see it as a press
@@ -3040,7 +3041,7 @@ void lock_mode_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t L = static_cast<uint32_t>(ctx->r[4]), mode = static_cast<uint32_t>(ctx->r[5]);
     if (std::getenv("PSPRECOMP_TAGTEAM_EXBCAM") && ok(L, 0x200) && ok(rd(L + 248u), 0x12D0)) std::fprintf(stderr, "[LOCKMODE] t=%.2fs block %08X owner %s mode %u -> %u flag %u ra %08X bypass %d\n", dissidia_battle_age() / 60.0f, L, role_of(rd(L + 248u)), rd(L + 264u), mode, static_cast<uint32_t>(ctx->r[6]), static_cast<uint32_t>(ctx->r[31]), g_lock_bypass ? 1 : 0);
     if (g_lock_bypass) { lock_why("our-lock-mode"); g_orig_lock_mode(rdram, ctx); return; }
-    lock_why("L-press");
+    lock_why("L-press"); g_lock_press_t = dissidia_battle_age();
     if (g_nextra && ok(L, 0x200)) {
         const uint32_t owner = rd(L + 248u), h1 = rd(L + 304u);
         if (g_log && (owner == srd(g_bs + 56u + 4u * rd(g_bs + 84u)))) { static int n = 0; if (n++ < 200) std::fprintf(stderr, "[TAGTEAM] t=%.1fs lock mode call: block %08X mode %u -> %u flag %u (sel %d) cyc %d core %u target %s\n", dissidia_battle_age() / 60.0f, L, rd(L + 264u), mode, static_cast<uint32_t>(ctx->r[6]), ok(h1, 0x40) ? static_cast<int>(rd(h1 + 28u)) : -99, cyc_of(owner).cyc, ok(h1, 0x40) ? call(0x08B40A50u, h1, L) : 0u, ok(rd(owner + 0x2FCu), 0x12D0) ? role_of(rd(owner + 0x2FCu)) : "-"); }
@@ -10873,7 +10874,9 @@ const char* lock_word_bad(uint32_t t, uint32_t P, uint32_t mem) {
         if (!foes(b, P) || !alive(b)) return "standin-of-ally-or-dead";
         return (b == mem || t == mem) ? nullptr : "assist-not-locked-before";
     }
-    if (g_ram[(t + 0x542u) & 0x07FFFFFFu] != 0) return "assist";
+    const uint32_t kind = g_ram[(t + 0x542u) & 0x07FFFFFFu];
+    if (kind == 1u) return "assist";   // (a real assist actor, kind 1, as everywhere else in this file)
+    if (kind != 0u) return nullptr;    // EX core and other retail lock targets that are not fighters: retail's own, left alone (26 Nov, RP6 "cannot change targets": the EX core was taken for an assist)
     if (ao8_parked_partner(t)) return "parked-partner";
     if (is_down(t)) return "down";
     if (!alive(t)) return "dead";
@@ -10888,15 +10891,27 @@ void lock_govern() {
     static uint32_t gen = ~0u; if (gen != g_battle_gen) { gen = g_battle_gen; g_lockmem.clear(); }
     if (exb_running() || (g_chase_ctl_now && rd(g_chase_ctl_now) != 0) || g_cpair[0].a) return;
     uint32_t f[6]; const int n = all_fighters(f);
+    if (std::getenv("PSPRECOMP_TAGTEAM_TESTLOCKCORE")) {   // test aid: while an EX core is out the human's lock selector is put on it (what retail's L cycle does: selector 2)
+        const uint32_t H = lock_local_human(), HL = ok(H, 0x12D0) ? rd(H + 0x5ACu) : 0u, h1 = ok(HL, 0x200) ? rd(HL + 304u) : 0u;
+        static bool once = false; const uint32_t ca = static_cast<uint32_t>(std::strtoul(std::getenv("PSPRECOMP_TAGTEAM_TESTLOCKCORE"), nullptr, 16));
+        if (!once && ca > 0x08800000u && ok(ca, 0x40) && g_ram[(ca + 0x542u) & 0x07FFFFFFu] == 6 && ok(HL, 0x200) && dissidia_battle_age() / 60.0f >= 30.f) { once = true; call(LOCK_SET, HL, ca); std::fprintf(stderr, "[TESTLOCKCORE] t=%.2fs human's lock block put on the EX core %08X (override %08X, lock answer %08X)\n", dissidia_battle_age() / 60.0f, ca, rd(HL + 252u), call(LOCK_GET, HL)); }
+        if (ok(h1, 0x40) && rd(HL + 264u) == 1 && call(0x08B40A50u, h1, HL)) { if (rd(h1 + 28u) != 2) std::fprintf(stderr, "[TESTLOCKCORE] t=%.2fs selector -> 2 (EX core %08X)\n", dissidia_battle_age() / 60.0f, call(0x08B40A50u, h1, HL)); wr(h1 + 28u, 2); }
+    }
     for (int i = 0; i < n; i++) {
         const uint32_t P = f[i];
         if (!pad_driven(P) || is_rebuilding(P) || !alive(P) || g_ram[(P + 0x542u) & 0x07FFFFFFu] != 0) continue;
         const uint32_t L = rd(P + 0x5ACu); if (!ok(L, 0x200) || rd(L + 248u) != P) continue;
+        if (dissidia_battle_age() - g_lock_press_t < 60.f) continue;   // never within ~1 s of the player's own L / R press
         const uint32_t mem = g_lockmem.count(P) ? g_lockmem[P] : 0u;
         const uint32_t lt = call(LOCK_GET, L), t2 = rd(P + 0x2FCu), fo = rd(P + 0x300u), ov = rd(L + 252u);
         const char* bl = lock_word_bad(lt, P, mem); const char* b2 = lock_word_bad(t2, P, mem); const char* bf = lock_word_bad(fo, P, mem); const char* bo = lock_word_bad(ov, P, mem);
-        if (!bl && !b2 && !bf && !bo) { if (lt && !lock_word_bad(lt, P, mem)) g_lockmem[P] = lock_norm(lt); continue; }
+        static std::map<uint32_t, uint32_t> given_up, tried;   // fighter -> the bad word it was fixed / given up on
+        if (!bl && !b2 && !bf && !bo) { given_up.erase(P); tried.erase(P); if (lt && !lock_word_bad(lt, P, mem)) g_lockmem[P] = lock_norm(lt); continue; }
         const char* why = bl ? bl : b2 ? b2 : bf ? bf : bo;
+        const uint32_t badw = bl ? lt : b2 ? t2 : bf ? fo : ov;
+        if (given_up.count(P) && given_up[P] == badw) continue;
+        if (tried.count(P) && tried[P] == badw) { given_up[P] = badw; std::fprintf(stderr, "[LOCKFIX] t=%.2fs %s %08X: the correction did not stick (bad %s %08X again): the governor stops for this target\n", dissidia_battle_age() / 60.0f, role_of(P), P, why, badw); continue; }
+        tried[P] = badw;
         uint32_t nt = 0;
         for (const uint32_t c : {lt, t2, fo, ao8_stand_in(mem), mem}) if (c && !lock_word_bad(c, P, mem)) { nt = c; break; }
         if (!nt) { float bd = 1e30f;
@@ -10916,7 +10931,8 @@ const char* lock_kind(uint32_t t, uint32_t P) {
     if (!t) return "none";
     if (!ok(t, 0x12D0)) return "NOT-AN-ACTOR";
     if (ao8_body_of(t)) return "standin-assist";
-    if (g_ram[(t + 0x542u) & 0x07FFFFFFu] != 0) return "ASSIST";
+    if (g_ram[(t + 0x542u) & 0x07FFFFFFu] == 1u) return "ASSIST";
+    if (g_ram[(t + 0x542u) & 0x07FFFFFFu] != 0) return "non-fighter";
     if (is_down(t) || !alive(t)) return "DEAD";
     if (rdf(t + 0x84u) < -20.0f || std::fabs(rdf(t + 0x80u)) >= 1000.0f || std::fabs(rdf(t + 0x88u)) >= 1000.0f) return "PARKED";
     if (!foes(t, P)) return "ALLY";
