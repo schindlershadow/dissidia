@@ -19,6 +19,8 @@ final class Engine {
     static native boolean feature(String name);
     static native String payloadFingerprint();
     static native String gameDir();
+    /** The game's disc files are still on the device (the game folder, or an older install's work folder). */
+    static native boolean discPresent(String work);
     static native String releaseRoot();
     static native String loadState(String file);
     static native boolean saveState(String file, String text);

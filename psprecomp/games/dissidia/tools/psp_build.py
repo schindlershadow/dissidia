@@ -43,6 +43,8 @@ import time
 # On Android the bundled Python is started through the app's loader (psprecomp/setup/proc.cpp): child pythons need the same prefix
 PYEXE = ([os.environ["PSPRECOMP_PY_LOADER"]] if os.environ.get("PSPRECOMP_PY_LOADER") else []) + [sys.executable]
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import discdir   # noqa: E402  where disc0 is (the phone keeps it only in the game's folder)
 ANALYSES = ["analysis", "analysis_battle", "analysis_menu", "analysis_extra", "analysis_supacc"]
 STEPS = ["analysis", "recompile", "overlays", "configure", "build"]
 PROGRESS = False
@@ -220,9 +222,11 @@ def main():
     work = os.path.abspath(a.workdir)
     game = os.path.abspath(a.game)
     repo = os.path.abspath(a.repo)
-    disc = os.path.join(work, "disc0", "PSP_GAME")
     if not os.path.isdir(work):
         die("workdir %s does not exist (run setup_from_iso.py first)" % work)
+    disc = os.path.join(discdir.disc_dir(work, say), "PSP_GAME")
+    if discdir.home() and not discdir.has_game(os.path.dirname(disc)):
+        die("the game's files are not in %s (the folder was deleted?): pick your game file (.iso / .cso) again to build it from the disc" % os.path.dirname(disc))
     env = dict(os.environ)
     # Compile jobs. Before: at most 3 on any machine. Now, unless `--jobs N` is given: one per core, and each compile waits in the
     # launcher (objcache.py, the memory gate) until the memory that is free right now covers it, so a small machine is not overrun
@@ -281,9 +285,9 @@ def main():
     for tool in (() if a.no_compile or a.android else ("cmake",)):
         if not shutil.which(tool, path=env["PATH"]):
             die("%s not found in PATH (a release bundles it; pass --toolchain)" % tool)
-    eboot = os.path.join(work, "EBOOT.dec.elf")
-    if not os.path.isfile(eboot):
-        die("%s missing: run setup_from_iso.py first" % eboot)
+    eboot = discdir.eboot_elf(work, say)   # the phone's cleanup removes it; made again from the disc's EBOOT.BIN
+    if not eboot:
+        die("%s missing: run setup_from_iso.py first" % os.path.join(work, "EBOOT.dec.elf"))
 
     # ------------------------------------------------------------------ 1. analysis
     step(1, "Rebuilding the analysis from your files")

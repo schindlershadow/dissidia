@@ -1141,6 +1141,15 @@ public class SetupActivity extends Activity {
     }
 
     private void startPlan(String kind, String isoPath, Options o, String prev, int skip) {
+        if ((kind.equals("rebuild") || kind.equals("extras")) && !Engine.discPresent(stWorkdir())) {
+            // the only copy of the disc files is in the game's folder: the player deleted it. They are made again from the game file.
+            dialog("The game's files are gone", "The game's files are no longer on this device (the game's folder was deleted or emptied), and "
+                    + (kind.equals("rebuild") ? "the game cannot be updated" : "extras cannot be added") + " without them. Pick your Dissidia 012 game file (.iso or .cso) again: "
+                    + "it is read once and the game is built again. Your saves are kept.", Icons.WARN,
+                    new Btn("Pick the game file", Icons.DISC, Card.STYLE_PRIMARY, () -> beginPick(PICK_ISO, this::backHome)),
+                    new Btn("Cancel", Icons.CLOSE, Card.STYLE_NORMAL, this::backHome));
+            return;
+        }
         if (preflight(kind, isoPath, o, prev, skip)) return;
         if (!kind.startsWith("demo")) hideGameFromGallery(true, false);
         runKind = kind;

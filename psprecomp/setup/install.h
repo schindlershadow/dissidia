@@ -171,11 +171,14 @@ std::string home_dir();
 // Free bytes on the volume of `path` (nearest existing parent); -1 if unknown.
 long long free_space(const std::string& path);
 constexpr long long kNeededBytes = 6LL << 30;             // desktop: extracted disc (~1.7 GB) + generated sources + objects, with slack
-constexpr long long kNeededBytesAndroid = 11LL << 29;     // phone: 5.5 GB, see needed_bytes
+constexpr long long kNeededBytesAndroid = 7LL << 29;      // phone: 3.5 GB peak (one disc copy 1.7 + objects 0.4 + generated sources 0.2 + zig cache 0.4 + apk/link 0.2 + slack), see needed_bytes
 
 // How much free space an install needs: the game build (desktop kNeededBytes, phone kNeededBytesAndroid; what a retry already has in
 // `workdir` - the extracted disc, the compiled objects - is subtracted) plus every extra turned on in `o` (Extra::need_bytes).
 // `extras_only`: Change extras on an installed game (no build).
+// Are the game's disc files still there (the phone keeps the only copy in game_dir/disc0; an older install has them in workdir/disc0)? When
+// not (the player deleted the game folder), a rebuild / extras change needs the game file (.iso / .cso) again.
+bool disc_files_present(const std::string& workdir, const std::string& game_dir);
 long long needed_bytes(bool android, const std::string& workdir, const Options& o, bool extras_only);
 // "" when `workdir`'s drive has room for `need`, else the failure text (explain_failure's "space") to show BEFORE the install
 // starts. PSPRECOMP_SKIP_SPACE_CHECK=1 turns the check off. Unknown free space (-1) passes.
