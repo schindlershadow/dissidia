@@ -47,6 +47,7 @@ import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import discdir  # noqa: E402  (where disc0 is)
 import vcdiff  # noqa: E402
 
 SECTOR = 2048
@@ -173,7 +174,7 @@ class WorkSource:
         self.name = "%s (rebuilt from %s)" % (layout["id"], work)
         self.size = layout["size"]
         self.blobs = [(b["offset"], zlib.decompress(base64.b64decode(b["data"]))) for b in layout["blobs"]]
-        disc = os.path.join(work, "disc0")
+        disc = discdir.disc_dir(work)
         self.spans = []          # (offset, size, host path or None=zeros, file offset)
         self.missing = []
         self.holes = []          # (lo, hi) absolute: bytes of a file taken from the other disc that differ there
@@ -458,7 +459,7 @@ def slug(name):
 
 def cmd_import(a):
     work = os.path.abspath(a.work)
-    if not os.path.isdir(os.path.join(work, "disc0")):
+    if not os.path.isdir(discdir.disc_dir(work)):
         die("%s is not an install folder (no disc0/; run setup_from_iso.py first)" % work)
     mods = os.path.abspath(a.mods or default_mods(work))
     if a.patch.startswith("fd:"):          # Android's file picker hands over an open descriptor
@@ -547,7 +548,7 @@ def cmd_import(a):
             "Dissidia 012 disc (an update made for an earlier version of the mod? Those need the full patch from the mod's "
             "author). Nothing was installed." % (len(unexplained), ", ".join("#%d" % b[0] for b in unexplained[:8])))
 
-    disc = os.path.join(work, "disc0")
+    disc = discdir.disc_dir(work)
     usr = os.path.join(disc, "PSP_GAME", "USRDIR")
     staging = folder + ".new"
     shutil.rmtree(staging, ignore_errors=True)
@@ -645,7 +646,7 @@ def cmd_import(a):
             enc = os.path.join(work, "EBOOT.enc.bin")
             if not s.unknown and os.path.isfile(enc) and os.path.getsize(enc) == size and open(enc, "rb").read() == s.read(0, size):
                 continue                           # the disc's own (encrypted) EBOOT: unchanged
-            local = os.path.join(work, "EBOOT.dec.elf")
+            local = discdir.eboot_elf(work) or os.path.join(work, "EBOOT.dec.elf")
             key = "EBOOT.BIN"
         else:
             rel = p.split("/", 2)[2]               # under USRDIR
@@ -710,7 +711,7 @@ def cmd_import(a):
             with open(os.path.join(staging, "code", key), "wb") as f:
                 f.write(data)
             if key == "EBOOT.BIN":
-                recs = eboot_patch_records(open(os.path.join(work, "EBOOT.dec.elf"), "rb").read(), data)
+                recs = eboot_patch_records(open(discdir.eboot_elf(work) or os.path.join(work, "EBOOT.dec.elf"), "rb").read(), data)
                 with open(os.path.join(staging, "code", "eboot.patch"), "wb") as f:
                     for va, b in recs:
                         f.write(struct.pack("<II", va, len(b)) + b)

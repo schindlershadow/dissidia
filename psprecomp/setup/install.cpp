@@ -565,9 +565,15 @@ std::vector<std::string> android_verify_argv(const Layout& l, const std::string&
 std::string android_game_dir() { return std::string("/sdcard/Android/media/") + kGamePackage + "/game"; }
 
 EnvList android_env(const Layout& l, const std::string& workdir) {
-    return {{"PYTHONUNBUFFERED", "1"}, {"PYTHONDONTWRITEBYTECODE", "1"}, {"PYTHONHOME", join(l.root, "python")},
+    EnvList e = {{"PYTHONUNBUFFERED", "1"}, {"PYTHONDONTWRITEBYTECODE", "1"}, {"PYTHONHOME", join(l.root, "python")},
             {"PSPRECOMP_ANDROID_DEVICE", "1"}, {"PSPRECOMP_ZIG", l.zig}, {"HOME", workdir},
             {"TMPDIR", join(workdir, "tmp")}, {"ZIG_LIB_DIR", join(l.android_dir, "zig-lib")}};
+    // One copy of the disc files: they live only in the game's folder (tools/discdir.py). PSPRECOMP_DISC_HOME_OLD=1 in the app's
+    // environment: the old layout (disc0 in the work folder, copied at the end); PSPRECOMP_KEEP_BUILD=1: no clean-up after the build.
+    for (const char* k : {"PSPRECOMP_DISC_HOME_OLD", "PSPRECOMP_KEEP_BUILD"})
+        if (const char* v = std::getenv(k)) e.push_back({k, v});
+    e.push_back({"PSPRECOMP_DISC_HOME", android_game_dir() + "/disc0"});
+    return e;
 }
 
 std::string android_payload_fingerprint(const Layout& l) {
@@ -607,8 +613,8 @@ std::vector<Step> plan_install_android(const Layout& l, const std::string& iso, 
     b.weight = 0.80;
     Step c;
     c.label = "Putting the game files where the game can read them";
-    c.explain = "Copies the game's files (about 2 GB) to where the game reads them.";
-    c.argv = {l.python, join(l.game_dir, "tools/android_local_install.py"), workdir, "--dest", android_game_dir()};
+    c.explain = "Moves the last files to where the game reads them and removes what the build left (nothing the game needs).";
+    c.argv = {l.python, join(l.game_dir, "tools/android_local_install.py"), workdir, "--dest", android_game_dir(), "--clean"};
     c.env = android_env(l, workdir);
     c.weight = 0.10;
     std::vector<Step> p{x};
@@ -953,6 +959,11 @@ std::string human_gb(long long b) {
     return t;
 }
 
+bool disc_files_present(const std::string& workdir, const std::string& game_dir) {
+    const char* pkg = "PSP_GAME/USRDIR/DATA/PACKAGE.BIN";
+    return is_file(join(game_dir, std::string("disc0/") + pkg)) || is_file(join(workdir, std::string("disc0/") + pkg));
+}
+
 static long long tree_has(const std::string& p, long long bytes) { return is_dir(p) || is_file(p) ? bytes : 0; }
 
 long long needed_bytes(bool android, const std::string& workdir, const Options& o, bool extras_only) {
@@ -961,7 +972,9 @@ long long needed_bytes(bool android, const std::string& workdir, const Options& 
         n = android ? kNeededBytesAndroid : kNeededBytes;
         // a retry / resume already has these (measured: the extracted disc 1.7 GB, the compiled objects 0.4 GB)
         if (!workdir.empty()) {
-            n -= tree_has(join(workdir, "disc0/PSP_GAME"), 1700LL << 20);
+            long long disc = tree_has(join(workdir, "disc0/PSP_GAME"), 1700LL << 20);
+            if (android) disc = std::max(disc, tree_has(std::string("/sdcard/Android/media/org.psprecomp.game/game/disc0/PSP_GAME"), 1700LL << 20));
+            n -= disc;
             n -= tree_has(join(workdir, "android/obj"), 400LL << 20);
         }
         n = std::max(n, 1LL << 30);

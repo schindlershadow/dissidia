@@ -53,6 +53,8 @@ COMPATIBLE_DISC_IDS = {              # other releases known to work with the EU 
 PSPDECRYPT_GIT = "https://github.com/John-K/pspdecrypt"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import discdir   # noqa: E402  where disc0 is (the phone keeps it only in the game's folder)
 REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 
 
@@ -503,7 +505,9 @@ def disc_note(disc_id):
 
 def extract(iso, workdir, force):
     """Extract SYSDIR/EBOOT.BIN (to EBOOT.enc.bin), PARAM.SFO-style metadata and all of USRDIR."""
-    disc = os.path.join(workdir, "disc0", "PSP_GAME")
+    if discdir.home():
+        discdir.prepare(discdir.disc_dir(workdir))
+    disc = os.path.join(discdir.disc_dir(workdir), "PSP_GAME")
     result = {"missing": [], "disc_id": None, "title": None, "package_md5": None, "package_size": None, "files": 0, "bytes": 0}
 
     eb = iso.find("PSP_GAME/SYSDIR/EBOOT.BIN")
@@ -541,7 +545,7 @@ def extract(iso, workdir, force):
         dest = os.path.join(disc, "USRDIR", *rel.split("/"))
         if force or not (os.path.isfile(dest) and os.path.getsize(dest) == r["size"]):
             todo += r["size"]
-    free = shutil.disk_usage(workdir).free
+    free = shutil.disk_usage(os.path.dirname(disc) if discdir.home() else workdir).free
     if free < todo + (256 << 20):
         raise IsoError("not enough free disk space in %s: need about %s more, %s free"
                        % (workdir, fmt_size(todo + (256 << 20)), fmt_size(free)))
@@ -605,7 +609,8 @@ def postprocess(workdir, pspdecrypt, decrypted=None):
         note = decrypt_eboot(pspdecrypt(), enc, dec)
         if note:
             print("  pspdecrypt: " + note.splitlines()[-1])
-    sysdir = os.path.join(workdir, "disc0", "PSP_GAME", "SYSDIR")
+    disc = os.path.join(discdir.disc_dir(workdir), "PSP_GAME")
+    sysdir = os.path.join(disc, "SYSDIR")
     os.makedirs(sysdir, exist_ok=True)
     shutil.copy2(dec, os.path.join(sysdir, "EBOOT.BIN"))
     shutil.copy2(dec, os.path.join(sysdir, "BOOT.BIN"))
@@ -622,7 +627,7 @@ def postprocess(workdir, pspdecrypt, decrypted=None):
         raise RuntimeError("internal: eboot image size mismatch")
 
     facts["overlays"] = {}
-    data_dir = os.path.join(workdir, "disc0", "PSP_GAME", "USRDIR", "DATA")
+    data_dir = os.path.join(disc, "USRDIR", "DATA")
     for elf_name, bin_name, want_id in OVERLAYS:
         p = os.path.join(data_dir, elf_name)
         if not os.path.isfile(p):

@@ -39,6 +39,7 @@ import tempfile
 PYEXE = ([os.environ['PSPRECOMP_PY_LOADER']] if os.environ.get('PSPRECOMP_PY_LOADER') else []) + [sys.executable]
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import discdir  # noqa: E402  (where disc0 is)
 import charmod_gmo as G  # noqa: E402
 import charmod_objx as co  # noqa: E402
 import d1_objx  # noqa: E402
@@ -328,7 +329,7 @@ def cmd_install(a):
     and the online deltas (netpack.py)."""
     import netpack as npk
     man = json.load(open(os.path.join(PATCH_DIR, 'manifest.json'), encoding="utf-8"))
-    d12 = pe.Package(os.path.join(a.work, 'disc0'))
+    d12 = pe.Package(discdir.disc_dir(a.work))
     d1 = IsoPackage(a.d1)
     disc, title = d1.disc_id()        # Dissidia 012 has obj/p_fiv100.objx too: the disc's own id tells the games apart
     if disc != D1_DISC_ID:
@@ -390,10 +391,10 @@ def cmd_install(a):
     if not os.path.exists(os.path.join(mods, 'roster.txt')):
         open(os.path.join(mods, 'roster.txt'), 'w', encoding="utf-8").close()       # (roster_mainbin would make up a character without one)
     print('PROGRESS 75', flush=True)
-    if subprocess.call(PYEXE + [os.path.join(HERE, 'roster_mainbin.py'), os.path.join(a.work, 'disc0'), mods]):
+    if subprocess.call(PYEXE + [os.path.join(HERE, 'roster_mainbin.py'), discdir.disc_dir(a.work), mods]):
         raise SystemExit('roster_mainbin.py failed')
     print('PROGRESS 90', flush=True)
-    subprocess.call(PYEXE + [os.path.join(HERE, 'netpack.py'), 'deltas', mods, '--disc', os.path.join(a.work, 'disc0')])
+    subprocess.call(PYEXE + [os.path.join(HERE, 'netpack.py'), 'deltas', mods, '--disc', discdir.disc_dir(a.work)])
     print('PROGRESS 100', flush=True)
     print('Bartz\'s Dissidia 1 moves installed (Settings > Mods switches them)')
 

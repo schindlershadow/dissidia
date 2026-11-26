@@ -249,6 +249,7 @@ JNI(jobjectArray, explainFailure)(JNIEnv* e, jclass, jstring step, jstring stage
 JNI(jstring, layoutProblem)(JNIEnv* e, jclass) { return jstr(e, g_problem); }
 JNI(jboolean, feature)(JNIEnv* e, jclass, jstring name) { return setup::feature_available(g_layout, str(e, name)); }
 JNI(jstring, payloadFingerprint)(JNIEnv* e, jclass) { return jstr(e, g_layout.android_dir.empty() ? "" : setup::android_payload_fingerprint(g_layout)); }
+JNI(jboolean, discPresent)(JNIEnv* e, jclass, jstring jwork) { return setup::disc_files_present(str(e, jwork), setup::android_game_dir()); }
 JNI(jstring, gameDir)(JNIEnv* e, jclass) { return jstr(e, setup::android_game_dir()); }
 JNI(jstring, releaseRoot)(JNIEnv* e, jclass) { return jstr(e, g_root); }
 

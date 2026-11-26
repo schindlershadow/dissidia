@@ -147,6 +147,16 @@ static void disc_checks(const std::filesystem::path& tmp) {
         hd.set("hd_textures", "1");
         CHECK(needed_bytes(false, "", hd, false) > needed_bytes(false, "", none, false));
         CHECK(needed_bytes(true, "", none, false) == kNeededBytesAndroid);
+        CHECK(kNeededBytesAndroid < (4LL << 30));   // one copy of the disc: the phone's peak is about 3.5 GB (was 5.5)
+        {   // disc files: in the game folder (phone), in an older install's work folder, or gone (ask for the game file again)
+            const std::filesystem::path g = tmp / "gamefolder", w = tmp / "workfolder";
+            CHECK(!disc_files_present(w.string(), g.string()));
+            std::filesystem::create_directories(g / "disc0/PSP_GAME/USRDIR/DATA"); write_file(g / "disc0/PSP_GAME/USRDIR/DATA/PACKAGE.BIN", "x");
+            CHECK(disc_files_present(w.string(), g.string()));
+            std::filesystem::remove_all(g);
+            std::filesystem::create_directories(w / "disc0/PSP_GAME/USRDIR/DATA"); write_file(w / "disc0/PSP_GAME/USRDIR/DATA/PACKAGE.BIN", "x");
+            CHECK(disc_files_present(w.string(), g.string()));
+        }
         CHECK(needed_bytes(false, "", none, true) < (1LL << 30));
         CHECK(space_problem(tmp.string(), 1LL << 20, false).empty());
         const std::string sp = space_problem(tmp.string(), 1LL << 60, true);

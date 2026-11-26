@@ -32,6 +32,7 @@ import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import discdir  # noqa: E402  (where disc0 is)
 import xdelta_mod as X  # noqa: E402
 
 FUNC_RE = re.compile(r'^RECOMP_FUNC void (\w+)\(uint8_t\* rdram, recomp_context\* ctx\) \{ /\* 0x([0-9A-Fa-f]{8}) \*/', re.M)
@@ -483,9 +484,9 @@ def read_dynamic(code_dir):
 
 def retail_module(cx, key):
     if key == "EBOOT.BIN":
-        p = os.path.join(cx.work, "EBOOT.dec.elf")
+        p = (discdir.eboot_elf(cx.work) or os.path.join(cx.work, "EBOOT.dec.elf"))
     else:
-        p = os.path.join(cx.work, "disc0", "PSP_GAME", "USRDIR", "DATA", key)
+        p = os.path.join(discdir.disc_dir(cx.work), "PSP_GAME", "USRDIR", "DATA", key)
     return open(p, "rb").read() if os.path.isfile(p) else None
 
 
