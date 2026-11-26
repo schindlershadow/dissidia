@@ -557,7 +557,7 @@ std::atomic<int> g_hop_more{0}; std::atomic<int64_t> g_hop_at{0};
 // The Free-for-all now opens the 1-on-1 route for a pick and, on YES, takes the pick and sends the app to 0x30 (back to the list, where the players screen opens again);
 // the battle opens the Party route and jumps from 16 straight to 28 with the party records written (no Party Select / CPU Select object is ever made).
 // PSPRECOMP_TAGTEAM_FFA_PSOLD=1: the old CPU Select hop and scripted pass.
-enum QbMode { QB_NONE = 0, QB_PICK, QB_RETURN, QB_START };
+enum QbMode { QB_NONE = 0, QB_PICK, QB_RETURN, QB_START, QB_DETOUR };   // QB_DETOUR: Player Select went to another app (Customization, state 50) and comes back to the same Player Select
 int g_qb_mode = QB_NONE;
 int g_trip_out = 0; bool g_trip_online = false; int64_t g_trip_t0 = 0, g_qb_last_ms = 0, g_main_seen_ms = 0, g_trip_in_t0 = 0;   // the trips' fades (trip_tick)
 void trip_draw(float white, bool own_frame); float trip_in_white(); void start_cover_draw(); float post_white();
@@ -1511,6 +1511,7 @@ void qb_frame_hook(uint8_t* rdram, recomp_context* ctx) {
         std::fprintf(stderr, "[FFA] Quick Battle (Party): state 16 -> 28 (setup screen)\n");
     }
     if (g_qb_mode == QB_PICK && before == 16) { g_qb_mode = QB_NONE; std::fprintf(stderr, "[FFA] Player Select trip: the app took the Party route (state 16), dropped\n"); }
+    if (g_qb_mode == QB_DETOUR && before == 5) { g_qb_mode = QB_PICK; std::fprintf(stderr, "[FFA] Player Select: back from the detour, picking again\n"); }
     g_orig_qb_frame(rdram, ctx);
     if (g_start_cover && !g_start_exit_t0 && okp(P) && r32(P + 0x910u) >= 0x30u) g_start_exit_t0 = steady_ms();   // the battle start's fade out
     if (g_trip_post && !g_post_exit_t0 && okp(P) && r32(P + 0x910u) >= 0x30u) g_post_exit_t0 = steady_ms();   // after a battle: the app's way out to the list
@@ -1523,6 +1524,11 @@ void qb_frame_hook(uint8_t* rdram, recomp_context* ctx) {
             // leave the way Circle does (its fade out, then 0x30): the state goes back to 5 and the next select tick reports 4 (= Circle) to the state's own code
             w32(P + 0x910u, 5u); g_sel_force = 4; g_qb_mode = QB_RETURN;
             std::fprintf(stderr, "[FFA] Player Select: YES on char %d (look %d): the app leaves to the list as on Circle (not CPU Select, state %u)\n", g_ps_pick, g_ps_look, next);
+        } else if (next != 0x30u && next != 0x31u && !std::getenv("PSPRECOMP_TAGTEAM_FFA_CUSTOLD")) {
+            // 26 Nov (user, Deck: Customization from the Free-for-all's Player Select = white screen): state 50 is the Customization app; retail brings the app back to this same
+            // Player Select (state 5) when it closes. It was taken for "left without a pick": the white cover of the trip back stayed up over Customization. Now nothing of ours draws
+            // and the pick goes on afterwards. PSPRECOMP_TAGTEAM_FFA_CUSTOLD=1: old.
+            g_qb_mode = QB_DETOUR; std::fprintf(stderr, "[FFA] Player Select: detour to state %u (Customization): it comes back to the Player Select, the pick goes on\n", next);
         } else { g_ps_pick = 0; g_qb_mode = QB_RETURN; std::fprintf(stderr, "[FFA] Player Select: left without a pick (next state %u)\n", next); }
     }
 }
@@ -1668,7 +1674,7 @@ void dissidia_menu_play_se(uint8_t* rdram, recomp_context* ctx, int id) { play_s
 void dissidia_tagteam_modesel_draw_frozen(bool online) {
     if (g_trip_out && !dissidia_tagteam_inject_old()) return;   // (trip_tick draws it)
     ge_draw_set_game_layer_ttl(kHoldTtlMs);
-    if (g_ms_ffa && !ps_old() && (g_qb_mode == QB_PICK || g_qb_mode == QB_START)) return;   // the Free-for-all trips draw their own fade (trip_tick)
+    if (g_ms_ffa && !ps_old() && (g_qb_mode == QB_PICK || g_qb_mode == QB_START || g_qb_mode == QB_DETOUR)) return;   // the Free-for-all trips draw their own fade (trip_tick)
     modesel_draw(online);
 }   // after a choice: the Mode Select stays on screen, cursor on the chosen row, until the next menu opens (the layer expires 150 ms after the last draw)
 // The list row the confirm starts (menu_settings.cpp writes it to the sub-list cursor): a Free-for-all pick opens Quick Battle (1-on-1) (row 0) for its Player Select.
@@ -1694,7 +1700,8 @@ void dissidia_tagteam_modesel_confirm(bool sp) {
 // menu_settings.cpp, when the Battle Mode list comes back after the Quick Battle app: a Free-for-all pick trip ends on the players screen (hosted over the list again), with the pick
 // in its field. Returns true when it took over (the Mode Select is not reopened).
 bool dissidia_tagteam_ffa_ps_return() {
-    if (g_qb_mode != QB_RETURN) return false;
+    if (g_qb_mode != QB_RETURN && g_qb_mode != QB_DETOUR) return false;   // (a detour that ended on the list: no pick)
+    if (g_qb_mode == QB_DETOUR) g_ps_pick = 0;
     g_qb_mode = QB_NONE;
     if (g_ps_pick >= 1 && g_ps_pick <= 33 && g_hop_slot >= 0) {
         const int pick = g_ps_pick;
@@ -1710,7 +1717,7 @@ bool dissidia_tagteam_ffa_ps_return() {
     return true;
 }
 void dissidia_tagteam_lobby_pending(bool on) {
-    if (on && !ps_old() && (g_qb_mode == QB_PICK || g_qb_mode == QB_START || g_start_cover)) { g_lobby_pending = false; g_ms_done = false; return; }   // (26 Nov: the FFA trips go on by themselves)
+    if (on && !ps_old() && (g_qb_mode == QB_PICK || g_qb_mode == QB_START || g_qb_mode == QB_DETOUR || g_start_cover)) { g_lobby_pending = false; g_ms_done = false; return; }   // (26 Nov: the FFA trips go on by themselves)
     if (on && g_ms_done) { g_ms_done = false; return; } g_lobby_pending = on;
 }   // (a Free-for-all that was set up in the Mode Select goes straight on)
 
