@@ -29,6 +29,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <functional>
 #include <vector>
 
 #include "../runtime/src/hle/psp_savedata_dialog.h"
@@ -244,6 +245,27 @@ struct App {
     // native (system) file dialogs; the built-in browser is the fallback
     std::unique_ptr<pfd::open_file> file_dlg;
     std::unique_ptr<pfd::select_folder> dir_dlg;
+    // Dialogs we no longer want. Destroying a pfd dialog blocks until the user closes it (it waits for the child
+    // process / thread), which froze the whole wizard on Back / "Use the simple browser instead". They wait here and
+    // are destroyed once they have finished, without ever blocking the render loop.
+    std::vector<std::function<bool()>> dlg_graveyard;   // each returns true once its dialog finished (and has destroyed it)
+    void drop_dialogs() {
+        retire(std::move(file_dlg));
+        retire(std::move(dir_dlg));
+    }
+    template <class D> void retire(std::unique_ptr<D> d) {
+        if (!d) return;
+#ifndef _WIN32
+        d->kill();   // SIGKILL the zenity/kdialog child; reaping it is quick
+#endif
+        std::shared_ptr<D> sp(std::move(d));
+        dlg_graveyard.push_back([sp]() mutable { if (!sp->ready(0)) return false; sp.reset(); return true; });
+    }
+    void reap_dialogs() {
+        for (size_t i = 0; i < dlg_graveyard.size();) {
+            if (dlg_graveyard[i]()) dlg_graveyard.erase(dlg_graveyard.begin() + i); else ++i;
+        }
+    }
     Pick pick = Pick::Iso;
     std::string pick_extra;   // Pick::Disc: the key of the extra whose disc is picked
     const setup::Extra* picked_extra() const { return setup::find_extra(pick_extra); }
@@ -742,8 +764,7 @@ struct App {
     }
 
     void open_browser() {
-        file_dlg.reset();
-        dir_dlg.reset();
+        drop_dialogs();
         br.exts = pick == Pick::Disc && picked_extra() ? picked_extra()->disc.patterns : std::vector<std::string>{".iso", ".cso"};
         br.open(pick_start(pick), pick == Pick::Dir);
         go(pick == Pick::Dir ? Screen::BrowseDir : pick == Pick::Disc ? Screen::PickUndub : Screen::PickIso);
@@ -777,6 +798,7 @@ struct App {
     }
 
     void poll_native() {
+        reap_dialogs();
         if (file_dlg && file_dlg->ready(0)) {
             auto r = file_dlg->result();
             file_dlg.reset();
@@ -899,7 +921,7 @@ struct App {
             break;
         case Screen::Waiting:
             if (sel == 0) open_browser();
-            else { file_dlg.reset(); dir_dlg.reset(); go(before_pick); }
+            else { drop_dialogs(); go(before_pick); }
             break;
         case Screen::PickIso:
         case Screen::PickUndub:
@@ -989,7 +1011,7 @@ struct App {
     void cancel() {
         switch (screen) {
         case Screen::Waiting:
-            file_dlg.reset(); dir_dlg.reset();
+            drop_dialogs();
             go(before_pick);
             break;
         case Screen::PickIso:

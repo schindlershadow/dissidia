@@ -199,6 +199,7 @@ private:
     std::condition_variable m_cond;
     std::mutex m_mutex;
     DWORD m_tid;
+    bool m_started = false;   // (local fix) guards m_cond against a lost wakeup
 #elif __EMSCRIPTEN__ || __NX__
     // FIXME: do something
 #else
@@ -744,13 +745,19 @@ inline void internal::executor::start_func(std::function<std::string(int *)> con
         // Save our thread id so that the caller can cancel us
         m_tid = GetCurrentThreadId();
         EnumWindows(&enum_windows_callback, (LPARAM)this);
+        {
+            std::lock_guard<std::mutex> g(m_mutex);
+            m_started = true;
+        }
         m_cond.notify_all();
         return fun(&m_exit_code);
     };
 
     std::unique_lock<std::mutex> lock(m_mutex);
+    m_started = false;
     m_future = std::async(std::launch::async, trampoline);
-    m_cond.wait(lock);
+    // wait with a predicate: the thread may notify before we get here (that lost wakeup froze the wizard forever)
+    m_cond.wait(lock, [this] { return m_started; });
     m_running = true;
 }
 
