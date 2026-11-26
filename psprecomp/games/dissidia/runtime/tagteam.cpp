@@ -595,18 +595,24 @@ void xbreak_guard(uint32_t a) {
     if (cur < last) { const int v = std::min(base > 0 ? base : last, last + (last - cur)); xbrv_set(a, static_cast<uint32_t>(v)); it->second = v;
         if (g_log) std::fprintf(stderr, "[TAGTEAM] t=%.2fs %s is broken: a hit took %d BRV, given back and added to the refill (%d -> %d)\n", dissidia_battle_age() / 60.0f, role_of(a), last - cur, last, v); }
 }
-// Free-for-all: a SLOT fighter hit by a fighter of its OWN game side (two independent fighters share a side) was not protected by its break. Retail checks "is the
-// victim broken" in the attacker's opponent handler, i.e. the other side's slot fighter, so a same-side attacker's BRV hit on a broken slot fighter took BRV off him during
-// states 3 / 4 and broke him again (26 Nov RP6: "broken every BRV hit, no cooldown"). Same rule as the extras (xbreak_guard): while the slot fighter's own handler is in
-// the break (state 3 / 4) a BRV loss is given back and added to the refill; no new break. PSPRECOMP_TAGTEAM_FFA_BREAKGUARD_OLD=1: old.
+// Break rule for every slot fighter, every mode (user 26 Nov: "someone who is broken should not get broken again until the BRV is recovered", whoever hits them).
+// Retail decides "the victim is already broken" in the damage handler of the attacker's opponent; for a hit from a fighter of the victim's OWN game side (free-for-all)
+// that is the wrong handler, and the extras' handler copies / redirected reactions can pick another one too. While the slot fighter's own handler is in the break
+// (state 3 / 4): no new break reaction (hitreact2_hook), a BRV loss that would take him to 0 again in the refill (state 4) is given back, and a loss from a same-side
+// hit is given back and added to the refill (the extras' rule, xbreak_guard). PSPRECOMP_TAGTEAM_BREAKRULE_OLD=1 (or the earlier _FFA_BREAKGUARD_OLD=1): old.
 std::map<uint32_t, int> g_sbrv_last;   // slot fighter -> its BRV at the end of the last frame
+bool breakrule_old() { static const bool o = std::getenv("PSPRECOMP_TAGTEAM_BREAKRULE_OLD") || std::getenv("PSPRECOMP_TAGTEAM_FFA_BREAKGUARD_OLD"); return o; }
 bool sbreak_active(uint32_t a, uint32_t h) { return ok(h, 0x310) && rd(h + 16u) == a && (rd(h + 8u) == 3u || rd(h + 8u) == 4u); }
 bool sbreak_same_side_hit(uint32_t a);   // (below hit_last)
+bool brk_log_on(); bool brk_room(); const char* brk_mode(); std::string brk_who(uint32_t a); uint32_t brk_state(uint32_t a);
+void brk_note_skip(uint32_t v, uint32_t att, const char* why); uint32_t brk_last_hitter(uint32_t v, int* age); bool brk_unhit_reaction(uint32_t o); void brk_poll(); void brk_hit_log(uint32_t att, uint32_t vic);   // break log (below)
 void sbreak_guard(uint32_t a, uint32_t h) {
     auto it = g_sbrv_last.find(a); if (it == g_sbrv_last.end() || !sbreak_active(a, h) || rd(h + 8u) != 4u) return;   // (state 3 is retail's own zeroing at the break)
     const int last = it->second, cur = static_cast<int>(xbrv(a)), base = static_cast<int>(xbase(a));
-    if (cur < last && sbreak_same_side_hit(a)) { const int v = std::min(base > 0 ? base : last, last + (last - cur)); xbrv_set(a, static_cast<uint32_t>(v)); it->second = v;
-        if (g_log) std::fprintf(stderr, "[BREAKGUARD] t=%.2fs %s is broken (state %u): a hit took %d BRV, given back and added to the refill (%d -> %d)\n", dissidia_battle_age() / 60.0f, role_of(a), rd(h + 8u), last - cur, last, v); }
+    if (cur >= last) return;
+    const bool same = sbreak_same_side_hit(a);
+    if (same || cur == 0) { const int v = same ? std::min(base > 0 ? base : last, last + (last - cur)) : last; xbrv_set(a, static_cast<uint32_t>(v)); it->second = v;
+        if (g_log) std::fprintf(stderr, "[BREAKGUARD] t=%.2fs %s is broken (state %u): a %s hit took %d BRV, given back%s (%d -> %d)\n", dissidia_battle_age() / 60.0f, role_of(a), rd(h + 8u), same ? "same-side" : "cross-side", last - cur, same ? " and added to the refill" : " (it would break again)", last, v); }
 }
 FuncPtr g_orig_hpstep = nullptr; void hpstep_hook(uint8_t* rdram, recomp_context* ctx);
 FuncPtr g_orig_corepick = nullptr; void corepick_hook(uint8_t* rdram, recomp_context* ctx);
@@ -9538,6 +9544,11 @@ void hudanim_hook(uint8_t* rdram, recomp_context* ctx) {
             ctx->r[2] = 0; return;
         }
     }
+    if ((type == 2u || type == 3u) && g_bs && g_nextra && g_hud && hud == g_hud && brk_log_on() && brk_room()) {   // the break animation (the BREAK word / burst) starts on a big panel: which fighters are broken right now?
+        std::fprintf(stderr, "[BRKHUD] t=%.2fs mode %s break animation (type %u) started on the big panel, group %s; handler states:", dissidia_battle_age() / 60.0f, brk_mode(), type, (hud + (type == 2u ? 120u : 36u)) == panel_group(0) ? "side 0" : "side 1");
+        uint32_t f[8]; const int n = all_fighters(f); for (int i2 = 0; i2 < n; i2++) std::fprintf(stderr, " %s=%u", brk_who(f[i2]).c_str(), brk_state(f[i2]));
+        std::fprintf(stderr, " {%s}\n", brv_line());
+    }
     g_orig_hudanim(rdram, ctx);
 }
 // FUN_08889FB8(side, kind, on) -> FUN_089DE660(hud, side, kind, on) -> FUN_089DFD68(group hud+36+84*side, kind, on): kind 0 is the STEADY "BREAK" that replaces the
@@ -9887,6 +9898,66 @@ bool sbreak_same_side_hit(uint32_t a) {
     for (int i = 0; i < nf; i++) { if (f[i] == a || side_of(f[i]) != side_of(a)) continue; uint32_t vv = 0; int ag = -1; hit_last(f[i], vv, ag); if (vv == a && ag >= 0 && ag <= 8) return true; }
     return false;
 }
+// ---- Break log (tag battles, on by default, PSPRECOMP_TAGTEAM_BREAKLOG=0 off; independent of PSPRECOMP_TAGTEAM_LOG, not capped by the BREAKSHOT shots):
+// [BRKEVT] one line per break of any fighter (handler state -> 3, or BRV to 0 from a hit): victim / attacker (the fighter whose hit registered last on the victim) with
+//   side and character, the victim's BRV before / after, its handler state before / after, whether it was ALREADY broken or in the refill (a repeat break), the mode.
+// [BRKHIT] one line per registered hit on a fighter at BRV 0 / broken / in the refill.  [BRKEND] the end of a break (state back to 0).
+// [BRKSKIP] a reaction the break rule dropped (already broken, or nobody hit the fighter).  At most 1500 lines a battle.
+bool brk_log_on() { static const bool off = std::getenv("PSPRECOMP_TAGTEAM_BREAKLOG") && std::getenv("PSPRECOMP_TAGTEAM_BREAKLOG")[0] == '0'; return !off && g_bs && g_nextra; }
+int g_brk_lines = 0; uint32_t g_brk_gen = ~0u;
+bool brk_room() { if (g_brk_gen != g_battle_gen) { g_brk_gen = g_battle_gen; g_brk_lines = 0; } return g_brk_lines++ < 1500; }
+const char* brk_mode() { return ffa_now() ? "ffa" : three_now() ? "3v3" : "2v2"; }
+uint32_t brk_human() { const uint32_t hs = rd(g_bs + 84u); return srd(g_bs + 56u + 4u * (hs & 1u)); }
+uint32_t brk_handler(uint32_t a) {
+    if (auto x = g_extra_hdl.find(a); x != g_extra_hdl.end()) return x->second;
+    for (const auto& p : g_hstate_pairs) if (p.first == a && p.second) return p.second;
+    if (auto it = g_slot_hdl.find(a); it != g_slot_hdl.end()) return it->second;
+    return 0;
+}
+uint32_t brk_state(uint32_t a) { const uint32_t h = brk_handler(a); return ok(h, 0x310) && rd(h + 16u) == a ? rd(h + 8u) : 99u; }
+uint32_t brk_last_hitter(uint32_t v, int* age) {
+    uint32_t f[8]; const int n = hit_attackers(f); uint32_t best = 0; int ba = 1 << 30;
+    for (int i = 0; i < n; i++) { uint32_t vv = 0; int ag = -1; hit_last(f[i], vv, ag); if (vv == v && ag >= 0 && ag < ba) { best = f[i]; ba = ag; } }
+    if (age) *age = best ? ba : -1; return best;
+}
+bool brk_unhit_reaction(uint32_t o) {   // a reaction in o's handler although no hit registered on o in the last 10 frames while a hit landed on another fighter
+    uint32_t f[8]; const int n = hit_attackers(f); bool on_o = false, other = false;
+    for (int i = 0; i < n; i++) { uint32_t vv = 0; int ag = -1; hit_last(f[i], vv, ag); if (ag < 0 || ag > 10 || !vv) continue; if (vv == o) on_o = true; else if (f[i] != o) other = true; }
+    return !on_o && other;
+}
+std::string brk_who(uint32_t a) { char b[64]; if (!a || !ok(a, 0x12D0)) return "-"; std::snprintf(b, sizeof b, "%s:%d s%u", role_of(a), actor_char(a), side_of(a)); return b; }
+void brk_note_skip(uint32_t v, uint32_t att, const char* why) {
+    if (!brk_log_on() || !brk_room()) return;
+    std::fprintf(stderr, "[BRKSKIP] t=%.2fs mode %s victim %s%s attacker %s state %u BRV %u: %s {%s}\n", dissidia_battle_age() / 60.0f, brk_mode(), brk_who(v).c_str(), v == brk_human() ? " (HUMAN)" : "", brk_who(att).c_str(), brk_state(v), xbrv(v), why, brv_line());
+}
+void brk_hit_log(uint32_t att, uint32_t vic) {
+    if (!brk_log_on() || !ok(vic, 0x12D0)) return;
+    const uint32_t st = brk_state(vic); const bool broken = st == 1u || st == 3u || st == 4u || g_xbroken.count(vic) || xbrv(vic) == 0u;
+    if (!broken) return;
+    static std::map<uint64_t, int> lastf; const int fr = g_hframe; const uint64_t key = (static_cast<uint64_t>(att) << 32) | vic;
+    if (auto it = lastf.find(key); it != lastf.end() && fr - it->second < 4 && fr >= it->second) return; lastf[key] = fr; if (lastf.size() > 64) lastf.clear();
+    if (!brk_room()) return;
+    std::fprintf(stderr, "[BRKHIT] t=%.2fs mode %s attacker %s -> victim %s%s: victim BRV %u handler state %u%s%s\n", dissidia_battle_age() / 60.0f, brk_mode(), brk_who(att).c_str(), brk_who(vic).c_str(), vic == brk_human() ? " (HUMAN)" : "", xbrv(vic), st, g_xbroken.count(vic) ? " extra-marked-broken" : "", (st == 3u || st == 4u) ? " IN BREAK/REFILL" : (xbrv(vic) == 0u ? " BRV 0" : ""));
+}
+void brk_poll() {
+    static std::map<uint32_t, int> pbrv; static std::map<uint32_t, uint32_t> pst; static uint32_t gen = ~0u;
+    if (gen != g_battle_gen) { gen = g_battle_gen; pbrv.clear(); pst.clear(); }
+    if (!brk_log_on()) return;
+    uint32_t f[8]; const int n = all_fighters(f);
+    for (int i = 0; i < n; i++) {
+        const uint32_t a = f[i]; if (!ok(a, 0x12D0)) continue;
+        const int b = static_cast<int>(xbrv(a)); const uint32_t st = brk_state(a);
+        const int pb = pbrv.count(a) ? pbrv[a] : b; const uint32_t ps = pst.count(a) ? pst[a] : st;
+        const bool enter = (st == 3u && ps != 3u) || (st == 4u && ps != 3u && ps != 4u);
+        const bool zero = b == 0 && pb > 0 && st != 3u && st != 4u && st != 1u;   // taken to 0 by a hit without the handler's break (the user's "broken" without a state change)
+        if (enter || zero) {
+            int ag = -1; const uint32_t att = brk_last_hitter(a, &ag);
+            const bool already = ps == 3u || ps == 4u || g_xbroken.count(a) != 0;
+            if (brk_room()) std::fprintf(stderr, "[BRKEVT] t=%.2fs mode %s %s victim %s%s attacker %s (hit %d frames ago) BRV %d -> %d handler state %u -> %u already_broken_or_refill %d%s {%s}\n", dissidia_battle_age() / 60.0f, brk_mode(), enter ? "BREAK" : "BRV0", brk_who(a).c_str(), a == brk_human() ? " (HUMAN)" : "", brk_who(att).c_str(), ag, pb, b, ps, st, already ? 1 : 0, already ? " REPEAT" : (att && side_of(att) == side_of(a) ? " SAME-SIDE" : ""), brv_line());
+        } else if (ps != st && (st == 0u && (ps == 3u || ps == 4u)) && brk_room()) std::fprintf(stderr, "[BRKEND] t=%.2fs victim %s%s break over: handler state %u -> 0, BRV %d\n", dissidia_battle_age() / 60.0f, brk_who(a).c_str(), a == brk_human() ? " (HUMAN)" : "", ps, b);
+        pbrv[a] = b; pst[a] = st;
+    }
+}
 // Friendly fire on a SLOT fighter (19 Nov desktop: Terra, the human's partner, hit the human): the reaction went to the attacker's module's opponent handler,
 // i.e. the ENEMY slot fighter's: the break animation / "Bravery Break" played on the enemy (who was not broken). The slot fighter that was hit gets it in
 // his own handler. Returns that handler (0 = none). PSPRECOMP_TAGTEAM_NOFRIENDLYSLOT=1: old.
@@ -9937,11 +10008,9 @@ void hitreact2_hook(uint8_t* rdram, recomp_context* ctx) {
     if (ok(h, 0x310) && g_bs && rd(h + 4u) == 0x08AE7B50u) { const uint32_t o = rd(h + 16u); if (o && (o == srd(g_bs + 56u) || o == srd(g_bs + 60u))) g_slot_hdl[o] = h; }
     if (!off && ok(h, 0x310)) {
         if (const uint32_t sh = booked_friendly_slot_handler(rd(h + 16u))) {
-            static const bool bg_old = std::getenv("PSPRECOMP_TAGTEAM_FFA_BREAKGUARD_OLD") != nullptr;
             const uint32_t sv = rd(sh + 16u);
-            if (!bg_old && ffa_now() && sbreak_active(sv, sh)) {   // already broken: no new break, the BRV loss goes back
-                sbreak_guard(sv, sh);
-                if (g_log) std::fprintf(stderr, "[HITREACT] t=%.2fs hit on %s during its break: no new break\n", dissidia_battle_age() / 60.0f, role_of(sv));
+            if (!breakrule_old() && sbreak_active(sv, sh)) {   // already broken: no new break, the BRV loss goes back
+                sbreak_guard(sv, sh); brk_note_skip(sv, g_react_att, "friendly-path reaction");
                 ctx->r[2] = 0; return;
             }
             react_with_opponent(rdram, ctx, sh, g_react_att); return; }
@@ -9956,6 +10025,13 @@ void hitreact2_hook(uint8_t* rdram, recomp_context* ctx) {
             react_with_opponent(rdram, ctx, g_extra_hdl[x], g_react_att);
             if (xbrv(x) == 0 && !std::getenv("PSPRECOMP_TAGTEAM_NOXBREAK")) { g_xbroken.insert(x); g_xbrv_last[x] = 0; g_xbreak_t0[x] = dissidia_battle_age(); g_xbreak_show[x] = dissidia_battle_age(); if (g_log) std::fprintf(stderr, "[TAGTEAM] t=%.2fs %s broken (BRV 0): no new break until it is back at %u\n", dissidia_battle_age() / 60.0f, role_of(x), xbase(x)); }
             return;
+        }
+    }
+    if (!off && !breakrule_old() && g_bs && g_nextra && ok(h, 0x310) && rd(h + 4u) == 0x08AE7B50u) {   // a reaction in a slot fighter's own handler (the general break rule + a reaction nobody caused)
+        const uint32_t o = rd(h + 16u);
+        if (o && (o == srd(g_bs + 56u) || o == srd(g_bs + 60u))) {
+            if (sbreak_active(o, h)) { sbreak_guard(o, h); if (xbrv(o) == 0u) { brk_note_skip(o, brk_last_hitter(o, nullptr), "own-handler reaction while broken"); ctx->r[2] = 0; return; } }
+            else if (rd(h + 8u) == 0u && xbrv(o) > 0u && brk_unhit_reaction(o)) { brk_note_skip(o, 0, "reaction on a fighter nobody hit (a hit landed on another fighter)"); ctx->r[2] = 0; return; }
         }
     }
     if (g_log && std::getenv("PSPRECOMP_TAGTEAM_HITREACTLOG") && ok(h, 0x310) && g_bs) { const uint32_t vo = rd(h + 16u); if (vo == srd(g_bs + 56u) || vo == srd(g_bs + 60u)) { static int c = 0; if (c++ < 200) { std::fprintf(stderr, "[HITREACT0] t=%.2fs reaction in %s's own handler (no extra victim found), last hits:", dissidia_battle_age() / 60.0f, role_of(vo)); uint32_t f[8]; const int nf = hit_attackers(f); for (int i = 0; i < nf; i++) { uint32_t vv = 0; int ag = -1; hit_last(f[i], vv, ag); if (ag >= 0 && ag < 30) std::fprintf(stderr, " %s->%s(%d)", role_of(f[i]), ok(vv, 0x12D0) ? role_of(vv) : "?", ag); } std::fprintf(stderr, " step %08X\n", g_xstep_att); } } }
@@ -10199,6 +10275,7 @@ void hitreg_hook(uint8_t* rdram, recomp_context* ctx) {
             if (i == g_nhits && g_nhits < 8) g_nhits++;
             if (i < 8 && !keep_foe) g_hits[i] = {vic, att, g_hframe};
             if (!keep_foe) audit_record(att, vic);
+            if (!keep_foe) brk_hit_log(att, vic);
             if (!keep_foe) {   // the EX Burst rule: the burster's last hit (an assist's hit counts for its master)
                 uint32_t own = att;
                 for (int q = 0; q < g_nextra; q++) if (g_extra[q].started && (att == g_extra[q].actor || att == xas_ptr(g_extra[q].actor) )) own = g_extra[q].actor;
@@ -12213,8 +12290,8 @@ void dissidia_tagteam_frame_end(uint8_t* rdram, recomp_context* ctx) {
     if (g_ram) { { TtStep s_("group_end_step"); group_end_step(); } { TtStep s_("tally_post_step"); tally_post_step(); } leftover_unload(); }
     if (g_ram && std::getenv("PSPRECOMP_TAGTEAM_GROUPLOG")) { static std::string last; char b[96]; const uint32_t i1 = 0x09AFDFB0u + 0x25u + 0x38u; std::snprintf(b, sizeof b, "idx %u cnt %u res %u %u %u | t0 idx %u res %u %u", g_ram[(i1 - 7u) & 0x07FFFFFFu], g_ram[(i1 - 6u) & 0x07FFFFFFu], g_ram[(i1 - 5u) & 0x07FFFFFFu], g_ram[(i1 - 4u) & 0x07FFFFFFu], g_ram[(i1 - 3u) & 0x07FFFFFFu], g_ram[(0x09AFDFB0u + 0x25u - 7u) & 0x07FFFFFFu], g_ram[(0x09AFDFB0u + 0x25u - 5u) & 0x07FFFFFFu], g_ram[(0x09AFDFB0u + 0x25u - 4u) & 0x07FFFFFFu]);
         if (last != b) { last = b; std::fprintf(stderr, "[GROUPLOG] frame %u: %s\n", g_fe_ctr, b); std::fprintf(stderr, "[GROUPLOG]   08B82480:"); for (uint32_t a = 0x08B82480u; a < 0x08B82510u; a++) std::fprintf(stderr, "%s%02X", (a & 15u) ? "" : " | ", g_ram[a & 0x07FFFFFFu]); std::fprintf(stderr, "\n"); } }
-    if (g_ram) { TtStep s_("breakshot_poll"); breakshot_poll(); }
-    if (g_ram && g_bs && g_nextra && ffa_now() && !std::getenv("PSPRECOMP_TAGTEAM_FFA_BREAKGUARD_OLD")) {   // slot fighters' breaks in a free-for-all (sbreak_guard)
+    if (g_ram) { TtStep s_("breakshot_poll"); breakshot_poll(); brk_poll(); }
+    if (g_ram && g_bs && g_nextra && !breakrule_old()) {   // slot fighters' breaks, every mode (sbreak_guard)
         for (uint32_t k = 0; k < 2; k++) { const uint32_t S = srd(g_bs + 56u + 4u * k); if (!ok(S, 0x12D0)) continue;
             uint32_t h = 0; for (const auto& p : g_hstate_pairs) if (p.first == S) h = p.second;
             if (!h) if (auto it = g_slot_hdl.find(S); it != g_slot_hdl.end()) h = it->second;
