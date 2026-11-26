@@ -2655,6 +2655,21 @@ void ge_draw_init() {
                      g_sync_mode == 1 ? "glFinish per batch" : g_sync_mode == 2 ? "glFinish per list"
                      : g_sync_mode == 3 ? "glFinish per present" : "glFlush per batch");
     }
+#if !defined(PSP_GLES) && !defined(__APPLE__)
+    else {
+        // Desktop OpenGL (Windows, Linux, Steam Deck): glFlush after every batch by default (#131: invisible menu, flickering
+        // textures, duplicated effects on real asynchronous drivers; the same cure the Steam Deck launcher already applied,
+        // but only run.sh did, so Windows never got it). Not with the Vulkan backend, where glFlush is a queue submit.
+        bool vk = false;
+#if defined(PSPRECOMP_HAVE_VKGL)
+        vk = vkgl::active();
+#endif
+        if (!vk) {
+            g_sync_mode = 4;
+            std::fprintf(stderr, "[DRAW] GE sync mode 4 (glFlush per batch) (desktop OpenGL default; PSPRECOMP_GE_SYNC=off to disable)\n");
+        }
+    }
+#endif
     if (const char* rm = std::getenv("PSPRECOMP_GE_RING")) {
         if (!std::strcmp(rm, "map")) g_ring_mode = 1;
         else if (!std::strcmp(rm, "sub")) g_ring_mode = 0;

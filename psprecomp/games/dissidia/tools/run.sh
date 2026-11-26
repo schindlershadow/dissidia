@@ -41,7 +41,7 @@
 #   --legacy-ge              PSPRECOMP_GE_FAST=0: use the legacy per-PRIM renderer (CPU skinning, one draw per PRIM)
 #                            instead of the default batched GPU-skinning path. Escape hatch only; it is slower.
 #   --ge-sync 1|2|3|flush|off  PSPRECOMP_GE_SYNC: wait for the GPU (1 per batch, 2 per display list, 3 per frame,
-#                            flush = glFlush per batch, off = none). Default on a Steam Deck: flush (it fixes the
+#                            flush = glFlush per batch, off = none). Default with OpenGL on desktop (Windows, Linux, Deck): flush (it fixes the
 #                            flicker there, see docs/steamdeck.md); elsewhere off.
 #   --gl-debug               PSPRECOMP_GL_DEBUG=1 PSPRECOMP_GL_STATS=2: driver messages and GL errors in the log
 #   --log FILE               also write the runtime's stderr log to FILE (default: <workdir>/last_run.log)
