@@ -5,6 +5,7 @@
 // when the file is absent: the repo ships no game data.
 #include "../runtime/package_mods.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -223,6 +224,27 @@ int main(int argc, char** argv) {
         CHECK(bs);
         CHECK(kIndexExtendedBytes >= 16 + (retail_n + kIndexMaxNewEntries) * 12);
         (void)!std::system(("rm -rf " + d2).c_str());
+    }
+    // nothing may be served from 2 GiB or more (the game keeps 20 bits of a sector: a Customization screen froze when the virtual
+    // sectors of 4,282 texture-pack PNGs, then the text override, went past it)
+    {
+        std::string d3 = dir + "_big";
+        (void)!std::system(("rm -rf " + d3 + " && mkdir -p " + d3 + "/texpacks/p1 " + d3 + "/obj").c_str());
+        (void)!std::system(("for i in $(seq 1 30); do truncate -s 100M " + d3 + "/texpacks/p1/t$i.png; done").c_str());   // 3 GB of sparse files, never indexed
+        std::string l5; PackageMods m5;
+        CHECK(m5.build(orig, package_size, d3, &l5, &err, kIndexExtendedBytes));
+        CHECK(m5.empty());                                              // texpacks/ is not game data
+        (void)!std::system(("for i in $(seq 1 16); do truncate -s 150M " + d3 + "/obj/huge$i.gmo; done").c_str());   // 2.4 GB of NEW entries
+        spit(d3 + "/obj/p_fiv100.objx", big);                            // a real override that must be relocated
+        PackageMods m6; std::string l6;
+        CHECK(m6.build(orig, package_size, d3, &l6, &err, kIndexExtendedBytes));
+        uint64_t top = 0; bool reloc = false;
+        for (const auto& o : m6.overrides()) { top = std::max<uint64_t>(top, o.start + o.span); if (o.asset == "obj/p_fiv100.objx") reloc = o.relocated; }
+        CHECK(top <= kMaxPackageBytes);
+        CHECK(reloc);                                                   // the real override got its place before any NEW entry
+        CHECK(l6.find("no room below 2 GiB") != std::string::npos);     // and the NEW entries that did not fit were dropped, loudly
+        CHECK(m6.overrides().size() > 1 && m6.overrides().size() < 17);
+        (void)!std::system(("rm -rf " + d3).c_str());
     }
     std::string rm = "rm -rf " + dir; (void)!std::system(rm.c_str());
     if (g_fail == 0) std::printf("ALL PASSED\n"); else std::printf("%d FAILED\n", g_fail);
