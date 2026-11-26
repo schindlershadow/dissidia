@@ -517,7 +517,11 @@ void sub_tick_hook(uint8_t* rdram, recomp_context* ctx) {
         if (gap) g_ms_hold = false;   // (another screen ran in between: the next menu has been and gone)
         if (g != open_group || gap) {
             open_group = g;
-            if (tg && dissidia_tagteam_menu_mode_on() && !dissidia_tagteam_modesel_active() && r32(cur + 36) == tag_ext(tg) && r32(cur + 4) == tg->target && !std::getenv("PSPRECOMP_TAGTEAM_NOROWBACK")) {
+            // 26 Nov (RP6: Mode Select > Group Battle opened the Museum): on a slow phone the sub-list's tick gap passed 0.12 s between the Mode Select's choice
+            // (cursor on its row, g_ms_go / g_direct_pending set) and the direct confirm below, so this moved the cursor to the Tag Team Battle row first and the
+            // confirm took row 5 (Collection). Never while a Mode Select choice is waiting to be confirmed. PSPRECOMP_TAGTEAM_ROWBACK_DURING_GO=1: old.
+            const bool choice_waiting = (g_ms_go || g_direct_pending) && !std::getenv("PSPRECOMP_TAGTEAM_ROWBACK_DURING_GO");
+            if (tg && !choice_waiting && dissidia_tagteam_menu_mode_on() && !dissidia_tagteam_modesel_active() && r32(cur + 36) == tag_ext(tg) && r32(cur + 4) == tg->target && !std::getenv("PSPRECOMP_TAGTEAM_NOROWBACK")) {
                 std::memcpy(rdram + ((cur + 4) & 0x07FFFFFFu), &tg->rows, 4);
                 std::fprintf(stderr, "[MENUSET] group %u opened with Tag Team Battle on: cursor %u -> %u (the Tag Team Battle row)\n", tg->group, tg->target, tg->rows);
             }
