@@ -29,7 +29,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # the C runtime is linked into the exe (crt-static): a dynamic MSVC build needs VCRUNTIME140.dll, i.e. the Microsoft Visual C++
+      # Redistributable, which many PCs do not have, and the install then failed at the recompile step
       - run: cargo build --release -p psp-cli
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+      - name: The recompiler needs no Visual C++ Redistributable
+        shell: pwsh
+        run: |
+          $hit = Select-String -Path target/release/psprecomp.exe -Pattern 'VCRUNTIME', 'MSVCP1', 'api-ms-win-crt' -SimpleMatch -List
+          if ($hit) { Write-Error "psprecomp.exe still imports the Visual C++ runtime: $($hit.Pattern)"; exit 1 }
       - uses: actions/upload-artifact@v4
         with:
           name: recompiler-windows
