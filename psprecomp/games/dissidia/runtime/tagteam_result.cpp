@@ -33,7 +33,7 @@ bool dissidia_tagteam_post_flow();         // tagteam_menu.cpp: the way back to 
 namespace {
 using dissidia::LayerColor;
 using dissidia::GimImage;
-dissidia::MenuLayer g_L;
+dissidia::MenuLayer g_L("ffa_result", true);
 int64_t now_ms() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 
 // ---- the retail result scene's picture parts ----

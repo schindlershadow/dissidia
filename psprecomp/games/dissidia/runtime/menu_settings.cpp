@@ -222,7 +222,7 @@ bool confirm_pressed_at(uint8_t* rdram, recomp_context* ctx, uint32_t args) {
 // out over the last 40) with a soft white dot at its start; selected: a royal-blue band (63, 53, 174) from - 2 to + 12 that fades in over the
 // first 30 units and lightens towards (134, 136, 207) at the right edge, white text with a dark edge, the pointing hand
 // (common UI sheet, native size) at - 10, and the row's help text in the help bar (bold 7.9, centred at 232, baseline 239.3).
-dissidia::MenuLayer g_layer;
+dissidia::MenuLayer g_layer("settings", true);
 dissidia::GimImage g_ui_sheet;        // menu/en/menu_lpk_label_gim_0.bin entry 0 (128x128): the pointing hand at (2, 50, 38, 24)
 int g_ui_sheet_state = 0;
 // The same sheet's texture-pack id (psp_texpack_make_id of its texels; tools/texpack_extract.py prints it for the GIM). With an
