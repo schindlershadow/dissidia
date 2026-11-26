@@ -544,7 +544,10 @@ void gs_row(float x0, float x1, float y, float h, bool sel, const std::string& n
 // ---- The mode select (Battle Mode / Communications Mode > Tag Team Battle, 22 Nov): the first screen after choosing the entry; its choice decides the screens that follow
 // (team modes: Party Select, the lobby; Free-for-all: Party Select, the Free-for-all player setup, the lobby).
 int g_ffa_slot = 0, g_ffa_field = 0;   // the cursor: slot 0..3, field 0 TYPE, 1 MAIN, 2 TAG-IN, 3 STRENGTH
-bool g_rearm = false;   // 25 Nov (user: back out past the lobby, then forward again skipped it): set when the flow was backed out of; once the setup screen has been gone for 0.5 s the lobby (FFA: the players screen) is pending again. PSPRECOMP_TAGTEAM_MENUBACK_OLD=1: old
+int64_t g_ffa_walk_t0 = 0; bool g_ffa_walk_seen = false;   // 26 Nov: the FFA battle-start walk (list confirm > state 16 -> 28 > setup screen > Enter Battle > app 0x1D .. 0x30), logged as [FFAWALK]
+bool ffawalk_old() { static const bool o = std::getenv("PSPRECOMP_TAGTEAM_FFAWALK_OLD") != nullptr; return o; }
+void ffawalk_log(const char* step, int st) { std::fprintf(stderr, "[FFAWALK] %s (t=+%.1fs, app state %d)\n", step, g_ffa_walk_t0 ? (steady_ms() - g_ffa_walk_t0) / 1000.0 : 0.0, st); }
+bool g_rearm = std::getenv("PSPRECOMP_TAGTEAM_TEST_REARM") != nullptr;   // 25 Nov (user: back out past the lobby, then forward again skipped it): set when the flow was backed out of; once the setup screen has been gone for 0.5 s the lobby (FFA: the players screen) is pending again. PSPRECOMP_TAGTEAM_MENUBACK_OLD=1: old
 bool g_ffa_then_lobby = false, g_lobby_pending = false, g_ffa_flow = false, g_ffa_autostart = false;
 bool g_ms_pre = false, g_ms_hop = false, g_ms_done = false;   // 25 Nov (user: Free-for-all goes DIRECTLY to the players menu): the players screen and the lobby are hosted by the Mode Select (retail's Party Select / CPU Select are passed by a script afterwards; g_ms_hop: the player asked for the game's selector instead)
 std::atomic<int> g_script_lim{1000}; std::atomic<int> g_ps_frames{0};   // frames Party Select's ready test ran since the script started   // the scripted pass stops after the event that starts at or before this poll
@@ -1360,9 +1363,11 @@ void sp_draw(uint8_t* rdram, recomp_context* ctx, uint32_t screen, bool hide) {
             std::fprintf(stderr, "[FFA] back from the battle: the players screen again (not the Group Battle setup)\n");
         }
     }
-    {   static auto last_sp = std::chrono::steady_clock::now(); const auto nw = std::chrono::steady_clock::now();
+    {   static auto last_sp = std::chrono::steady_clock::now() - (std::getenv("PSPRECOMP_TAGTEAM_TEST_REARM") ? std::chrono::seconds(10) : std::chrono::seconds(0)); const auto nw = std::chrono::steady_clock::now();
+        if (g_rearm && (g_ffa_autostart || g_qb_mode == QB_START || g_start_cover) && !ffawalk_old()) { g_rearm = false; ffawalk_log("stale re-arm dropped (a start is under way)", -1); }
         if (g_rearm && nw - last_sp > std::chrono::milliseconds(kRearmMs) && !menuback_old()) { g_rearm = false; g_lobby_pending = true; std::fprintf(stderr, "[TTLOBBY] the setup screen is back after backing out: the lobby again\n"); }
         last_sp = nw; }
+    if (g_lobby_pending && (g_ffa_autostart || g_qb_mode == QB_START) && !ffawalk_old()) { g_lobby_pending = false; ffawalk_log("stale lobby request dropped (a start is under way)", -1); }
     if (!g_dlg_open && g_lobby_pending && list && !std::getenv("PSPRECOMP_TAGTEAM_SPLOBBY_OFF")) {   // the flow: Tag Team Battle > mode select > Party Select > (the Free-for-all player setup >) the lobby > this screen
         g_lobby_pending = false; opened_now = true; g_lob_sp = true; g_dlg_bp = false; g_dlg_sp = false; g_dlg_open = true; g_lob_row = 0;
         uint8_t L0[10] = {1, 2, 0, 5, 0, 0, 0, 0, 0, 1}; dissidia_tagteam_lobby_get(L0);
@@ -1387,8 +1392,12 @@ void sp_draw(uint8_t* rdram, recomp_context* ctx, uint32_t screen, bool hide) {
     const uint8_t mask = dissidia_tagteam_sp_cpu_mask();
     { uint8_t L[10]; dissidia_tagteam_lobby_get(L); if (mok && list && !std::getenv("PSPRECOMP_TAGTEAM_SPLOBBY_OFF")) dissidia_tagteam_sp_write_round(screen); }   // (the saved lobby is read once, the mode's switches follow it)
     if (list) g_script_t.store(-1, std::memory_order_relaxed);   // the scripted Party Select pass is over
+    if (g_ffa_autostart && list && !ffawalk_old()) {   // 26 Nov: the walk's watchdog: whatever dialog is up, the start goes on
+        if (!g_ffa_walk_seen) { g_ffa_walk_seen = true; ffawalk_log("setup screen is up", row); }
+        if (g_dlg_open) { g_dlg_open = false; g_dlg_mode = 0; g_ffa_then_lobby = false; ffawalk_log("a dialog was open over the start: closed", row); }
+    }
     if (g_ffa_autostart && list && !g_dlg_open) {   // Enter Battle (the cursor starts on it)
-        g_ffa_autostart = false; if (dissidia_tagteam_inject_old()) g_inject_late.store(9, std::memory_order_relaxed); else sp_enter_battle(rdram, ctx, screen); if (!std::getenv("PSPRECOMP_TAGTEAM_FFA_NOREOPEN")) g_ffa_after = 1; std::fprintf(stderr, "[FFA] lobby done: Enter Battle (cursor row %d)\n", row);
+        g_ffa_autostart = false; if (dissidia_tagteam_inject_old()) g_inject_late.store(9, std::memory_order_relaxed); else sp_enter_battle(rdram, ctx, screen); if (!std::getenv("PSPRECOMP_TAGTEAM_FFA_NOREOPEN")) g_ffa_after = 1; std::fprintf(stderr, "[FFA] lobby done: Enter Battle (cursor row %d)\n", row); ffawalk_log("Enter Battle called", row);
     }
     {   // 26 Nov (user: the stage preview must follow a lobby stage change; the Down + Up nudge is gone): when the lobby closes over the list, the screen's preview step
         // FUN_08AA9350 (the one the list runs on a cursor move) is called once. PSPRECOMP_TAGTEAM_PREVIEW_OLD=1: not called.
@@ -1508,11 +1517,17 @@ void qb_frame_hook(uint8_t* rdram, recomp_context* ctx) {
         uint8_t sl[4] = {1, 0, 0, 5}; dissidia_tagteam_ffa_get(0, sl);
         ffa_fill_party(P, sl[1] ? sl[1] : 31);
         w32(P + 0x910u, 28u); g_qb_mode = QB_NONE; g_start_cover = true; g_start_exit_t0 = 0;
-        std::fprintf(stderr, "[FFA] Quick Battle (Party): state 16 -> 28 (setup screen)\n");
+        std::fprintf(stderr, "[FFA] Quick Battle (Party): state 16 -> 28 (setup screen)\n"); ffawalk_log("state 16 -> 28", before);
     }
     if (g_qb_mode == QB_PICK && before == 16) { g_qb_mode = QB_NONE; std::fprintf(stderr, "[FFA] Player Select trip: the app took the Party route (state 16), dropped\n"); }
     if (g_qb_mode == QB_DETOUR && before == 5) { g_qb_mode = QB_PICK; std::fprintf(stderr, "[FFA] Player Select: back from the detour, picking again\n"); }
     g_orig_qb_frame(rdram, ctx);
+    if (g_ffa_walk_t0 && okp(P)) {   // [FFAWALK]: every app state change of the start, and a note every 5 s while it sits
+        static int last_st = -1; static int64_t last_note = 0; const int st = static_cast<int>(r32(P + 0x910u)), sub = static_cast<int>(r32(P + 0x91Cu)); const int64_t nw = steady_ms();
+        if (st != last_st) { last_st = st; last_note = nw; ffawalk_log(("app state change, sub " + std::to_string(sub)).c_str(), st); }
+        else if (nw - last_note > 5000) { last_note = nw; ffawalk_log(("STALL: app state unchanged, sub " + std::to_string(sub) + (g_ffa_autostart ? ", Enter Battle still pending" : "")).c_str(), st); }
+        if (st >= 0x30) g_ffa_walk_t0 = 0;
+    }
     if (g_start_cover && !g_start_exit_t0 && okp(P) && r32(P + 0x910u) >= 0x30u) g_start_exit_t0 = steady_ms();   // the battle start's fade out
     if (g_trip_post && !g_post_exit_t0 && okp(P) && r32(P + 0x910u) >= 0x30u) g_post_exit_t0 = steady_ms();   // after a battle: the app's way out to the list
     if (g_qb_mode == QB_PICK && before == 5 && okp(P) && r32(P + 0x910u) == 6u) {
@@ -1684,7 +1699,7 @@ void dissidia_tagteam_modesel_confirm(bool sp) {
     if (dissidia_tagteam_inject_old()) g_inject_late.store(9, std::memory_order_relaxed);
     else { g_trip_out = 2; g_trip_online = !sp; g_trip_t0 = steady_ms(); }   // 26 Nov: the Mode Select fades to white with the list (the list is never seen behind it)
     if (sp && g_ms_ffa && !ps_old() && !std::getenv("PSPRECOMP_TAGTEAM_FFA_KEEPPARTY") && !std::getenv("PSPRECOMP_TAGTEAM_FFA_PREOLD")) {
-        if (g_ms_hop) g_qb_mode = QB_PICK; else { g_qb_mode = QB_START; g_ffa_autostart = true; }
+        if (g_ms_hop) g_qb_mode = QB_PICK; else { g_qb_mode = QB_START; g_ffa_autostart = true; if (!ffawalk_old()) { g_rearm = false; g_lobby_pending = false; g_dlg_open = false; g_dlg_mode = 0; g_ffa_walk_t0 = steady_ms(); g_ffa_walk_seen = false; ffawalk_log("start", 0); } }
         if (g_qb_mode == QB_PICK) { g_trip_out = 1; g_trip_t0 = steady_ms(); } else { g_trip_out = 0; g_start_cover = true; g_start_exit_t0 = 0; }
         g_trip_in_t0 = 0;
         std::fprintf(stderr, "[FFA] list confirm: %s\n", g_qb_mode == QB_PICK ? "Quick Battle (1-on-1) for the Player Select pick" : "Quick Battle (Party) straight to the setup screen (no Party Select / CPU Select)");
