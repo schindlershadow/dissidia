@@ -1,6 +1,7 @@
 # Tag team battles (2 v 2): research notes and plan
 
 ## TODO (kept up to date; newest first)
+- ~~Overhead: Assist Bar turned itself on in 3v3 / FFA battles~~ FIXED 26 Nov (branch tt-ohassist): `overhead_default_on` (3v3 / FFA start) turned on the assist bar change with the overhead HP bars. Now only the HP bars; the assist bar is the player's own setting. `PSPRECOMP_TAGTEAM_OH_ASSIST_DEFAULT_OLD=1` = old.
 - ~~RP6: Communications > Tag Team Battle > Mode Select > Group Battle opened the Museum~~ FIXED 26 Nov (branch tt-museum): on the slow phone the sub-list tick gap (> 0.12 s) ran the "cursor back on the Tag Team Battle row" step between the Mode Select choice and its direct confirm, which then confirmed row 5 (Collection). The row-back now never runs while a Mode Select choice waits (`g_ms_go` / `g_direct_pending`); `PSPRECOMP_TAGTEAM_ROWBACK_DURING_GO=1` = old. Found by the device test (log `~/dissidia/tt/desk_logs/rp6_devtest_modeselect_museum_1126.log`); verify on the RP6.
 
 - ~~Chases: effects / timers / battle clock / gauges / HUD still slowed for everybody, not only the two chasers (user, 26 Nov)~~ DONE 26 Nov (tree ttcfx, branch tt-chasefx, "Batch forty-six"): the battle clock, the battle controller (side modules, EX / assist gauges, hit handling), the HUD / scene / effect managers and the fighters' direct step readers run at the step without the chase unless they belong to a chaser. Open: effects are told apart by position only; sounds not checked; no device.
