@@ -1,6 +1,7 @@
 # Tag team battles (2 v 2): research notes and plan
 
 ## TODO (kept up to date; newest first)
+- ~~Crosshair gone after an extra's kill camera (RP6 26 Nov, `desk_logs/rp6_reticle5_1126_1816.log`)~~ FIXED 26 Nov (branch tt-cursor7): the lockfix6 restore put back a +0x878 snapshot taken after the enable was already cleared ("extra kill camera over: 0101 -> 0001"). The restore now only ever sets the lock cursor enable (bit 0x0100) when the fight resumes, never clears it.
 - Keep-fighting during an EX Burst: **removed from the lobby until fixed** (user, 26 Nov: "very jank"): a player outside the burst could move but the camera framed the burst (`desk_logs/rp6_laguna_exb_1126_1736.log`). Freeze is always used now; keep-fighting stays as Settings > Debug "EX Burst: Keep Fighting" (default off) / `PSPRECOMP_TAGTEAM_EXBURST=fight`, online the host's. To bring it back: the outside player's camera must stay on his own fighter for the whole burst (view only; the manager's shown slot is not enough), then re-add the lobby row (`lobby_visible` skips row 4). (tree ttferal, branch tt-feralexb2, "Batch seventy-three")
 - ~~Lock-on ring "moves wildly, guesses ahead and snaps back" after the HUD smoothing (user, device 26 Nov)~~ FIXED 26 Nov (tree tthudsm2, branch tt-hudsmooth2, "Batch seventy-one"): the 2D follow moved each of the ring's 8 pieces by the nearest ROOT BONE of any skinned draw; now one offset from the lock target's world position. `PSPRECOMP_HUD_FOLLOW_NEAREST=1` = old. Not on a device.
 
