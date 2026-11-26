@@ -122,6 +122,9 @@ constexpr uint32_t BTN_UP = 0x10u, BTN_RIGHT = 0x20u, BTN_DOWN = 0x40u, BTN_LEFT
 std::atomic<uint32_t> g_raw_pad{0};   // the pad as the filter saw it before the dialog took it
 std::atomic<bool> g_dlg_open{false};
 std::atomic<int> g_inject_cross{0};
+void add_cpu_direct(uint8_t* rdram, recomp_context* ctx, uint32_t screen);
+std::atomic<bool> g_add_cpu_direct{false};   // 26 Nov: "Add CPU" (L on the free row): the screen's own Cross step is called (no press) before the next update
+const char* g_inj_why = nullptr;   // 26 Nov: why the pad filter is about to add bits to the player's pad (always-on [INJECT] log in dissidia_tagteam_menu_pad)
 // 25 Nov (user, RP6: "back does not return to the previous tag menu"): the single player chain is Battle Mode list > Mode Select > Party Select > setup screen + Battle Lobby.
 // Circle on the setup screen's list (no dialog) now reopens the lobby (g_lob_flow), Circle in that lobby goes back to Party Select (one injected Circle for retail's screen),
 // and menu_settings.cpp reopens the Mode Select when the Battle Mode / Communications list comes back. PSPRECOMP_TAGTEAM_MENUBACK_OLD=1: old.
@@ -168,7 +171,11 @@ void play_se(uint8_t* rdram, recomp_context* ctx, int id) {
 uint32_t g_sp_screen_last_fwd();
 void sp_back_direct(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t screen = g_sp_screen_last_fwd(); FuncPtr f = ovl_menu_lookup(0x08AAB8B4u);
-    if (!(screen >= 0x08800000u && screen < 0x0A000000u) || !f) { g_inject_circle.store(6, std::memory_order_relaxed); return; }
+    if (!(screen >= 0x08800000u && screen < 0x0A000000u) || !f) {   // 26 Nov: no press as a fallback (PSPRECOMP_TAGTEAM_INJECT_OLD=1: the old injected Circle)
+        if (dissidia_tagteam_inject_old()) g_inject_circle.store(6, std::memory_order_relaxed);
+        else std::fprintf(stderr, "[TTLOBBY] back from the setup screen: screen pointer %08X / teardown function invalid, nothing done (no press injected)\n", screen);
+        return;
+    }
     const recomp_context save = *ctx; ctx->r[4] = static_cast<int32_t>(screen); ctx->r[5] = 1; f(rdram, ctx); *ctx = save;
     std::fprintf(stderr, "[TTLOBBY] setup screen left the way its Circle does (no press)\n");
 }
@@ -548,7 +555,6 @@ bool g_rearm = false;   // 25 Nov (user: back out past the lobby, then forward a
 bool g_ffa_then_lobby = false, g_lobby_pending = false, g_ffa_flow = false, g_ffa_autostart = false;
 bool g_ms_pre = false, g_ms_hop = false, g_ms_done = false;   // 25 Nov (user: Free-for-all goes DIRECTLY to the players menu): the players screen and the lobby are hosted by the Mode Select (retail's Party Select / CPU Select are passed by a script afterwards; g_ms_hop: the player asked for the game's selector instead)
 std::atomic<int> g_script_lim{1000}; std::atomic<int> g_ps_frames{0};   // frames Party Select's ready test ran since the script started   // the scripted pass stops after the event that starts at or before this poll
-std::atomic<int> g_hop_more{0}; std::atomic<int64_t> g_hop_at{0};
 // 26 Nov (user: every Free-for-all pick through the game's real Player Select; no pad injections, no Party Select / CPU Select): the Quick Battle app (ovl_menu, app = *0x08AA3F44,
 // P = app + 0x154) is one state machine, P + 0x910 = its state (PMF table 0x08AA3F48, run by FUN_08A97DA8), P + 0x914 = the state after a transition state.
 //   2 picks the route; 1-on-1: 4 makes Player Select (FUN_08AA0D48(app, 0)), 5 runs it (FUN_08A9E0E8): on YES the pick (FUN_08A81188 = charId) goes to P + 0x804C and the state
@@ -983,7 +989,7 @@ void draw(uint8_t* rdram, recomp_context* ctx, uint32_t screen) {
     const bool cpu_row = switchable && ((dissidia_tagteam_local_cpu_mask() >> row) & 1) && row != first;   // (the settings of a keeper's first row are not in the beacon bytes: default strength 5 / Auto / Random)
     if (g_dlg_open && !g_dlg_bp && g_dlg_mode == 0 && !cpu_row) g_dlg_open = false;   // the row went away / is a player again
     const bool free_row = left && n >= 1 && n < 5 && row == n && !g_dlg_open;   // the cursor is on the next free row: L = Add CPU
-    if (free_row && (pressed & BTN_L)) { dissidia_tagteam_add_cpu_request(true); g_inject_cross.store(3, std::memory_order_relaxed); play_se(rdram, ctx, 1); }
+    if (free_row && (pressed & BTN_L)) { dissidia_tagteam_add_cpu_request(true); if (dissidia_tagteam_inject_old()) { g_inj_why = "Add CPU: Cross for the setup screen (INJECT_OLD)"; g_inject_cross.store(3, std::memory_order_relaxed); play_se(rdram, ctx, 1); } else g_add_cpu_direct.store(true, std::memory_order_relaxed); }   // 26 Nov: the screen's own Cross step is called (add_cpu_direct), no press
     bool opened_now = false;
     // The host's CPU party (docs "Proper PvE"): when every human chose one party the other is a CPU party. Its rows are the order column's (1st..5th): L adds one (picker),
     // Select opens a row's STRENGTH / LEVEL / TYPE, Square takes it out. Everyone sees the rows (plates at the right edge); only the host edits.
@@ -1123,6 +1129,7 @@ void setup_tick_hook(uint8_t* rdram, recomp_context* ctx) {
     if (!dissidia_tagteam_inject_old() && dissidia_tagteam_group_on() && !std::getenv("PSPRECOMP_TAGTEAM_TOURNAMENT") && r32(screen + SCR_COLUMN) == 1u && r32(screen + SCR_ROW) < 5u) {
         uint8_t L[10]; if (dissidia_tagteam_bp_party() < 0 && dissidia_tagteam_lobby_get(L)) { w32(screen + SCR_COLUMN, 0u); std::fprintf(stderr, "[TTLOBBY] cursor on a covered round row: party column, same row (no press)\n"); }
     }
+    if (g_add_cpu_direct.exchange(false, std::memory_order_relaxed)) add_cpu_direct(rdram, ctx, screen);
     g_orig_tick(rdram, ctx);
     if (std::getenv("PSPRECOMP_TTCPU_CURDUMP")) {   // debug: small words of the screen object that changed this frame
         static std::vector<uint32_t> prev; static uint32_t prev_scr = 0;
@@ -1303,6 +1310,39 @@ void sp_enter_battle(uint8_t* rdram, recomp_context* ctx, uint32_t screen) {
     if (FuncPtr f = ovl_menu_lookup(0x08AAB8B4u)) { ctx->r[4] = static_cast<int32_t>(screen); ctx->r[5] = 0; f(rdram, ctx); *ctx = save; }
     else { g_ram[(M + 0x624u) & 0x07FFFFFFu] = 1; w32(M + 4u, 5u); }
     std::fprintf(stderr, "[FFA] setup screen: Enter Battle (the list's own step, no press)\n");
+}
+// 26 Nov (user: no injected presses): "Add CPU" (L on the free row) = what the Communications setup screen's list does on Cross with the cursor on a row other than Enter Battle
+// (ovl_menu 0x08AAF010: with screen flags (screen + 0x7CC0) bit 1 and no pending word (+0x7CC4): FUN_08AAA608(screen, +0x7CC8) must accept, then flags |= 8, M + 4 = 5, the cursor object's +8 / +12 = +0x7CC4 / +0x7CC8 and FUN_08AAB0B8(screen), sound 1 (refused: sound 4); the plain path: sound 1, FUN_08AA9634(screen) (opens the row's selector), M + 4 = 3 and, with flags bit 0,
+// the row's animation steps FUN_08AB58E0(obj, 9, row), (obj, 6, 3), (obj, 7, 0) and FUN_08AB5790(obj, 2) on obj = *(screen + 0x7CBC). PSPRECOMP_TAGTEAM_INJECT_OLD=1: the old injected Cross.
+void add_cpu_direct(uint8_t* rdram, recomp_context* ctx, uint32_t screen) {
+    const uint32_t M = r32(screen + SCR_M); FuncPtr f9634 = ovl_menu_lookup(0x08AA9634u), fA608 = ovl_menu_lookup(0x08AAA608u), fB0B8 = ovl_menu_lookup(0x08AAB0B8u);
+    const uint32_t st = okp(M) ? r32(M + 4u) : 0xFFFFFFFFu;
+    if (!okp(screen) || !okp(M) || (st != 2u && st != 7u)) { std::fprintf(stderr, "[TTCPU] Add CPU: setup screen not on its list (state %u), nothing done (no press injected)\n", st); dissidia_tagteam_add_cpu_request(false); return; }
+    const uint32_t flags = r32(screen + 31936u);
+    const recomp_context save = *ctx;
+    if ((flags & 2u) && r32(screen + 31940u) == 0u) {   // the Communications setup screen: the row's own selector (state 7 = its list)
+        const uint32_t obj = r32(screen + 31908u);
+        if (!fA608 || !fB0B8 || !okp(obj)) { std::fprintf(stderr, "[TTCPU] Add CPU: the screen's selector step is not reachable, nothing done (no press injected)\n"); dissidia_tagteam_add_cpu_request(false); return; }
+        ctx->r[4] = static_cast<int32_t>(screen); ctx->r[5] = static_cast<int32_t>(r32(screen + 31944u)); fA608(rdram, ctx); const bool ok = ctx->r[2] != 0; *ctx = save;
+        if (!ok) { play_se(rdram, ctx, 4); std::fprintf(stderr, "[TTCPU] Add CPU: the screen refuses the row (its own buzz), nothing opened\n"); dissidia_tagteam_add_cpu_request(false); return; }
+        w32(screen + 31936u, flags | 8u); w32(M + 4u, 5u); w32(obj + 8u, r32(screen + 31940u)); w32(obj + 12u, r32(screen + 31944u));
+        ctx->r[4] = static_cast<int32_t>(screen); fB0B8(rdram, ctx); *ctx = save;
+        play_se(rdram, ctx, 1);
+        std::fprintf(stderr, "[TTCPU] Add CPU: the Communications setup screen's own Cross step called on row %u, flags %08X (no press)\n", r32(screen + SCR_ROW), flags);
+        return;
+    }
+    if (!f9634) { dissidia_tagteam_add_cpu_request(false); return; }
+    play_se(rdram, ctx, 1);
+    ctx->r[4] = static_cast<int32_t>(screen); f9634(rdram, ctx); *ctx = save;
+    w32(M + 4u, 3u);
+    if (flags & 1u) {
+        const uint32_t obj = r32(screen + 31948u), row = r32(screen + SCR_ROW);
+        if (okp(obj)) {
+            if (FuncPtr f = ovl_menu_lookup(0x08AB58E0u)) { const uint32_t a[3][2] = {{9, row}, {6, 3}, {7, 0}}; for (auto& e : a) { ctx->r[4] = static_cast<int32_t>(obj); ctx->r[5] = e[0]; ctx->r[6] = e[1]; f(rdram, ctx); *ctx = save; } }
+            if (FuncPtr f = ovl_menu_lookup(0x08AB5790u)) { ctx->r[4] = static_cast<int32_t>(obj); ctx->r[5] = 2; f(rdram, ctx); *ctx = save; }
+        }
+    }
+    std::fprintf(stderr, "[TTCPU] Add CPU: the setup screen's own Cross step called on row %u, flags %08X (no press)\n", r32(screen + SCR_ROW), flags);
 }
 void sp_draw(uint8_t* rdram, recomp_context* ctx, uint32_t screen, bool hide) {
     dissidia_tagteam_result_done();
@@ -1574,19 +1614,19 @@ bool dissidia_tagteam_post_flow() { return g_trip_post && g_qb_mode == QB_RETURN
 void dissidia_tagteam_main_tick_seen() { g_main_seen_ms = steady_ms(); }   // menu_settings.cpp: the start menu's top level or sub-list ran
 
 void dissidia_menu_rows_fade_tick();
-uint32_t dissidia_tagteam_menu_pad(uint32_t raw) {
+static uint32_t menu_pad_inner(uint32_t raw) {
     trip_tick(); dissidia_menu_rows_fade_tick();
     if (ms_log()) { static uint32_t prev = 0; const uint32_t e = raw & ~prev; prev = raw; if (e & (BTN_UP | BTN_DOWN)) g_ms_press_t = std::chrono::steady_clock::now(); }
     g_raw_pad.store(raw, std::memory_order_relaxed);
     const int sr = g_sp_row.load(std::memory_order_relaxed);
     if (sr >= 0) {   // single player tag mode, round dialog of the 2nd round on: the cursor stays on STRENGTH / LEVEL / TYPE
         static bool inj = false;
-        if (sr == 0 && dissidia_tagteam_inject_old()) { inj = !inj; raw = inj ? (raw | BTN_DOWN) : (raw & ~BTN_DOWN); }   // opened on STAGE: one Down (old; now sp_dlg_hook starts it on STRENGTH)
+        if (sr == 0 && dissidia_tagteam_inject_old()) { g_inj_why = "round dialog opened on STAGE: Down (INJECT_OLD)"; inj = !inj; raw = inj ? (raw | BTN_DOWN) : (raw & ~BTN_DOWN); }   // opened on STAGE: one Down (old; now sp_dlg_hook starts it on STRENGTH)
         else if (sr == 0) raw &= ~BTN_UP;
         else if (sr == 1) raw &= ~BTN_UP;
         else if (sr == 3) raw &= ~BTN_DOWN;
     }
-    if (int ij = g_inject_cross.load(std::memory_order_relaxed); ij > 0) { g_inject_cross.store(ij - 1, std::memory_order_relaxed); raw = (ij == 2) ? (raw | BTN_CROSS) : (raw & ~BTN_CROSS); }   // Add CPU: one Cross press (edge) for the screen
+    if (int ij = g_inject_cross.load(std::memory_order_relaxed); ij > 0) { g_inj_why = "Add CPU: Cross for the setup screen (INJECT_OLD)"; g_inject_cross.store(ij - 1, std::memory_order_relaxed); raw = (ij == 2) ? (raw | BTN_CROSS) : (raw & ~BTN_CROSS); }   // Add CPU: one Cross press (edge) for the screen
     if (steady_ms() - g_circle_stamp.load(std::memory_order_relaxed) < 100) raw &= ~BTN_CIRCLE;   // the setup screen's list: Circle is ours (back to the lobby)
     if (g_sp_sq_block.load(std::memory_order_relaxed) && g_pad_polls.fetch_add(1, std::memory_order_relaxed) - g_sq_stamp.load(std::memory_order_relaxed) < 40u) raw &= ~BTN_SQUARE;
     else g_pad_polls.fetch_add(1, std::memory_order_relaxed);
@@ -1613,12 +1653,14 @@ uint32_t dissidia_tagteam_menu_pad(uint32_t raw) {
                 g_layer.publish();
             }
             g_script_t.store(st > endt ? -1 : st + 1, std::memory_order_relaxed);
+            { static bool logged = false; if (st == 0 && !logged) { logged = true; std::fprintf(stderr, "[INJECT] scripted Party Select / CPU Select pass active (it overrides Cross / Down / Up / Circle of the player's pad; FFA_PSOLD / KEEPPARTY / PREOLD only)\n"); } else if (st > 0) logged = false; }
+            if (m) g_inj_why = "scripted Party Select / CPU Select pass (FFA_PSOLD / KEEPPARTY / PREOLD)";
             raw = (raw & ~(BTN_CROSS | BTN_DOWN | BTN_UP | BTN_CIRCLE)) | m;
         }
     }
     if (const int cf = g_col_fix.load(std::memory_order_relaxed); cf && (cf == 1 || dissidia_tagteam_inject_old()) && !std::getenv("PSPRECOMP_TAGTEAM_COLFIX_OFF") && g_pad_polls.load(std::memory_order_relaxed) - g_enter_stamp.load(std::memory_order_relaxed) < 40u) {
         if (cf == 1) raw &= ~(BTN_RIGHT | BTN_LEFTK);
-        else { static bool inj = false; inj = !inj; raw &= ~(BTN_CROSS | BTN_LEFTK); raw = inj ? (raw | BTN_RIGHT) : (raw & ~BTN_RIGHT); }   // a round row: back to the party column
+        else { g_inj_why = "Communications setup: Right from a round row (INJECT_OLD)"; static bool inj = false; inj = !inj; raw &= ~(BTN_CROSS | BTN_LEFTK); raw = inj ? (raw | BTN_RIGHT) : (raw & ~BTN_RIGHT); }   // a round row: back to the party column
     }
     dissidia_tagteam_result_tick();   // (a decided Free-for-all: the result screen's rows)
     raw = dissidia_tagteam_result_pad(raw);   // the Free-for-all result screen (own, tagteam_result.cpp)
@@ -1626,12 +1668,25 @@ uint32_t dissidia_tagteam_menu_pad(uint32_t raw) {
     static std::atomic<int> hold{0};   // a button that closed a dialog stays down for a few polls: the screen under it must not see it
     if (g_dlg_open.load(std::memory_order_relaxed)) { hold.store(12, std::memory_order_relaxed); return 0u; }
     if (const int h = hold.load(std::memory_order_relaxed); h > 0) { hold.store(h - 1, std::memory_order_relaxed); return 0u; }
-    if (g_inject_circle.load(std::memory_order_relaxed) == 0 && g_hop_more.load(std::memory_order_relaxed) > 0 && steady_ms() >= g_hop_at.load(std::memory_order_relaxed)) { g_hop_more.fetch_sub(1, std::memory_order_relaxed); g_inject_circle.store(6, std::memory_order_relaxed); }   // (the second Circle of a hop to Party Select)
-    if (int ic = g_inject_circle.load(std::memory_order_relaxed); ic > 0) { g_inject_circle.store(ic - 1, std::memory_order_relaxed); raw = (ic >= 3 && ic <= 5) ? (raw | BTN_CIRCLE) : (raw & ~BTN_CIRCLE); }
-    if (int il = g_inject_late.load(std::memory_order_relaxed); il > 0) { g_inject_late.store(il - 1, std::memory_order_relaxed); raw = (il >= 3 && il <= 5) ? (raw | BTN_CROSS) : (raw & ~BTN_CROSS); }
+    if (int ic = g_inject_circle.load(std::memory_order_relaxed); ic > 0) { g_inj_why = "Circle for retail's setup screen (INJECT_OLD)"; g_inject_circle.store(ic - 1, std::memory_order_relaxed); raw = (ic >= 3 && ic <= 5) ? (raw | BTN_CIRCLE) : (raw & ~BTN_CIRCLE); }
+    if (int il = g_inject_late.load(std::memory_order_relaxed); il > 0) { g_inj_why = "list confirm Cross after the Mode Select (INJECT_OLD)"; g_inject_late.store(il - 1, std::memory_order_relaxed); raw = (il >= 3 && il <= 5) ? (raw | BTN_CROSS) : (raw & ~BTN_CROSS); }
     return raw;
 }
 
+// 26 Nov (user: no button is ever pressed on the player's behalf in the menus): the always-on proof. Any bit this filter adds to the player's pad is logged with its reason
+// (nothing is logged by the default paths; every old injection sits behind PSPRECOMP_TAGTEAM_INJECT_OLD=1 and says so here).
+void dissidia_tagteam_inject_log(const char* who, uint32_t before, uint32_t after, const char* why) {
+    static uint32_t lasts[2] = {0, 0}; uint32_t& last = lasts[who[0] == 't' && who[1] == 'a' ? 0 : 1];
+    const uint32_t added = after & ~before;
+    if (added != last) { if (added) std::fprintf(stderr, "[INJECT] %s adds pad bits %04X to the player's pad (%04X -> %04X): %s\n", who, added, before, after, why ? why : "unknown"); last = added; }
+}
+void dissidia_tagteam_inject_why(const char* why) { g_inj_why = why; }
+uint32_t dissidia_tagteam_menu_pad(uint32_t raw) {
+    g_inj_why = nullptr;
+    const uint32_t out = menu_pad_inner(raw);
+    dissidia_tagteam_inject_log("tag menu pad filter", raw, out, g_inj_why);
+    return out;
+}
 // The mode select (menu_settings.cpp calls these from the start menu's updates): the screen after choosing Tag Team Battle.
 uint32_t dissidia_tagteam_raw_pad() { return g_raw_pad.load(std::memory_order_relaxed); }   // the pad before the dialogs took it
 void dissidia_tagteam_modesel_open() { g_ms_first = true; g_dlg_mode = 5; g_dlg_open = true; }

@@ -143,7 +143,10 @@ bool dissidia_training_chosen() { return env_on(); }
 void dissidia_training_inject_cross() { g_inject_cross.store(9, std::memory_order_relaxed); }
 
 // The pad filter (framerate.cpp, every poll): the panel takes the pad while it is open; the row's confirm is replayed once as a fresh Cross for the retail list.
-uint32_t dissidia_training_pad(uint32_t raw) {
+void dissidia_tagteam_inject_log(const char* who, uint32_t before, uint32_t after, const char* why);   // tagteam_menu.cpp: the always-on [INJECT] line
+static uint32_t training_pad_inner(uint32_t raw);
+uint32_t dissidia_training_pad(uint32_t raw) { const uint32_t out = training_pad_inner(raw); dissidia_tagteam_inject_log("training pad filter", raw, out, "Training row: Cross for the Battle Mode list (INJECT_OLD)"); return out; }
+static uint32_t training_pad_inner(uint32_t raw) {
     g_raw.store(raw, std::memory_order_relaxed);
     static int hold = 0;
     if (const int il = g_inject_cross.load(std::memory_order_relaxed); il > 0) { g_inject_cross.store(il - 1, std::memory_order_relaxed); raw = (il >= 3 && il <= 5) ? (raw | BTN_CROSS) : (raw & ~BTN_CROSS); }
