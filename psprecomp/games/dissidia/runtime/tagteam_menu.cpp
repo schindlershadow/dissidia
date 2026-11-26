@@ -357,7 +357,7 @@ bool g_no_allcpu = std::getenv("PSPRECOMP_TAGTEAM_NOALLCPU") != nullptr;
 // The rows the dialog shows (logical row numbers): single player has no ASSIST row (Square on the setup screen toggles it), CPU STRENGTH only with CPU FILL on.
 int lobby_visible(const uint8_t* L, int out[kLobbyRows]) {
     int n = 0; const bool sp = dissidia_tagteam_lobby_sp();
-    for (int r = 1; r < kLobbyRows; r++) { if (r == 5 && sp) continue; if (r == 7 && !L[2]) continue; if (r == 8 && !(sp && L[0] == 3)) continue; if (r == 9 && (g_no_allcpu || !dissidia_tagteam_lobby_editable())) continue; out[n++] = r; }
+    for (int r = 1; r < kLobbyRows; r++) { if (r == 4) continue; /* EX BURST rule: not offered (freeze always; keep fighting is a debug setting, docs Batch sixty-six) */ if (r == 5 && sp) continue; if (r == 7 && !L[2]) continue; if (r == 8 && !(sp && L[0] == 3)) continue; if (r == 9 && (g_no_allcpu || !dissidia_tagteam_lobby_editable())) continue; out[n++] = r; }
     return n;
 }
 const char* kLobbyRowName[kLobbyRows] = {"MODE", "STAGE", "RULES", "JUDGMENT", "EX BURST", "ASSIST", "CPU FILL", "CPU STRENGTH", "PLAYERS", "ALL CPUs", "CHASE SLOW"};
@@ -971,8 +971,9 @@ void lobby_panel(const uint8_t* L, float a) {
     const char* title = "BATTLE LOBBY";
     const float tw = g_layer.text(title, true, 8.4f, 0, 0, LayerColor{0, 0, 0, 0}, true);
     g_layer.text(title, true, 8.4f, (x0 + x1) / 2.f - tw / 2.f, y0 + 16.f, LayerColor{255, 255, 255, a});
-    for (int i = 0; i < 6; i++) {
-        const float ry = y0 + 40.f + 22.f * float(i);
+    for (int i = 0, k = 0; i < 6; i++) {
+        if (i == 4) continue;   // (EX BURST row: not offered)
+        const float ry = y0 + 40.f + 22.f * float(k++);
         g_layer.text(kLobbyRowName[i], true, 6.6f, x0 + 8.f, ry, LayerColor{200, 210, 250, a});
         const std::string v = lobby_value(i, L);
         const float vw = g_layer.text(v, true, 6.8f, 0, 0, LayerColor{0, 0, 0, 0}, true);

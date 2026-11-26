@@ -1,6 +1,7 @@
 # Tag team battles (2 v 2): research notes and plan
 
 ## TODO (kept up to date; newest first)
+- Keep-fighting during an EX Burst: **removed from the lobby until fixed** (user, 26 Nov: "very jank"): a player outside the burst could move but the camera framed the burst (`desk_logs/rp6_laguna_exb_1126_1736.log`). Freeze is always used now; keep-fighting stays as Settings > Debug "EX Burst: Keep Fighting" (default off) / `PSPRECOMP_TAGTEAM_EXBURST=fight`, online the host's. To bring it back: the outside player's camera must stay on his own fighter for the whole burst (view only; the manager's shown slot is not enough), then re-add the lobby row (`lobby_visible` skips row 4). (tree ttferal, branch tt-feralexb2, "Batch sixty-seven")
 - ~~Lock-on ring "moves wildly, guesses ahead and snaps back" after the HUD smoothing (user, device 26 Nov)~~ FIXED 26 Nov (tree tthudsm2, branch tt-hudsmooth2, "Batch seventy-one"): the 2D follow moved each of the ring's 8 pieces by the nearest ROOT BONE of any skinned draw; now one offset from the lock target's world position. `PSPRECOMP_HUD_FOLLOW_NEAREST=1` = old. Not on a device.
 - ~~HUD marks (lock-on indicator, overhead bars, entrance FX) and retail's lock-on ring step at 30 Hz at 60 / 120 fps (user, 26 Nov)~~ DONE 26 Nov (tree tthudsm, branch tt-hudsmooth, "Batch sixty-seven"): positions blended like the renderer's scene, pulse clock follows slow motion, retail ring found by content so it moves with the interpolated fighter. `PSPRECOMP_TAGTEAM_HUDSMOOTH_OLD=1` = old. Not on a device.
 
@@ -2338,7 +2339,7 @@ User: "make the 3v3". Each side gets two extras instead of one, so three fighter
 ## Battle lobby, free-for-all of players, fixes from the 10-player tests (22 Nov, branch tagteam-lobby; online with 2 and 3 players)
 User + Schindler: one place for the mode and the battle's rules, showing every player's character; FFA = independent players.
 - **Battle lobby** (tagteam_menu.cpp, setup screen): Select on one of the player's own rows opens BATTLE LOBBY: MODE (1 vs 1 Duel, Team 2 vs 2,
-  Team 3 vs 3, Tag Duel, Free-for-all), STAGE, RULES, JUDGMENT, EX BURST (freeze / keep fighting), ASSIST, CPU FILL (+ strength; not wired yet).
+  Team 3 vs 3, Tag Duel, Free-for-all), STAGE, RULES, JUDGMENT, EX BURST (freeze / keep fighting; REMOVED from the lobby 26 Nov, see Batch sixty-seven), ASSIST, CPU FILL (+ strength; not wired yet).
   The host edits (Left / Right), the others see the host's settings. The lobby travels in beacon bytes 40-47 (version 9, 48 bytes):
   'L', mode | size << 4, cpu_fill | strength << 4, stage, rules, judgement, exb | assist << 1. `lobby_apply` (host) sets the switches the
   battle reads (fighters per side, g_three, g_ffa, assists, EX Burst rule) and `mp_sync_mode`.
@@ -6304,3 +6305,9 @@ User: during chases the effects and timers (hit / particle effects of the others
 - **Test.** `rec_run.py` 120 fps, `PSPRECOMP_INTERP_TRACE=3`: piece-offset spread 0.00 (one offset), jump frames 30 of 1647 (was 121 of 1160 / 91 of 1628); the rest are the game's own ring easing (the ring itself moves
   10-20 px in one tick when the target dashes; only that tick's step remains). Regression `tagteam_test.py --baseline` PASS (`~/dissidia/tt/s2/reg_hudsmooth2`).
 - **Not verified.** On the device; a target that is an assist body / parked partner (mapped with `ao8_body_of`, not exercised); non-tag 1v1 uses the player's actor.
+
+### Batch sixty-seven (26 Nov, tree ttferal, branch tt-feralexb2): the EX Burst rule leaves the lobby, freeze everywhere
+- **User:** the keep-fighting handling is "very jank" (a Laguna burst in FFA: the human could move, but the camera showed the burst). "Disable being able to move during bursts in all game modes. Keep that option a debug thing."
+- **Change** (`tagteam.cpp`, `tagteam_menu.cpp`): (1) `exb_ffa_fight()` of Batch sixty-six is gone: FFA freezes the fighters outside a burst like every mode. (2) The lobby's EX BURST row is not offered (`lobby_visible` skips row 4, the setup screen's lobby panel skips it); the lobby value (`g_exb_lobby`, saved `settings.ini` field) is ignored. The rule is `exb_rule_fight_env()` = `PSPRECOMP_TAGTEAM_EXBURST=fight` or the new debug toggle "EX Burst: Keep Fighting" (Settings > Debug > Tag Team, default off); online it is still the host's roster flag (bit 1), so both machines agree. (3) Kept: the Feral Chaos battlefield reset and the burst-end restore of Batch sixty-six (nobody stays held / stranded: slot fighters in the pink-space part are put back too), and the outsider stage view / `[EXBVIEW]` (only active under keep-fighting).
+- **Tests** (host headless, Feral Chaos burst on the human, `EXBAT=x0:15:s0`, `ENEMY2_CHAR=32`): FFA `fe_zffa`, 3v3 `fe_ztv3`, 2v2 `fe_ztv2`: outsiders held ("EX Burst in it: ... held: ..."), `reset to the stage`, every fighter back on the stage and the human moving / attacking afterwards. Online two copies (`mp_test.py --menu-mode ffa|team2 --fill`, `FILLCHAR=32,32 EXBAT=x0:20,x1:42`, ports 9831 / 9832, `~/dissidia/tt/s2/feral/mp_ffa`, `mp_team2`): both copies burst, reset the stage and agree: `[NETSYNC]` 2335 / 2263 frames compared, 0 mismatched. Regression `tagteam_test.py --baseline` PASS (`~/dissidia/tt/s2/feral/reg2`).
+- **Not done:** the camera for a player outside a burst under keep-fighting (the debug mode still frames the burst); RP6.
