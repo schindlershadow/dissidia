@@ -1801,6 +1801,11 @@ static void flush_batch() {
 #endif
             glBufferData(GL_COPY_WRITE_BUFFER, (GLsizeiptr)(s.cap * s.stride), nullptr, GL_STREAM_DRAW);
             s.write = 0;
+        } else if (g_ring_mode == 2) {
+            // PSPRECOMP_GE_RING=orphan (experiment for #131): fresh storage for every batch instead of appending to one buffer,
+            // for drivers (Mesa radeonsi) that mis-order uploads into a buffer the GPU is still reading.
+            glBufferData(GL_COPY_WRITE_BUFFER, (GLsizeiptr)(s.cap * s.stride), nullptr, GL_STREAM_DRAW);
+            s.write = 0;
         } else if (s.write + n > s.cap) {
 #ifdef PSP_GLES
             // Adreno does not honour orphaning: draws still pending when the buffer is re-specified read the NEW storage
@@ -2676,6 +2681,7 @@ void ge_draw_init() {
     if (const char* rm = std::getenv("PSPRECOMP_GE_RING")) {
         if (!std::strcmp(rm, "map")) g_ring_mode = 1;
         else if (!std::strcmp(rm, "sub")) g_ring_mode = 0;
+        else if (!std::strcmp(rm, "orphan")) g_ring_mode = 2;
 
     }
     g_verify = std::getenv("PSPRECOMP_GE_VERIFY") != nullptr;
