@@ -4618,14 +4618,14 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
         static int first_intro = 0; static uint32_t fi_gen = ~0u; if (fi_gen != g_battle_gen) { fi_gen = g_battle_gen; first_intro = 0; }
         static const bool bl = std::getenv("PSPRECOMP_TAGTEAM_BANTERLATE") != nullptr;
         if (cur >= 1000) {
-            intro_seen = true;
+            intro_seen = true;   // (online: the partners still come in after the intro until the rare lock-step divergence of the early mode is found, Batch twenty-three)
             if (!first_intro) first_intro = cur;
-            else if (cur != first_intro && !bl && g_late_wait) { g_late_ready = true; g_pre_hold = true; g_pre_used = true; g_hold_t0 = dissidia_battle_age(); dissidia_pause_match(0, 30.f); g_hold_tasks_at = g_hold_t0 + (std::getenv("PSPRECOMP_BANTER_HOLDDELAY") ? static_cast<float>(std::atof(std::getenv("PSPRECOMP_BANTER_HOLDDELAY"))) : 0.f); if (g_hold_tasks_at <= g_hold_t0) { pre_hold_tasks(true); g_hold_tasks_at = -1.f; } if (g_log) std::fprintf(stderr, "[TAGTEAM] t=%.2fs intro script %d -> %d: the retail flow is held, the partners come in before the vs display\n", dissidia_battle_age() / 60.f, first_intro, cur); }
+            else if (cur != first_intro && !bl && g_late_wait && (!comms_battle() || std::getenv("PSPRECOMP_TAGTEAM_BANTERNET"))) {  g_late_ready = true; g_pre_hold = true; g_pre_used = true; g_hold_t0 = dissidia_battle_age(); dissidia_pause_match(0, 30.f); g_hold_tasks_at = g_hold_t0 + (std::getenv("PSPRECOMP_BANTER_HOLDDELAY") ? static_cast<float>(std::atof(std::getenv("PSPRECOMP_BANTER_HOLDDELAY"))) : 0.f); if (g_hold_tasks_at <= g_hold_t0) { pre_hold_tasks(true); g_hold_tasks_at = -1.f; } if (g_log) std::fprintf(stderr, "[TAGTEAM] t=%.2fs intro script %d -> %d: the retail flow is held, the partners come in before the vs display\n", dissidia_battle_age() / 60.f, first_intro, cur); }
         }
         else if (intro_seen && (cur == 1 || cur == 2)) g_late_ready = true;
         if (!g_late_wait) g_late_ready = true;
     }
-    if (!g_late_q.empty() && g_late_ready && (g_planned_gen == g_battle_gen || std::getenv("PSPRECOMP_TAGTEAM_NOPLANWAIT")) && !(g_pre_hold && !std::getenv("PSPRECOMP_BANTER_SPAWNINTICK"))) { spawn_late_queue(); intro_seen = false; }   // the intro is over: make the late extras now (while the partners come in inside the held intro the frame hook does it: a spawn inside the object manager's walk cut that frame's scene short, one blank frame)
+    if (!g_late_q.empty() && g_late_ready && (g_planned_gen == g_battle_gen || std::getenv("PSPRECOMP_TAGTEAM_NOPLANWAIT")) && !(g_pre_hold && std::getenv("PSPRECOMP_BANTER_SPAWNINFRAME"))) { spawn_late_queue(); intro_seen = false; }   // the intro is over: make the late extras now (while the partners come in inside the held intro the frame hook does it: a spawn inside the object manager's walk cut that frame's scene short, one blank frame)
     {   // start the extras once all of them are loaded; the registrations are taken back in reverse spawn order
         bool pending = false, all_ready = true;
         bool only_callin = true; for (int i = 0; i < g_nextra; i++) if (!g_extra[i].started && !g_extra[i].callin) only_callin = false;
@@ -11611,7 +11611,7 @@ void dissidia_tagteam_frame(uint8_t* rdram, recomp_context* ctx) {
         for (const Late& l : g_late_load) { load_character(l.charId); g_late_q.push_back(l); }
         g_late_load.clear();
     }
-    if (g_pre_hold && !g_late_q.empty() && g_late_ready && g_bs && (g_planned_gen == g_battle_gen || std::getenv("PSPRECOMP_TAGTEAM_NOPLANWAIT")) && !std::getenv("PSPRECOMP_BANTER_SPAWNINTICK")) { g_ram = rdram; g_ctx = ctx; spawn_late_queue(); }   // the partners inside the held intro: spawned here, outside the object manager's walk
+    if (g_pre_hold && !g_late_q.empty() && g_late_ready && g_bs && (g_planned_gen == g_battle_gen || std::getenv("PSPRECOMP_TAGTEAM_NOPLANWAIT")) && std::getenv("PSPRECOMP_BANTER_SPAWNINFRAME")) { g_ram = rdram; g_ctx = ctx; spawn_late_queue(); }   // the partners inside the held intro: spawned here, outside the object manager's walk
     if (g_log && g_nextra && g_bs && std::getenv("PSPRECOMP_TAGTEAM_SWAPPROBE")) {
         static bool done = false;
         if (!done && dissidia_battle_age() > 9.f * 60.f && g_extra[0].started) {
