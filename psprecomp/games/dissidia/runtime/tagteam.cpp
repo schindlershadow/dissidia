@@ -11106,6 +11106,27 @@ void lock_poll() {
             dissidia_battle_age() / 60.0f, role_of(P), P, loc ? " (local human)" : "", o.lt, s.lt, lock_kind(s.lt, P), o.t2, s.t2, lock_kind(s.t2, P), o.fo, s.fo, lock_kind(s.fo, P), o.cam, s.cam, o.ov, s.ov,
             rd(L + 264u), cyc_of(P).cyc, (s.lt == s.t2 && s.t2 == s.fo && (!loc || !s.cam || s.cam == s.t2)) ? 1 : 0, static_cast<double>(err), g_lock_whys.empty() ? "retail/unknown" : g_lock_whys.c_str());
     }
+    {   // [RETICLE] the retail lock-on cursor of the local human: its lock block's fade byte +0x444 (0 = hidden, 0x7F / 0xFF shown) and the float +0x440; logged when the byte changes
+        // and when the cursor is hidden while the lock is valid (mode 1, a living enemy as the lock answer): the next device log shows it. PSPRECOMP_TAGTEAM_RETICLELOG=0 off.
+        static const bool roff = std::getenv("PSPRECOMP_TAGTEAM_RETICLELOG") && std::getenv("PSPRECOMP_TAGTEAM_RETICLELOG")[0] == '0';
+        static uint32_t rg = ~0u; static int rlines = 0; static int lastb = -1; static float hid_since = -1.f;
+        if (rg != g_battle_gen) { rg = g_battle_gen; rlines = 0; lastb = -1; hid_since = -1.f; }
+        const uint32_t H = roff ? 0u : lock_local_human(), HL = ok(H, 0x12D0) ? rd(H + 0x5ACu) : 0u;
+        if (ok(HL, 0x500) && rd(HL + 248u) == H) {
+            const int b = static_cast<int>(g_ram[(HL + 0x444u) & 0x07FFFFFFu]); const uint32_t mode = rd(HL + 264u), lt = call(LOCK_GET, HL);
+            const bool valid = mode == 1u && ok(lt, 0x12D0) && !lock_word_bad(lt, H, lt) && alive(H);
+            const int sig = b | static_cast<int>((rd(HL + 0x184u) & 0xFFu) << 8) | static_cast<int>((rd(HL + 0x110u) & 1u) << 16) | static_cast<int>((rd(HL + 0x114u) & 1u) << 17) | static_cast<int>((mode & 0xFu) << 20) | (static_cast<int>(g_ram[(HL + 0x126u) & 0x07FFFFFFu]) << 24);
+            static int lastsig = -1;
+            if (sig != lastsig && rlines++ < 200) std::fprintf(stderr, "[RETICLE] t=%.2fs human %08X lock block %08X: cursor fade +0x444 %d, mode-1 handler state +0x184 %u, +0x110 %u +0x114 %u, +0x1D0 %X, (+0x440 %08X) mode %u lock %08X %s +0x124 %08X +0x126 %02X pair +88/89 %02X %02X\n", dissidia_battle_age() / 60.0f, H, HL, b, rd(HL + 0x184u), rd(HL + 0x110u), rd(HL + 0x114u), rd(HL + 0x1D0u), rd(HL + 0x440u), mode, lt, lock_kind(lt, H), rd(HL + 0x124u), g_ram[(HL + 0x126u) & 0x07FFFFFFu], ok(rd(0x089D69F8u), 0x80) ? g_ram[(rd(0x089D69F8u) + 88u) & 0x07FFFFFFu] : 0u, ok(rd(0x089D69F8u), 0x80) ? g_ram[(rd(0x089D69F8u) + 89u) & 0x07FFFFFFu] : 0u);
+            if (const char* dd = std::getenv("PSPRECOMP_TAGTEAM_RETICLEDUMP")) { static int dumped = 0; static float nextd = -1.f; if (nextd < 0.f) nextd = static_cast<float>(std::atof(dd)); if (dumped < 6 && dissidia_battle_age() / 60.0f >= nextd) { dumped++; nextd += 20.f; std::fprintf(stderr, "[RETICLEDUMP] block %08X:", HL); for (uint32_t o = 0; o < 0x200u; o += 4) if (rd(HL + o)) std::fprintf(stderr, " %X:%08X", o, rd(HL + o)); std::fprintf(stderr, " | +270..2A8:"); for (uint32_t o = 0x270u; o < 0x2A8u; o += 4) std::fprintf(stderr, " %X:%08X", o, rd(HL + o)); std::fprintf(stderr, " | +300..310:"); for (uint32_t o = 0x300u; o < 0x314u; o += 4) std::fprintf(stderr, " %X:%08X", o, rd(HL + o)); const uint32_t h1d = rd(HL + 304u); std::fprintf(stderr, "\n[RETICLEDUMP] h1 %08X:", h1d); if (ok(h1d, 0x80)) for (uint32_t o = 0; o < 0x80u; o += 4) std::fprintf(stderr, " %X:%08X", o, rd(h1d + o)); std::fprintf(stderr, "\n[RETICLEDUMP] actor %08X words (<0x100000 or flags):", H); for (uint32_t o = 0x100u; o < 0x12D0u; o += 4) { const uint32_t v = rd(H + o); if (v && (v < 0x100000u || (v & 0xFF000000u) == 0x02000000u || (v & 0xFF000000u) == 0x03000000u)) std::fprintf(stderr, " %X:%X", o, v); } std::fprintf(stderr, "\n[RETICLEDUMP] target %08X words:", lt); if (ok(lt, 0x12D0)) for (uint32_t o = 0x100u; o < 0x12D0u; o += 4) { const uint32_t v = rd(lt + o); if (v && (v < 0x100000u || (v & 0xFF000000u) == 0x02000000u || (v & 0xFF000000u) == 0x03000000u)) std::fprintf(stderr, " %X:%X", o, v); } std::fprintf(stderr, "\n"); } }
+            lastsig = sig; lastb = b;
+            const float age = dissidia_battle_age();
+            {   // a snapshot every 20 s of battle time (and the lines above on every change): what the retail HUD / camera could gate the cursor on, to compare a frame with and without the crosshair
+                static float snap_t = -1e9f; const float ag = dissidia_battle_age();
+                if (ag - snap_t >= 1200.f && rlines++ < 200) { snap_t = ag; const uint32_t mgr = dissidia_camera_manager(); const uint32_t bc = rd(0x089D69F8u), bsx = g_bs;
+                    std::fprintf(stderr, "[RETICLE] t=%.2fs snapshot: valid %d mode %u lock %08X %s | human +0x380 %08X +0x384 %08X +0x126B %02X | block +0x108 %u +0x118 %02X +0x120 %08X +0x124 %08X +0x184 %u | target +0x380 %08X script %d | cam mgr %08X +8B4 %08X +8B8 %08X +8C0 %08X +6D0 %08X +6D4 %08X | pair +88/89 %02X %02X +180 %08X | bs+72 %u\n", ag / 60.0f, valid ? 1 : 0, mode, lt, lock_kind(lt, H), rd(H + 0x380u), rd(H + 0x384u), g_ram[(H + 0x126Bu) & 0x07FFFFFFu], rd(HL + 264u), g_ram[(HL + 0x118u) & 0x07FFFFFFu], rd(HL + 0x120u), rd(HL + 0x124u), rd(HL + 0x184u), ok(lt, 0x12D0) ? rd(lt + 0x380u) : 0u, ok(lt, 0x12D0) ? static_cast<int16_t>(rd(lt + 0x180u) & 0xFFFFu) : -1, mgr, mgr ? rd(mgr + 0x8B4u) : 0u, mgr ? rd(mgr + 0x8B8u) : 0u, mgr ? rd(mgr + 0x8C0u) : 0u, mgr ? rd(mgr + 0x6D0u) : 0u, mgr ? rd(mgr + 0x6D4u) : 0u, ok(bc, 0x100) ? g_ram[(bc + 88u) & 0x07FFFFFFu] : 0u, ok(bc, 0x100) ? g_ram[(bc + 89u) & 0x07FFFFFFu] : 0u, ok(bc, 0x100) ? rd(bc + 180u) : 0u, bsx ? rd(bsx + 72u) : 0u); } }
+        }
+    }
     g_lock_whys.clear();
 }
 }  // namespace
@@ -12898,8 +12919,18 @@ void dissidia_tagteam_frame(uint8_t* rdram, recomp_context* ctx) {
         if (mgr && ok(hum, 0x12D0)) {
             const uint32_t foe = rd(hum + 0x300u), cur = rd(mgr + 0x8B4u);
             uint32_t f[6]; const int n = all_fighters(f);
-            bool is_enemy = false; for (int i = 0; i < n; i++) if (f[i] == cur && side_of(f[i]) != side_of(hum)) is_enemy = true;
-            if (is_enemy && foe && foe != cur && alive(foe)) { if (g_log) std::fprintf(stderr, "[TAGTEAM] camera foe %08X -> %08X\n", cur, foe); wr(mgr + 0x8B4u, foe); }
+            // 26 Nov (lockfix4, RP6 "crosshair gone", camera manager read live: +0x8B4 = the human's partner, +0x8C0 = 1): the camera foe is written by EVERY lock block (+0x6D0 the human's,
+            // +0x6D4 the enemy slot's...), the last writer wins, and the enemy slot fighter's block names ITS target - the human's partner / the human, a fighter of the human's own
+            // side. The old test only corrected a camera foe on the OTHER side, so then the camera (and the retail cursor, which follows it) stayed on the partner, not on the
+            // human's lock. Now any fighter in the camera foe word is replaced by the human's foe (not EX cores / non-fighters). PSPRECOMP_TAGTEAM_CAMFOE_SIDE_OLD=1: old test.
+            if (const char* tc = std::getenv("PSPRECOMP_TAGTEAM_TESTCAMFOE")) {   // test aid: at <s> seconds the camera foe is put on the human's own-side extra (what the device showed), once
+                static bool done = false; if (!done && dissidia_battle_age() / 60.0f >= static_cast<float>(std::atof(tc))) for (int i = 0; i < g_nextra; i++) if (g_extra[i].started && ok(g_extra[i].actor, 0x12D0) && side_of(g_extra[i].actor) == side_of(hum)) { done = true; wr(mgr + 0x8B4u, g_extra[i].actor); std::fprintf(stderr, "[TESTCAMFOE] t=%.2fs camera foe set to %s %08X\n", dissidia_battle_age() / 60.0f, role_of(g_extra[i].actor), g_extra[i].actor); break; } }
+            static const bool side_old = std::getenv("PSPRECOMP_TAGTEAM_CAMFOE_SIDE_OLD") != nullptr;
+            const uint32_t hL = rd(hum + 0x5ACu); const bool plain_fight = rd(g_bs + 72u) == 3u && !exb_running() && ok(hL, 0x200) && rd(hL + 264u) == 1u;   // (the same-side case only in the plain fight with the lock on: kill / finish / burst cameras aim where they like)
+            bool is_enemy = false; for (int i = 0; i < n; i++) if (f[i] == cur && (side_old ? side_of(f[i]) != side_of(hum) : (side_of(f[i]) != side_of(hum) || plain_fight))) is_enemy = true;
+            if (is_enemy && foe && foe != cur && alive(foe)) { if (g_log) std::fprintf(stderr, "[TAGTEAM] camera foe %08X -> %08X\n", cur, foe);
+                { static int rc = 0; if (side_of(cur) == side_of(hum) && rc++ < 60) std::fprintf(stderr, "[RETICLE] t=%.2fs camera foe was %s %08X (the human's own side), put back on the lock target %08X\n", dissidia_battle_age() / 60.0f, role_of(cur), cur, foe); }
+                wr(mgr + 0x8B4u, foe); }
         }
     }
     if (g_nextra && g_bs && std::getenv("PSPRECOMP_TAGTEAM_RETICLE")) {   // experiment: the overlay globals that hold the human's foe (reticle?)
