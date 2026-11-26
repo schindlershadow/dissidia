@@ -2,6 +2,7 @@
 #include "psp_memory.h"
 #include "recomp.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <chrono>
 #include <cstdio>
@@ -72,6 +73,7 @@ struct SasVoice {
     bool tail = false;
     uint32_t pitch = SAS_PITCH_BASE;
     // state
+    int32_t trace_peak = 0;     // PSPRECOMP_SAS_TRACE: peak |output| since the last report
     bool playing = false;
     bool paused = false;
     bool keyed = false;
@@ -330,6 +332,7 @@ void render_voice(uint8_t* rdram, SasVoice& v, int frames,
         int64_t scaled = (static_cast<int64_t>(smp) * env) >> 16;
         mix_l[i] += static_cast<int32_t>((scaled * v.vol_l) >> 12);
         mix_r[i] += static_cast<int32_t>((scaled * v.vol_r) >> 12);
+        if (trace_on()) { int32_t a = static_cast<int32_t>(std::abs((scaled * std::max(v.vol_l, v.vol_r)) >> 12)); if (a > v.trace_peak) v.trace_peak = a; }
 
         env_step(v);
         if (!v.playing) break;
@@ -354,6 +357,19 @@ void sas_render(uint8_t* rdram, int32_t* mix_l, int32_t* mix_r) {
         SasVoice& v = g_voices[vi];
         if (!v.playing || v.paused) continue;
         render_voice(rdram, v, frames, mix_l, mix_r);
+    }
+    if (trace_on()) {   // about once a second: every voice that was audible, with its peak and source
+        static int grains = 0;
+        if (++grains >= 172) {
+            grains = 0;
+            for (int vi = 0; vi < SAS_VOICE_COUNT; vi++) {
+                SasVoice& v = g_voices[vi];
+                if (v.trace_peak > 0 || v.playing)
+                    SAS_TRACE("level v=%d peak=%d playing=%d keyed=%d addr=%08x size=%u vol=%d/%d", vi, v.trace_peak,
+                              v.playing ? 1 : 0, v.keyed ? 1 : 0, v.addr, v.size, v.vol_l, v.vol_r);
+                v.trace_peak = 0;
+            }
+        }
     }
 }
 

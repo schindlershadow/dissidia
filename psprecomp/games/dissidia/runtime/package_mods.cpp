@@ -6,6 +6,9 @@
 #include <atomic>
 #include <thread>
 #include <cctype>
+#include <cerrno>
+#include <mutex>
+#include <set>
 #include <cstdio>
 #include <cstring>
 #include <dirent.h>
@@ -110,14 +113,33 @@ bool parse_hex8(const std::string& s, uint32_t* out) {
 
 int64_t pread_all(const std::string& file, uint8_t* dest, uint32_t n, int64_t off) {
     int fd = ::open(file.c_str(), O_RDONLY | O_BINARY);
-    if (fd < 0) return -1;
+    if (fd < 0) {
+        std::fprintf(stderr, "[MODS] open failed: %s errno=%d (%s) off=%lld len=%u\n", file.c_str(), errno, std::strerror(errno),
+                     (long long)off, n);
+        return -1;
+    }
     int64_t got = 0;
+    int rerr = 0;
     while (got < n) {
         ssize_t r = psp_plat::pread_(fd, dest + got, n - got, off + got);
+        if (r < 0) rerr = errno;
         if (r <= 0) break;
         got += r;
     }
     ::close(fd);
+    if (got < n)
+        std::fprintf(stderr, "[MODS] short read: %s got=%lld want=%u off=%lld errno=%d\n", file.c_str(), (long long)got, n,
+                     (long long)off, rerr);
+    static const bool trace = std::getenv("PSPRECOMP_PKG_TRACE") != nullptr;
+    if (trace) {   // each served loose file once: path and size
+        static std::mutex mtx;
+        static std::set<std::string> seen;
+        std::lock_guard<std::mutex> lk(mtx);
+        if (seen.insert(file).second) {
+            struct stat st;
+            std::fprintf(stderr, "[MODS] serve %s size=%lld\n", file.c_str(), ::stat(file.c_str(), &st) == 0 ? (long long)st.st_size : -1LL);
+        }
+    }
     return got;
 }
 
