@@ -5,6 +5,7 @@
 //   PSPRECOMP_TAGTEAM=1        turn the spike on
 //   PSPRECOMP_TAGTEAM_EXTRAS=n 1 = the enemy's second fighter, 2 = the human's partner, 3 = both (default)
 //   PSPRECOMP_TAGTEAM_LOG=1    log what the hook does
+#include <utility>
 #include "psp_render_queue.h"
 #include "psp_memory.h"
 #include "psp_game_module.h"
@@ -519,6 +520,8 @@ uint32_t call(uint32_t addr, uint32_t a0, uint32_t a1 = 0, uint32_t a2 = 0, uint
 
 void tick_hook(uint8_t* rdram, recomp_context* ctx);
 const char* role_of(uint32_t a);
+void chasefx_install_impl();
+bool chasefx_log_rate() { static const bool on = std::getenv("PSPRECOMP_TAGTEAM_CHASEFX_RATE") != nullptr; return on; }
 const char* g_gnote = nullptr; uint32_t g_gnote_a = 0; void agauge_note(const char* why) { g_gnote = why; g_gnote_a = 0; }
 float agauge_of(uint32_t a); void agauge_hit_note(const char* who, uint32_t att, uint32_t vic, float g0);   // cause of the assist-gauge write our own code is about to make / just made (the gauge log, agauge_watch)
 void fix_assist();
@@ -1467,6 +1470,7 @@ void setup_hook(uint8_t* rdram, recomp_context* ctx) {
         if (!std::getenv("PSPRECOMP_TAGTEAM_NOOTHERCAM")) { g_orig_lock_other_pos = fn(LOCK_OTHER_POS); if (g_orig_lock_other_pos) psp_dispatch_register(LOCK_OTHER_POS, lock_other_pos_hook); }
         else std::fprintf(stderr, "[TAGTEAM] lock cycle hooks not installed\n");
     }
+    chasefx_install_impl();
     if (!g_orig_rule && std::getenv("PSPRECOMP_TAGTEAM_RULELOG")) { g_orig_rule = fn(0x08A040BCu); if (g_orig_rule) psp_dispatch_register(0x08A040BCu, rule_hook); }
     if (!g_orig_vspage) { g_orig_vspage = fn(0x08AF324Cu); if (g_orig_vspage) psp_dispatch_register(0x08AF324Cu, vs_page_hook); }
     if (!g_orig_stock) { g_orig_stock = fn(0x08B33914u); if (g_orig_stock) psp_dispatch_register(0x08B33914u, stock_hook); }
@@ -8781,8 +8785,16 @@ float chase_other_scale(float ticks) {   // 2 / channel 1 while a chase slows th
 }
 }  // namespace
 // framerate.cpp: actor_dt_hook / cam_dt_hook ask for the factor of one actor's step / the camera's step.
+extern int g_gs_depth; extern float g_gs_slowG;   // below (chasefx)
+float dissidia_frame_ticks();   // framerate.cpp
 float dissidia_tt_chase_actor_scale(uint32_t actor, float ticks) {
-    const float sc = chase_other_scale(ticks); if (sc == 1.0f) return 1.0f;
+    const float sc = chase_other_scale(ticks);
+    if (g_gs_depth) {   // inside a call run at the step without the chase (chasefx): a chaser's actor still takes the retail step
+        const float G = rdf(0x089D5EACu); uint32_t a = actor;
+        for (int d = 0; d < 3 && ok(a, 0x12D0); d++) { if (chase_member(a)) return G > 1e-6f ? g_gs_slowG / G : 1.0f; a = rd(a + 0x1108u); }
+        return 1.0f;
+    }
+    if (sc == 1.0f) return 1.0f;
     uint32_t a = actor;
     for (int d = 0; d < 3 && ok(a, 0x12D0); d++) { if (chase_member(a)) return 1.0f; a = rd(a + 0x1108u); }   // the actor, then its master (shots, effects actors)
     return sc;
@@ -8797,7 +8809,86 @@ float dissidia_tt_chase_cam_scale(float ticks) {   // the view of a local fighte
     const uint32_t H = srd(g_bs + 56u + 4u * (rd(g_bs + 84u) & 1u));
     return (ok(H, 0x12D0) && !chase_member(H)) ? sc : 1.0f;
 }
+
+// ---- "Chase slow: chasers only", everything that reads the global step directly (26 Nov, tree ttcfx, docs "Batch forty-two") ----
+// The actor step is compensated above (batch thirty-seven); the other readers of the global step 0x089D5EAC (146 sites in 131 functions: the battle controller that hands the step to the
+// side modules / gauges / hit handling / battle clock, the HUD, the 2D / scene / effect managers, summons, timers ...) still slowed down with the chase.  Those functions are hooked
+// (kGsAddr): while a chase runs and the "chasers only" option is on, a call whose subject (its a0, or the owner word a0+8 of a handler, up to three master links up) is not one
+// of the two chasers (or their assist actors) runs with the global step it would have without the chase (`other`, as chase_other_scale), then the retail value is put back; a call
+// that belongs to a chaser inside such a call gets the retail value back for its duration (and an actor's step: see dissidia_tt_chase_actor_scale). Effect handles
+// (FUN_088A6028 / 088A62A8) have no owner word: they belong to the chase when the nearest fighter to their position (handle +0x50) is a chaser.
+// Battle state only (chase controller, fighters' positions, the host's option via noslow_now()): the same on every machine. PSPRECOMP_TAGTEAM_CHASEFX_OLD=1 = off (batch thirty-seven
+// behaviour: only actors compensated). Debug: PSPRECOMP_TAGTEAM_CHASEFX_PROBE=1 (which functions run in a chase), PSPRECOMP_TAGTEAM_CHASEFX_LOG=1 (decisions, clock rate).
+const uint32_t kGsAddr[] = {0x08886C88u, 0x0888C048u, 0x089E6450u, 0x08A22D38u, 0x08A2B98Cu, 0x08A2FB70u, 0x08A31A24u, 0x08A31CFCu, 0x08A31FB4u, 0x08A32588u, 0x08A33FB4u, 0x08A34528u, 0x08A347E0u, 0x08A356C8u, 0x08A36638u, 0x08A36EE4u, 0x08A39540u, 0x08A3A0B8u, 0x08A3A638u, 0x08A3B560u, 0x08A42EA8u, 0x08A436F4u, 0x08A44140u, 0x08A45C94u, 0x08A46208u, 0x08A48E88u, 0x08A4B130u, 0x08A4CCE8u, 0x08A50060u, 0x08A50CD0u, 0x08A575D0u, 0x08A60044u, 0x08A9FF80u, 0x08AA3E44u, 0x08ABB8E0u, 0x08AC17A8u, 0x08AC5588u, 0x08ACBCC8u, 0x08ACD3FCu, 0x08AD0BC8u, 0x08AD96F0u, 0x08AE0D70u, 0x08AE0E0Cu, 0x08AE10B0u, 0x08AE2DA8u, 0x08AE6160u, 0x08AE6678u, 0x08AE975Cu, 0x08AEC000u, 0x08AED570u, 0x08AED664u, 0x08AED70Cu, 0x08AEE124u, 0x08AEEDA8u, 0x08AEF4B0u, 0x08AEFBD8u, 0x08AFCDACu, 0x08AFDFB0u, 0x08B0433Cu, 0x08B05DECu, 0x08B060D0u, 0x08B070B4u, 0x08B0DEA0u, 0x08B1C448u, 0x08B2337Cu, 0x08B25B88u, 0x08B274ACu, 0x08B37604u, 0x08B37BCCu, 0x08B42854u, 0x08B431ECu, 0x08B43ED4u, 0x08B4E02Cu, 0x08B4F250u, 0x08B4FABCu, 0x08B4FC68u, 0x08B50B8Cu, 0x08B52358u, 0x08B52604u, 0x08B545E0u, 0x08B54F14u, 0x08B555A8u, 0x08B55C0Cu, 0x08B566C0u, 0x08B5744Cu, 0x08B57884u, 0x08B583DCu, 0x08B59204u, 0x08B5A8CCu, 0x08B5AE3Cu, 0x08B5C3C4u, 0x08B5CFA8u, 0x08B5E024u, 0x08B5E9A4u, 0x08B5F0C8u, 0x08B5F6A4u, 0x08B60384u, 0x08B606A8u, 0x08B60DC4u, 0x08B61228u, 0x08B61F30u, 0x088085A8u, 0x08808748u, 0x0880A9E8u, 0x08817518u, 0x08819294u, 0x08819F84u, 0x088284C8u, 0x0884A9B0u, 0x0884C0BCu, 0x08851974u, 0x08851D30u, 0x08852AACu, 0x08853F28u, 0x08854FACu, 0x08856194u, 0x08857A3Cu, 0x08859E54u, 0x0885A5ECu, 0x0885B010u, 0x08861208u, 0x08873F80u, 0x08874680u, 0x08874F24u, 0x088A2324u, 0x088A6028u, 0x088A62A8u, 0x088A973Cu, 0x088E04C4u, 0x088E09FCu, 0x088E7188u, 0x08915438u, 0x08919A14u};
+constexpr int kGsN = static_cast<int>(sizeof(kGsAddr) / sizeof(kGsAddr[0]));
+FuncPtr g_gs_orig[kGsN] = {};
+struct GsStat { uint32_t clk = 0, calls = 0, member = 0, swapped = 0, held = 0; float g_slow = 0, g_norm = 0; uint32_t first_a0 = 0; };
+GsStat g_gs_stat[kGsN]; bool g_gs_was = false;
+int g_gs_depth = 0; float g_gs_slowG = 0.f, g_gs_normG = 0.f;   // inside a swapped call: the retail step and the step without the chase
+bool chasefx_log() { static const bool on = std::getenv("PSPRECOMP_TAGTEAM_CHASEFX_LOG") != nullptr || std::getenv("PSPRECOMP_TAGTEAM_CHASEFX_PROBE") != nullptr; return on; }
+bool chase_running() { return g_bs && g_chase_ctl_now && ok(g_chase_ctl_now, 0x40) && rd(g_chase_ctl_now) != 0; }
+void gs_dump() {
+    std::fprintf(stderr, "[CHASEFX] chase over: functions that ran during it (addr calls | member (kept retail) / run at the normal step / kept retail inside a swapped call | retail G, normal G):\n");
+    for (int i = 0; i < kGsN; i++) if (g_gs_stat[i].calls) { const GsStat& s = g_gs_stat[i];
+        std::fprintf(stderr, "[CHASEFX]   %08X %5u | %5u %5u %5u | %.4f %.4f  a0 %08X clock-writes %u\n", kGsAddr[i], s.calls, s.member, s.swapped, s.held, s.g_slow, s.g_norm, s.first_a0, s.clk); }
+    std::memset(g_gs_stat, 0, sizeof(g_gs_stat));
+}
+bool gs_inside_member(uint32_t x) {   // x points into (or is) a chaser's actor / its assist actor
+    const uint32_t ctl = g_chase_ctl_now;
+    for (int k = 0; k < 2; k++) {
+        const uint32_t m = rd(ctl + 28u + 4u * static_cast<uint32_t>(k)); if (!m) continue;
+        uint32_t c[3] = {m, ao8_x_of_slot(m), 0u}; for (int q = 0; q < g_nextra; q++) if (g_extra[q].actor == m) c[2] = xas_ptr(m);
+        for (uint32_t v : c) if (v && x >= v && x < v + 0x1400u) return true;
+    }
+    return false;
+}
+bool gs_member(uint32_t a0) {
+    const uint32_t ctl = g_chase_ctl_now;
+    if (a0 >= ctl - 0x80u && a0 < ctl + 0x400u) return true;   // the chase controller's own objects (prompt, timers)
+    for (int w = 0; w < 4; w++) {
+        uint32_t x = w == 0 ? a0 : (ok(a0, 16) ? rd(a0 + (w == 1 ? 8u : w == 2 ? 0u : 4u)) : 0u);
+        for (int d = 0; d < 3 && x && ok(x, 0x12D0); d++) { if (gs_inside_member(x)) return true; x = rd(x + 0x1108u); }
+    }
+    return false;
+}
+bool gs_effect_member(uint32_t h) {   // an effect handle belongs to the chase unless it sits within 3.5 m of a fighter that is not a chaser (a hit / aura / trail of that fighter)
+    const float px = rdf(h + 0x50u), py = rdf(h + 0x54u), pz = rdf(h + 0x58u);
+    if (!(std::fabs(px) < 1000.f && std::fabs(py) < 1000.f && std::fabs(pz) < 1000.f)) return true;
+    uint32_t f[6]; const int n = all_fighters(f); float best = 1e30f; uint32_t who = 0;
+    for (int i = 0; i < n; i++) { const float dx = rdf(f[i] + 0x80u) - px, dy = rdf(f[i] + 0x84u) - py, dz = rdf(f[i] + 0x88u) - pz, d = dx * dx + dy * dy + dz * dz; if (d < best) { best = d; who = f[i]; } }
+    return !who || best > 3.5f * 3.5f || chase_member(who);
+}
+template <int I> void gs_hook(uint8_t* rdram, recomp_context* ctx) {
+    g_ram = rdram;
+    if (kGsAddr[I] >= 0x089DD4C0u) { const uint32_t ovl = rd(0x089DD4C0u); if (ovl != 1u) { const FuncPtr f = ovl == 2 ? dissidia_ovl_menu_lookup(kGsAddr[I]) : ovl == 3 ? dissidia_ovl_extra_lookup(kGsAddr[I]) : nullptr; if (f) f(rdram, ctx); return; } }
+    const uint32_t a0 = static_cast<uint32_t>(ctx->r[4]);
+    const float sc = g_gs_depth ? 1.0f : chase_other_scale(dissidia_frame_ticks());
+    if (sc == 1.0f && !g_gs_depth) {
+        if (chasefx_log() && g_gs_was && !chase_running()) { g_gs_was = false; gs_dump(); }
+        g_gs_orig[I](rdram, ctx); return;
+    }
+    const bool eff = kGsAddr[I] == 0x088A6028u || kGsAddr[I] == 0x088A62A8u;
+    if (eff && chasefx_log()) { static uint32_t seen[16] = {}; static int ns = 0; bool known = false; for (int i = 0; i < ns && i < 16; i++) known |= seen[i] == a0; if (!known) { if (ns < 16) seen[ns++] = a0;
+        uint32_t f[6]; const int n = all_fighters(f); float best = 1e30f; uint32_t who = 0; const float px = rdf(a0 + 0x50u), py = rdf(a0 + 0x54u), pz = rdf(a0 + 0x58u);
+        for (int i = 0; i < n; i++) { const float dx = rdf(f[i] + 0x80u) - px, dy = rdf(f[i] + 0x84u) - py, dz = rdf(f[i] + 0x88u) - pz, d = dx * dx + dy * dy + dz * dz; if (d < best) { best = d; who = f[i]; } }
+        std::fprintf(stderr, "[CHASEFX] t=%.2f effect handle %08X at (%.1f %.1f %.1f): nearest fighter %s %08X %.1f m -> %s\n", dissidia_battle_age() / 60.f, a0, px, py, pz, who ? role_of(who) : "-", who, std::sqrt(best), gs_effect_member(a0) ? "the chase's (retail step)" : "other (normal step)"); } }
+    const bool member = eff ? gs_effect_member(a0) : gs_member(a0);
+    const float G = rdf(0x089D5EACu);
+    if (!g_gs_depth) { g_gs_slowG = G; g_gs_normG = G * sc; }
+    const float want = member ? g_gs_slowG : g_gs_normG;
+    if (chasefx_log()) { g_gs_was = true; GsStat& s = g_gs_stat[I]; s.calls++; if (!s.first_a0) s.first_a0 = a0; if (member) s.member++; if (want != G) { if (g_gs_depth) s.held++; else s.swapped++; } s.g_slow = g_gs_slowG; s.g_norm = g_gs_normG; }
+    const bool clk = chasefx_log() && I == 0 && g_bs; const float clk0 = clk ? rdf(g_bs + 96u) : 0.f;
+    if (chasefx_log() && g_bs) { const float c0 = rdf(g_bs + 96u); if (want == G) g_gs_orig[I](rdram, ctx); else { wrf(0x089D5EACu, want); g_gs_depth++; g_gs_orig[I](rdram, ctx); g_gs_depth--; wrf(0x089D5EACu, G); } if (rdf(g_bs + 96u) != c0) g_gs_stat[I].clk++; }
+    else if (want == G) { g_gs_orig[I](rdram, ctx); }
+    else { wrf(0x089D5EACu, want); g_gs_depth++; g_gs_orig[I](rdram, ctx); g_gs_depth--; wrf(0x089D5EACu, G); }
+    if (clk) { static int n = 0; static float pclk = 0.f; if (n++ % 4 == 0) std::fprintf(stderr, "[CHASEFX] clock t=%.3f battle controller got step %.4f (retail %.4f): battle clock +%.4f in it, +%.4f since the last call\n", dissidia_battle_age() / 60.f, want, G, rdf(g_bs + 96u) - clk0, rdf(g_bs + 96u) - pclk); pclk = rdf(g_bs + 96u); }
+}
+template <int... Is> void gs_install_all(std::integer_sequence<int, Is...>) {
+    static void (*const hooks[])(uint8_t*, recomp_context*) = {gs_hook<Is>...};
+    for (int i = 0; i < kGsN; i++) { g_gs_orig[i] = fn(kGsAddr[i]); if (g_gs_orig[i]) psp_dispatch_register(kGsAddr[i], hooks[i]); }
+}
 namespace {
+void chasefx_install_impl() { static bool done = false; if (done) return; done = true; if (std::getenv("PSPRECOMP_TAGTEAM_CHASEFX_OLD")) return; gs_install_all(std::make_integer_sequence<int, kGsN>{}); }
 void slowset_hook(uint8_t* rdram, recomp_context* ctx) {
     g_ram = rdram;
     {   static const bool lg = std::getenv("PSPRECOMP_TTCAM_EXCHLOG") != nullptr;   // debug: every frame of the EX chance, any fighter: EX controller words, clock step, actor flags
@@ -11733,6 +11824,10 @@ void dissidia_tagteam_frame_end(uint8_t* rdram, recomp_context* ctx) {
     }
     TtStep tt_step_("frame_end");
     g_fe_ctr++;
+    if (g_bs && chasefx_log_rate()) {   // debug (PSPRECOMP_TAGTEAM_CHASEFX_RATE=1): the battle clock's advance per frame while a chase slows the battle (chase slow-motion channel < 1)
+        static float pclk = 0.f; const uint32_t mg = rd(0x08A62280u); const float c1 = ok(mg, 0x40) ? rdf(mg + 8u) : 2.f; const float clk = rdf(g_bs + 96u);
+        if (c1 < 1.99f && c1 > 0.f) std::fprintf(stderr, "[CHASEFX] rate t=%.3f ch1 %.3f clock +%.4f\n", dissidia_battle_age() / 60.f, c1, clk - pclk);
+        pclk = clk; }
     { static int k = 0; if ((k++ % 30) == 0) mp_sync_mode(); }   /* keep this player's tag team bytes in the beacons current */
     if (g_bs && g_ram && std::getenv("PSPRECOMP_TAGTEAM_SYNCDUMP")) {   /* debug: every battle frame, each fighter's actor, brain, status and lock blocks to a file (compare two machines offline) */
         static FILE* fo = nullptr; static float last = -1.f;
