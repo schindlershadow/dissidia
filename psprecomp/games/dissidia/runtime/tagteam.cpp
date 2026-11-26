@@ -2895,19 +2895,14 @@ bool exb_busy() {
 // burst's full-screen presentation (screen fader #0, the white flash) is then not drawn on this screen.
 bool g_view_outside_exb = false;
 int g_exb_lobby = -1;   // the battle lobby's EX Burst rule (-1 = not set: PSPRECOMP_TAGTEAM_EXBURST decides)
-bool exb_rule_fight_env() { static const bool f = [] { const char* e = std::getenv("PSPRECOMP_TAGTEAM_EXBURST"); return e && !std::strcmp(e, "fight"); }(); return g_exb_lobby >= 0 ? g_exb_lobby != 0 : f; }
+// "Keep fighting" is not a lobby rule any more (user, 26 Nov: moving during a burst gave a wrong camera): freeze is always used. The debug setting (Settings > Debug, default off) or
+// PSPRECOMP_TAGTEAM_EXBURST=fight turns keep-fighting on for a battle; online only the host's value counts (roster flag bit 1), so every machine uses the same one. The lobby's own value (g_exb_lobby) is ignored.
+bool g_dbg_exb_fight = false;
+bool exb_rule_fight_env() { static const bool f = [] { const char* e = std::getenv("PSPRECOMP_TAGTEAM_EXBURST"); return e && !std::strcmp(e, "fight"); }(); return f || g_dbg_exb_fight; }
 bool comms_battle();
 // "No chase slow-down": online the host's value (roster flag 0x80, agreed before the first lock-step frame), else this machine's own.
 bool noslow_now() { if (g_shared_valid && comms_battle()) return (g_shared_flags & 0x80u) != 0; return noslow_local(); }
-// Free-for-all (user, RP6 26 Nov: "all players should be able to move in this EX Burst, it should only affect the player who took it"): nobody is a mate there, so the
-// fighters outside a burst are never held, whatever the lobby's EX Burst rule says (the rule's freeze is for the team modes). Online the host's FFA flag (roster bit 2).
-// PSPRECOMP_TAGTEAM_EXBFFAFREEZE_OLD=1: the lobby's rule decides in free-for-all too (old).
-bool exb_ffa_fight() {
-    static const bool old = std::getenv("PSPRECOMP_TAGTEAM_EXBFFAFREEZE_OLD") != nullptr; if (old) return false;
-    if (g_shared_valid && comms_battle()) return (g_shared_flags & 4u) != 0;
-    return g_ffa != 0;
-}
-bool exb_rule_fight() { if (exb_ffa_fight()) return true; if (g_shared_valid && comms_battle()) return (g_shared_flags & 2u) != 0; return exb_rule_fight_env(); }   // online: the host's rule
+bool exb_rule_fight() { if (g_shared_valid && comms_battle()) return (g_shared_flags & 2u) != 0; return exb_rule_fight_env(); }   // online: the host's rule
 // Keep-fighting rule, during a burst: x and y are on opposite sides of it (one fights in it, the other outside it). The fighters outside
 // then aim only at each other (aim_fix treats one in the burst as no target), so they do not chase the burst pair across the stage.
 bool exb_apart(uint32_t x, uint32_t y) {
@@ -14135,6 +14130,8 @@ void dissidia_tagteam_install(uint8_t* rdram) {
                                    +[]() { return g_dbg_ffa == 3; }, +[](bool on) { g_dbg_ffa = on ? 3 : 0; sp_mode_refresh(); if (on) overhead_default_on(); }, false, false, "Tag Team"});
     psp_settings_add_debug_toggle({"Free-for-all (4)", "Tag team free-for-all, 4 fighters (experimental)\nWith Tag Team on: you and three CPU fighters, everyone against everyone. L cycles the lock through every opponent. You lose when you fall, you win as the last one standing.\nAffects the next battle that starts.",
                                    +[]() { return g_dbg_ffa == 4; }, +[](bool on) { g_dbg_ffa = on ? 4 : 0; sp_mode_refresh(); if (on) overhead_default_on(); }, false, false, "Tag Team"});
+    psp_settings_add_debug_toggle({"EX Burst: Keep Fighting", "Tag team: the fighters outside an EX Burst keep fighting\nOff (default): everyone outside the burst is held until it ends (the burst camera frames the burst). On (experimental, the camera still frames the burst): they play on, on the stage. Online the host's setting decides.\nAffects the next battle that starts.",
+                                   +[]() { return g_dbg_exb_fight; }, +[](bool on) { g_dbg_exb_fight = on; }, false, false, "Tag Team"});
     psp_settings_add_debug_toggle({"Lethal HP Hits Kill", "Tag team: lethal HP hits always kill\nOff (default, retail): a fighter with a survive-at-1-HP effect survives one lethal HP attack at 1 HP. On: a fighter with a retail survive-at-1-HP effect (some CPU fighters carry one) dies from an HP attack that would kill it, instead of being left at 1 HP. Off: retail behaviour. Tag team battles only.",
                                    +[]() { return g_clear_surv; }, +[](bool on) { g_clear_surv = on; }, false, false, "Tag Team"});
     psp_settings_add_debug_toggle({"KO Kill Camera", "Tag team: KO kill camera\nOn: an HP attack that knocks out a fighter whose team goes on plays retail's finishing-blow presentation (slow motion and finish camera) in full, then the fight continues with the next fighter. Off: the fight continues at once.",
