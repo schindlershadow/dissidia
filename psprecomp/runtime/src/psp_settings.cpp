@@ -946,7 +946,7 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.disabled = !avail;
             m.can_dec = avail && vk;
             m.can_inc = avail && !vk;
-            m.help = avail ? "Graphics API (PSPRECOMP_RENDERER)\nVulkan is the default on Android when the GPU supports it (needs Vulkan 1.1); elsewhere OpenGL is the default and the most tested. Vulkan renders the same picture through a Vulkan layer. Takes effect the next time the game starts. Saved."
+            m.help = avail ? "Graphics API (PSPRECOMP_RENDERER)\nVulkan is the default when the GPU supports it (needs Vulkan 1.1); OpenGL is the fallback and the choice for GPUs without Vulkan. Vulkan renders the same picture through a Vulkan layer. Takes effect the next time the game starts. Saved."
                            : "Graphics API: Vulkan unavailable\n" + why + " OpenGL is used.";
             break;
         }

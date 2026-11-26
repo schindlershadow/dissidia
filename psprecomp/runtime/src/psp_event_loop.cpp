@@ -907,7 +907,7 @@ int psp_runtime_init_sdl() {
         }
     }
     const char* fs_env = std::getenv("PSPRECOMP_FULLSCREEN");
-    const bool use_vk = vk_renderer_requested();
+    bool use_vk = vk_renderer_requested();
     uint32_t wflags = (use_vk ? SDL_WINDOW_VULKAN : SDL_WINDOW_OPENGL) | SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE |
                       SDL_WINDOW_ALLOW_HIGHDPI;
     if (fs_env && fs_env[0] && fs_env[0] != '0') wflags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
@@ -965,11 +965,29 @@ int psp_runtime_init_sdl() {
         std::string verr;
         if (!vkgl::init(g_window, psp_vsync_wanted() != 0, &verr)) {
             std::fprintf(stderr, "[RT] Vulkan backend unavailable: %s\n", verr.c_str());
+#ifndef PSP_GLES
+            // Vulkan is the default on desktops now: if it will not start (driver, display server), fall back to OpenGL
+            // with a new window (the first one was made for Vulkan).
+            std::fprintf(stderr, "[RT] falling back to OpenGL\n");
+            SDL_DestroyWindow(g_window);
+            wflags = (wflags & ~SDL_WINDOW_VULKAN) | SDL_WINDOW_OPENGL;
+            g_window = SDL_CreateWindow(g_window_title.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, win_w, win_h, wflags);
+            if (g_window) { apply_window_icon(g_window); g_gl_context = SDL_GL_CreateContext(g_window); }
+            if (!g_window || !g_gl_context) {
+                std::fprintf(stderr, "[RT] OpenGL fallback failed: %s\n", SDL_GetError());
+                if (g_window) SDL_DestroyWindow(g_window);
+                SDL_Quit();
+                return 1;
+            }
+            use_vk = false;
+#else
             SDL_DestroyWindow(g_window);
             SDL_Quit();
             return 1;
+#endif
         }
-    } else
+    }
+    if (!use_vk)
 #endif
 #ifdef PSP_GLES
     if (false) {   // libGLESv3 exports the ES 3.2 entry points directly

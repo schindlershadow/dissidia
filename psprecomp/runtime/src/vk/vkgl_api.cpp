@@ -401,11 +401,7 @@ bool available(std::string* why) {
 
 bool requested() {
     const char* r = std::getenv("PSPRECOMP_RENDERER");
-#ifdef __ANDROID__
-    const bool by_default = true;    // phones: Vulkan whenever the GPU/driver supports it (PSPRECOMP_RENDERER=gl or the Settings row picks OpenGL)
-#else
-    const bool by_default = false;
-#endif
+    const bool by_default = true;    // Vulkan whenever the GPU/driver supports it, on every platform (PSPRECOMP_RENDERER=gl or the Settings row picks OpenGL); falls back to OpenGL when the probe or init fails
     const bool want = r && r[0] ? (!std::strcmp(r, "vulkan") || !std::strcmp(r, "vk")) : by_default;
     if (!want) return false;
     std::string why;
