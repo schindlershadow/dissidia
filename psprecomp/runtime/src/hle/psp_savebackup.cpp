@@ -10,6 +10,8 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <set>
+#include <sys/stat.h>
 #include <sstream>
 
 namespace fs = std::filesystem;
@@ -214,42 +216,91 @@ bool daily(const std::string& saves_root, const std::string& backup_root) {
     return snapshot(saves_root, backup_root, kDaily, {}, &id).empty() && !id.empty();
 }
 
+// A backup folder never changes once it is made (it only goes away, or a save is taken out of it), so what was read from it is kept
+// until the folder's own modification time moves: opening Settings > Saves again does not read every backup again (on a phone's
+// shared storage each file costs a millisecond or more). PSPRECOMP_SAVES_SYNC_OLD=1 reads everything every time.
+namespace {
+struct Cached { long long mtime_ns = 0; bool keep = false; Backup b; };
+std::mutex g_list_mu;
+std::map<std::string, Cached> g_list_cache;
+long long dir_mtime_ns(const fs::path& p) {
+    struct stat st;
+    if (::stat(p.string().c_str(), &st) != 0) return -1;
+#ifdef __APPLE__
+    return (long long)st.st_mtimespec.tv_sec * 1000000000LL + st.st_mtimespec.tv_nsec;
+#else
+    return (long long)st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec;
+#endif
+}
+bool list_uncached() { static const bool v = [] { const char* e = std::getenv("PSPRECOMP_SAVES_SYNC_OLD"); return e && *e && *e != '0'; }(); return v; }
+}  // namespace
+
+static bool read_backup(const fs::directory_entry& it, Backup* out);
+
 std::vector<Backup> list(const std::string& backup_root) {
     std::vector<Backup> out;
     std::error_code ec;
     const fs::path root = P(backup_root);
+    std::set<std::string> seen;
     for (auto it = fs::directory_iterator(root, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
         std::error_code e2;
         if (!it->is_directory(e2)) continue;
-        const std::string n = S(it->path().filename());
+        const std::string key = S(it->path());
+        const long long mt = list_uncached() ? -1 : dir_mtime_ns(it->path());
+        seen.insert(key);
+        if (mt >= 0) {
+            std::lock_guard<std::mutex> lk(g_list_mu);
+            auto c = g_list_cache.find(key);
+            if (c != g_list_cache.end() && c->second.mtime_ns == mt) { if (c->second.keep) out.push_back(c->second.b); continue; }
+        }
+        Backup b;
+        const bool keep = read_backup(*it, &b);
+        if (mt >= 0 && mt < (std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count() - 3000000000LL)) {   // not one still being written
+            std::lock_guard<std::mutex> lk(g_list_mu);
+            g_list_cache[key] = {mt, keep, keep ? b : Backup{}};
+        }
+        if (keep) out.push_back(std::move(b));
+    }
+    if (!list_uncached()) {
+        std::lock_guard<std::mutex> lk(g_list_mu);
+        for (auto c = g_list_cache.begin(); c != g_list_cache.end();) {   // forget folders of this root that are gone
+            if (c->first.compare(0, backup_root.size(), backup_root) == 0 && !seen.count(c->first)) c = g_list_cache.erase(c); else ++c;
+        }
+    }
+    std::sort(out.begin(), out.end(), [](const Backup& a, const Backup& b) { return a.when != b.when ? a.when > b.when : a.id > b.id; });
+    return out;
+}
+
+static bool read_backup(const fs::directory_entry& it, Backup* outp) {
+    {
+        const std::string n = S(it.path().filename());
         Backup b;
         b.id = n;
-        b.path = S(it->path());
+        b.path = S(it.path());
         if (parse_id(n, &b.when, &b.reason)) {
-            const std::string txt = read_text(it->path() / "backup.txt");
+            const std::string txt = read_text(it.path() / "backup.txt");
             const size_t tp = txt.find("time=");
             if (tp != std::string::npos) b.when = time_t(std::strtoll(txt.c_str() + tp + 5, nullptr, 10));
             b.saves = psp_savemgr::scan(b.path);
         } else {
             // An older runtime's "<name>.bak[N]": one save folder whose name has the extra ending.
             const size_t bak = n.rfind(".bak");
-            if (bak == std::string::npos) continue;
+            if (bak == std::string::npos) return false;
             psp_savemgr::SaveInfo s;
-            if (!psp_savemgr::read_save(b.path, &s)) continue;
+            if (!psp_savemgr::read_save(b.path, &s)) return false;
             s.name = n.substr(0, bak);
             std::string d, x;
-            if (!psp_savemgr::split_name(s.name, &d, &x)) continue;
+            if (!psp_savemgr::split_name(s.name, &d, &x)) return false;
             s.disc = d; s.suffix = x;
             b.reason = kLegacy;
             b.when = s.mtime;
             b.saves.push_back(s);
         }
-        if (b.saves.empty()) continue;
+        if (b.saves.empty()) return false;
         for (const auto& s : b.saves) b.bytes += s.bytes;
-        out.push_back(std::move(b));
+        *outp = std::move(b);
+        return true;
     }
-    std::sort(out.begin(), out.end(), [](const Backup& a, const Backup& b) { return a.when != b.when ? a.when > b.when : a.id > b.id; });
-    return out;
 }
 
 std::string remove(const std::string& backup_root, const std::string& id) {

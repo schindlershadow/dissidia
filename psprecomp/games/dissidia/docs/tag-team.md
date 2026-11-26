@@ -2,6 +2,8 @@
 
 ## TODO (kept up to date; newest first)
 
+- **[FIXED 26 Nov (branch tt-savesmenu), verify on the RP6] Settings > Saves slow to open and freezes the screen** (user report): cause = `Page::reset()` / the top rows read every save of every backup folder synchronously (`psp_savebackup::list`, thousands of files, slow on Android FUSE). Fix: background load with "Loading..." rows, per-backup read cache, one stat per save; see savedata.md "Opening Settings > Saves"; opt-out `PSPRECOMP_SAVES_SYNC_OLD=1`. Host: UI thread 28 ms -> 0.1 ms. Not measured on the RP6 (needs the new APK).
+
 - **User play-test 25 Nov evening (RP6):**
   - Battle Lobby: hovering "Enter Battle" shows no stage preview (should show the lobby's stage).
   - Opening Communications mode opened the battle menu (tag menu flow; likely the Mode Select re-open of Batch fifteen firing on the Communications list).

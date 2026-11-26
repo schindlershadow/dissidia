@@ -299,6 +299,7 @@ static bool press(psp_saves::Page& p, const std::string& prefix, int from = 0) {
     const int i = row_of(p, prefix, from);
     if (i < 0) { std::printf("  (no row \"%s\"; rows:", prefix.c_str()); for (auto& r : p.rows()) std::printf(" [%s]", r.label.c_str()); std::printf(")\n"); return false; }
     p.confirm(i);
+    p.wait_idle();   // opening Backups reads them on a thread
     return true;
 }
 static bool answer(psp_saves::Page& p, const std::string& button) {
