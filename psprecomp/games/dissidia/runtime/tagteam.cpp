@@ -11730,6 +11730,18 @@ bool ao8_try(uint32_t k, uint32_t M, uint32_t kind) {
                  static_cast<int16_t>(rd(X + 0x180u) & 0xFFFFu), foe, fw, a.parked ? "stepped out" : "stays");
     return true;
 }
+// 26 Nov (user, RP6: "a Squall assist is still on the stage and does not go away"): a dismissed assist actor (between calls) is put into its hidden idle script AND parked at
+// (5000, y, 5000) like the partner's body, whatever way the call ended (attack over, hit, caps, actor gone), and every tick a still-visible idle assist is parked again
+// (ao8_tick). The controller places it again at the next call. PSPRECOMP_TTCAM_AO8XPARK_OLD=1: only the idle script (old).
+bool ao8_xpark_on() { static const bool off = std::getenv("PSPRECOMP_TTCAM_AO8XPARK_OLD") != nullptr; return !off; }
+void ao8_park_x(uint32_t X, const char* why) {
+    if (!ao8_xpark_on() || !ok(X, 0x12D0)) return;
+    const float x = rdf(X + 0x80u), z = rdf(X + 0x88u); if (std::isfinite(x) && std::isfinite(z) && std::fabs(x) >= 1000.f && std::fabs(z) >= 1000.f) return;   // already parked
+    const float y = rdf(X + 0x84u);
+    const uint32_t sp0 = static_cast<uint32_t>(g_ctx->r[29]); g_ctx->r[29] = static_cast<int32_t>(sp0 - 0x100u); const uint32_t vec = sp0 - 0xC0u;
+    wrf(vec, 5000.0f); wrf(vec + 4, std::isfinite(y) ? y : 0.f); wrf(vec + 8, 5000.0f); wrf(vec + 12, 1.0f); tp_vec("assist off: dismissed assist parked", X, vec); call(PLACE, X, vec, 1); g_ctx->r[29] = static_cast<int32_t>(sp0);
+    std::fprintf(stderr, "[AO8] t=%.2fs dismissed assist %08X (char %d, script %d) was at (%.1f,%.1f,%.1f): parked (%s)\n", dissidia_battle_age() / 60.0f, X, actor_char(X), static_cast<int>(static_cast<int16_t>(rd(X + 0x180u) & 0xFFFFu)), static_cast<double>(x), static_cast<double>(y), static_cast<double>(z), why);
+}
 void ao8_finish(uint32_t k, const char* why) {
     Ao8& a = g_ao8[k]; if (!a.M) return;
     if (a.gen == g_battle_gen && ok(a.M, 0x12D0) && rd(a.M + 0x1108u) == a.X) wr(a.M + 0x1108u, a.prev);
@@ -11740,13 +11752,20 @@ void ao8_finish(uint32_t k, const char* why) {
     // comes back where it left from, facing as it did, in its stand / air state with no fall speed gathered while parked at (5000, 5000). Not after a hit on the assist (it keeps
     // its hit reaction at the assist's spot). PSPRECOMP_TTCAM_AO8HANDOVER=1: the round 8 hand-over (the partner takes the assist's place).
     static const bool handover_old = std::getenv("PSPRECOMP_TTCAM_AO8HANDOVER") != nullptr;
-    const bool want_handover = handover_old || g_ao8_hitfinish;
+    // 26 Nov (user: "Golbez got called as an assist; when it was over he got sent back to where he was. He should be exactly where the assist is"): the 25 Nov return to the
+    // departure spot is the OLD behaviour now; by default the partner's body stays where the assist actor is when the call ends (position, facing, stand / air state, the lock on
+    // the assist's foe), then fights on as a normal fighter from there. PSPRECOMP_TTCAM_AO8RETURN=1: the 25 Nov return to the spot it left from.
+    static const bool return_old = std::getenv("PSPRECOMP_TTCAM_AO8RETURN") != nullptr;
+    const bool want_handover = handover_old || g_ao8_hitfinish || !return_old;
     if (!oldback && want_handover && a.gen == g_battle_gen && a.parked && ok(a.X, 0x12D0) && ok(a.P, 0x12D0) && alive(a.P) && !is_down(a.P)) {
         hx = rdf(a.X + 0x80u); hy = rdf(a.X + 0x84u); hz = rdf(a.X + 0x88u); hyaw = rdf(a.X + 0x9Cu); hfoe = rd(a.X + 0x300u); hair = game_airborne(a.X);
         if (std::isfinite(hx) && std::isfinite(hy) && std::isfinite(hz) && std::fabs(hx) < 3000.f && std::fabs(hz) < 3000.f) {
             GPos g{}; const char* how = "the assist's own spot";
             if (!ground_near(hx, hz, &g, false)) { GPos n{}; const float d = nearest_sample(hx, hz, &n, false);
                 if (d >= 0.f && d <= 12.f) { hx = n.x; hz = n.z; if (!hair) hy = n.y; how = "nearest known floor (the assist's spot is off the map)"; } else how = "no floor known near it: the assist's spot"; }
+            { const float xy = hy, fl = oob_floor(hx, hy, hz);   // the assist's height against the stage's floor under it: below / on it = standing on it, above it = in the air (falls)
+              if (std::isfinite(fl)) { if (hy < fl) hy = fl; if (hair && hy - fl < 0.15f) hair = false; }
+              if (g_log && hy != xy) std::fprintf(stderr, "[AO8] t=%.2fs side %u hand-over: the assist's height %.2f is below the floor %.2f: put on the floor\n", dissidia_battle_age() / 60.0f, k, static_cast<double>(xy), static_cast<double>(fl)); }
             handover = true; std::fprintf(stderr, "[AO8] t=%.2fs side %u hand-over: partner %08X takes the assist's place (%.1f,%.1f,%.1f) %s, %s, foe %08X\n", dissidia_battle_age() / 60.0f, k, a.P, hx, hy, hz, hair ? "in the air" : "on the ground", how, hfoe);
         }
     }
@@ -11754,6 +11773,7 @@ void ao8_finish(uint32_t k, const char* why) {
     // the controller clears the assist's "available" bit (+904 & *0x089C7FC0 = 0x10000, read by FUN_08837990 in the call gate FUN_08B02784) while it is out and sets it
     // again when the assist's attack ends by itself; a call ended early (hit switch, 6 s / 12 s caps) left it clear and every later call was refused (host H15f, K13)
     if (a.gen == g_battle_gen && ok(a.X, 0x12D0)) wr(a.X + 904u, rd(a.X + 904u) | rd(0x089C7FC0u));
+    if (a.gen == g_battle_gen && ok(a.X, 0x12D0)) ao8_park_x(a.X, why);
     if (ok(a.X, 0x12D0)) g_ao8_xwatch[a.X] = dissidia_battle_age();
     if (a.gen == g_battle_gen && a.parked && ok(a.P, 0x12D0) && handover) {
         wr(a.P + 0x380u, rd(a.P + 0x380u) & ~2u); g_appear_guard.erase(a.P);
@@ -11761,6 +11781,8 @@ void ao8_finish(uint32_t k, const char* why) {
         wrf(a.P + 0x9Cu, hyaw); wrf(a.P + 0x320u, hyaw);
         if (ao_foe_ok(hfoe, a.M)) { wr(a.P + 0x300u, hfoe); wr(a.P + 0x2FCu, hfoe); ao_lock_foe(a.P, hfoe); face_foe(a.P); } else model_face_yaw(a.P);
         if (!g_ao8_hitfinish) start_script(a.P, hair ? 102u : 1u);   // an assist that ended in the air: the partner goes on in its air state and falls from there (not after a hit: its hit reaction stays)
+        std::fprintf(stderr, "[AO8POS] t=%.2fs side %u partner %08X: left from (%.2f,%.2f,%.2f) yaw %.2f, assist ends at (%.2f,%.2f,%.2f) yaw %.2f %s, partner now (%.2f,%.2f,%.2f) yaw %.2f script %d\n", dissidia_battle_age() / 60.0f, k, a.P, static_cast<double>(a.px), static_cast<double>(a.py), static_cast<double>(a.pz), static_cast<double>(a.pyaw),
+                     static_cast<double>(hx), static_cast<double>(hy), static_cast<double>(hz), static_cast<double>(hyaw), hair ? "air" : "ground", static_cast<double>(rdf(a.P + 0x80u)), static_cast<double>(rdf(a.P + 0x84u)), static_cast<double>(rdf(a.P + 0x88u)), static_cast<double>(rdf(a.P + 0x9Cu)), static_cast<int>(static_cast<int16_t>(rd(a.P + 0x180u) & 0xFFFFu)));
         a.px = hx; a.py = hy; a.pz = hz;
     } else
     if (a.gen == g_battle_gen && a.parked && ok(a.P, 0x12D0)) {
@@ -11853,6 +11875,16 @@ void ao8_step(uint32_t ctl) {
 }
 void ao8_tick() {
     if (g_ao8[0].M || g_ao8[1].M) ao8_step(g_amgr);
+    if (ao8_xpark_on() && g_bs) for (const auto& kv : g_xas) {   // an idle forced assist (no call of its partner running) that stands on the stage is dismissed again
+        const uint32_t X = kv.second.assist; if (!kv.second.forced || !kv.second.ready || !ok(X, 0x12D0)) continue;
+        bool inc = false; for (const Ao8& c : g_ao8) if (c.M && c.X == X) inc = true; if (inc) continue;
+        bool hitfix = false; for (const Ao8XFix& f : g_ao8_xfix) if (f.X == X) hitfix = true; if (hitfix) continue;
+        const int sc = static_cast<int16_t>(rd(X + 0x180u) & 0xFFFFu); const float age = dissidia_battle_age();
+        static std::map<uint32_t, float> seen; if (age - kv.second.born < 120.f) continue;   // (just made: the first 2 s are the build's)
+        const float x = rdf(X + 0x80u), z = rdf(X + 0x88u); if (!std::isfinite(x) || !std::isfinite(z) || (std::fabs(x) >= 1000.f && std::fabs(z) >= 1000.f)) { seen.erase(X); continue; }
+        if (!seen.count(X)) { seen[X] = age; continue; } if (age - seen[X] < 15.f) continue;   // 0.5 s on the stage while idle
+        seen.erase(X); if (sc != 1) start_script(X, 1); wr(X + 904u, rd(X + 904u) | rd(0x089C7FC0u)); ao8_park_x(X, "idle watchdog");
+    }
     // (user: "the assist should not lock in this case, it should just switch with the CPU getting hit") the hit was registered on the partner (hitreg_hook), but the assist
     // actor still starts its own hit reaction a little later in the frame (5xx, +904 bit 0x10000 "available" cleared, +908 bit 1): undone here, its flags put back, its
     // hidden idle script 1; the partner plays that reaction when it has none of its own. Without this the controller refused every later call (host K5 / K11).
