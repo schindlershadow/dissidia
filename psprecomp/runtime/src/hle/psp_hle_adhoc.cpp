@@ -212,9 +212,13 @@ int64_t g_relay_last_rx = 0;              // anything heard from the server
 struct Direct {
     sockaddr_in pub{}, lan{}, active{};
     int state = 0;                     // 0 none, 1 punching, 2 up
-    int64_t started = 0, last_rx = 0, next_punch = 0, asked = 0;
+    int64_t started = 0, last_rx = 0, next_punch = 0, asked = 0, up_at = 0;
+    uint32_t sweep = 0;                // punch round counter (port prediction)
+    std::string reason;                // why this player is reached through the relay (last failure), shown in the notification
 };
 std::map<Mac, Direct> g_direct;
+struct ConnTold { int mode = 0; int64_t since = 0; };   // per player of the group: 0 nothing shown yet, 1 "connected directly" shown, 2 "via relay" shown
+std::map<Mac, ConnTold> g_conn_told;
 int g_relay_version = 0;
 bool g_direct_off = false;             // PSPRECOMP_ADHOC_DIRECT=0
 uint32_t g_lan_ip = 0;                 // this machine's address toward the relay (network order), for two players behind one router
@@ -756,11 +760,16 @@ void on_packet_now(const uint8_t* d, size_t n, const sockaddr_in& from) {
         if (!from_relay) {   // a direct path: a punch from an introduced player, or traffic from the address its punch came from
             auto dit = g_direct.find(src);
             if (dit == g_direct.end() || g_direct_off) return;
+            {   // test aid: PSPRECOMP_ADHOC_DIRECT_DROP=<s>: direct packets are ignored from <s> seconds after the first one on (0: all; shows the "via relay" notices)
+                static const char* dd = std::getenv("PSPRECOMP_ADHOC_DIRECT_DROP"); static int64_t d0 = 0; if (!d0) d0 = now_us();
+                if (dd && now_us() - d0 >= (int64_t)(std::atof(dd) * 1e6)) return;
+            }
             Direct& dp = dit->second;
             if (d[4] == T_PUNCH) {
                 if (blen < 6 || std::memcmp(body, g_mac.data(), 6) != 0) return;
                 if (dp.state != 2) ANOTE("direct: path to %s is up (%s:%u)", mac_str(src).c_str(), inet_ntoa(from.sin_addr), ntohs(from.sin_port));
-                dp.active = from; dp.state = 2; dp.last_rx = now_us();
+                if (dp.state != 2) dp.up_at = now_us();
+                dp.active = from; dp.state = 2; dp.last_rx = now_us(); dp.reason.clear();
                 return;
             }
             if (dp.state != 2 || dp.active.sin_addr.s_addr != from.sin_addr.s_addr || dp.active.sin_port != from.sin_port) return;
@@ -911,6 +920,43 @@ void send_beacons() {
     for (auto& a : targets) send_raw(a, T_BEACON, b);
 }
 
+// What the player is told about each other player of the group's connection: direct (LAN, or an Internet path that was punched) or through the relay and why;
+// again when it switches. Called once a second from net_check (g_mu held).
+void conn_toasts(int64_t t) {
+    for (auto& [mac, p] : g_peers) {
+        if (!same_group(mac)) continue;
+        ConnTold& ct = g_conn_told[mac];
+        if (!ct.since) ct.since = t;
+        const char* who = p.nick[0] ? p.nick : "a player";
+        const std::string id = mac_str(mac);
+        auto pit = g_ping.find(mac);
+        const double ping = pit != g_ping.end() && pit->second.ever ? pit->second.srtt_ms : -1;
+        char pg[32] = ""; if (ping >= 0) std::snprintf(pg, sizeof pg, ", ping %d ms", (int)ping);
+        if (!g_relay_mode) {   // LAN: every player is reached directly
+            if (ct.mode != 1 && (ping >= 0 || t - ct.since > 3000000)) { ct.mode = 1; psp_net_notice(("conn:" + id).c_str(), 1, "Connected directly to %s (LAN%s)", who, pg); }
+            continue;
+        }
+        auto dit = g_direct.find(mac);
+        Direct* dp = dit == g_direct.end() ? nullptr : &dit->second;
+        if (dp && dp->state == 2) {
+            if (ct.mode != 1 && (ping >= 0 || t - dp->up_at > 2500000)) {
+                ct.mode = 1;
+                const bool lan = dp->active.sin_addr.s_addr == dp->lan.sin_addr.s_addr && dp->lan.sin_addr.s_addr && dp->lan.sin_addr.s_addr != dp->pub.sin_addr.s_addr;
+                psp_net_notice(("conn:" + id).c_str(), 1, "Connected directly to %s (%s%s)", who, lan ? "same network" : "Internet", pg);
+            }
+            continue;
+        }
+        std::string why;
+        if (g_direct_off) why = "direct connections are turned off";
+        else if (g_relay_ok && g_relay_version < 2) why = "server too old for direct connections";
+        else if (dp && !dp->reason.empty()) why = dp->reason;
+        else if (ct.mode == 0 && t - ct.since > 25000000) why = "no introduction from the server (peer in LAN mode / old version?)";
+        if (!why.empty() && ct.mode != 2 && t - ct.since > 1000000) { ct.mode = 2; psp_net_notice(("conn:" + id).c_str(), 1, "Playing via relay with %s: %s", who, why.c_str()); }
+    }
+    for (auto it = g_conn_told.begin(); it != g_conn_told.end();)
+        if (!g_peers.count(it->first) || !same_group(it->first)) it = g_conn_told.erase(it); else ++it;
+}
+
 // Once a second (network thread, g_mu held): pings to the players in our group, and what the player is told about network trouble.
 void net_check(int64_t t) {
     // the party server
@@ -918,7 +964,7 @@ void net_check(int64_t t) {
         psp_net_notice("server", 30, "Network: no answer from the party server %s. Check your internet connection or the Server setting.", g_cfg_server.c_str());
     if (g_relay_mode && g_relay_ok && g_relay_last_rx && t - g_relay_last_rx > 6000000)
         psp_net_notice("server_lost", 30, "Network: lost the connection to the party server (nothing for %d s).", (int)((t - g_relay_last_rx) / 1000000));
-    if (!g_connected) { g_ping.clear(); g_direct.clear(); return; }
+    if (!g_connected) { g_ping.clear(); g_direct.clear(); g_conn_told.clear(); return; }
     if (g_relay_mode && g_relay_ok && g_relay_version >= 2 && !g_direct_off) {   // ask the relay to introduce us to the others
         if (!g_lan_ip) {   // our address toward the relay (the route's source address; no packet is sent)
             const int fd = (int)socket(AF_INET, SOCK_DGRAM, 0);
@@ -946,6 +992,7 @@ void net_check(int64_t t) {
     }
     for (auto it = g_direct.begin(); it != g_direct.end();)   // players who left
         if (!g_peers.count(it->first) || !same_group(it->first)) it = g_direct.erase(it); else ++it;
+    conn_toasts(t);
     for (auto it = g_ping.begin(); it != g_ping.end();)   // forget players who left the group
         if (!g_peers.count(it->first) || !same_group(it->first)) it = g_ping.erase(it); else ++it;
     for (auto& [mac, p] : g_peers) {
@@ -994,12 +1041,17 @@ void periodic() {
     if (t >= g_next_net_check) { g_next_net_check = t + 1000000; net_check(t); }
     for (auto& [mac, dp] : g_direct) {   // punch while trying, keep the path (and the routers' mappings) alive once up
         if (dp.state == 0 || t < dp.next_punch) continue;
-        if (dp.state == 1 && t - dp.started > 6000000) {
+        if (dp.state == 1 && t - dp.started > 8000000) {
+            char pub[32], lan[32];
+            std::snprintf(pub, sizeof pub, "%s:%u", inet_ntoa(dp.pub.sin_addr), ntohs(dp.pub.sin_port));
+            std::snprintf(lan, sizeof lan, "%s:%u", inet_ntoa(dp.lan.sin_addr), ntohs(dp.lan.sin_port));
+            (void)lan; dp.reason = std::string("no reply from ") + pub + " in 8 s (NAT/firewall, yours or theirs)";
             ANOTE("direct: no answer from %s; staying on the relay", mac_str(mac).c_str());
             dp.state = 0;
             continue;
         }
         if (dp.state == 2 && t - dp.last_rx > 3000000) {
+            dp.reason = "direct path silent for 3 s (NAT mapping dropped?)";
             ANOTE("direct: path to %s went quiet; back to the relay", mac_str(mac).c_str());
             dp.state = 0;
             continue;
@@ -1010,6 +1062,19 @@ void periodic() {
         else {
             if (dp.pub.sin_port) send_raw(dp.pub, T_PUNCH, b);
             if (dp.lan.sin_port && dp.lan.sin_addr.s_addr && dp.lan.sin_addr.s_addr != dp.pub.sin_addr.s_addr) send_raw(dp.lan, T_PUNCH, b);
+            // A NAT that gives every destination its own port (symmetric) maps the other side to a port the relay never saw. Routers usually hand
+            // those out in sequence, so after the first 1.5 s the punches also go to the ports next to the reported one (a few per round).
+            if (dp.pub.sin_port && t - dp.started > 1500000) {
+                static const int offs[] = {1, 2, 3, 4, 5, 6, 7, 8, -1, -2, -3, -4, 9, 10, 11, 12, 13, 14, 15, 16};
+                for (int k = 0; k < 4; k++) {
+                    const int o = offs[(dp.sweep * 4 + k) % (sizeof offs / sizeof offs[0])];
+                    const int port = (int)ntohs(dp.pub.sin_port) + o;
+                    if (port < 1024 || port > 65535) continue;
+                    sockaddr_in a = dp.pub; a.sin_port = htons((uint16_t)port);
+                    send_raw(a, T_PUNCH, b);
+                }
+                dp.sweep++;
+            }
         }
     }
     for (auto it = g_reasm.begin(); it != g_reasm.end();)   // drop half-received messages
