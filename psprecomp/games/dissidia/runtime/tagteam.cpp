@@ -5377,9 +5377,11 @@ void cam_restore(const char* why) {
     // +0x879 = the lock cursor's enable); it is re-armed only by a new lock-on, so a lock held through the finish (here on the human's own-side extra, whose lock is not re-acquired) stays
     // without the cyan ring for the rest of the battle (host: writing the old +0x878 back brings the ring at once; the camera director's own words were not the cause). Put back with the director.
     // PSPRECOMP_TAGTEAM_CURSORRESTORE_OLD=1: off.
-    if (same && g_camsnap.mgr && g_camsnap.mgr == dissidia_camera_manager() && g_camsnap.w878 && !std::getenv("PSPRECOMP_TAGTEAM_CURSORRESTORE_OLD")) {
-        const uint32_t m = g_camsnap.mgr, cur = rd(m + 0x878u);
-        if ((cur & 0xFFFFu) != g_camsnap.w878) { wr(m + 0x878u, (cur & 0xFFFF0000u) | g_camsnap.w878); std::fprintf(stderr, "[RETICLE] t=%.2fs restored: camera manager +0x878 %04X -> %04X (%s: the finish had cleared the lock cursor's enable)\n", dissidia_battle_age() / 60.0f, cur & 0xFFFFu, g_camsnap.w878, why); }
+    // 26 Nov (RP6 rp6_reticle5_1126_1816: "extra kill camera over" restored 0101 -> 0001): a snapshot can be taken after something already cleared the enable,
+    // so the restore only ever turns the lock cursor's enable (byte +0x879, bit 0x0100) ON when the fight resumes, never off.
+    if (same && g_camsnap.mgr && g_camsnap.mgr == dissidia_camera_manager() && !std::getenv("PSPRECOMP_TAGTEAM_CURSORRESTORE_OLD")) {
+        const uint32_t m = g_camsnap.mgr, cur = rd(m + 0x878u), want = (cur & 0xFFFFu) | 0x0100u;
+        if ((cur & 0xFFFFu) != want) { wr(m + 0x878u, (cur & 0xFFFF0000u) | want); std::fprintf(stderr, "[RETICLE] t=%.2fs restored: camera manager +0x878 %04X -> %04X (%s: the finish had cleared the lock cursor's enable)\n", dissidia_battle_age() / 60.0f, cur & 0xFFFFu, want, why); }
     }
     if (!same || !ok(g_camsnap.cam, 0x100) || cam_director() != g_camsnap.cam) return;
     const uint32_t c = g_camsnap.cam;
