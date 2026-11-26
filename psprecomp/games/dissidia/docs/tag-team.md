@@ -1,6 +1,7 @@
 # Tag team battles (2 v 2): research notes and plan
 
 ## TODO (kept up to date; newest first)
+- ~~Lock-on ring "moves wildly, guesses ahead and snaps back" after the HUD smoothing (user, device 26 Nov)~~ FIXED 26 Nov (tree tthudsm2, branch tt-hudsmooth2, "Batch sixty-six"): the 2D follow moved each of the ring's 8 pieces by the nearest ROOT BONE of any skinned draw; now one offset from the lock target's world position. `PSPRECOMP_HUD_FOLLOW_NEAREST=1` = old. Not on a device.
 - ~~HUD marks (lock-on indicator, overhead bars, entrance FX) and retail's lock-on ring step at 30 Hz at 60 / 120 fps (user, 26 Nov)~~ DONE 26 Nov (tree tthudsm, branch tt-hudsmooth, "Batch sixty-seven"): positions blended like the renderer's scene, pulse clock follows slow motion, retail ring found by content so it moves with the interpolated fighter. `PSPRECOMP_TAGTEAM_HUDSMOOTH_OLD=1` = old. Not on a device.
 - ~~Assist Off call: the partner is sent back to where it was; a dismissed assist stays on the stage (user, RP6 26 Nov)~~ DONE 26 Nov (tree ttaspos, branch tt-assistpos, "Batch sixty-three"): the partner now stays where the assist actor ends (position, facing, stand / air state); dismissed forced assists are parked off the stage. Still unverified on the device.
 
@@ -6240,3 +6241,16 @@ User: during chases the effects and timers (hit / particle effects of the others
   (0 before). Regression `tagteam_test.py --baseline`: PASS (`~/dissidia/tt/s2/reg_hudsmooth`).
 - **Not verified.** On a device; the slow-motion rate in a real chase / assist (rate was 1.000 in play); retail's own rotation animation of the ring is still 30 Hz (only its
   position is blended); the off-screen target pointer texture (0xC7EA30 in the old table) was not located, it stays unblended; vsync-bound frames where the layer and the picture land one frame apart.
+
+### Batch sixty-six (26 Nov, tree tthudsm2, branch tt-hudsmooth2): lock-on ring ran ahead and snapped back
+- **Cause (batch sixty-five made it visible: before, the ring was not matched at all).** `ge_draw_through_ip` gave every piece of the ring the offset (blended - newest) of the nearest ROOT BONE of
+  any skinned draw within 90 px. A fighter has dozens of draws (body, weapon, parts) and there are several fighters: pieces of one ring took different anchors, the choice flipped between
+  frames, and a root bone sways with the animation by 10-20 px per tick while the ring (placed by the game on the target's position) does not. Log `[IP2D]` on the host
+  (`~/dissidia/tt/s2/hudsm/n5`): the chosen root went 246 -> 263 -> 256 -> 251 -> 237 px while the ring stayed at 259; piece offsets differed by up to 21 px; 121 of 1160 frames had a jump (second difference > 5 px).
+- **Fix.** The game module hands the renderer the world position (feet) of the ring's target (the human's lock target, actor +0x2FC) for each gameplay frame and the one before
+  (`tagteam_hud_follow_target` -> `ge_draw_set_follow_world`, keyed by the interpolation gen). The renderer's offset is that point projected with the blended camera and blended position minus
+  projected with the newest camera and position (the game's own placement): the same offset for all pieces, no bone, sign = blended - newest (no extrapolation; >3 m teleport, > 60 px cut = none). No
+  target given (or `PSPRECOMP_HUD_FOLLOW_NEAREST=1`): the old nearest-root behaviour. The chevron / eyes / bars do not share this (they blend positions by the list's phase, `tagteam_hud_pos`).
+- **Test.** `rec_run.py` 120 fps, `PSPRECOMP_INTERP_TRACE=3`: piece-offset spread 0.00 (one offset), jump frames 30 of 1647 (was 121 of 1160 / 91 of 1628); the rest are the game's own ring easing (the ring itself moves
+  10-20 px in one tick when the target dashes; only that tick's step remains). Regression `tagteam_test.py --baseline` PASS (`~/dissidia/tt/s2/reg_hudsmooth2`).
+- **Not verified.** On the device; a target that is an assist body / parked partner (mapped with `ao8_body_of`, not exercised); non-tag 1v1 uses the player's actor.

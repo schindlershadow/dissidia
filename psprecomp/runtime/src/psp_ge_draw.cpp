@@ -2852,6 +2852,11 @@ uint8_t* g_ip_rdram = nullptr;
 // blended. Per frame, every skinned draw's root on screen (PSP pixels) with the newest and with the blended matrices; a following 2D draw
 // moves by the difference of the nearest one.
 struct IpAnchor { float live[2], drawn[2]; };
+struct IpCam { uint32_t seq = ~0u; float v0[12], p0[16], v1[12], p1[16]; };   // the camera of this list: newest gameplay frame (0) and as drawn, blended (1)
+IpCam g_ip_cam;
+// The world position of the mark's target (the game module: ge_draw_set_follow_world), per gameplay frame: newest and the one before.
+struct IpFollowW { uint32_t gen = 0; bool used = false, has_prev = false; float prev[3], cur[3]; };
+IpFollowW g_ip_fw[8]; std::mutex g_ip_fw_mu;
 std::vector<IpAnchor> g_ip_anchors;
 uint32_t g_ip_anchor_seq = ~0u;
 bool g_ip2d_on = false;   // the draw being decoded is such a draw (set by ip_apply, cleared after the draw)
@@ -2941,6 +2946,7 @@ static bool ip_apply(int prim_type, int count, IpMats* saved) {
         ip_lerp(bp, pv.p, cur.p, ip_mode() == 2 ? 1.0f + g_ip_phase : g_ip_phase, 16); ip_lerp(bb, pv.b, cur.b, ip_mode() == 2 ? 1.0f + g_ip_phase : g_ip_phase, 12);
         IpAnchor a;
         if (g_ip_anchors.size() < 64 && ip_screen(cur.w, cur.v, cur.p, cur.b, a.live) && ip_screen(bw, bv, bp, bb, a.drawn)) g_ip_anchors.push_back(a);
+        if (g_ip_cam.seq != g_ip_seq) { g_ip_cam.seq = g_ip_seq; std::memcpy(g_ip_cam.v0, cur.v, sizeof cur.v); std::memcpy(g_ip_cam.p0, cur.p, sizeof cur.p); std::memcpy(g_ip_cam.v1, bv, sizeof bv); std::memcpy(g_ip_cam.p1, bp, sizeof bp); }   // the scene's camera, newest and blended
     }
     g_ge_state_gen++;   // the draw-key cache (keyed by this) must not reuse matrices built for another draw: the blend changes them without a GE command
     const float t = ip_mode() == 2 ? 1.0f + g_ip_phase : g_ip_phase;   // 1: prev -> cur (one frame behind); 2: cur projected ahead
@@ -2960,11 +2966,47 @@ static bool ip_apply(int prim_type, int count, IpMats* saved) {
     return true;
 }
 
+void ge_draw_set_follow_world(uint32_t gen, const float* prev, const float cur[3]) {
+    std::lock_guard<std::mutex> lk(g_ip_fw_mu);
+    IpFollowW* w = &g_ip_fw[gen & 7u];
+    w->gen = gen; w->used = true; w->has_prev = prev != nullptr; std::memcpy(w->cur, cur, 12); if (prev) std::memcpy(w->prev, prev, 12);
+}
+static bool ip_world_screen(const float* X, const float* v, const float* p, float* out) {   // a world point -> PSP screen pixels
+    float vp[3], c[4];
+    for (int j = 0; j < 3; j++) vp[j] = X[0] * v[j] + X[1] * v[3 + j] + X[2] * v[6 + j] + v[9 + j];
+    for (int j = 0; j < 4; j++) c[j] = vp[0] * p[j] + vp[1] * p[4 + j] + vp[2] * p[8 + j] + p[12 + j];
+    if (c[3] <= 0.01f) return false;
+    out[0] = (c[0] / c[3] + 1.0f) * 240.0f; out[1] = (1.0f - c[1] / c[3]) * 136.0f;
+    return true;
+}
+
 // Vertex decoder (through mode, PSP pixels): the offset that moves this 2D draw from where the game put it (centre cx, cy) to the blend of
 // where it was on the last two gameplay frames. false = leave it.
+// The mark's target (the lock-on ring) is known to the game module as a world position per gameplay frame (ge_draw_set_follow_world): the offset is that
+// point projected with the blended camera and blended position minus projected with the newest camera and position, the game's own placement. That
+// follows the actor, not an animated bone: the nearest root bone of any skinned draw (the old way, still the fallback when no target is given or with
+// PSPRECOMP_HUD_FOLLOW_NEAREST=1) belonged to the wrong fighter or swayed with the animation, so the ring ran ahead and snapped back (RP6, 26 Nov).
 bool ge_draw_through_ip(float cx, float cy, float* dx, float* dy) {
     if (!g_ip2d_on || g_ip_anchor_seq != g_ip_seq || g_ip_anchors.empty()) return false;
-    const IpAnchor* best = nullptr; float bd = 90.0f * 90.0f;   // the fighter whose newest root is nearest (within 90 px)
+    static const bool s_old = std::getenv("PSPRECOMP_HUD_FOLLOW_NEAREST") != nullptr;
+    if (!s_old && g_ip_cam.seq == g_ip_seq) {
+        IpFollowW w; { std::lock_guard<std::mutex> lk(g_ip_fw_mu); w = g_ip_fw[g_ip_gen & 7u]; }
+        if (w.used && w.gen == g_ip_gen) {
+            float Xc[3] = {w.cur[0], w.cur[1] + 0.9f, w.cur[2]}, Xb[3] = {Xc[0], Xc[1], Xc[2]};
+            if (w.has_prev) {
+                const float ddx = w.cur[0] - w.prev[0], ddy = w.cur[1] - w.prev[1], ddz = w.cur[2] - w.prev[2];
+                if (ddx * ddx + ddy * ddy + ddz * ddz <= 9.0f) { const float t = ip_mode() == 2 ? 1.0f + g_ip_phase : g_ip_phase; for (int i = 0; i < 3; i++) Xb[i] = w.prev[i] + (w.cur[i] - w.prev[i]) * t + (i == 1 ? 0.9f : 0.0f); }
+            }
+            float s0[2], s1[2];
+            if (ip_world_screen(Xc, g_ip_cam.v0, g_ip_cam.p0, s0) && ip_world_screen(Xb, g_ip_cam.v1, g_ip_cam.p1, s1)) {
+                *dx = s1[0] - s0[0]; *dy = s1[1] - s0[1];
+                if (*dx * *dx + *dy * *dy > 60.0f * 60.0f) return false;   // a cut: leave it
+                if (ip_trace_level() >= 3) std::fprintf(stderr, "[IP2D] seq %u phase %.2f centre %.1f,%.1f target live %.1f,%.1f drawn %.1f,%.1f -> %+.1f,%+.1f\n", g_ip_seq, g_ip_phase, cx, cy, s0[0], s0[1], s1[0], s1[1], *dx, *dy);
+                return true;
+            }
+        }
+    }
+    const IpAnchor* best = nullptr; float bd = 90.0f * 90.0f;   // fallback: the fighter whose newest root is nearest (within 90 px)
     for (const auto& a : g_ip_anchors) {
         const float d = (a.live[0] - cx) * (a.live[0] - cx) + (a.live[1] - cy) * (a.live[1] - cy);
         if (d < bd) { bd = d; best = &a; }
