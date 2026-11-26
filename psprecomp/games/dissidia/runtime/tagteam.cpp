@@ -5359,18 +5359,27 @@ void xkocam_start(uint32_t victim);   // below (callfx_step): the kill camera of
 // The kill camera (retail finish state 2 / 3 for slot KOs, xkocam_start for extras) leaves the camera director (cam = *0x08B3D6B8 + 1872: look-at vector +64, flag word +188 bits 1 / 2 / 4,
 // animation player +156.., +176 / +180 / +184) on a fixed look-at target with a camera animation running; retail never hands it back (the match ends). The director's words are saved before the kill camera
 // starts and put back when it is over, so the normal battle camera follows its fighters again (RP6 22 Nov: the camera stayed on the dead extra). PSPRECOMP_TAGTEAM_NOCAMRESTORE=1: old behaviour.
-struct CamSnap { uint32_t gen = ~0u, cam = 0; bool have = false; uint8_t d[0x100]; } g_camsnap;
+struct CamSnap { uint32_t gen = ~0u, cam = 0, mgr = 0, w878 = 0; bool have = false; uint8_t d[0x100]; } g_camsnap;   // (mgr / w878: the camera manager and its halfword +0x878, see cam_restore)
 uint32_t cam_director() { const uint32_t p = rd(0x08B3D6B8u); return ok(p, 0x100) && ok(p + 1872u, 0x100) ? p + 1872u : 0u; }
 void cam_snap(const char* why) {
     if (std::getenv("PSPRECOMP_TAGTEAM_NOCAMRESTORE")) return;
     if (g_camsnap.have && g_camsnap.gen == g_battle_gen) return;   // one saved state per kill camera (a second KO during the first keeps the original)
     const uint32_t c = cam_director(); if (!c) return;
     std::memcpy(g_camsnap.d, g_ram + (c & 0x07FFFFFFu), sizeof g_camsnap.d); g_camsnap.cam = c; g_camsnap.gen = g_battle_gen; g_camsnap.have = true;
+    g_camsnap.mgr = dissidia_camera_manager(); g_camsnap.w878 = g_camsnap.mgr && ok(g_camsnap.mgr, 0x1000) ? (rd(g_camsnap.mgr + 0x878u) & 0xFFFFu) : 0u;
     if (g_log) std::fprintf(stderr, "[KOCAM] camera director %08X saved (%s): flags +188 %08X, +176 %08X +180 %08X\n", c, why, rd(c + 188u), rd(c + 176u), rd(c + 180u));
 }
 void cam_restore(const char* why) {
     if (!g_camsnap.have) return;
     const bool same = g_camsnap.gen == g_battle_gen; g_camsnap.have = false;
+    // 26 Nov (lockfix6, RP6 FFA: "the crosshair never came back after a KO I did not make"): the retail finish clears the camera MANAGER's halfword +0x878 (0x0101 -> 0x0001 in the fight, byte
+    // +0x879 = the lock cursor's enable); it is re-armed only by a new lock-on, so a lock held through the finish (here on the human's own-side extra, whose lock is not re-acquired) stays
+    // without the cyan ring for the rest of the battle (host: writing the old +0x878 back brings the ring at once; the camera director's own words were not the cause). Put back with the director.
+    // PSPRECOMP_TAGTEAM_CURSORRESTORE_OLD=1: off.
+    if (same && g_camsnap.mgr && g_camsnap.mgr == dissidia_camera_manager() && g_camsnap.w878 && !std::getenv("PSPRECOMP_TAGTEAM_CURSORRESTORE_OLD")) {
+        const uint32_t m = g_camsnap.mgr, cur = rd(m + 0x878u);
+        if ((cur & 0xFFFFu) != g_camsnap.w878) { wr(m + 0x878u, (cur & 0xFFFF0000u) | g_camsnap.w878); std::fprintf(stderr, "[RETICLE] t=%.2fs restored: camera manager +0x878 %04X -> %04X (%s: the finish had cleared the lock cursor's enable)\n", dissidia_battle_age() / 60.0f, cur & 0xFFFFu, g_camsnap.w878, why); }
+    }
     if (!same || !ok(g_camsnap.cam, 0x100) || cam_director() != g_camsnap.cam) return;
     const uint32_t c = g_camsnap.cam;
     if (g_log) std::fprintf(stderr, "[KOCAM] camera director %08X restored (%s): flags +188 %08X -> %08X, +180 %08X -> %08X\n", c, why, rd(c + 188u), g_camsnap.d[188] | (g_camsnap.d[189] << 8) | (g_camsnap.d[190] << 16) | (static_cast<uint32_t>(g_camsnap.d[191]) << 24), rd(c + 180u), g_camsnap.d[180] | (g_camsnap.d[181] << 8) | (g_camsnap.d[182] << 16) | (static_cast<uint32_t>(g_camsnap.d[183]) << 24));
