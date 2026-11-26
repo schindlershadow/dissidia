@@ -369,6 +369,7 @@ void ctrl_all_hook(uint8_t* rdram, recomp_context* ctx) {
 }  // namespace
 
 // ---- interface for tagteam.cpp ----
+void dissidia_ttnet_roster_pump() { roster_step(); }   // the pre-battle VS page (the lock-step is not running yet): the host's roster goes out / comes in now, so the page can show the real line-up on every machine
 bool dissidia_ttnet_running() { return g_running; }
 // Our lock-step will run the tag battles of a group (the switch and the game functions; the same on every machine of the group).
 bool dissidia_ttnet_enabled() { return g_enabled && g_orig_dispatch && g_pack && g_unpack && g_ctrl_read && g_orig_ctrl_all && g_ctrl_update; }

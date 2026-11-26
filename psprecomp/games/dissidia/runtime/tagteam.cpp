@@ -13,6 +13,7 @@
 #include "psp_settings.h"
 #include "tagteam_hud.h"
 #include "tagteam_party.h"
+#include "tagteam_vs.h"
 #include "psp_ge_draw.h"
 #include "package_mods.h"
 #include "hle/psp_hle.h"
@@ -61,6 +62,7 @@ static inline void backtrace_symbols_fd(void* const*, int, int) {}
 #include <vector>
 
 extern FuncPtr ovl_battle_lookup(uint32_t vaddr);
+extern FuncPtr ovl_menu_lookup(uint32_t vaddr);
 FuncPtr dissidia_ovl_menu_lookup(uint32_t vaddr);    // xdelta_mods.cpp (the loaded overlay at a battle-overlay address)
 FuncPtr dissidia_ovl_extra_lookup(uint32_t vaddr);
 int dissidia_test_action(uint8_t* rdram, recomp_context* ctx, uint32_t actor, int id);   // roster.cpp (debug: start an action by id)
@@ -184,6 +186,14 @@ constexpr uint32_t REG_PAIR0 = 0x08BAE9FCu, REG_PAIR1 = 0x08BAEA08u;   // ctor w
 constexpr uint32_t LAST_FIGHTER_OBJ = 0x089D4774u;   // EBOOT global: the TAIL of the object list at 0x089D4770 (link +120) the constructor appends to. Never restore it: an older tail orphans the newest node and its later unlink (FUN_0880ABF4) loops forever
 constexpr uint32_t ACT_VT = 0x544u, ACT_FLAGS = 0x5B0u, ACT_LOCKBLK = 0x5ACu;
 
+bool g_vs_early = false;   // the VS page's early planning is running: read_party may fall back to the menu's team struct
+uint32_t g_vs_stamp = 0, g_vs_obj = 0;   // game frame (g_fe_ctr) of the last VS page tick, the page object
+struct VsPlanned { int team, ch, drv, kth; };
+std::vector<VsPlanned> g_vs_plan; uint32_t g_vs_plan_gen = 0xFFFFFFFFu;
+FuncPtr g_orig_vspage = nullptr;
+void vs_page_hook(uint8_t* rdram, recomp_context* ctx);   // below
+void plan_late(uint8_t* rdram, recomp_context* ctx);
+uint32_t tally_row(uint32_t base, int r, int i);
 FuncPtr g_orig_setup = nullptr, g_orig_flow = nullptr, g_orig_tick = nullptr, g_orig_lock_other = nullptr, g_orig_refresh = nullptr, g_orig_lock_mode = nullptr, g_orig_lock_other_pos = nullptr, g_orig_stock = nullptr, g_orig_rule = nullptr, g_orig_rel1 = nullptr, g_orig_rel2 = nullptr;
 bool g_in_ctor = false;   // inside the extra's constructor: the resource releases are skipped (see rel_hook)
 bool g_oneround = true;   // KO rules, one continuous round: a KO'd slot fighter is swapped with its living team mate at once, no stock hack / round restart (PSPRECOMP_TAGTEAM_ONEROUND=0: the old restart flow)
@@ -1430,6 +1440,7 @@ void setup_hook(uint8_t* rdram, recomp_context* ctx) {
         else std::fprintf(stderr, "[TAGTEAM] lock cycle hooks not installed\n");
     }
     if (!g_orig_rule && std::getenv("PSPRECOMP_TAGTEAM_RULELOG")) { g_orig_rule = fn(0x08A040BCu); if (g_orig_rule) psp_dispatch_register(0x08A040BCu, rule_hook); }
+    if (!g_orig_vspage) { g_orig_vspage = fn(0x08AF324Cu); if (g_orig_vspage) psp_dispatch_register(0x08AF324Cu, vs_page_hook); }
     if (!g_orig_stock) { g_orig_stock = fn(0x08B33914u); if (g_orig_stock) psp_dispatch_register(0x08B33914u, stock_hook); }
     if (!g_orig_hpstep) { g_orig_hpstep = fn(0x08AEFF40u); if (g_orig_hpstep) psp_dispatch_register(0x08AEFF40u, hpstep_hook); }
     if (!g_orig_pauseopen) { g_orig_pauseopen = fn(0x08B1DE34u); if (g_orig_pauseopen) psp_dispatch_register(0x08B1DE34u, pause_open_hook); }
@@ -1923,18 +1934,22 @@ int actor_char(uint32_t actor) {
 // the party one member after the other, so the members behind the one on the stage are the reserve; the ones before him are out.
 constexpr uint32_t PARTY_IDS_FROM_BS = 0x13C21u, PARTY_STRIDE = 0x38u;
 int g_human_rec = 0;   // which team record (0/1) is the human's team (refresh_reserve)
-struct PartyList { int n = 0; uint8_t ids[8] = {}; };
+struct PartyList { int n = 0; uint8_t ids[8] = {}, jobs[8] = {}; };
 PartyList read_party(int side) {
     PartyList p;
     if (!g_bs) return p;
-    const uint32_t ids = g_bs + PARTY_IDS_FROM_BS + PARTY_STRIDE * static_cast<uint32_t>(side);
+    uint32_t ids = g_bs + PARTY_IDS_FROM_BS + PARTY_STRIDE * static_cast<uint32_t>(side);
     if (!ok(ids - 6u, 0x10)) return p;
-    const int n = g_ram[(ids - 6u) & 0x07FFFFFFu];
+    int n = g_ram[(ids - 6u) & 0x07FFFFFFu];
+    if ((n < 1 || n > 8) && g_vs_early) {   // the VS page is up and the battle overlay has not filled its team records yet: the menu's own copy (same layout; the page reads it too)
+        ids = 0x09AFDFD5u + PARTY_STRIDE * static_cast<uint32_t>(side);
+        n = g_ram[(ids - 6u) & 0x07FFFFFFu];
+    }
     if (n < 1 || n > 8) return p;
     // ttx: a row retail dropped (id 0) at the END of the list (the CPU party's 5th row when its owner already registered rows of his own: retail keeps the
     // count 5 but the 5th block is empty) ends the list instead of rejecting all of it (the CPU party then had no fighters at all: `side 1 order:` empty).
     int m = 0;
-    for (int i = 0; i < n; i++) { const uint8_t c = g_ram[(ids + static_cast<uint32_t>(i)) & 0x07FFFFFFu]; if (c == 0) { for (int j = i + 1; j < n; j++) if (g_ram[(ids + static_cast<uint32_t>(j)) & 0x07FFFFFFu] != 0) return PartyList{}; break; } if (c > 34) return PartyList{}; p.ids[m++] = c; }
+    for (int i = 0; i < n; i++) { const uint8_t c = g_ram[(ids + static_cast<uint32_t>(i)) & 0x07FFFFFFu]; if (c == 0) { for (int j = i + 1; j < n; j++) if (g_ram[(ids + static_cast<uint32_t>(j)) & 0x07FFFFFFu] != 0) return PartyList{}; break; } if (c > 34) return PartyList{}; p.jobs[m] = g_ram[(ids + 5u + static_cast<uint32_t>(i)) & 0x07FFFFFFu]; p.ids[m++] = c; }
     if (m < 1) return PartyList{};
     p.n = m;
     return p;
@@ -11682,6 +11697,60 @@ void dissidia_tagteam_frame_end(uint8_t* rdram, recomp_context* ctx) {
     if (g_hud_up && g_fe_ctr - g_hud_fe > 4) { g_hud_up = false; tagteam_hud_set_banner(""); tagteam_hud_draw({}, {}); tagteam_hud_overhead({}, 0, false); tagteam_hud_lockind({}); }
 }
 
+namespace { void plan_late(uint8_t* rdram, recomp_context* ctx) {
+    g_ram = rdram; g_ctx = ctx;
+    if (g_planned_gen == g_battle_gen || !g_roster_ok) return;
+    {
+            g_planned_gen = g_battle_gen; g_vs_early = rd(g_bs + 72) == 0; g_vs_plan.clear(); g_vs_plan_gen = g_battle_gen;
+            const uint32_t hs = rd(g_bs + 84u) & 1u, hum = srd(g_bs + 56u + 4u * hs), cpu = srd(g_bs + 56u + 4u * (1u - hs));
+            static const bool no_real = std::getenv("PSPRECOMP_TAGTEAM_NOREAL") != nullptr;
+            std::vector<Late> keep;
+            int per_side_seen[2] = {0, 0};
+            for (Late& l : g_late_q) {
+                const int team = (l.slot_actor == hum) ? 0 : 1;
+                if (ffa_now() && !l.callin && !((eff_mask() >> (team == 0 ? 1 : 0)) & 1)) {   // FFA: a member queued its extras before the host's rules came (FFA 3 has only the CPU side's)
+                    if (g_log) std::fprintf(stderr, "[TAGTEAM] team %d extra: not in a free-for-all of %d, dropped\n", team, ffa_now());
+                    continue;
+                }
+                if (l.side < 2 && !l.callin && ++per_side_seen[l.side] >= 2 && (comms_battle() ? fighters_per_side(static_cast<int>(l.side)) < 3 : !three_now())) {
+                    if (g_log) std::fprintf(stderr, "[TAGTEAM] side %u: a second partner was queued, but the side fields fewer than three: dropped\n", l.side);
+                    continue;
+                }
+                // Communications Mode: the side's first CPU pick (comms_partner_char), never "the next member" of the record (that may be a player)
+                int drv = -1;
+                // Single player (user rule, 17 Nov): the human's partners are only what he set up as CPU rows; a Battle Mode party has no CPU rows, so his
+                // side gets no partner (1 v 2; his next members come in when he falls). PSPRECOMP_TAGTEAM_SP_PARTNER=1 = the old 2 v 2 with his 2nd member.
+                static const bool sp_partner = std::getenv("PSPRECOMP_TAGTEAM_SP_PARTNER") != nullptr;
+                if (team == 0) update_party_reserve();   // (which team record is the human's)
+                bool ffa_off = false;
+                const int ffc = (no_real || l.callin || l.info_slot >= 100 || comms_battle()) ? -1 : sp_ffa_slot_char(static_cast<int>(l.side), team, &ffa_off);   // single player Free-for-all player setup: P3 / P4 (-1: not in use)
+                const bool spc = ffc < 0 && team == 0 && !no_real && !l.callin && l.info_slot < 100 && sp_cpu_battle();   // single player: his first CPU row is the partner
+                const int kth = (l.side < 2 && !l.callin && !std::getenv("PSPRECOMP_TAGTEAM_OLDTHIRD")) ? std::max(1, per_side_seen[l.side]) : 1;   // 3 v 3: the side's 1st / 2nd partner
+                int c = ffc >= 0 ? ffc : spc ? sp_next(false) : (no_real || l.callin || l.info_slot >= 100) ? 0 : (comms_battle() && ffa_now()) ? ffa_fill_or_player(static_cast<int>(l.side), &drv) : comms_battle() ? comms_partner_char(static_cast<int>(l.side), &drv) : (team == 0 && !sp_partner && !clones_allowed()) ? 0 : party_partner_char(team, hum, cpu, kth);
+                if (const char* tp = std::getenv("PSPRECOMP_TAGTEAM_TESTPART"); tp && !l.callin && l.side < 2 && l.info_slot < 100) {   // test aid "<team0 chars>;<team1 chars>" (e.g. "24,22;15,22"): the k-th start partner of a team is that character
+                    int t = 0, k = 0; const char* q = tp; int pick = 0;
+                    while (*q) { if (*q == ';') { t++; k = 0; q++; continue; } if (*q == ',') { k++; q++; continue; } char* e2 = nullptr; const long v = std::strtol(q, &e2, 10); if (e2 == q) { q++; continue; } if (t == team && k + 1 == kth) pick = static_cast<int>(v); q = e2; }
+                    if (pick) { c = pick; std::fprintf(stderr, "[TAGTEAM] test aid: team %d partner %d is char %d\n", team, kth, c); } }
+                // single player CPU fill (battle lobby): an empty place gets a CPU. User (25 Nov): the human's side only when his party has an empty
+                // place - a full party (5 members) stays 1 v 2, its members come in when he falls.
+                bool human_full = false;
+                if (team == 0 && !comms_battle()) human_full = read_party(g_human_rec).n >= 5;   // the human's party record (as the "party reserve ... lists n/n" log line), lead included
+                if (!c && human_full && cpu_fill_now() && g_log) std::fprintf(stderr, "[CPUFILL] side %u: the human's party is full, no CPU fill\n", l.side);
+                if (!c && !human_full && ffc < 0 && !comms_battle() && !no_real && !l.callin && l.info_slot < 100 && cpu_fill_now() && l.side < 2) c = fill_pick(static_cast<int>(l.side));
+                if (spc) { sp_mark(c, true); std::fprintf(stderr, "[TTSP] partner at the start: CPU member %d (%s)\n", c, c ? char_label(c, true).c_str() : "none loadable"); }
+                else if (!comms_battle() && team == 0 && !sp_partner && !clones_allowed() && g_log) std::fprintf(stderr, "[TAGTEAM] single player: no CPU row on the human's team, no partner (1 v 2)\n");
+                l.driver = drv; if (c) g_vs_plan.push_back({team, c, drv, kth});
+                if (g_log) std::fprintf(stderr, "[TAGTEAM] team %d extra: party member %d (%s)\n", team, c, c ? char_label(c, true).c_str() : "clone");
+                if (c) { const bool from_party = ffc < 0 && !spc && !comms_battle() && !(no_real || l.callin || l.info_slot >= 100);   // the k-th next party member: the reserve starts after all of them
+                    l.info_slot = static_cast<uint32_t>(100 + c); l.charId = c; g_real_partner[team] = std::max(g_real_partner[team], from_party ? kth : 1); g_partner_chars[team].insert(c); g_late_load.push_back(l); }
+                else if (clones_allowed()) keep.push_back(l);
+                else if (g_log) std::fprintf(stderr, "[TAGTEAM] team %d has no second member: no partner (no duplicate of the fighter on the stage)\n", team);
+            }
+            g_late_q = keep;   // the real ones come back through the load below once their files are in
+            if (g_vs_early) { update_party_reserve(); g_vs_early = false; }   // (the reserve lists the VS page shows: after the partners are known)
+    }
+}
+}  // namespace
 void dissidia_tagteam_frame(uint8_t* rdram, recomp_context* ctx) {
     TtStep tt_step_("tt_frame");
     g_frame_ctr++;
@@ -11743,56 +11812,10 @@ void dissidia_tagteam_frame(uint8_t* rdram, recomp_context* ctx) {
             if (st >= 0 && l[st].is_cpu) { std::fprintf(stderr, "[TTCPUP] side %d: the fighter on the stage (char %d) is a CPU row: the AI plays slot %d from the start\n", sd, l[st].charId, sd); slot_handover(srd(g_bs + 56u + 4u * static_cast<uint32_t>(sd)), -1); }
         }
     }
-    if (g_bs && !g_late_q.empty() && (rd(g_bs + 72) != 0 || pre_mode())) {   // a group battle: the extras at the start are the party's second members, not clones (the party record is not filled when the setup runs, so this is decided once the battle runs)
+    const bool vs_up = g_vs_stamp && g_fe_ctr - g_vs_stamp < 6u && !std::getenv("PSPRECOMP_TAGTEAM_VSPAGE_OLD");   // the pre-battle VS page is up: the start-of-battle line-up is planned now so the page can show it
+    if (g_bs && !g_late_q.empty() && (rd(g_bs + 72) != 0 || pre_mode() || vs_up)) {   // a group battle: the extras at the start are the party's second members, not clones (the party record is not filled when the setup runs, so this is decided once the battle runs)
         g_ram = rdram; g_ctx = ctx;
-        if (g_planned_gen != g_battle_gen && g_roster_ok) {   // (a member plans with the host's roster: it is here before the first lock-step frame)
-            g_planned_gen = g_battle_gen;
-            const uint32_t hs = rd(g_bs + 84u) & 1u, hum = srd(g_bs + 56u + 4u * hs), cpu = srd(g_bs + 56u + 4u * (1u - hs));
-            static const bool no_real = std::getenv("PSPRECOMP_TAGTEAM_NOREAL") != nullptr;
-            std::vector<Late> keep;
-            int per_side_seen[2] = {0, 0};
-            for (Late& l : g_late_q) {
-                const int team = (l.slot_actor == hum) ? 0 : 1;
-                if (ffa_now() && !l.callin && !((eff_mask() >> (team == 0 ? 1 : 0)) & 1)) {   // FFA: a member queued its extras before the host's rules came (FFA 3 has only the CPU side's)
-                    if (g_log) std::fprintf(stderr, "[TAGTEAM] team %d extra: not in a free-for-all of %d, dropped\n", team, ffa_now());
-                    continue;
-                }
-                if (l.side < 2 && !l.callin && ++per_side_seen[l.side] >= 2 && (comms_battle() ? fighters_per_side(static_cast<int>(l.side)) < 3 : !three_now())) {
-                    if (g_log) std::fprintf(stderr, "[TAGTEAM] side %u: a second partner was queued, but the side fields fewer than three: dropped\n", l.side);
-                    continue;
-                }
-                // Communications Mode: the side's first CPU pick (comms_partner_char), never "the next member" of the record (that may be a player)
-                int drv = -1;
-                // Single player (user rule, 17 Nov): the human's partners are only what he set up as CPU rows; a Battle Mode party has no CPU rows, so his
-                // side gets no partner (1 v 2; his next members come in when he falls). PSPRECOMP_TAGTEAM_SP_PARTNER=1 = the old 2 v 2 with his 2nd member.
-                static const bool sp_partner = std::getenv("PSPRECOMP_TAGTEAM_SP_PARTNER") != nullptr;
-                if (team == 0) update_party_reserve();   // (which team record is the human's)
-                bool ffa_off = false;
-                const int ffc = (no_real || l.callin || l.info_slot >= 100 || comms_battle()) ? -1 : sp_ffa_slot_char(static_cast<int>(l.side), team, &ffa_off);   // single player Free-for-all player setup: P3 / P4 (-1: not in use)
-                const bool spc = ffc < 0 && team == 0 && !no_real && !l.callin && l.info_slot < 100 && sp_cpu_battle();   // single player: his first CPU row is the partner
-                const int kth = (l.side < 2 && !l.callin && !std::getenv("PSPRECOMP_TAGTEAM_OLDTHIRD")) ? std::max(1, per_side_seen[l.side]) : 1;   // 3 v 3: the side's 1st / 2nd partner
-                int c = ffc >= 0 ? ffc : spc ? sp_next(false) : (no_real || l.callin || l.info_slot >= 100) ? 0 : (comms_battle() && ffa_now()) ? ffa_fill_or_player(static_cast<int>(l.side), &drv) : comms_battle() ? comms_partner_char(static_cast<int>(l.side), &drv) : (team == 0 && !sp_partner && !clones_allowed()) ? 0 : party_partner_char(team, hum, cpu, kth);
-                if (const char* tp = std::getenv("PSPRECOMP_TAGTEAM_TESTPART"); tp && !l.callin && l.side < 2 && l.info_slot < 100) {   // test aid "<team0 chars>;<team1 chars>" (e.g. "24,22;15,22"): the k-th start partner of a team is that character
-                    int t = 0, k = 0; const char* q = tp; int pick = 0;
-                    while (*q) { if (*q == ';') { t++; k = 0; q++; continue; } if (*q == ',') { k++; q++; continue; } char* e2 = nullptr; const long v = std::strtol(q, &e2, 10); if (e2 == q) { q++; continue; } if (t == team && k + 1 == kth) pick = static_cast<int>(v); q = e2; }
-                    if (pick) { c = pick; std::fprintf(stderr, "[TAGTEAM] test aid: team %d partner %d is char %d\n", team, kth, c); } }
-                // single player CPU fill (battle lobby): an empty place gets a CPU. User (25 Nov): the human's side only when his party has an empty
-                // place - a full party (5 members) stays 1 v 2, its members come in when he falls.
-                bool human_full = false;
-                if (team == 0 && !comms_battle()) human_full = read_party(g_human_rec).n >= 5;   // the human's party record (as the "party reserve ... lists n/n" log line), lead included
-                if (!c && human_full && cpu_fill_now() && g_log) std::fprintf(stderr, "[CPUFILL] side %u: the human's party is full, no CPU fill\n", l.side);
-                if (!c && !human_full && ffc < 0 && !comms_battle() && !no_real && !l.callin && l.info_slot < 100 && cpu_fill_now() && l.side < 2) c = fill_pick(static_cast<int>(l.side));
-                if (spc) { sp_mark(c, true); std::fprintf(stderr, "[TTSP] partner at the start: CPU member %d (%s)\n", c, c ? char_label(c, true).c_str() : "none loadable"); }
-                else if (!comms_battle() && team == 0 && !sp_partner && !clones_allowed() && g_log) std::fprintf(stderr, "[TAGTEAM] single player: no CPU row on the human's team, no partner (1 v 2)\n");
-                l.driver = drv;
-                if (g_log) std::fprintf(stderr, "[TAGTEAM] team %d extra: party member %d (%s)\n", team, c, c ? char_label(c, true).c_str() : "clone");
-                if (c) { const bool from_party = ffc < 0 && !spc && !comms_battle() && !(no_real || l.callin || l.info_slot >= 100);   // the k-th next party member: the reserve starts after all of them
-                    l.info_slot = static_cast<uint32_t>(100 + c); l.charId = c; g_real_partner[team] = std::max(g_real_partner[team], from_party ? kth : 1); g_partner_chars[team].insert(c); g_late_load.push_back(l); }
-                else if (clones_allowed()) keep.push_back(l);
-                else if (g_log) std::fprintf(stderr, "[TAGTEAM] team %d has no second member: no partner (no duplicate of the fighter on the stage)\n", team);
-            }
-            g_late_q = keep;   // the real ones come back through the load below once their files are in
-        }
+        plan_late(rdram, ctx);   // (a member plans with the host's roster: it is here before the first lock-step frame)
     }
     if (!g_late_load.empty() && g_bs && rd(g_bs + 72) != 0) {   // a called-in member's files: loading them inside a fighter's update could stall the game
         g_ram = rdram; g_ctx = ctx;
@@ -12631,6 +12654,27 @@ void partc_dbg_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t c = rd(0x08A405E0u);
     if (ok(c, 0x300) && rd(c + 0x278u) != 0) { std::fprintf(stderr, "[EXBPART] t=%.2fs create script %08X ra %08X -> %08X :", dissidia_battle_age() / 60.0f, scr, ra, static_cast<uint32_t>(ctx->r[2])); if (ok(scr, 0x40)) for (uint32_t o = 0; o < 0x40u; o += 4) std::fprintf(stderr, " %08X", rd(scr + o)); std::fprintf(stderr, "\n"); }
 }
+// ---- the pre-battle "Round N / VS" page (battle overlay scene; docs/tag-team.md "Batch thirty-six") ----
+void dissidia_ttnet_roster_pump();
+namespace {
+uint32_t g_vs_seen_frame = 0;
+void vs_page_hook(uint8_t* rdram, recomp_context* ctx) {
+    FuncPtr orig = g_orig_vspage;
+    g_ram = rdram;
+    if (rd(0x089DD4C0u) != 1u) { if (FuncPtr m = rd(0x089DD4C0u) == 2u ? dissidia_ovl_menu_lookup(0x08AF324Cu) : nullptr) m(rdram, ctx); return; }   // (another overlay is loaded: not ours)
+    const uint32_t a0 = static_cast<uint32_t>(ctx->r[4]);
+    g_vs_stamp = g_fe_ctr; g_vs_obj = a0;
+    { static uint32_t lg = 0; if (g_log && (g_fe_ctr - lg > 90)) { lg = g_fe_ctr; std::fprintf(stderr, "[TTVS] page tick obj %08X g_bs %08X late_q %d planned %d/%d\n", a0, g_bs, int(g_late_q.size()), int(g_planned_gen == g_battle_gen), int(g_roster_ok)); } }
+    if (g_bs && !g_late_q.empty() && g_planned_gen != g_battle_gen && rd(g_bs + 72) == 0 && !std::getenv("PSPRECOMP_TAGTEAM_VSPAGE_OLD")) {
+        if (comms_battle() && !g_roster_ok) dissidia_ttnet_roster_pump();   // a member: the host's roster first
+        plan_late(rdram, ctx);
+    }
+    if (g_bs && comms_battle() && g_roster_ok && g_me.host && rd(g_bs + 72) == 0 && !std::getenv("PSPRECOMP_TAGTEAM_VSPAGE_OLD")) dissidia_ttnet_roster_pump();   // the host: hand it out   // the line-up is planned while the page is up
+    orig(rdram, ctx);
+    dissidia_tagteam_vs_draw();
+}
+}  // namespace
+
 void dissidia_tagteam_install(uint8_t* rdram) {
     dissidia_ttnet_install(rdram);
     const char* e = std::getenv("PSPRECOMP_TAGTEAM");
@@ -13148,4 +13192,85 @@ void dissidia_tagteam_bp_finalize(uint8_t* rdram, recomp_context* ctx) {
     std::fprintf(stderr, "[TTBP] Enter Battle step: CPU party %d, %d row(s), owner id %d, this machine is id %d\n", cp, h->bp_n, oid, me);
     if (oid != me) return;
     for (int k = 0; k < h->bp_n; k++) { call(0x088F6D80u, static_cast<uint32_t>(cp), static_cast<uint32_t>(k), h->bp_regs[k], 0); std::fprintf(stderr, "[TTBP] table block party %d row %d = char %d built here\n", cp, k, h->bp_regs[k]); }
+}
+
+// ---- the pre-battle VS page's line-up (docs/tag-team.md "Batch thirty-six") ----
+namespace {
+std::string vs_owner_name(int owner) {
+    std::vector<NetPlayer> tmp; const std::vector<const NetPlayer*> ps = players_sorted(snap_or_live(tmp));
+    if (owner < 0 || owner >= static_cast<int>(ps.size())) return "Player";
+    const NetPlayer* p = ps[static_cast<size_t>(owner)];
+    if (p->local) return "You";
+    uint8_t macs[16][6] = {}; char nicks[16][32] = {}; const int nm = psp_adhoc_group_macs(macs, nicks, 16);
+    for (int i = 0; i < nm; i++) if (!std::memcmp(macs[i], p->mac, 6) && nicks[i][0]) return nicks[i];
+    return "Player " + std::to_string(owner + 1);
+}
+}  // namespace
+bool dissidia_tagteam_vs_lineup(VsLineup* out) {
+    static VsLineup cache; static uint32_t cache_gen = 0xFFFFFFFFu;
+    if (!g_bs || !g_ram) return false;
+    if (g_planned_gen != g_battle_gen && !g_late_q.empty()) return false;   // the early plan has not run yet
+    if (cache_gen == g_battle_gen && cache.valid) { *out = cache; return true; }
+    VsLineup L; L.assist = !assist_off_now(); L.ffa = ffa_now() != 0;
+    const bool saved = g_vs_early; g_vs_early = rd(g_bs + 72) == 0;
+    update_party_reserve();   // (sets g_human_rec; the reserve lists)
+    const uint32_t hs = rd(g_bs + 84u) & 1u;
+    const uint32_t slot[2] = {srd(g_bs + 56u + 4u * hs), srd(g_bs + 56u + 4u * (1u - hs))};
+    const uint32_t base = rd(0x089D8508u);
+    const bool comms = comms_battle();
+    for (int t = 0; t < 2; t++) {
+        const int rec = rec_of_team(t);
+        PartyList pl = read_party(rec);
+        const int sc = ok(slot[t], 0x12D0) ? actor_char(slot[t]) : 0;
+        if (pl.n == 0 && sc > 0) { pl.n = 1; pl.ids[0] = static_cast<uint8_t>(sc); }
+        TagEntry te[10]; const int nte = comms ? party_order(rec, te, 10) : 0;
+        auto level_of = [&](int ch, int idx) {
+            int lv = 0;
+            if (ok(base, 0x3000) && idx >= 0 && idx < 5) { const uint32_t row = tally_row(base, rec, idx); if (g_ram[row & 0x07FFFFFFu] == ch) lv = g_ram[(row + 1u) & 0x07FFFFFFu]; }
+            if (lv <= 1) lv = std::max<int>(save_level_of(ch), 0);
+            if (lv <= 1 && ok(base, 0x3000)) lv = g_ram[(tally_row(base, rec, 0) + 1u) & 0x07FFFFFFu];   // (a CPU's Auto level: the side's lead)
+            if (lv <= 1 && ok(base, 0x3000)) lv = g_ram[(tally_row(base, rec_of_team(0), 0) + 1u) & 0x07FFFFFFu];
+            return lv > 100 ? 0 : lv;
+        };
+        auto who_of = [&](int ch, int role, int drv) -> std::pair<bool, std::string> {
+            if (comms) {
+                if (drv >= 0) return {false, vs_owner_name(drv)};
+                for (int i = 0; i < nte; i++) if (te[i].charId == ch) return te[i].is_cpu || te[i].owner < 0 ? std::make_pair(true, std::string("CPU")) : std::make_pair(false, vs_owner_name(te[i].owner));
+                return {true, "CPU"};
+            }
+            if (t == 0 && role == 0) return {false, "You"};
+            return {true, "CPU"};
+        };
+        std::vector<int> partners; std::vector<int> pdrv;
+        for (const VsPlanned& v : g_vs_plan) if (g_vs_plan_gen == g_battle_gen && v.team == t) { partners.push_back(v.ch); pdrv.push_back(v.drv); }
+        int at = -1; for (int i = 0; i < pl.n && at < 0; i++) if (pl.ids[i] == sc) at = i;
+        // the party as the orb row shows it
+        for (int i = 0; i < pl.n; i++) {
+            VsCard c; c.ch = pl.ids[i]; c.job = pl.jobs[i]; c.party_idx = i; c.level = level_of(c.ch, i);
+            const auto pit = std::find(partners.begin(), partners.end(), c.ch);
+            c.role = i == at ? 0 : pit != partners.end() ? 1 : (at >= 0 && i < at) ? 3 : 2;
+            const int drv = pit != partners.end() ? pdrv[static_cast<size_t>(pit - partners.begin())] : -1;
+            const auto w = who_of(c.ch, c.role, drv); c.cpu = w.first; c.who = w.second;
+            L.party[t].push_back(c);
+        }
+        // the team: slot, partners (a CPU fill is no member), the reserve in order
+        for (const VsCard& c : L.party[t]) if (c.role == 0) L.team[t].push_back(c);
+        for (size_t k = 0; k < partners.size(); k++) {
+            bool found = false; for (const VsCard& c : L.party[t]) if (c.role == 1 && c.ch == partners[k]) { L.team[t].push_back(c); found = true; break; }
+            if (!found) { VsCard c; c.ch = partners[k]; c.role = 1; c.level = level_of(c.ch, -1); const auto w = who_of(c.ch, 1, pdrv[k]); c.cpu = w.first; c.who = w.second; L.team[t].push_back(c); }
+        }
+        for (const VsCard& c : L.party[t]) if (c.role == 2) L.team[t].push_back(c);
+        if (L.team[t].empty() && sc > 0) { VsCard c; c.ch = sc; c.role = 0; c.level = level_of(sc, -1); const auto w = who_of(sc, 0, -1); c.cpu = w.first; c.who = w.second; L.team[t].push_back(c); }
+    }
+    if (L.ffa) {   // every fighter for himself: the two slot fighters, then the extras
+        for (int t = 0; t < 2; t++) for (const VsCard& c : L.team[t]) if (c.role <= 1) L.ffa_list.push_back(c);
+    }
+    g_vs_early = saved;
+    L.valid = !L.team[0].empty() || !L.team[1].empty();
+    cache = L; cache_gen = g_battle_gen; *out = L;
+    static uint32_t logged = 0xFFFFFFFFu;
+    if (logged != g_battle_gen) { logged = g_battle_gen; std::fprintf(stderr, "[TTVS] line-up:%s", L.ffa ? " (free-for-all)" : "");
+        for (int t = 0; t < 2; t++) { std::fprintf(stderr, " | team %d:", t); for (const VsCard& c : L.team[t]) std::fprintf(stderr, " %s%d/%s/L%d/j%d/%s", c.role == 0 ? "S" : c.role == 1 ? "P" : "R", c.ch, c.who.c_str(), c.level, c.job, c.cpu ? "cpu" : "pl"); }
+        std::fprintf(stderr, "\n"); }
+    return L.valid;
 }
