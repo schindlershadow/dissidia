@@ -234,6 +234,7 @@ bool dissidia_tagteam_result_mute_scene(uint32_t ra) { return g.stage != 0 && ra
 
 void dissidia_tagteam_result_install(FuncPtr orig_request) { g_orig_req = orig_request; }
 
+bool dissidia_tagteam_inject_old(); void dissidia_tagteam_inject_why(const char* why);   // tagteam_menu.cpp
 uint32_t dissidia_tagteam_result_pad(uint32_t raw) {
     constexpr uint32_t CROSS = 0x4000u;
     const uint32_t edge = raw & ~g.prev; g.prev = raw;
@@ -261,7 +262,10 @@ uint32_t dissidia_tagteam_result_pad(uint32_t raw) {
     // stage 2: white fades over the last picture while the player's Cross reaches the retail screen under it; the way back to the players screen takes the layer over (white to white)
     const int64_t dt = now_ms() - g.texit;
     draw_screen(g.R, timeline(), std::min(1.f, static_cast<float>(dt) / 380.f));
-    if (dissidia_tagteam_post_flow() || dt > 7000) { g.stage = 0; dissidia_tagteam_result_consumed(); std::fprintf(stderr, "[FFARES] result screen closed after %lld ms\n", static_cast<long long>(dt)); return raw; }
+    const bool old_pulse = dissidia_tagteam_inject_old();   // 26 Nov (user: no button is pressed on the player's behalf): the carried Cross is gone; the fade is short and the retail screen under it gets the player's own pad (his next Cross); INJECT_OLD=1: the pulsed Cross
+    if (dissidia_tagteam_post_flow() || dt > (old_pulse ? 7000 : 450)) { g.stage = 0; dissidia_tagteam_result_consumed(); std::fprintf(stderr, "[FFARES] result screen closed after %lld ms\n", static_cast<long long>(dt)); return raw; }
+    if (!old_pulse) return raw;
+    dissidia_tagteam_inject_why("FFA result screen: Cross carried to the retail screen (INJECT_OLD)");
     g.pulse++; return (g.pulse % 10) < 3 ? (raw | CROSS) : (raw & ~CROSS);   // (the player's own press, kept going until the retail screen takes it)
 }
 
