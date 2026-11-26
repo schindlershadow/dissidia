@@ -259,8 +259,14 @@ struct App {
         d->kill();   // SIGKILL the zenity/kdialog child; reaping it is quick
 #endif
         std::shared_ptr<D> sp(std::move(d));
-        dlg_graveyard.push_back([sp]() mutable { if (!sp->ready(0)) return false; sp.reset(); return true; });
+        sp->close_async();   // Windows: post WM_CLOSE to the dialog's windows (never blocks); the helper process was killed above elsewhere
+        dlg_graveyard.push_back([sp]() mutable {
+            if (!sp->ready(0)) { sp->close_async(); return false; }   // keep asking until it is gone
+            sp.reset();
+            return true;
+        });
     }
+    bool dialogs_pending() const { return file_dlg || dir_dlg || !dlg_graveyard.empty(); }
     void reap_dialogs() {
         for (size_t i = 0; i < dlg_graveyard.size();) {
             if (dlg_graveyard[i]()) dlg_graveyard.erase(dlg_graveyard.begin() + i); else ++i;
@@ -1580,6 +1586,12 @@ int main(int argc, char** argv) {
         SDL_Delay(8);
     }
     if (app.building) app.proc.kill();
+    app.drop_dialogs();
+    if (app.dialogs_pending()) {
+        // A native dialog is still open. Destroying a pfd dialog waits for it to close, so leave without running destructors.
+        for (int i = 0; i < 25 && !app.dlg_graveyard.empty(); i++) { app.reap_dialogs(); SDL_Delay(20); }
+        if (!app.dlg_graveyard.empty()) { std::fflush(nullptr); std::_Exit(0); }
+    }
     if (app.tex) SDL_DestroyTexture(app.tex);
     if (app.ren) SDL_DestroyRenderer(app.ren);
     if (app.win) SDL_DestroyWindow(app.win);
