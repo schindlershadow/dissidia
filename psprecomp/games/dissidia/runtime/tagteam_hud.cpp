@@ -29,7 +29,8 @@ void dissidia_menu_draw_hand(dissidia::MenuLayer& L, float x, float y, float a);
 namespace {
 
 using dissidia::LayerColor;
-dissidia::MenuLayer g_layer;
+dissidia::MenuLayer g_layer("hud", true);
+struct HudInit { HudInit() { g_layer.incremental = false; } } g_hud_init;
 bool g_layer_shown = false;
 std::vector<TagHudFighter> g_fighters;
 std::vector<TagHudReserve> g_reserves;
@@ -641,7 +642,7 @@ void tagteam_layer_frame(bool in_battle) {
     if (pm) pause_menu(pm, pm_sel);
     L.lap("notices"); const bool fx = tagteam_fx_draw(g_layer); L.lap("fx");
     if (!any && !fx) { if (g_layer_shown) { g_layer.clear(); g_layer_shown = false; } return; }
-    g_layer.publish(); L.lap("publish");
+    g_layer.tag(pm ? "pause_menu" : "battle"); g_layer.publish(); L.lap("publish");
     g_layer_shown = true;
 }
 

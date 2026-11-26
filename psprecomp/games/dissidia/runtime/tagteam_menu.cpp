@@ -114,11 +114,24 @@ FuncPtr g_orig_preview = nullptr;
 FuncPtr g_orig_ready = nullptr, g_orig_enter = nullptr, g_orig_tick = nullptr, g_play_se = nullptr, g_orig_sp_tick = nullptr, g_orig_sp_dlg = nullptr;
 bool g_lob_sp = false;   // the battle lobby (modes 2..4) was opened by the single player screen (else by the Communications setup screen)
 bool g_dlg_sp = false;   // the CPU settings dialog edits a single player CPU row (else a Communications row)
-dissidia::MenuLayer g_layer;
+dissidia::MenuLayer g_layer("menu", true);
+const char* dlg_tag();   // the screen the layer shows (the timing log's label)
 uint32_t g_prev_buttons = 0;
 // The CPU settings dialog (a CPU row's STRENGTH / LEVEL / TYPE; opened with Select (Triangle is the screen's Customization) on one of the player's own CPU rows). While it is open it takes the pad
 // (dissidia_tagteam_menu_pad is in the game's button filter chain), the setup screen underneath sees no buttons.
 constexpr uint32_t BTN_UP = 0x10u, BTN_RIGHT = 0x20u, BTN_DOWN = 0x40u, BTN_LEFTK = 0x80u, BTN_R = 0x200u, BTN_OPEN = 0x1u, BTN_CIRCLE = 0x2000u, BTN_CROSS = 0x4000u;
+// 26 Nov (menus at 10 fps / lists "too slow"): a direction held in the lobby / players screen / pickers repeats like the retail lists (the first repeat after 400 ms, then
+// every 100 ms); it is the same press the player makes, no injected input. Called with the pad state of every poll. PSPRECOMP_TAGTEAM_MENUREPEAT_OFF=1: edges only (old).
+uint32_t dir_repeat(uint32_t b, uint32_t pressed, bool active) {
+    static const bool off = std::getenv("PSPRECOMP_TAGTEAM_MENUREPEAT_OFF") != nullptr;
+    static uint32_t held = 0; static std::chrono::steady_clock::time_point next{};
+    const uint32_t dir = b & (BTN_UP | BTN_RIGHT | BTN_DOWN | BTN_LEFTK), d = dir & (~dir + 1u);   // (one direction at a time)
+    if (!d || !active || off) { held = 0; return pressed; }
+    const auto now = std::chrono::steady_clock::now();
+    if (d != held || (pressed & dir)) { held = d; next = now + std::chrono::milliseconds(400); }
+    else if (now >= next) { pressed |= d; next = std::max(next + std::chrono::milliseconds(100), now - std::chrono::milliseconds(100)); }
+    return pressed;
+}
 std::atomic<uint32_t> g_raw_pad{0};   // the pad as the filter saw it before the dialog took it
 std::atomic<bool> g_dlg_open{false};
 std::atomic<int> g_inject_cross{0};
@@ -620,6 +633,7 @@ int modesel_frame(uint8_t* rdram, recomp_context* ctx, bool group_online) {
     return result;
 }
 void modesel_draw_body(bool group_online);
+const char* dlg_tag() { switch (g_dlg_mode) { case 0: return "cpu_dialog"; case 1: return "picker"; case 2: return "lobby"; case 3: return "ffa_players"; case 4: return "ffa_picker"; case 5: return "modesel"; default: return "dialog"; } }
 // 26 Nov (user: the Mode Select is laggy; measured on the host 33 ms per frame, ~20 fps): the whole 960x544 layer was rasterised again every frame (gradients, glows, serif title,
 // text) although only the cursor row changes. Now each finished image (cursor row x online x scale) is baked once and kept; a frame that shows the same image only extends the layer's
 // life (no raster, no upload), a move publishes the cached image of the new row, and the other rows are rendered ahead on idle frames. PSPRECOMP_TAGTEAM_MSLAG_OLD=1: old.
@@ -630,13 +644,13 @@ const MsImg& ms_bake(int sel, bool online, int sc) {
     auto it = g_ms_cache.find(ms_key(sel, online, sc));
     if (it != g_ms_cache.end()) return it->second;
     const int keep = g_ms_sel; g_ms_sel = sel;
-    g_layer.begin(sc); modesel_draw_body(online); g_ms_sel = keep;
+    g_layer.begin_raw(sc); modesel_draw_body(online); g_ms_sel = keep;
     MsImg m; m.img = g_layer.bake(); m.w = g_layer.width(); m.h = g_layer.height();
     return g_ms_cache.emplace(ms_key(sel, online, sc), std::move(m)).first->second;
 }
 void modesel_draw(bool group_online) {
     const int sc = std::max(2, psp_sddialog::output_scale());
-    if (ms_lag_old()) { g_layer.begin(sc); modesel_draw_body(group_online); g_layer.publish(); return; }
+    if (ms_lag_old()) { g_layer.begin_raw(sc); modesel_draw_body(group_online); g_layer.publish(); return; }
     const int key = ms_key(g_ms_sel, group_online, sc);
     if (key == g_ms_pub_key && ge_draw_game_layer_serial() == g_ms_pub_serial && ge_draw_game_layer_touch()) return;
     const MsImg& m = ms_bake(g_ms_sel, group_online, sc);
@@ -972,7 +986,7 @@ void draw(uint8_t* rdram, recomp_context* ctx, uint32_t screen) {
     uint8_t regs[5] = {};
     const int n = dissidia_tagteam_local_regs(regs);
     uint32_t b = g_raw_pad.load(std::memory_order_relaxed);
-    const uint32_t pressed = b & ~g_prev_buttons;
+    const uint32_t pressed = dir_repeat(b, b & ~g_prev_buttons, g_dlg_open && g_dlg_mode >= 1 && g_dlg_mode <= 4);
     g_prev_buttons = b;
     // Square on a registered row from the second on: CPU <-> the player's own.
     const bool left = r32(screen + SCR_COLUMN) == 0u;
@@ -1086,7 +1100,7 @@ void draw(uint8_t* rdram, recomp_context* ctx, uint32_t screen) {
     { static bool po = false; static int pm = -1; const bool o2 = g_dlg_open.load(); if (o2 != po || (o2 && g_dlg_mode != pm)) { po = o2; pm = g_dlg_mode;
         std::fprintf(stderr, "[TTLOBBY] setup screen dialog %s (mode %d, column %u row %d, pressed %04X)\n", o2 ? "open" : "closed", g_dlg_mode, r32(screen + SCR_COLUMN), row, pressed); } }
     if (g_dlg_open) { if (g_dlg_mode == 1) picker(rdram, ctx, opened_now ? 0u : pressed, a); else if (g_dlg_mode == 2) lobby_dialog(rdram, ctx, opened_now ? 0u : pressed, a); else dialog(rdram, ctx, opened_now ? 0u : pressed, dt, a); }
-    g_layer.publish();
+    g_layer.tag(g_dlg_open ? dlg_tag() : "partysel"); g_layer.publish();
 }
 
 
@@ -1315,7 +1329,7 @@ void sp_draw(uint8_t* rdram, recomp_context* ctx, uint32_t screen, bool hide) {
     uint8_t rows[5] = {};
     const int n = dissidia_tagteam_sp_rows(screen, rows);
     const uint32_t b = g_raw_pad.load(std::memory_order_relaxed);
-    const uint32_t pressed = b & ~g_prev_buttons;
+    const uint32_t pressed = dir_repeat(b, b & ~g_prev_buttons, g_dlg_open && g_dlg_mode >= 1 && g_dlg_mode <= 4);
     g_prev_buttons = b;
     const uint32_t M = r32(screen + SCR_M);
     const bool mok = M >= 0x08800000u && M < 0x0A000000u;
@@ -1435,7 +1449,7 @@ void sp_draw(uint8_t* rdram, recomp_context* ctx, uint32_t screen, bool hide) {
         if (g_dlg_open) { if (g_dlg_mode == 2) lobby_dialog(rdram, ctx, opened_now ? 0u : pressed, a); else if (g_dlg_mode == 3 || g_dlg_mode == 4) ffa_screen(rdram, ctx, opened_now ? 0u : pressed); else dialog(rdram, ctx, opened_now ? 0u : pressed, dt, a); }
     }
     if (cover && !g_dlg_open) { gs_background(); const std::string t = "Starting the battle..."; const float w = g_layer.text(t, true, 10.f, 0, 0, LayerColor{0, 0, 0, 0}, true); g_layer.text(t, true, 10.f, kScrW / 2.f - w / 2.f, 140.f, LayerColor{40, 42, 100, 1.f}); }
-    g_layer.publish(); g_sp_layer_up = mask || switchable || sq_ours || g_dlg_open || hide || labels || cover;
+    g_layer.tag(g_dlg_open ? dlg_tag() : "sp_setup"); g_layer.publish(); g_sp_layer_up = mask || switchable || sq_ours || g_dlg_open || hide || labels || cover;
 }
 void sp_tick_hook(uint8_t* rdram, recomp_context* ctx) {
     if (r32(OVL_BASE) != 2) { if (FuncPtr f = ovl_battle_lookup(SP_TICK)) f(rdram, ctx); return; }
@@ -1449,7 +1463,7 @@ void sp_tick_hook(uint8_t* rdram, recomp_context* ctx) {
     if (std::getenv("PSPRECOMP_TTSP_SCRDUMP") && g_ram[(screen + 0x788u) & 0x07FFFFFFu]) sp_scrdump(screen);
     if (std::getenv("PSPRECOMP_TAGTEAM_NOSPCPU") || !dissidia_tagteam_sp_mode()) {
         if (g_dlg_open && (g_dlg_sp || (g_lob_sp && g_dlg_mode >= 2 && g_dlg_mode <= 4))) g_dlg_open = false;   // (not the Communications lobby: PR #129, it closed at once)
-        if (hide || g_sp_layer_up) { g_layer.begin(std::max(2, psp_sddialog::output_scale())); if (hide) sp_hide_bands(); g_layer.publish(); g_sp_layer_up = hide; }
+        if (hide || g_sp_layer_up) { g_layer.begin(std::max(2, psp_sddialog::output_scale())); if (hide) sp_hide_bands(); g_layer.tag("sp_hide"); g_layer.publish(); g_sp_layer_up = hide; }
         return;
     }
     sp_draw(rdram, ctx, screen, hide);
@@ -1537,7 +1551,7 @@ void trip_draw(float white, bool own_frame) {
     else if (g_qb_mode == QB_START || g_ms_done || g_start_cover) { gs_background(); gs_title("FREE-FOR-ALL", "Everyone fights for himself"); const char* t = "Starting the battle..."; const float w = g_layer.text(t, true, 9.f, 0, 0, LayerColor{0, 0, 0, 0}, true); g_layer.text(t, true, 9.f, (kScrW - w) / 2.f, 140.f, LayerColor{40, 42, 80, 1.f}); }
     else { const int sl = g_ffa_slot, fi = g_ffa_field, dm = g_dlg_mode; const bool fl = g_ffa_flow; g_ffa_flow = true; g_dlg_mode = 3; ffa_screen(nullptr, nullptr, 0u); g_ffa_flow = fl; g_ffa_slot = sl; g_ffa_field = fi; g_dlg_mode = dm; }
     if (white > 0.f) g_layer.band(0.f, 0.f, kScrW, 272.f, [&](float, float) { return LayerColor{255, 255, 255, std::min(1.f, white)}; });
-    if (own_frame) g_layer.publish();
+    g_layer.tag("trip"); if (own_frame) g_layer.publish();
 }
 
 float post_white() {   // after a battle: fade in from retail's white as the setup screen comes, fade out with the app's way out
@@ -1610,7 +1624,7 @@ uint32_t dissidia_tagteam_menu_pad(uint32_t raw) {
                 gs_background(); gs_title("FREE-FOR-ALL", "Everyone fights for himself");
                 const char* t = lim < 1000 ? "Opening the character select..." : "Starting the battle...";
                 const float w = g_layer.text(t, true, 9.f, 0, 0, LayerColor{0, 0, 0, 0}, true); g_layer.text(t, true, 9.f, (kScrW - w) / 2.f, 140.f, LayerColor{40, 42, 80, 1.f});
-                g_layer.publish();
+                g_layer.tag("ffa_cover"); g_layer.publish();
             }
             g_script_t.store(st > endt ? -1 : st + 1, std::memory_order_relaxed);
             raw = (raw & ~(BTN_CROSS | BTN_DOWN | BTN_UP | BTN_CIRCLE)) | m;
@@ -1638,13 +1652,13 @@ void dissidia_tagteam_modesel_open() { g_ms_first = true; g_dlg_mode = 5; g_dlg_
 bool dissidia_tagteam_modesel_active() { return g_dlg_open.load() && (g_dlg_mode == 5 || g_ms_pre); }
 int dissidia_tagteam_modesel_frame(uint8_t* rdram, recomp_context* ctx, bool online) {
     if (g_ms_pre) {   // the Free-for-all's players screen / lobby, hosted here
-        const uint32_t b = g_raw_pad.load(std::memory_order_relaxed), pressed = b & ~g_prev_buttons; g_prev_buttons = b;
+        const uint32_t b = g_raw_pad.load(std::memory_order_relaxed), pressed = dir_repeat(b, b & ~g_prev_buttons, g_dlg_open && g_dlg_mode >= 2 && g_dlg_mode <= 4); g_prev_buttons = b;
         g_layer.begin(std::max(2, psp_sddialog::output_scale()));
         const bool was_lobby = g_dlg_mode == 2;
         if (g_dlg_mode == 2) lobby_dialog(rdram, ctx, pressed, 1.f); else ffa_screen(rdram, ctx, pressed);
         if (!ps_old() && (!g_ms_pre || !g_dlg_open)) { if (was_lobby && !g_dlg_open) g_start_cover = true; trip_draw(0.f, false); }   // the choice was made this frame: the screen stays (the trip's fade to white follows)
         else { const float w = trip_in_white(); if (w > 0.f) g_layer.band(0.f, 0.f, kScrW, 272.f, [&](float, float) { return LayerColor{255, 255, 255, w}; }); }
-        g_layer.publish();
+        g_layer.tag(dlg_tag()); g_layer.publish();
         if (g_ms_pre && !g_dlg_open) { g_ms_pre = false; g_ms_done = true; g_dlg_mode = 0; std::fprintf(stderr, "[FFA] Mode Select: players and lobby done, the game's screens are passed by the script\n"); return 1; }
         if (!g_ms_pre && g_ms_hop && !g_dlg_open) return 1;
         return 0;
@@ -1661,9 +1675,9 @@ void dissidia_menu_style_list(const std::string& title, const std::string& sub, 
     const float x0 = 38.f, x1 = 442.f, y0 = 40.f, h = 16.f;
     for (size_t i = 0; i < rows.size(); i++) gs_row(x0, x1, y0 + h * float(i), h - 1.f, static_cast<int>(i) == sel, rows[i].first, rows[i].second, !rows[i].second.empty(), 6.6f);
     gs_footer(footer, help);
-    g_layer.publish();
+    g_layer.tag("train_options"); g_layer.publish();
 }
-void dissidia_menu_style_clear() { g_layer.begin(std::max(2, psp_sddialog::output_scale())); g_layer.publish(); }
+void dissidia_menu_style_clear() { g_layer.begin(std::max(2, psp_sddialog::output_scale())); g_layer.tag("style_clear"); g_layer.publish(); }
 void dissidia_menu_play_se(uint8_t* rdram, recomp_context* ctx, int id) { play_se(rdram, ctx, id); }
 void dissidia_tagteam_modesel_draw_frozen(bool online) {
     if (g_trip_out && !dissidia_tagteam_inject_old()) return;   // (trip_tick draws it)

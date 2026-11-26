@@ -4813,6 +4813,9 @@ static std::mutex g_gl_mu;
 static std::vector<uint32_t> g_gl_px;
 static int g_gl_w = 0, g_gl_h = 0;
 static bool g_gl_dirty = false;
+static bool g_gl_full = true;                 // the whole image must go to the texture (new size, new life); else only g_gl_dr
+static int g_gl_dr[4] = {0, 0, -1, -1};      // dirty rectangle (inclusive x0, y0, x1, y1): what differs from the texture's content
+static const bool g_gl_old_upload = std::getenv("PSPRECOMP_MENUFPS_OLD") != nullptr;   // 26 Nov: upload the whole image every time, as before
 static std::chrono::steady_clock::time_point g_gl_time;
 static int g_gl_next_ttl = 150, g_gl_ttl = 150;   // ms the layer stays without a new publish (ge_draw_set_game_layer_ttl: for the next publish only)
 void ge_draw_set_game_layer_ttl(int ms) { std::lock_guard<std::mutex> lk(g_gl_mu); g_gl_next_ttl = std::clamp(ms, 50, 2000); }
@@ -4829,13 +4832,32 @@ bool ge_draw_game_layer_touch() {
 void ge_draw_set_game_layer(const uint32_t* rgba, int w, int h) {
     if (!rgba || w <= 0 || h <= 0) { ge_draw_clear_game_layer(); return; }
     std::lock_guard<std::mutex> lk(g_gl_mu);
+    // 26 Nov (menus at 10 fps on the Deck): when the image has the shape of the one held, only the rows / columns that differ are copied and uploaded
+    if (!g_gl_old_upload && !g_gl_full && g_gl_w == w && g_gl_h == h && g_gl_px.size() == size_t(w) * size_t(h)) {
+        int y0 = -1, y1 = -1, x0 = w, x1 = -1;
+        for (int y = 0; y < h; y++) {
+            const uint32_t* a = rgba + size_t(y) * size_t(w); uint32_t* b = g_gl_px.data() + size_t(y) * size_t(w);
+            if (std::memcmp(a, b, size_t(w) * 4) == 0) continue;
+            int lo = 0, hi = w - 1; while (a[lo] == b[lo]) lo++; while (a[hi] == b[hi]) hi--;
+            std::memcpy(b + lo, a + lo, size_t(hi - lo + 1) * 4);
+            if (y0 < 0) y0 = y; y1 = y; x0 = std::min(x0, lo); x1 = std::max(x1, hi);
+        }
+        if (y0 >= 0) {
+            if (g_gl_dirty && g_gl_dr[2] >= g_gl_dr[0]) { x0 = std::min(x0, g_gl_dr[0]); y0 = std::min(y0, g_gl_dr[1]); x1 = std::max(x1, g_gl_dr[2]); y1 = std::max(y1, g_gl_dr[3]); }
+            g_gl_dr[0] = x0; g_gl_dr[1] = y0; g_gl_dr[2] = x1; g_gl_dr[3] = y1; g_gl_dirty = true;
+        }
+        g_gl_serial++;
+        g_gl_time = std::chrono::steady_clock::now(); g_gl_ttl = g_gl_next_ttl; g_gl_next_ttl = 150;
+        return;
+    }
     g_gl_px.assign(rgba, rgba + size_t(w) * size_t(h));
+    g_gl_full = false; g_gl_dr[0] = 0; g_gl_dr[1] = 0; g_gl_dr[2] = w - 1; g_gl_dr[3] = h - 1;
     g_gl_w = w; g_gl_h = h; g_gl_dirty = true; g_gl_serial++;
     g_gl_time = std::chrono::steady_clock::now(); g_gl_ttl = g_gl_next_ttl; g_gl_next_ttl = 150;
 }
 void ge_draw_clear_game_layer() {
     std::lock_guard<std::mutex> lk(g_gl_mu);
-    g_gl_px.clear(); g_gl_w = g_gl_h = 0; g_gl_dirty = true; g_gl_serial++;
+    g_gl_px.clear(); g_gl_w = g_gl_h = 0; g_gl_dirty = true; g_gl_full = true; g_gl_serial++;
     g_gl_copies.clear();
 }
 void ge_draw_set_game_layer_copies(const GeLayerCopy* c, int n) {
@@ -4872,7 +4894,7 @@ static void present_game_layer(const PresentRect& band) {
     static bool shown = false;
     {
         std::lock_guard<std::mutex> lk(g_gl_mu);
-        if (g_gl_w > 0 && std::chrono::steady_clock::now() - g_gl_time > std::chrono::milliseconds(g_gl_ttl)) { g_gl_px.clear(); g_gl_w = g_gl_h = 0; g_gl_dirty = true; }
+        if (g_gl_w > 0 && std::chrono::steady_clock::now() - g_gl_time > std::chrono::milliseconds(g_gl_ttl)) { g_gl_px.clear(); g_gl_w = g_gl_h = 0; g_gl_dirty = true; g_gl_full = true; }
         if (g_gl_dirty) {
             g_gl_dirty = false;
             shown = g_gl_w > 0;
@@ -4885,15 +4907,21 @@ static void present_game_layer(const PresentRect& band) {
                 glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
                 if (!tex) glGenTextures(1, &tex);
                 glBindTexture(GL_TEXTURE_2D, tex);
+                bool resized = false;
                 if (tw != g_gl_w || th != g_gl_h) {
                     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, g_gl_w, g_gl_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-                    tw = g_gl_w; th = g_gl_h;
+                    tw = g_gl_w; th = g_gl_h; resized = true;
                 }
-                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, g_gl_w, g_gl_h, GL_RGBA, GL_UNSIGNED_BYTE, g_gl_px.data());
+                if (!resized && !g_gl_old_upload && g_gl_dr[2] >= g_gl_dr[0] && g_gl_dr[3] >= g_gl_dr[1] && !(g_gl_dr[0] == 0 && g_gl_dr[1] == 0 && g_gl_dr[2] == g_gl_w - 1 && g_gl_dr[3] == g_gl_h - 1)) {
+                    // only the part that changed (the texture already holds the rest)
+                    glPixelStorei(GL_UNPACK_ROW_LENGTH, g_gl_w);
+                    glTexSubImage2D(GL_TEXTURE_2D, 0, g_gl_dr[0], g_gl_dr[1], g_gl_dr[2] - g_gl_dr[0] + 1, g_gl_dr[3] - g_gl_dr[1] + 1, GL_RGBA, GL_UNSIGNED_BYTE, g_gl_px.data() + size_t(g_gl_dr[1]) * size_t(g_gl_w) + size_t(g_gl_dr[0]));
+                } else glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, g_gl_w, g_gl_h, GL_RGBA, GL_UNSIGNED_BYTE, g_gl_px.data());
+                g_gl_dr[0] = g_gl_dr[1] = 0; g_gl_dr[2] = g_gl_dr[3] = -1;
                 glBindTexture(GL_TEXTURE_2D, GLuint(prev_tex));
                 glPixelStorei(GL_UNPACK_ALIGNMENT, prev_align);
                 glPixelStorei(GL_UNPACK_ROW_LENGTH, prev_row);

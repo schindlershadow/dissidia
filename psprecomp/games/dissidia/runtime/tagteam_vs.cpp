@@ -21,7 +21,7 @@ const uint32_t* dissidia_tagteam_face_px(const std::string& code, int* w, int* h
 
 namespace {
 using dissidia::LayerColor;
-dissidia::MenuLayer g_vl;
+dissidia::MenuLayer g_vl("vs", true);
 double now_s() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 double g_t0 = -1, g_last = -1;
 const char* kJob[16] = {"Freelancer", "Warrior", "Monk", "Thief", "Dark Knight", "Dragoon", "White Mage", "Black Mage", "Summoner", "Mime", "Knight", "Samurai", "Berserker", "Mystic Knight", "Ninja", "Sage"};
@@ -102,6 +102,8 @@ void chips(const std::vector<VsCard>& rs, int t, float x0, float x1, float y, fl
 }
 void ring(float cx, float cy, float a, LayerColor c) {   // a gold ring round an orb
     const float s = g_vl.S();
+    g_vl.note(7); g_vl.notef(cx); g_vl.notef(cy); g_vl.notef(a); g_vl.notef(c.r); g_vl.notef(c.g); g_vl.notef(c.b); g_vl.notef(c.a); g_vl.notef(s);
+    if (!g_vl.want_raster()) return;
     const int x0 = int(g_vl.PX(cx - 12.f)), x1 = int(g_vl.PX(cx + 12.f)), y0 = int(g_vl.PY(cy - 12.f)), y1 = int(g_vl.PY(cy + 12.f));
     const float R = 9.6f * s, T = 1.3f * s;
     for (int y = y0; y <= y1; y++) for (int x = x0; x <= x1; x++) {

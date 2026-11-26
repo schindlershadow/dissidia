@@ -259,7 +259,7 @@ void dissidia_training_frame_end(uint8_t* rdram, recomp_context* ctx, const uint
 
 // ---- the overlay (top left): called every frame end after the above; drawn on its own game layer ----
 namespace {
-dissidia::MenuLayer g_layer; bool g_layer_up = false;
+dissidia::MenuLayer g_layer("training", true); bool g_layer_up = false;
 }
 void dissidia_training_overlay(bool paused_hint) {
     const bool show = active() && g_battle_seen.load() && !g_panel.load();
