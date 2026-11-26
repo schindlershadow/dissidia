@@ -2688,7 +2688,7 @@ void hud_update() {
         static const bool hudlock = hudlock_on();
         if (hudlock && g_bs) for (uint32_t k = 0; k < 2; k++) {   // this extra is on the big panel: the small one shows the slot fighter it replaced there
             const uint32_t S = srd(g_bs + 56u + 4u * k);
-            if (ok(S, 0x12D0) && side_of(S) == side_of(e.actor) && hud_panel_fighter(k) == e.actor) {
+            if (ok(S, 0x12D0) && (side_of(S) == side_of(e.actor) || (ffa_now() && S != e.actor && !std::getenv("PSPRECOMP_TAGTEAM_HUDLOCK_FFA_OLD"))) && hud_panel_fighter(k) == e.actor) {
                 f.id = S; f.name = char_label(g_label_char.count(S) ? g_label_char[S] : actor_char(S), true); f.code = code_for_char(g_label_char.count(S) ? g_label_char[S] : actor_char(S));
                 const uint32_t st = rd(S + 0x52Cu); f.hp = ok(st, 0x40) ? std::max(0, hp_eff(S)) : 0; f.hp_max = std::max(static_cast<int>(rd(S + 0x10B0u)), std::max(f.hp, 1));
                 f.brv = ok(st, 0x40) ? static_cast<int>(rdh(st + 0x14u)) : -1;
@@ -8734,7 +8734,10 @@ uint32_t hud_panel_fighter(uint32_t side) {
     }
     if (!ok(H, 0x12D0) || !ok(slot, 0x12D0) || side_of(slot) == side_of(H)) return slot;
     uint32_t t = rd(H + 0x2FCu); if (const uint32_t b = ao8_body_of(t)) t = b;   // locked on an Assist Off call's assist actor: the panel shows its partner
-    for (int i = 0; i < g_nextra; i++) if (g_extra[i].actor == t && g_extra[i].started && side_of(t) == side_of(slot) && alive(t) && !is_down(t)) return t;
+    // 26 Nov (lockfix5, user: "in FFA the main display doesn't switch when I switch to the 3rd target only"): the opposing panel followed only an extra of the slot's own game side;
+    // the human's OWN-side extra (his FFA partner, a foe under our rules) was the 3rd lock target and the panel stayed on the slot fighter. PSPRECOMP_TAGTEAM_HUDLOCK_FFA_OLD=1: old.
+    static const bool ffa_old = std::getenv("PSPRECOMP_TAGTEAM_HUDLOCK_FFA_OLD") != nullptr;
+    for (int i = 0; i < g_nextra; i++) if (g_extra[i].actor == t && g_extra[i].started && (side_of(t) == side_of(slot) || (!ffa_old && ffa_now() && t != H)) && alive(t) && !is_down(t)) return t;
     return slot;
 }
 // The panel of a side shows hud_panel_fighter(side). Its BRV number is driven by reports (accumulated channels), so while it shows an extra the panel
