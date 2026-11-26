@@ -493,6 +493,14 @@ bool tagteam_hud_pos(uint32_t actor, float p[3]) {
     for (int i = 0; i < 3; i++) p[i] = prv->p[i] + (cur->p[i] - prv->p[i]) * t;
     return true;
 }
+void tagteam_hud_follow_target(uint32_t actor) {   // the lock-on ring's target: its feet for this gameplay frame and the one before go to the renderer (psp_ge_draw.cpp)
+    if (!actor || !g_view_on || smooth_old()) return;
+    track_pos(actor);
+    auto it = g_poshist.find(actor); if (it == g_poshist.end() || it->second.empty() || it->second.back().gen != g_view_gen) return;
+    const std::vector<PosRec>& h = it->second; const PosRec& c = h.back();
+    const PosRec* pv = h.size() >= 2 && h[h.size() - 2].gen + 1 == c.gen ? &h[h.size() - 2] : nullptr;
+    ge_draw_set_follow_world(c.gen, pv ? pv->p : nullptr, c.p);
+}
 void tagteam_hud_view(bool on, uint32_t gen, float slow_rate) {
     g_view_on = on; g_view_gen = gen; g_anim_rate = std::clamp(slow_rate, 0.f, 1.f);
 }
