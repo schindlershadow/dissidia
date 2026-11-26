@@ -164,6 +164,8 @@ def walk(a, b, slack=0.0, menu_mode=None, shots=None):   # slack: extra seconds 
     for c in both:
         c.press('cross', gap=2.0)                          # the 1st slot -> Player Select
     for c in both:
+        if c.side == 'B' and int(os.environ.get('MP_B_RIGHT', '0')):
+            c.press(*(['right'] * int(os.environ['MP_B_RIGHT'])), gap=0.5)   # MP_B_RIGHT=n: B picks the character n to the right of Lightning (default: both Lightning)
         c.press('cross', gap=1.5)                          # Lightning
     for c in both:
         c.press('cross', gap=3.0)                          # YES
