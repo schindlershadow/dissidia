@@ -2520,7 +2520,9 @@ int g_overhead = [] { const char* e = std::getenv("PSPRECOMP_TAGTEAM_OVERHEAD");
 // g_hide_ui = hide our side panels. Both default off; the env override (the test scripts) and the 3v3 / FFA switches turn them on with the style.
 bool g_oh_assist = [] { const char* a = std::getenv("PSPRECOMP_TAGTEAM_OH_ASSIST"); if (a) return std::atoi(a) != 0; const char* e = std::getenv("PSPRECOMP_TAGTEAM_OVERHEAD"); return e && std::atoi(e) != 0; }();   // PSPRECOMP_TAGTEAM_OH_ASSIST=0|1 and _HIDE_UI=0|1 set them alone
 bool g_hide_ui = [] { const char* a = std::getenv("PSPRECOMP_TAGTEAM_HIDE_UI"); if (a) return std::atoi(a) != 0; const char* e = std::getenv("PSPRECOMP_TAGTEAM_OVERHEAD"); return e && std::atoi(e) != 0; }();
-void overhead_default_on(bool hide_ui = true) { (void)hide_ui; if (g_overhead == 0) { g_overhead = 1; g_oh_assist = true; if (std::getenv("PSPRECOMP_TAGTEAM_FFA_HIDEUI_OLD") && hide_ui) g_hide_ui = true; } }   // (25 Nov, user: "Hide tag team UI" is never switched on by a mode: the 3v3 / free-for-all switches used to set it; only the player's own setting or PSPRECOMP_TAGTEAM_HIDE_UI=1 does)   // 3v3 / free-for-all: the side panels cover only two foes
+// 26 Nov (user: "why is Overhead: Assist Bar still being set by default?"): the 3v3 / FFA default turns on the overhead HP bars only; the assist bar change
+// stays the player's own choice (Settings > Debug > Overhead: Assist Bar). PSPRECOMP_TAGTEAM_OH_ASSIST_DEFAULT_OLD=1: old (turned on with the bars).
+void overhead_default_on(bool hide_ui = true) { (void)hide_ui; if (g_overhead == 0) { g_overhead = 1; if (std::getenv("PSPRECOMP_TAGTEAM_OH_ASSIST_DEFAULT_OLD")) g_oh_assist = true; if (std::getenv("PSPRECOMP_TAGTEAM_FFA_HIDEUI_OLD") && hide_ui) g_hide_ui = true; } }   // (25 Nov, user: "Hide tag team UI" is never switched on by a mode: the 3v3 / free-for-all switches used to set it; only the player's own setting or PSPRECOMP_TAGTEAM_HIDE_UI=1 does)   // 3v3 / free-for-all: the side panels cover only two foes
 void overhead_update() {
     std::vector<TagHudOverhead> bars;
     if (g_overhead && g_bs && !exb_running() && intro_done()) {
