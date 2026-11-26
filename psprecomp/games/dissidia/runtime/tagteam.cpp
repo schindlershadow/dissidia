@@ -10320,12 +10320,15 @@ void hitreact_hook(uint8_t* rdram, recomp_context* ctx) {
 // menu/JP/battle/chara_image/<name><suffix>.gim and returns a sprite object, kept at hud + 420 + 4 * side (+428: the weapon variant).
 FuncPtr g_orig_portrait = nullptr; uint32_t g_port_hud = 0; uint32_t g_port_args[2][3] = {};
 std::map<int, uint32_t> g_port_obj; uint32_t g_port_orig_pic[2] = {}; std::map<uint32_t, int> g_port_pic_char;   // (portrait_for / portrait_show below)
+uint32_t g_port_arena = 0; unsigned g_port_slot = 0; constexpr unsigned kPortArenaSlots = 24; constexpr uint32_t kPortSlotBytes = 0x4400u;   // the portrait pixel arena (portrait_for)
+std::map<int, uint32_t> g_port_sum;   // char -> checksum of its picture's first 32 KB when made (portrait_show checks it)
+uint32_t port_sum(uint32_t a) { uint32_t h = 2166136261u; if (!ok(a, 0x4000)) return 0; for (uint32_t o = 0; o < 0x4000u; o += 4) h = (h ^ rd(a + o)) * 16777619u; return h | 1u; }
 void portrait_hook(uint8_t* rdram, recomp_context* ctx) {
     g_ram = rdram; g_ctx = ctx;
     const uint32_t hud = static_cast<uint32_t>(ctx->r[4]), rec = static_cast<uint32_t>(ctx->r[5]), kind = static_cast<uint32_t>(ctx->r[6]), var = static_cast<uint32_t>(ctx->r[7]);
     g_orig_portrait(rdram, ctx);
     const uint32_t obj = static_cast<uint32_t>(ctx->r[2]);
-    if (g_port_hud != hud) { g_port_hud = hud; g_port_obj.clear(); g_port_orig_pic[0] = g_port_orig_pic[1] = 0; g_port_pic_char.clear(); }   // a new battle HUD
+    if (g_port_hud != hud) { g_port_hud = hud; g_port_obj.clear(); g_port_orig_pic[0] = g_port_orig_pic[1] = 0; g_port_pic_char.clear(); g_port_sum.clear(); g_port_slot = 0; }   // a new battle HUD
     if (ok(obj, 0x40) && ok(rec, 8) && var == 0) g_port_pic_char[rd(obj + 0x10u)] = static_cast<int8_t>(g_ram[(rec + 6u) & 0x07FFFFFFu]);
     if (std::getenv("PSPRECOMP_TAGTEAM_PORTLOG")) { std::fprintf(stderr, "[PORTRAIT] name '%.12s' byte9 %u ", reinterpret_cast<const char*>(g_ram + ((rec + 36u) & 0x07FFFFFFu)), g_ram[(rec + 9u) & 0x07FFFFFFu]); std::fprintf(stderr, "hud %08X rec %08X (char %d) kind %u variant %u -> %08X:", hud, rec, ok(rec, 8) ? static_cast<int>(static_cast<int8_t>(g_ram[(rec + 6u) & 0x07FFFFFFu])) : -1, kind, var, obj);
         for (uint32_t o = 0; o < 0x60 && ok(obj, 0x60); o += 4) std::fprintf(stderr, " %08X", rd(obj + o)); std::fprintf(stderr, "\n"); }
@@ -10337,7 +10340,8 @@ uint32_t portrait_for(int c) {
     const uint32_t rec = info_for_char(c); if (!ok(g_port_hud, 0x200) || !rec) return g_port_obj[c] = 0;
     const uint32_t sp0 = static_cast<uint32_t>(g_ctx->r[29]); g_ctx->r[29] = static_cast<int32_t>(sp0 - 0x100u);
     const uint32_t mgr = rd(0x089D7830u); if (ok(mgr, 0x40)) g_ram[(mgr + 35u) & 0x07FFFFFFu] = 1;
-    const uint32_t obj = call(0x08B21588u, g_port_hud, rec, 0xFFFFFFFFu, 0);
+    static const bool pkg_only = std::getenv("PSPRECOMP_TAGTEAM_PORTPKG") != nullptr;   // test aid: always the package read below (what the RP6 does: the game's lookup finds nothing there)
+    const uint32_t obj = pkg_only ? 0u : call(0x08B21588u, g_port_hud, rec, 0xFFFFFFFFu, 0);
     if (ok(mgr, 0x40)) g_ram[(mgr + 35u) & 0x07FFFFFFu] = 0;
     g_ctx->r[29] = static_cast<int32_t>(sp0);
     uint32_t made = obj;
@@ -10357,23 +10361,28 @@ uint32_t portrait_for(int c) {
             if (g_log) { std::fprintf(stderr, "[TAGTEAM] portrait %s from the package (%zu bytes, buffer %08X heap %08X): sprite %08X picture", path.c_str(), b.size(), buf, heap, made);
                 const uint32_t pic = ok(made, 0x40) ? rd(made + 0x10u) : 0u; for (uint32_t o = 0; ok(pic, 0x40) && o < 0x30u; o += 4) std::fprintf(stderr, " %08X", rd(pic + o)); std::fprintf(stderr, "\n"); }
         } else if (g_log) std::fprintf(stderr, "[TAGTEAM] portrait %s: not read (heap %08X)\n", path.c_str(), heap);
+    }
+    {   // (also for a portrait the game's own lookup made: the data sits in the model pool the same way)
         if (ok(made, 0x100)) {   // RP6 20 Nov (rp6_1120_cecil_icon.log): Cecil's portrait data landed at 0E0981B0 (model pool, high RAM) and the icon was not drawn. The host
             // draws textures up there (GE checked, exact address incl.), so the cause is not found; the portrait's pixels are copied below 0C000000 (guest, a small
             // arena in region 2) - the sprite is never freed, nothing else points at them. PSPRECOMP_TAGTEAM_PORTRELOC=<hex dest> = debug: move to that address;
             // PSPRECOMP_TAGTEAM_PORTHI=1 leaves the data where the game put it; =2 also moves data from the whole of region 3 (default: from 0E000000).
-            const uint32_t pic = rd(made + 0x10u); const uint32_t A = ok(pic, 0x40) ? rd(pic) : 0u; const uint32_t N = 0x8000u;
+            const uint32_t pic = rd(made + 0x10u); const uint32_t A = ok(pic, 0x40) ? rd(pic) : 0u; const uint32_t N = kPortSlotBytes;
             const char* rl = std::getenv("PSPRECOMP_TAGTEAM_PORTRELOC"); const char* ph = std::getenv("PSPRECOMP_TAGTEAM_PORTHI");
-            const uint32_t from = ph && ph[0] == '2' ? 0x0C800000u : 0x0E000000u;
-            static uint32_t arena = 0; static unsigned slot = 0;
-            if (!rl && !(ph && ph[0] == '1') && A >= from && !arena) arena = psp_kmem_bump_alloc_named_r2(16u * N, "TAGTEAM_PORTRAIT_PIX");
-            const uint32_t dst = rl ? static_cast<uint32_t>(std::strtoul(rl, nullptr, 16)) : (arena && A >= from && !(ph && ph[0] == '1') ? arena + (slot++ % 16u) * N : 0u);
+            // 26 Nov (Cecil's icon missing again at 0D155A20, rp6_cecil_portrait_1126_1807.log: below the old 0E000000 line, so never moved): every portrait whose data is in
+            // region 3 (the model pool, 0C800000 up) is moved. PSPRECOMP_TAGTEAM_PORTMOVE_OLD=1 = the old line (0E000000).
+            static const bool move_old = std::getenv("PSPRECOMP_TAGTEAM_PORTMOVE_OLD") != nullptr;
+            const uint32_t from = move_old && !(ph && ph[0] == '2') ? 0x0E000000u : 0x0C800000u;
+            if (!rl && !(ph && ph[0] == '1') && A >= from && !g_port_arena) g_port_arena = psp_kmem_bump_alloc_named_r2(kPortArenaSlots * N, "TAGTEAM_PORTRAIT_PIX");
+            const uint32_t dst = rl ? static_cast<uint32_t>(std::strtoul(rl, nullptr, 16)) : (g_port_arena && A >= from && !(ph && ph[0] == '1') ? g_port_arena + (g_port_slot++ % kPortArenaSlots) * N : 0u);
             if (A && dst && ok(A, N) && ok(dst, N)) { std::memcpy(g_ram + (dst & 0x07FFFFFFu), g_ram + (A & 0x07FFFFFFu), N);
                 int n = 0; for (uint32_t base : {pic, made}) for (uint32_t o = 0; o < 0x100u; o += 4) { const uint32_t v = rd(base + o); if (v >= A && v < A + N) { wr(base + o, v - A + dst); n++; } }
                 if (g_log) std::fprintf(stderr, "[TAGTEAM] portrait pixels %08X -> %08X (%d pointers rewritten)\n", A, dst, n); } }
     }
     const uint32_t obj2 = made;
     if (ok(obj2, 0x40)) g_ram[(obj2 + 22u) & 0x07FFFFFFu] = 0;   // hidden: only its picture is used
-    if (g_log) std::fprintf(stderr, "[TAGTEAM] portrait of char %d: sprite %08X (picture %08X)\n", c, obj2, ok(obj2, 0x40) ? rd(obj2 + 0x10u) : 0u);
+    if (ok(obj2, 0x40)) { const uint32_t pic = rd(obj2 + 0x10u); if (ok(pic, 0x40)) g_port_sum[c] = port_sum(rd(pic)); }
+    if (g_log) std::fprintf(stderr, "[TAGTEAM] portrait of char %d: sprite %08X (picture %08X, pixels %08X)\n", c, obj2, ok(obj2, 0x40) ? rd(obj2 + 0x10u) : 0u, ok(obj2, 0x40) && ok(rd(obj2 + 0x10u), 0x40) ? rd(rd(obj2 + 0x10u)) : 0u);
     return g_port_obj[c] = obj2;
 }
 // 26 Nov (lock-step desync, Batch forty-three): the big panel follows THIS machine's player's lock-on target, so a portrait for an extra was made only on
@@ -10383,21 +10392,29 @@ uint32_t portrait_for(int c) {
 // character on the stage gets its portrait as it comes in (spawn, rebuild, and a sweep in the slot fighter's tick), from battle state only, so the
 // allocations are the same on every machine; the view only picks one. PSPRECOMP_TAGTEAM_PORTRAIT_LAZY=1: old (made on first view).
 bool portrait_lazy() { static const bool on = std::getenv("PSPRECOMP_TAGTEAM_PORTRAIT_LAZY") != nullptr; return on; }
+bool portrait_prep_old() { static const bool on = std::getenv("PSPRECOMP_TAGTEAM_PORTPREP_OLD") != nullptr; return on; }
 void portrait_prepare(int c) {
     if (portrait_lazy() || c <= 0 || !ok(g_port_hud, 0x200) || g_port_obj.count(c)) return;
-    for (const auto& kv : g_port_pic_char) if (kv.second == c) return;   // a picture the HUD set-up made (a slot's own character): shown without a new one
+    // a picture the HUD set-up made for a SIDE's own portrait sprite: portrait_show shows it without a new one. (Before 26 Nov any HUD-made picture of that character
+    // skipped this, but portrait_show only reuses the side's own: the party member's picture was then made at the first lock, view-dependent = lock-step unsafe.)
+    for (uint32_t sd = 0; sd < 2; sd++) {
+        if (!g_port_orig_pic[sd] && ok(g_port_hud, 0x200)) { const uint32_t po = rd(g_port_hud + 420u + 4u * sd); if (ok(po, 0x40)) g_port_orig_pic[sd] = rd(po + 0x10u); }
+        if (portrait_prep_old()) break;
+        auto it = g_port_pic_char.find(g_port_orig_pic[sd]); if (it != g_port_pic_char.end() && it->second == c) return;
+    }
+    if (portrait_prep_old()) for (const auto& kv : g_port_pic_char) if (kv.second == c) return;
     portrait_for(c);
 }
 void portrait_prepare_all() {
     if (portrait_lazy() || !g_bs || !ok(g_port_hud, 0x200)) return;
     for (uint32_t k = 0; k < 2; k++) { const uint32_t S = srd(g_bs + 56u + 4u * k); if (ok(S, 0x12D0)) portrait_prepare(actor_char(S)); }
-    for (int i = 0; i < g_nextra; i++) if (g_extra[i].actor) portrait_prepare(g_extra[i].charId);
+    for (int i = 0; i < g_nextra; i++) if (g_extra[i].actor) portrait_prepare(g_extra[i].charId > 0 ? g_extra[i].charId : (ok(g_extra[i].actor, 0x12D0) ? actor_char(g_extra[i].actor) : 0));   // (charId is 0 for an extra spawned on the non-late path)
 }
 // The portrait state belongs to one battle's HUD: the cached sprites (g_port_obj) and the side's own picture (g_port_orig_pic) of the previous battle
 // were reused in the next one when its HUD object had the same address (fz1, 18 Nov: second battle after a forfeit, both big portraits white -
 // "side 0 portrait -> char 0 (picture 08B97888)" wrote battle 1's picture into battle 2's sprite). Dropped at the teardown and at every setup.
 void portrait_reset(bool hud_gone) {
-    g_port_obj.clear(); g_port_orig_pic[0] = g_port_orig_pic[1] = 0;
+    g_port_obj.clear(); g_port_orig_pic[0] = g_port_orig_pic[1] = 0; g_port_sum.clear(); g_port_slot = 0;
     if (hud_gone) { g_port_hud = 0; g_port_pic_char.clear(); }
 }
 void portrait_show(uint32_t side, int c) {   // side's big-panel portrait shows character c (0: its own again)
@@ -10408,7 +10425,9 @@ void portrait_show(uint32_t side, int c) {   // side's big-panel portrait shows 
         if (g_log) { const uint32_t pic = g_port_orig_pic[side]; std::fprintf(stderr, "[TAGTEAM] side %u retail portrait picture %08X:", side, pic); for (uint32_t o = 0; ok(pic, 0x40) && o < 0x30u; o += 4) std::fprintf(stderr, " %08X", rd(pic + o)); std::fprintf(stderr, "\n"); } }
     uint32_t pic = g_port_orig_pic[side];
     { auto it = g_port_pic_char.find(g_port_orig_pic[side]); if (it != g_port_pic_char.end() && it->second == c) c = 0; }   // its own character: its own picture
-    if (c > 0) { const uint32_t o = portrait_for(c); if (ok(o, 0x40) && rd(o + 0x10u)) pic = rd(o + 0x10u); }
+    if (c > 0) { const uint32_t o = portrait_for(c); if (ok(o, 0x40) && rd(o + 0x10u)) pic = rd(o + 0x10u);
+        auto sm = g_port_sum.find(c);   // the pixels must still be what they were when the portrait was made (a device icon went missing; the log says whether the data changed)
+        if (sm != g_port_sum.end() && ok(pic, 0x40) && sm->second) { const uint32_t now = port_sum(rd(pic)); if (now != sm->second) { std::fprintf(stderr, "[TAGTEAM] WARNING portrait pixels of char %d changed: %08X -> %08X (pixels at %08X)\n", c, sm->second, now, rd(pic)); sm->second = now; } } }
     if (rd(po + 0x10u) != pic) { wr(po + 0x10u, pic); if (g_log) std::fprintf(stderr, "[TAGTEAM] t=%.2fs side %u portrait -> char %d (picture %08X)\n", dissidia_battle_age() / 60.0f, side, c, pic); }
 }
 // The sound heap: FUN_088A0C10 (game start) takes 0x237000 bytes (~2.2 MB) from the main heap for the sound manager's allocator (0x09B4CF80,
@@ -14059,7 +14078,8 @@ void dissidia_tagteam_install(uint8_t* rdram) {
     // member loaded found the pool full and came in without models, effects and sounds (invisible, silent). The pool takes what region 1
     // has left after the sound heap, the effect allocator and the 2.6 MB staging heap for mid-battle loads (load_heap: it must stay in region 1;
     // placed in region 2 the game heap code failed every allocation in it). PSPRECOMP_TAGTEAM_POOL_EXTRA=<bytes> overrides.
-    if (!g_load_heap_block) g_load_heap_block = psp_kmem_bump_alloc_named_r2(0x290000u, "TAGTEAM_LOAD_HEAP");   // the staging heap first, in region 2 (see load_heap)
+    if (!g_load_heap_block) g_load_heap_block = psp_kmem_bump_alloc_named_r2(0x290000u, "TAGTEAM_LOAD_HEAP");
+    if (!g_port_arena && !std::getenv("PSPRECOMP_TAGTEAM_PORTHI")) g_port_arena = psp_kmem_bump_alloc_named_r2(kPortArenaSlots * kPortSlotBytes, "TAGTEAM_PORTRAIT_PIX");   // the portrait pixel arena (portrait_for) must be taken now: the effect heap bridge takes the rest of region 2 at the loading screen (26 Nov: mid-battle the request found nothing, so the 20 Nov workaround never moved a portrait)   // the staging heap first, in region 2 (see load_heap)
     if (!std::getenv("PSPRECOMP_TAGTEAM_NOPOOL")) { const char* pe = std::getenv("PSPRECOMP_TAGTEAM_POOL_EXTRA"); dissidia_model_pool_request_extra(pe ? static_cast<uint32_t>(std::strtoul(pe, nullptr, 0)) : 0x800000u); }   // (18 Nov: 7 MB tried to give the effect pool 1 MB more - the stage then drew as garbage late in the battle, run u10s; back to 8 MB)
     if (g_partner_char) g_preload[g_npreload++] = g_partner_char;
     if (g_enemy2_char) g_preload[g_npreload++] = g_enemy2_char;
