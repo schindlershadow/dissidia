@@ -2648,12 +2648,15 @@ void ge_draw_init() {
     if (const char* po = std::getenv("PSPRECOMP_PING_OVERLAY")) g_ping_overlay = po[0] && po[0] != '0';
     g_nobatch = std::getenv("PSPRECOMP_GE_NOBATCH") != nullptr;
     if (const char* sm = std::getenv("PSPRECOMP_GE_SYNC")) {
+        if (!std::strcmp(sm, "off") || !std::strcmp(sm, "none")) { g_sync_mode = 0; std::fprintf(stderr, "[DRAW] GE sync off\n"); }
+        else {
         g_sync_mode = !std::strcmp(sm, "flush") ? 4 : std::atoi(sm);
         if (g_sync_mode <= 0) g_sync_mode = 1;
         g_sync_each = g_sync_mode == 1;
         std::fprintf(stderr, "[DRAW] GE sync mode %d (%s)\n", g_sync_mode,
                      g_sync_mode == 1 ? "glFinish per batch" : g_sync_mode == 2 ? "glFinish per list"
                      : g_sync_mode == 3 ? "glFinish per present" : "glFlush per batch");
+    }
     }
 #if !defined(PSP_GLES) && !defined(__APPLE__)
     else {
