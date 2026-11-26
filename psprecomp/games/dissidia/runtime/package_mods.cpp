@@ -7,6 +7,7 @@
 #include <thread>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <dirent.h>
 #include <fcntl.h>
@@ -107,6 +108,10 @@ bool parse_hex8(const std::string& s, uint32_t* out) {
     *out = v;
     return true;
 }
+
+// PSPRECOMP_MODS_OLD2GIB=1: the layout before 26 Nov (texture-pack PNGs indexed, no 2 GiB limit): reproduces the frozen Customization screen.
+bool old_layout() { static const bool o = std::getenv("PSPRECOMP_MODS_OLD2GIB") != nullptr; return o; }
+uint64_t max_package_bytes() { return old_layout() ? ~0ull >> 1 : kMaxPackageBytes; }
 
 int64_t pread_all(const std::string& file, uint8_t* dest, uint32_t n, int64_t off) {
     int fd = ::open(file.c_str(), O_RDONLY | O_BINARY);
@@ -222,6 +227,10 @@ bool PackageMods::build(const std::vector<uint8_t>& original_index, uint64_t pac
             // textures/… is the texture-pack tree (psp_tex_pack.cpp serves it by xxhash id); the game never
             // requests those paths, and a dump of 1,000+ PNGs would otherwise flood the package index below.
             if (norm.compare(0, 9, "textures/") == 0) continue;
+            // texpacks/<id>/... is the installed texture packs (psp_texpacks.h, psp_tex_pack.cpp serves them by name): not game
+            // paths either. Each of a pack's thousands of PNGs became a NEW entry that took virtual sectors, which pushed the
+            // real overrides past 2 GiB (max_package_bytes()).
+            if (norm.compare(0, 9, "texpacks/") == 0 && !old_layout()) continue;
             crc = package_crc(norm);
         }
         if (st.st_size <= 0 || (uint64_t)st.st_size > kSizeMask) { note("[MODS] skip (size out of range): " + rel); continue; }
@@ -252,6 +261,10 @@ bool PackageMods::build(const std::vector<uint8_t>& original_index, uint64_t pac
                 // sectors() may be 0 for an empty original; keep at least `need`
                 if (ov.span < need * kSectorSize) ov.span = need * kSectorSize;
             } else {
+                if ((next_virtual + need) * kSectorSize > max_package_bytes()) {   // no room below 2 GiB: the retail file stays
+                    note("[MODS] skip (no room below 2 GiB in the package for " + std::to_string(ov.size) + " B): " + asset);
+                    continue;
+                }
                 ov.relocated = true;
                 ne.sector = (uint32_t)next_virtual;
                 ov.start = next_virtual * kSectorSize;
@@ -266,9 +279,11 @@ bool PackageMods::build(const std::vector<uint8_t>& original_index, uint64_t pac
         } else {
             ov.is_new = true; ov.relocated = true;
             IndexEntry ne;
-            ne.crc = crc; ne.sector = (uint32_t)next_virtual; ne.size_flags = (1u << 28) | ov.size;   // flags=1: see README
-            ov.start = next_virtual * kSectorSize; ov.span = need * kSectorSize;
-            next_virtual += need;
+            // the sector is given below, after the real overrides and only to the entries that are kept (dropped ones used to
+            // take virtual space too)
+            ne.crc = crc; ne.sector = 0; ne.size_flags = (1u << 28) | ov.size;   // flags=1: see README
+            ov.start = 0; ov.span = need * kSectorSize;
+            if (old_layout()) { ne.sector = (uint32_t)next_virtual; ov.start = next_virtual * kSectorSize; next_virtual += need; }   // as before 26 Nov
             new_entries.push_back(ne);
             added++;
             note("[MODS] NEW entry " + asset + " crc=" + [&]{ char b[16]; std::snprintf(b, sizeof b, "%08x", crc); return std::string(b); }() +
@@ -298,9 +313,41 @@ bool PackageMods::build(const std::vector<uint8_t>& original_index, uint64_t pac
             overrides_ = keep;
             new_entries.resize(std::min(new_entries.size(), room));
         }
+        {   // virtual sectors of the kept NEW entries, after every real override and below 2 GiB (max_package_bytes())
+            std::map<uint32_t, size_t> at;
+            for (size_t i = 0; i < overrides_.size(); i++) if (overrides_[i].is_new) at[overrides_[i].crc] = i;
+            std::vector<IndexEntry> placed;
+            std::set<uint32_t> gone;
+            for (IndexEntry& n : new_entries) {
+                Override& o = overrides_[at[n.crc]];
+                if (old_layout()) { placed.push_back(n); continue; }
+                const uint64_t need = o.span / kSectorSize;
+                if ((next_virtual + need) * kSectorSize > max_package_bytes()) {
+                    note("[MODS]   dropped NEW entry (no room below 2 GiB in the package) " + o.file);
+                    gone.insert(n.crc);
+                    continue;
+                }
+                n.sector = (uint32_t)next_virtual;
+                o.start = next_virtual * kSectorSize;
+                next_virtual += need;
+                placed.push_back(n);
+            }
+            if (!gone.empty()) {
+                std::vector<Override> keep;
+                for (auto& o : overrides_) if (!(o.is_new && gone.count(o.crc))) keep.push_back(o);
+                overrides_ = keep;
+            }
+            new_entries = placed;
+        }
         for (auto& n : new_entries) idx.entries.push_back(n);
         std::sort(idx.entries.begin(), idx.entries.end(),
                   [](const IndexEntry& a, const IndexEntry& b) { return a.crc < b.crc; });
+    }
+    {   // the whole virtual area the served files lie in has to be reachable (see max_package_bytes())
+        uint64_t top = 0;
+        for (const auto& o : overrides_) top = std::max<uint64_t>(top, o.start + o.span);
+        if (top > max_package_bytes()) note("[MODS] WARNING: the overrides reach " + std::to_string(top) + " B, past the 2 GiB the game can address");
+        else if (top > 0) note("[MODS] served files end at package offset " + std::to_string(top) + " B (the game addresses up to " + std::to_string(max_package_bytes()) + " B)");
     }
     std::sort(overrides_.begin(), overrides_.end(),
               [](const Override& a, const Override& b) { return a.start < b.start; });
@@ -322,6 +369,7 @@ bool PackageMods::add_override(const std::string& asset, const std::string& file
     uint64_t next = (package_size_ + kSectorSize - 1) / kSectorSize;
     for (const auto& o : overrides_) next = std::max<uint64_t>(next, (o.start + o.span + kSectorSize - 1) / kSectorSize);
     for (const auto& x : idx.entries) next = std::max<uint64_t>(next, (uint64_t)x.sector + x.sectors());
+    if ((next + (size + kSectorSize - 1) / kSectorSize) * kSectorSize > max_package_bytes()) return false;   // would lie past 2 GiB (max_package_bytes())
     Override ov;
     ov.crc = crc; ov.asset = norm; ov.file = file; ov.size = size; ov.relocated = true;
     ov.start = next * kSectorSize;

@@ -41,6 +41,9 @@ import time
 import urllib.request
 import zipfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import discdir  # noqa: E402  (where disc0 is)
+
 REPO = "Niosa/D012FFRT"
 CREDITS = {
     "file": "HD textures: your own texture pack, installed from %s.\n"
@@ -70,7 +73,7 @@ def http(url, timeout=60):
 
 
 def disc_id(workdir):
-    p = os.path.join(workdir, "disc0", "PSP_GAME", "PARAM.SFO")
+    p = os.path.join(discdir.disc_dir(workdir), "PSP_GAME", "PARAM.SFO")
     try:
         data = open(p, "rb").read()
     except OSError:
@@ -261,7 +264,7 @@ def main():
     ap.add_argument("--name", help="--pack file: the archive's file name when --zip is fd:N (the Android picker); names the pack")
     a = ap.parse_args()
     work = os.path.abspath(a.workdir)
-    if not os.path.isdir(os.path.join(work, "disc0")):
+    if not os.path.isdir(discdir.disc_dir(work)):
         die("%s is not an install folder (no disc0/)" % work)
     did = disc_id(work)
     mods = os.path.join(work, "mods")

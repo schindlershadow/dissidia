@@ -19,6 +19,8 @@ final class Engine {
     static native boolean feature(String name);
     static native String payloadFingerprint();
     static native String gameDir();
+    /** The game's disc files are still on the device (the game folder, or an older install's work folder). */
+    static native boolean discPresent(String work);
     static native String releaseRoot();
     static native String loadState(String file);
     static native boolean saveState(String file, String text);
@@ -40,6 +42,13 @@ final class Engine {
     static native String parseUpdate(String line);
     static native void inheritFd(int fd);
     static native long freeSpace(String path);
+    // free space an install / the extras need (setup/install.cpp needed_bytes) and the failure text when `workdir` has less ("" = enough)
+    static native long neededBytes(String options, String workdir, boolean extrasOnly);
+    static native String spaceProblem(String workdir, long need);
+    // why a step failed, in words: { kind, title, text } (setup/install.cpp explain_failure)
+    static native String[] explainFailure(String step, String stage, String error, String tail, String workdir, int code, boolean cancelled);
+    // the disc an extra needs, looked for in the folder of the first image (a real path): "" = none
+    static native String findExtraDisc(String key, String nearFile);
     // Report an issue (the game's psp_report.cpp): files = rel, path, rel, path ...; facts = key, value ...
     static native String[] reportPreview(String version, String spaceDir, String[] files, String[] facts);
     static native String reportBuild(String version, String spaceDir, String[] files, String[] facts, String title, String desc, String outZip);

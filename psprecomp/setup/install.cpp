@@ -565,9 +565,15 @@ std::vector<std::string> android_verify_argv(const Layout& l, const std::string&
 std::string android_game_dir() { return std::string("/sdcard/Android/media/") + kGamePackage + "/game"; }
 
 EnvList android_env(const Layout& l, const std::string& workdir) {
-    return {{"PYTHONUNBUFFERED", "1"}, {"PYTHONDONTWRITEBYTECODE", "1"}, {"PYTHONHOME", join(l.root, "python")},
+    EnvList e = {{"PYTHONUNBUFFERED", "1"}, {"PYTHONDONTWRITEBYTECODE", "1"}, {"PYTHONHOME", join(l.root, "python")},
             {"PSPRECOMP_ANDROID_DEVICE", "1"}, {"PSPRECOMP_ZIG", l.zig}, {"HOME", workdir},
             {"TMPDIR", join(workdir, "tmp")}, {"ZIG_LIB_DIR", join(l.android_dir, "zig-lib")}};
+    // One copy of the disc files: they live only in the game's folder (tools/discdir.py). PSPRECOMP_DISC_HOME_OLD=1 in the app's
+    // environment: the old layout (disc0 in the work folder, copied at the end); PSPRECOMP_KEEP_BUILD=1: no clean-up after the build.
+    for (const char* k : {"PSPRECOMP_DISC_HOME_OLD", "PSPRECOMP_KEEP_BUILD"})
+        if (const char* v = std::getenv(k)) e.push_back({k, v});
+    e.push_back({"PSPRECOMP_DISC_HOME", android_game_dir() + "/disc0"});
+    return e;
 }
 
 std::string android_payload_fingerprint(const Layout& l) {
@@ -607,8 +613,8 @@ std::vector<Step> plan_install_android(const Layout& l, const std::string& iso, 
     b.weight = 0.80;
     Step c;
     c.label = "Putting the game files where the game can read them";
-    c.explain = "Copies the game's files (about 2 GB) to where the game reads them.";
-    c.argv = {l.python, join(l.game_dir, "tools/android_local_install.py"), workdir, "--dest", android_game_dir()};
+    c.explain = "Moves the last files to where the game reads them and removes what the build left (nothing the game needs).";
+    c.argv = {l.python, join(l.game_dir, "tools/android_local_install.py"), workdir, "--dest", android_game_dir(), "--clean"};
     c.env = android_env(l, workdir);
     c.weight = 0.10;
     std::vector<Step> p{x};
@@ -931,6 +937,7 @@ std::string default_install_dir() {
 }
 
 long long free_space(const std::string& path) {
+    if (const char* f = std::getenv("PSPRECOMP_FAKE_FREE_MB")) return std::atoll(f) << 20;   // test aid: pretend the drive has this much free
     std::error_code ec;
     fs::path p = fs::absolute(path, ec);
     while (!p.empty() && !fs::exists(p, ec)) {
@@ -940,6 +947,176 @@ long long free_space(const std::string& path) {
     }
     auto sp = fs::space(p, ec);
     return ec ? -1 : (long long)sp.available;
+}
+
+// ------------------------------------------------------------------------------------------------------------------------------
+// Free space before the install, and a plain-words reason when a step fails (both installers).
+
+std::string human_gb(long long b) {
+    char t[32];
+    if (b >= (1LL << 30)) std::snprintf(t, sizeof t, "%.1f GB", b / double(1LL << 30));
+    else std::snprintf(t, sizeof t, "%lld MB", (b + (1 << 20) - 1) >> 20);
+    return t;
+}
+
+bool disc_files_present(const std::string& workdir, const std::string& game_dir) {
+    const char* pkg = "PSP_GAME/USRDIR/DATA/PACKAGE.BIN";
+    return is_file(join(game_dir, std::string("disc0/") + pkg)) || is_file(join(workdir, std::string("disc0/") + pkg));
+}
+
+static long long tree_has(const std::string& p, long long bytes) { return is_dir(p) || is_file(p) ? bytes : 0; }
+
+long long needed_bytes(bool android, const std::string& workdir, const Options& o, bool extras_only) {
+    long long n = 0;
+    if (!extras_only) {
+        n = android ? kNeededBytesAndroid : kNeededBytes;
+        // a retry / resume already has these (measured: the extracted disc 1.7 GB, the compiled objects 0.4 GB)
+        if (!workdir.empty()) {
+            long long disc = tree_has(join(workdir, "disc0/PSP_GAME"), 1700LL << 20);
+            if (android) disc = std::max(disc, tree_has(std::string("/sdcard/Android/media/org.psprecomp.game/game/disc0/PSP_GAME"), 1700LL << 20));
+            n -= disc;
+            n -= tree_has(join(workdir, "android/obj"), 400LL << 20);
+        }
+        n = std::max(n, 1LL << 30);
+    } else {
+        n = 256LL << 20;   // the copy step
+    }
+    for (const Extra& e : extras()) if (o.on(e.key) && (e.parent.empty() || o.on(e.parent))) n += e.need_bytes;
+    return n;
+}
+
+std::string space_problem(const std::string& workdir, long long need, bool android) {
+    if (const char* e = std::getenv("PSPRECOMP_SKIP_SPACE_CHECK")) if (e[0] == '1') return "";
+    const long long free = free_space(workdir);
+    if (free < 0 || free >= need) return "";
+    FailureCtx c;
+    c.step = "Before the install starts";
+    c.error = "not enough free disk space";
+    c.workdir = workdir;
+    c.android = android;
+    Failure f = explain_failure(c);
+    f.where = "The install cannot start: not enough free space.";
+    f.why = "The install needs about " + human_gb(need) + " free and " + human_gb(free) + " " + (free < 0 ? "are" : "is") + " free on the drive that holds " + workdir + ".";
+    f.todo = "Free at least " + human_gb(need - free + (256LL << 20)) + " more" +
+             (android ? " (Android Settings > Storage shows what takes space; the game file itself can be deleted from the phone once the game is installed)" :
+                        ", or pick another install folder on a drive with more space") + ". Then start again.";
+    return f.text();
+}
+
+std::string Failure::title() const {
+    static const std::pair<const char*, const char*> t[] = {{"space", "Not enough space"}, {"memory", "Out of memory"}, {"iso", "Wrong game file"}, {"damaged", "Damaged file"},
+        {"version", "Unknown disc version"}, {"download", "Download failed"}, {"compile", "Compiler error"}, {"link", "Link error"}, {"translate", "Translation error"},
+        {"pack", "Packing error"}, {"device", "No device"}, {"cancelled", "Cancelled"}};
+    for (auto& k : t) if (kind == k.first) return k.second;
+    return "Step failed";
+}
+
+std::string Failure::text() const { return where + "\n\nWhy: " + why + "\n\nWhat to do: " + todo; }
+
+static std::string lowered(std::string s) {
+    for (char& c : s) c = (char)std::tolower((unsigned char)c);
+    return s;
+}
+static bool has(const std::string& hay, std::initializer_list<const char*> needles) {
+    for (const char* n : needles) if (hay.find(n) != std::string::npos) return true;
+    return false;
+}
+// "batch_0165.cpp" from a compiler line
+static std::string cpp_name(const std::string& t) {
+    size_t e = t.find(".cpp");
+    if (e == std::string::npos) return "";
+    size_t b = e;
+    while (b > 0 && (std::isalnum((unsigned char)t[b - 1]) || t[b - 1] == '_' || t[b - 1] == '-')) b--;
+    return t.substr(b, e + 4 - b);
+}
+
+// The tool's own words: the last "error: ..." line of the output (python tools print their error that way) when the caller has no better.
+static std::string tool_error(const FailureCtx& c) {
+    if (!c.error.empty() && c.error.compare(0, 13, "A step failed") != 0) return c.error;
+    std::istringstream is(c.tail);
+    std::string line, last;
+    while (std::getline(is, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        if (line.compare(0, 7, "error: ") == 0) last = line.substr(7);
+    }
+    return last.empty() ? c.error : last;
+}
+
+Failure explain_failure(const FailureCtx& c0) {
+    FailureCtx c = c0;
+    c.error = tool_error(c0);
+    Failure f;
+    const std::string err = lowered(c.error), all = err + "\n" + lowered(c.tail) + "\n", st = lowered(c.step + " | " + c.stage);
+    const std::string step = c.stage.empty() || c.stage == c.step ? c.step : c.step + " (" + c.stage + ")";
+    const std::string log = " The details are in setup.log; Report an issue sends it to the developer.";
+    f.where = "It stopped at: " + (step.empty() ? std::string("the install") : step) + ".";
+    const std::string fastbuild = c.android ? " Pick the Fast build (Options > Build), which needs less memory and time." : "";
+    if (c.cancelled) {
+        f.kind = "cancelled"; f.where = "The install was cancelled."; f.why = "You stopped it.";
+        f.todo = "Start again whenever you like: it continues where it stopped.";
+    } else if (has(all, {"cachecheckfailed", "nospaceleft", "no space left", "not enough free disk space", "disk full", "errno 28", "enospc", "not enough space", "no room left"})) {
+        f.kind = "space";
+        const long long free = free_space(c.workdir.empty() ? "." : c.workdir);
+        const bool cache_only = all.find("cachecheckfailed") != std::string::npos && all.find("no space left") == std::string::npos && all.find("nospaceleft") == std::string::npos;
+        if (cache_only && free >= (1LL << 30))
+            f.why = "The compiler could not write its cache files (" + human_gb(free) + " show as free on the drive that holds " + c.workdir + "). The cache folder is not writable or the app's storage quota is used up.";
+        else
+            f.why = "The drive ran out of space" + (free >= 0 ? " (" + human_gb(free) + " free on the drive that holds " + c.workdir + ")" : std::string()) +
+                    (all.find("cachecheckfailed") != std::string::npos ? "; the compiler reported that it could not write its cache" : "") + ".";
+        f.todo = std::string("Free some space") + (c.android ? " (Android Settings > Storage; the game file can be deleted once the game is installed)" : ", or reinstall to a drive with more room") +
+                 ", then Try again: what is already done is kept. About " + human_gb(c.android ? kNeededBytesAndroid : kNeededBytes) + " are needed in total.";
+    } else if (!c.cancelled && (has(all, {"out of memory", "bad_alloc", "cannot allocate memory", "memoryerror", "std::bad_alloc", "killed\n", "oom-kill"}) || ((c.exit_code == -1 || c.exit_code == 137) && has(st, {"build", "compil", "translat", "analys"})))) {
+        f.kind = "memory";
+        f.why = "The " + std::string(c.android ? "phone" : "computer") + " ran out of memory and the system stopped the " + (has(st, {"compil"}) ? "compiler" : "tool") + ".";
+        f.todo = std::string(c.android ? "Close other apps, keep this app open (screen on, charger connected) and Try again: it continues where it stopped." + fastbuild
+                                       : "Close other programs (a browser uses a lot) and Try again: it continues where it stopped.");
+    } else if (has(all, {"not a 2048-byte-sector", "'cd001'", "psp_game/sysdir/eboot.bin not found", "psp_game/usrdir not found", "primary volume descriptor", "unsupported logical block", "zso (lz4", "dax images", "pbp (psn", "raw 2352", "not a cso file", "cso version", "unsupported", "not an elf"}) && has(st, {"read", "extract", "game file", "disc"})) {
+        f.kind = "iso";
+        f.why = "The game file is not a disc image the installer can read (" + (c.error.empty() ? std::string("unsupported format") : c.error) + ").";
+        f.todo = "Pick a .iso or .cso made from the whole Dissidia 012 disc (EU or US). ZSO, DAX and PBP files must be converted to ISO first (for example with maxcso --decompress), then start again.";
+    } else if (has(all, {"truncated", "is corrupt", "is short", "corrupt cso", "index truncated", "unexpected end of file", "crc"}) && has(st, {"read", "extract", "game file", "disc"})) {
+        f.kind = "damaged";
+        f.why = "The game file looks damaged or incomplete (" + (c.error.empty() ? std::string("it ends too early") : c.error) + "). A bad copy or dump gives this.";
+        f.todo = "Copy the file again (check that the copy finished and the drive has no errors) or dump your disc again, then pick it and start again.";
+    } else if (has(all, {"sha-256 differs", "does not match the binary", "wrong game version", "segment size mismatch", "pt_load segments", "differs from"}) ) {
+        f.kind = "version";
+        f.why = "The disc's program files are not the ones this installer was made for (" + (c.error.empty() ? std::string("a hash did not match") : c.error) + "). A modified, patched or bad dump does this.";
+        f.todo = "Use an unmodified dump of Dissidia 012 [duodecim] (EU ULES-01359 or US ULUS-10566), not a translation patch or a re-pack, and start again.";
+    } else if (has(all, {"download failed", "urlopen", "timed out", "connection reset", "name resolution", "network is unreachable", "ssl", "http error", "checksum"}) && (has(st, {"download", "update", "texture", "hd "}) || has(all, {"download"}))) {
+        f.kind = "download";
+        f.why = "A download did not finish (" + (c.error.empty() ? std::string("the connection failed") : c.error) + ").";
+        f.todo = "Check your internet connection (WiFi is best for big files) and Try again: files that finished are kept.";
+    } else if (has(all, {"linking failed", "ld.lld", "undefined symbol", "linker command failed"})) {
+        f.kind = "link";
+        f.why = "The compiled game could not be linked into one program.";
+        f.todo = "Try again once; if it fails the same way, press Report an issue: this is a problem of the installer, not of your files." + log;
+    } else if (has(all, {"compiling failed", "error:", "compilation terminated", "clang"}) && has(st, {"compil", "build"}) && !has(st, {"apk"})) {
+        f.kind = "compile";
+        const std::string file = cpp_name(c.error + "\n" + c.tail);
+        f.why = "The compiler stopped with an error" + (file.empty() ? std::string() : " in " + file) + ". Not enough memory or a damaged build folder can cause this.";
+        f.todo = "Try again once" + std::string(c.android ? " (close other apps first)." : ".") + " If it fails the same way, press Report an issue: this is a problem of the installer, not of your files." + fastbuild;
+    } else if (has(st, {"translat", "recompil", "analys", "overlay", "checks your game files"}) || has(all, {"panicked", "recompile failed", "no analysis"})) {
+        f.kind = "translate";
+        f.why = "The game's code could not be translated" + (c.error.empty() ? std::string(".") : " (" + c.error + ").");
+        f.todo = "Check that the game file is an unmodified Dissidia 012 (EU or US) and Try again. If it keeps failing, press Report an issue." + log;
+    } else if (has(all, {"no devices", "no device", "unauthorized", "device offline", "adb"}) && has(st, {"installing on your device", "device"})) {
+        f.kind = "device";
+        f.why = "The phone is not reachable over adb (" + (c.error.empty() ? std::string("no device answered") : c.error) + ").";
+        f.todo = "Connect the phone with USB, turn on USB debugging, accept the prompt on the phone, and Try again.";
+    } else if (has(all, {"apk", "sign", "zipalign", "aapt"}) && has(st, {"apk", "android", "installing"})) {
+        f.kind = "pack";
+        f.why = "The Android app could not be packed or signed (" + (c.error.empty() ? std::string("see the log") : c.error) + ").";
+        f.todo = "Try again once; if it fails the same way, press Report an issue." + log;
+    } else if (has(all, {"cannot write", "permission denied", "all files access", "read-only file system"})) {
+        f.kind = "space";
+        f.why = "The folder could not be written to (" + (c.error.empty() ? std::string("permission denied") : c.error) + ").";
+        f.todo = c.android ? "Allow \"all files access\" for this app in Android Settings > Apps, then Try again." : "Pick an install folder you can write to (inside your home folder), and start again.";
+    } else {
+        f.kind = "other";
+        f.why = c.error.empty() ? std::string("The step ended with an error") + (c.exit_code ? " (exit code " + std::to_string(c.exit_code) + ")" : std::string()) + "." : c.error + ".";
+        f.todo = "Try again: it continues where it stopped. If it fails the same way, press Report an issue." + log;
+    }
+    return f;
 }
 
 }  // namespace setup

@@ -439,6 +439,16 @@ PspDebugReply psp_debug_handle_line(const char* line,
     if (line[0] == 'S' && line[1] == ' ') {
         return handle_screenshot(line + 2);
     }
+    if (std::strncmp(line, "REC ", 4) == 0) {
+        // REC <n> <dir>: write each of the next n presented frames as <dir>/fNNNNN_<ms>.tga (test aid)
+        extern void ge_draw_record_frames(int n, const char* dir);
+        char* end = nullptr;
+        const long n = std::strtol(line + 4, &end, 10);
+        const char* dir = skip_spaces(end);
+        if (n < 0 || *dir == '\0') return make_err("bad-args");
+        ge_draw_record_frames(static_cast<int>(std::min<long>(n, 20000)), dir);
+        return make_ok_empty();
+    }
     if (line[0] == 'V' && line[1] == ' ') {
         const char* path = skip_spaces(line + 2);
         if (*path == '\0') return make_err("bad-path");

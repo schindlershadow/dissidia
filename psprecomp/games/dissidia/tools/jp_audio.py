@@ -26,6 +26,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import discdir                       # noqa: E402  (where disc0 is)
 import package_extract as pe          # noqa: E402  (package_crc, the index layout)
 import setup_from_iso as sfi          # noqa: E402  (Iso9660 / CSO reader)
 
@@ -154,7 +155,7 @@ def main():
     a = ap.parse_args()
     PROGRESS = a.progress
 
-    data_dir = os.path.join(a.work, "disc0", "PSP_GAME", "USRDIR", "DATA")
+    data_dir = os.path.join(discdir.disc_dir(a.work), "PSP_GAME", "USRDIR", "DATA")
     mine_info = os.path.join(data_dir, "PACKAGE_INFO.BIN")
     mine_pkg = os.path.join(data_dir, "PACKAGE.BIN")
     for p in (mine_info, mine_pkg):
