@@ -4453,7 +4453,19 @@ uint32_t exb_fighter(const char* w) {
     if (w[0] == 'x' && w[1] >= '0' && w[1] <= '9') { const int i = w[1] - '0'; return i < g_nextra && g_extra[i].started ? g_extra[i].actor : 0u; }
     return 0;
 }
+extern std::map<uint32_t, uint32_t> g_slot_hdl; void hitreact2_hook(uint8_t* rdram, recomp_context* ctx);
+uint32_t g_tp_react_args[3] = {0, 0, 0};   // test aid: the last natural slot-handler reaction call's r5..r7
+void exb_test_react() {   // PSPRECOMP_TAGTEAM_TEST_EXBREACT=1: while a burst on an extra runs, the retail reaction is delivered to the human slot fighter's handler (what the RP6 log showed: the burst's hit arrives there)
+    static const bool on = std::getenv("PSPRECOMP_TAGTEAM_TEST_EXBREACT") != nullptr; if (!on || !g_bs) return;
+    const uint32_t c = rd(0x08A405E0u); if (!ok(c, 0x300) || !exb_on(c)) return;
+    const uint32_t p0 = exb_p0(c), p1 = exb_p1(c); if (!ok(p0, 0x12D0) || !ok(p1, 0x12D0) || !g_extra_hdl.count(p1) || !g_tp_react_args[0]) return;
+    static int cnt = 0; if (cnt++ % 45) return;
+    for (int k = 0; k < 2; k++) { const uint32_t o = srd(g_bs + 56u + 4u * k); auto it = g_slot_hdl.find(o); if (o && o != p0 && o != p1 && side_of(o) == side_of(p1) && it != g_slot_hdl.end()) {
+        std::fprintf(stderr, "[TESTEXBREACT] t=%.2fs reaction delivered to %s's handler %08X during the burst %s -> %s\n", dissidia_battle_age() / 60.0f, role_of(o), it->second, role_of(p0), role_of(p1));
+        recomp_context cc = *g_ctx; cc.r[4] = static_cast<int32_t>(it->second); cc.r[5] = static_cast<int32_t>(g_tp_react_args[0]); cc.r[6] = static_cast<int32_t>(g_tp_react_args[1]); cc.r[7] = static_cast<int32_t>(g_tp_react_args[2]); cc.r[29] = static_cast<int32_t>(static_cast<uint32_t>(cc.r[29]) - 0x200u); hitreact2_hook(g_ram, &cc); } }
+}
 void exb_debug_start() {
+    exb_test_react();
     if (const char* w = std::getenv("PSPRECOMP_TAGTEAM_WATCHAT")) {   // debug: "<s>:<who>:<hex offset>": memory watch on that fighter's word from tag-clock time s
         static bool armed = false; float at = 0; char who[4] = {}; unsigned off = 0;
         if (!armed && std::sscanf(w, "%f:%3[^:]:%x", &at, who, &off) == 3 && dissidia_battle_age() / 60.0f >= at) { const uint32_t a = exb_fighter(who);
@@ -5390,6 +5402,8 @@ uint32_t g_midfin_gen = ~0u;   // battle generation whose retail finish phase (b
 // Retail's finish machine (FUN_08B0618C, FUN_08B06370) clears the sound-request enable byte 0x089D6C98 (FUN_088A24D4 returns 0 without it: no sound effect or voice can start any more); nothing sets it again
 // until the next phase. A mid-battle KO saves it at the finish start and writes it back when the finish is over (user, RP6 25 Nov: the second KO, a slot fighter, silenced every effect; PSPRECOMP_TAGTEAM_NOSNDENABLE=1 = old).
 uint32_t g_sndenable_gen = ~0u; uint32_t g_sndenable_val = 0;
+extern int g_hframe; void hit_last(uint32_t att, uint32_t& vic, int& age);
+uint32_t g_hpb_vic = 0, g_hpb_att = 0; int g_hpb_frame = -1000;   // the last HP step's victim / attacker / frame (phantom-step guard)
 static void hpstep_core(uint8_t* rdram, recomp_context* ctx, uint32_t forced) {
     g_ram = rdram; g_ctx = ctx; g_hp_last_victim = 0;
     if (g_bs && std::getenv("PSPRECOMP_TAGTEAM_BS72WATCH")) { static uint32_t wg = 0xFFFFFFFFu; if (wg != g_battle_gen) { wg = g_battle_gen; psp_mem_watch_set(g_bs + 72u); std::fprintf(stderr, "[BS72] watching bs+72 at %08X\n", g_bs + 72u); } }   // debug: who writes the battle phase
@@ -5418,6 +5432,18 @@ static void hpstep_core(uint8_t* rdram, recomp_context* ctx, uint32_t forced) {
         if (lv && lage >= 0 && lage <= 8 && lv != att) { real = lv; if (g_log) { static int c = 0; if (c++ < 60) std::fprintf(stderr, "[HPLATE] t=%.2fs %s %08X: no hit in the last 2 frames, its last registered hit (%d frames ago) on %s %08X books the HP damage (module victim %s %08X)\n", dissidia_battle_age() / 60.0f, role_of(att), att, lage, ok(lv, 0x12D0) ? role_of(lv) : "?", lv, ok(slotv, 0x12D0) ? role_of(slotv) : "?", slotv); } }
     }
     if (!(ok(real, 0x12D0) && ok(slotv, 0x12D0) && real != slotv && (xstep || side_of(real) == side_of(slotv) || side_of(real) == side_of(att)) && hp_eff(real) > 0)) real = 0;
+    // 26 Nov (user, RP6 FFA: "Chaos did HP damage to me, but it also said Laguna did damage"): a plain step (not an extra's own damage step) whose attacker is a slot fighter that has NO registered hit
+    // (none in the last 8 frames) booked its BRV on the module's default victim, 3-12 frames after an extra's HP hit on that same victim (rp6_hpdmg_1126_1811 t=217.32 extraP -> slotH, 217.39 slotC -> slotH
+    // 301 damage with slotC's BRV left unspent; same at t=55.34 / 55.54). Nobody hit the victim with that attacker: the step is skipped like a whiff (the attacker keeps its BRV, no damage booked).
+    // Every real step of a slot fighter in the headless FFA runs had its hit registered 1 frame before. PSPRECOMP_TAGTEAM_HPPHANTOM_OLD=1: old.
+    static const bool phantom_off = std::getenv("PSPRECOMP_TAGTEAM_HPPHANTOM_OLD") != nullptr;
+    if (!phantom_off && !real && !xstep && !forced && g_nextra && g_bs && ok(att, 0x12D0) && ok(slotv, 0x12D0) && (att == srd(g_bs + 56u) || att == srd(g_bs + 60u)) && g_hpb_vic == slotv && g_hpb_att != att && g_hframe - g_hpb_frame <= 20) {
+        uint32_t lv = 0; int lage = -1; hit_last(att, lv, lage);
+        if (!(lv && lage >= 0 && lage <= 8)) {
+            if (g_log) { static int c = 0; if (c++ < 100) { const uint32_t as = rd(att + 0x52Cu); std::fprintf(stderr, "[HPPHANTOM] t=%.2fs %s %08X (char %d) has no registered hit (last %d frames ago) but a plain HP step names it against %s %08X, %d frames after %s %08X's HP hit on that fighter: skipped, attacker BRV %d kept\n", dissidia_battle_age() / 60.0f, role_of(att), att, actor_char(att), lage, role_of(slotv), slotv, g_hframe - g_hpb_frame, ok(g_hpb_att, 0x12D0) ? role_of(g_hpb_att) : "?", g_hpb_att, ok(as, 0x40) ? static_cast<int>(rdh(as + 0x14u)) : -1); } }
+            return;
+        }
+    }
     if (forced) real = forced;   // PSPRECOMP_TAGTEAM_HPAIMONLY off: the same attack's second (third) victim, see hpstep_hook
     if (g_log && g_nextra && std::getenv("PSPRECOMP_TAGTEAM_HPSTEPLOG")) { uint32_t lv = 0; int lage = -1; hit_last(att, lv, lage); std::fprintf(stderr, "[HPSTEP] att %s %08X module fighter %s %08X, last registered hit on %08X %d frames ago\n", ok(att, 0x12D0) ? role_of(att) : "?", att, ok(slotv, 0x12D0) ? role_of(slotv) : "?", slotv, lv, lage); }
     if (real) wr(m, real);
@@ -5490,7 +5516,7 @@ static void hpstep_core(uint8_t* rdram, recomp_context* ctx, uint32_t forced) {
     hp_hit_indicator(a, ratt, dmg_hp0, hold && g_ko_mark.count(a) != 0);
     if (ok(a, 0x12D0) && dmg_hp0 > 0 && hp_eff(a) <= 0) {   // always on (27 Nov doubleko): every lethal HP hit, to read a KO off a device log; the booking lines follow from the KO flow
         ret_dump("lethal HP hit (KO)"); static int kc = 0; if (kc++ < 400) std::fprintf(stderr, "[KOEVT] t=%.2fs LETHAL HP hit: victim %s %08X (char %d s%u) hp %d -> %d (pending damage %d) by %s %08X (char %d), %s victim of this attack, victim script %d, held %d, KO mark %d\n", dissidia_battle_age() / 60.0f, role_of(a), a, actor_char(a), side_of(a), dmg_hp0, hp_eff(a), ok(st, 0x40) ? static_cast<int>(rd(st + 0x8u)) : -1, ok(ratt, 0x12D0) ? role_of(ratt) : "?", ratt, ok(ratt, 0x12D0) ? actor_char(ratt) : -1, forced ? "a further" : "the first", static_cast<int16_t>(rd(a + 0x180u) & 0xFFFFu), hold ? 1 : 0, g_ko_mark.count(a) ? 1 : 0); }
-    g_hp_last_victim = a;
+    g_hp_last_victim = a; g_hpb_vic = a; g_hpb_att = ratt; g_hpb_frame = g_hframe;
     static int n = 0;
     if (g_log && std::getenv("PSPRECOMP_TAGTEAM_HPSTEPLOG") && n++ < 400) std::fprintf(stderr, "[HPSTEP] t=%.2fs r4 %08X msg %08X actor %s %08X (handler %08X h+16 %s %08X) r6 %08X r7 %08X r8 %08X: hp %d -> %d pend %d -> %d\n", dissidia_battle_age() / 60.0f, static_cast<uint32_t>(ctx->r[4]), m, ok(a, 0x12D0) ? role_of(a) : "?", a, h, ok(h, 0x40) && ok(rd(h), 0x12D0) ? role_of(rd(h)) : "-", ok(h, 0x40) ? rd(h) : 0u, static_cast<uint32_t>(ctx->r[6]), static_cast<uint32_t>(ctx->r[7]), static_cast<uint32_t>(ctx->r[8]), hp0, ok(st, 0x40) ? static_cast<int>(rd(st + 0xCu)) : -1, pd0, ok(st, 0x40) ? static_cast<int>(rd(st + 0x8u)) : -1);
 }
@@ -5511,6 +5537,20 @@ void hpstep_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t xvic = g_xstep_vic;
     hpstep_core(rdram, ctx, 0);
     const uint32_t prim = g_hp_last_victim;
+    // test aid PSPRECOMP_TAGTEAM_TEST_PHANTOMHP=1: after an extra's HP step a plain step is forced in the opposing slot fighter's name against the same victim (the RP6 pattern)
+    static const bool tph = std::getenv("PSPRECOMP_TAGTEAM_TEST_PHANTOMHP") != nullptr;
+    if (tph && g_bs && ratt != att && prim && ok(prim, 0x12D0) && g_xstep_att) {
+        const uint32_t s0 = srd(g_bs + 56u), s1 = srd(g_bs + 60u), ph = side_of(s0) != side_of(prim) ? s0 : s1;
+        if (ok(ph, 0x12D0) && ph != prim && side_of(ph) != side_of(prim)) {
+            const recomp_context keep = *ctx; *ctx = sv; const uint32_t sp0 = static_cast<uint32_t>(ctx->r[29]); ctx->r[29] = static_cast<int32_t>(sp0 - 0x400u);
+            const uint32_t m2 = sp0 - 0x3C0u; wr(m2, prim); wr(m2 + 4u, m2 + 16u); wr(m2 + 16u, ph); ctx->r[5] = static_cast<int32_t>(m2);
+            const uint32_t sa = g_xstep_att, sv2 = g_xstep_vic; g_xstep_att = 0; g_xstep_vic = 0;
+            const uint32_t ps = rd(ph + 0x52Cu);
+            std::fprintf(stderr, "[TESTPHANTOM] t=%.2fs forced plain HP step %s %08X -> %s %08X (BRV %d)\n", dissidia_battle_age() / 60.0f, role_of(ph), ph, role_of(prim), prim, ok(ps, 0x40) ? static_cast<int>(rdh(ps + 0x14u)) : -1);
+            hpstep_core(rdram, ctx, 0);
+            g_xstep_att = sa; g_xstep_vic = sv2; *ctx = keep;
+        }
+    }
     uint32_t sec[4]; const int ns = ok(ratt, 0x12D0) ? hit_secondaries(ratt, sec, 4) : 0;
     if (!ns) return;
     const recomp_context after = *ctx;
@@ -9256,6 +9296,13 @@ void chclear_hook(uint8_t* rdram, recomp_context* ctx) {
 // a retail chance ends within ~1.5 s: EX controller +12 runs to 92 at 2 per frame) is ended by setting its EX gauge to 0 (the game's own end, gauge empty). Log
 // `[XREV]`. Battle ticks and game state only. PSPRECOMP_TTCAM_NOXREVCAP=1 = off.
 FuncPtr g_orig_slowset = nullptr;
+FuncPtr g_orig_sndreq = nullptr;
+void sndreq_hook(uint8_t* rdram, recomp_context* ctx) {   // debug PSPRECOMP_TAGTEAM_SNDLOG=1: every sound-effect request (FUN_088A24D4): id, who asked
+    g_ram = rdram; static int c = 0;
+    if (g_log && c++ < 3000) std::fprintf(stderr, "[SNDREQ] t=%.2fs a0 %u id %u a2 %u ra %08X\n", dissidia_battle_age() / 60.0f, static_cast<uint32_t>(ctx->r[4]), static_cast<uint32_t>(ctx->r[5]), static_cast<uint32_t>(ctx->r[6]), static_cast<uint32_t>(ctx->r[31]));
+    g_orig_sndreq(rdram, ctx);
+}
+
 struct XrevSpan { float t0 = 0.f, last = 0.f; };
 std::map<uint32_t, XrevSpan> g_xrev_t0; uint32_t g_xrev_gen = 0;
 bool is_cpu_extra(uint32_t a) { for (int i = 0; i < g_nextra; i++) if (g_extra[i].actor == a && g_extra[i].started) return !pad_driven(a); return false; }
@@ -9406,6 +9453,7 @@ namespace {
 void chasefx_install_impl() { static bool done = false; if (done) return; done = true; if (std::getenv("PSPRECOMP_TAGTEAM_CHASEFX_OLD")) return; gs_install_all(std::make_integer_sequence<int, kGsN>{}); }
 void slowset_hook(uint8_t* rdram, recomp_context* ctx) {
     g_ram = rdram;
+    if (g_log && std::getenv("PSPRECOMP_TAGTEAM_SLOWLOG")) { static int c = 0; if (c++ < 400) { std::fprintf(stderr, "[SLOWSET] t=%.2fs ch %d (r6 %X) rate %.2f ra %08X\n", dissidia_battle_age() / 60.0f, static_cast<int>(ctx->r[5]), static_cast<uint32_t>(ctx->r[6]), static_cast<double>(ctx->f[12]), static_cast<uint32_t>(ctx->r[31])); if (c < 30) psp_dump_func_ring("SLOWSET"); } }
     {   static const bool lg = std::getenv("PSPRECOMP_TTCAM_EXCHLOG") != nullptr;   // debug: every frame of the EX chance, any fighter: EX controller words, clock step, actor flags
         if (lg && static_cast<uint32_t>(ctx->r[31]) == 0x08ACB624u && ctx->r[5] == 2) { const uint32_t exc = static_cast<uint32_t>(ctx->r[18]), a = ok(exc, 0x40) ? rd(exc) : 0u, clk = rd(0x089D69E0u);
             if (ok(a, 0x12D0)) { const uint32_t st = rd(a + 0x52Cu); std::fprintf(stderr, "[EXCH] t=%.2fs %s %08X exc %08X st %u +8 %.2f +12 %.2f +16 %.2f +24 %.2f clk %.3f | +388 %08X +38C %08X +5A4 %02X gauge %.0f st+40 %08X\n", dissidia_battle_age() / 60.0f, role_of(a), a, exc, rd(exc + 4u), rdf(exc + 8u), rdf(exc + 12u), rdf(exc + 16u), rdf(exc + 24u),
@@ -10143,6 +10191,21 @@ uint32_t brk_samesideX(uint32_t vowner) {
     if (best) { g_react_att = batt; if (brk_log_on() && brk_room()) std::fprintf(stderr, "[BRKSKIP] t=%.2fs mode %s reaction in %s's handler routed to %s (its attacker %s hit it %d frames ago, same side)\n", dissidia_battle_age() / 60.0f, brk_mode(), brk_who(vowner).c_str(), brk_who(best).c_str(), brk_who(batt).c_str(), bage); }
     return best;
 }
+// 26 Nov (user, RP6 FFA, rp6_exb_samebreak_1126_1813 t=262.53: "I got broken by Laguna doing his EX Burst on Chaos during the burst"): a running EX Burst's hits are not in the hit registry. The burster (other side)
+// took the extra on the HUMAN's side to BRV 0 and the reaction arrived in the human slot fighter's handler (the extra's side's slot fighter, held outside the burst): BREAK on the human
+// (`attacker extraP ... SAME-SIDE`). A reaction in a slot handler whose owner is NOT in the running burst, while the burst's victim is an extra of the owner's side (with its own handler), belongs to that
+// extra. Returns it (0 = no such burst). PSPRECOMP_TAGTEAM_EXB_SAMESIDE_OLD=1: off. State only: lock-step safe.
+uint32_t brk_exbX(uint32_t vowner) {
+    static const bool off = std::getenv("PSPRECOMP_TAGTEAM_EXB_SAMESIDE_OLD") != nullptr; if (off || !g_nextra) return 0;
+    const uint32_t c = rd(0x08A405E0u); if (!ok(c, 0x300) || !exb_on(c)) return 0;
+    const uint32_t p0 = exb_p0(c), p1 = exb_p1(c);
+    if (std::getenv("PSPRECOMP_TAGTEAM_EXBXDBG")) std::fprintf(stderr, "[EXBX] vowner %s p0 %s p1 %s hdl %d\n", role_of(vowner), ok(p0,0x12D0)?role_of(p0):"-", ok(p1,0x12D0)?role_of(p1):"-", (int)g_extra_hdl.count(p1));
+    if (!ok(p0, 0x12D0) || !ok(p1, 0x12D0) || p0 == vowner || p1 == vowner) return 0;
+    if (side_of(p1) == side_of(p0) || side_of(p1) != side_of(vowner) || !g_extra_hdl.count(p1)) return 0;
+    g_react_att = p0;
+    if (brk_log_on() && brk_room()) std::fprintf(stderr, "[BRKSKIP] t=%.2fs reaction in %s's handler routed to %s (hit by the EX Burst of %s, same side as the handler's owner)\n", dissidia_battle_age() / 60.0f, brk_who(vowner).c_str(), brk_who(p1).c_str(), brk_who(p0).c_str());
+    return p1;
+}
 // The slot fighters' own damage handlers (vtable 0x08AE7B50, owner +16 = the slot fighter), found in their combat modules (afd424_hook) and in the reactions.
 std::map<uint32_t, uint32_t> g_slot_hdl;
 // A hit of a fighter of the victim's own game side landed on `a` within the last 8 frames: only those are outside retail's break check (cross-side hits are retail's own).
@@ -10257,6 +10320,7 @@ void hitreact2_hook(uint8_t* rdram, recomp_context* ctx) {
     g_ram = rdram; g_ctx = ctx;
     static const bool off = std::getenv("PSPRECOMP_TAGTEAM_NOHITREACT") != nullptr;
     const uint32_t h = static_cast<uint32_t>(ctx->r[4]);
+    if (ok(h, 0x310) && !g_exb_debug_call && g_slot_hdl.size() && std::getenv("PSPRECOMP_TAGTEAM_TEST_EXBREACT")) { g_tp_react_args[0] = static_cast<uint32_t>(ctx->r[5]); g_tp_react_args[1] = static_cast<uint32_t>(ctx->r[6]); g_tp_react_args[2] = static_cast<uint32_t>(ctx->r[7]); }
     if (g_log && std::getenv("PSPRECOMP_TAGTEAM_HITREACTLOG") && ok(h, 0x310)) { static int c = 0; if (c++ < 300) { std::fprintf(stderr, "[HITREACTLOG] t=%.2fs handler %08X owner %s %08X step %08X->%08X hits:", dissidia_battle_age() / 60.0f, h, role_of(rd(h + 16u)), rd(h + 16u), g_xstep_att, g_xstep_vic); uint32_t f[8]; const int nf = all_fighters(f); for (int i = 0; i < nf; i++) if (hit_victim_of(f[i])) std::fprintf(stderr, " %s->%s", role_of(f[i]), role_of(hit_victim_of(f[i]))); std::fprintf(stderr, "\n"); } }
     if (ok(h, 0x310) && g_bs && rd(h + 4u) == 0x08AE7B50u) { const uint32_t o = rd(h + 16u); if (o && (o == srd(g_bs + 56u) || o == srd(g_bs + 60u))) g_slot_hdl[o] = h; }
     if (!off && ok(h, 0x310)) {
@@ -10270,6 +10334,7 @@ void hitreact2_hook(uint8_t* rdram, recomp_context* ctx) {
         const uint32_t vowner = rd(h + 16u); uint32_t x = booked_extra_victim(vowner);
         { static const bool nobook = std::getenv("PSPRECOMP_TAGTEAM_TEST_NOBOOK") != nullptr; if (nobook && x) x = 0; }   // test aid: the booking misses the hit (what the RP6 log showed: the reaction arrives before the hit registers), so the reaction falls to the slot handler
         if (!x && !breakrule_old() && rd(h + 4u) == 0x08AE7B50u && g_bs && (vowner == srd(g_bs + 56u) || vowner == srd(g_bs + 60u))) x = brk_samesideX(vowner);
+        if (!x && !breakrule_old() && rd(h + 4u) == 0x08AE7B50u && g_bs && (vowner == srd(g_bs + 56u) || vowner == srd(g_bs + 60u))) x = brk_exbX(vowner);
         if (x) {
             if (g_xbroken.count(x) && !std::getenv("PSPRECOMP_TAGTEAM_NOXBREAK")) {   // already broken: no new break, the BRV loss goes back (xbreak_guard)
                 xbreak_guard(x);
@@ -10288,8 +10353,8 @@ void hitreact2_hook(uint8_t* rdram, recomp_context* ctx) {
             if (sbreak_active(o, h)) { sbreak_guard(o, h); if (xbrv(o) == 0u) { brk_note_skip(o, brk_last_hitter(o, nullptr), "own-handler reaction while broken"); ctx->r[2] = 0; return; } }
             else if (rd(h + 8u) == 0u && xbrv(o) > 0u && brk_unhit_reaction(o)) {
                 // unproven (a hit the hit registry missed, e.g. a projectile, would lose its reaction): logged only; PSPRECOMP_TAGTEAM_BREAK_UNHIT_GUARD=1 drops it
-                static const bool drop = [] { const char* e = std::getenv("PSPRECOMP_TAGTEAM_BREAK_UNHIT_GUARD"); return e && e[0] == '1'; }();
-                brk_note_skip(o, 0, drop ? "reaction on a fighter nobody hit (a hit landed on another fighter)" : "WOULD SKIP (log only): reaction on a fighter nobody hit (a hit landed on another fighter)");
+                static const bool drop = [] { const char* e = std::getenv("PSPRECOMP_TAGTEAM_BREAK_UNHIT_GUARD"); return !(e && e[0] == '0'); }();   // default ON (26 Nov: every WOULD SKIP in the RP6 logs was followed by a bogus break); =0: log only
+                brk_note_skip(o, 0, drop ? "reaction on a fighter nobody hit (a hit landed on another fighter): dropped" : "WOULD SKIP (log only): reaction on a fighter nobody hit (a hit landed on another fighter)");
                 if (drop) { ctx->r[2] = 0; return; }
             }
         }
@@ -10542,6 +10607,15 @@ void hitreg_hook(uint8_t* rdram, recomp_context* ctx) {
                 if (own == att) for (int sd = 0; sd < 2; sd++) { const uint32_t S = srd(g_bs + 56u + 4u * static_cast<uint32_t>(sd)); if (ok(S, 0x12D0) && (att == S || att == rd(S + 0x1108u) || att == ao8_x_of_slot(S))) own = S; }
                 g_exb_lasthit[own] = {vic, dissidia_battle_age()};
                 if (own != att) g_exb_lasthit[att] = {vic, dissidia_battle_age()};
+                // 26 Nov (user, RP6 FFA rp6_nobreak_1126_1839 t=74.65 "attacker other:18 s2 -> extraP"): an assist actor's hit was registered under the assist actor (side 2, no fighter), so the
+                // reaction rules saw an attacker of "another side" and a reaction in slotC's handler was a bogus break. The hit is also registered for the caller (its master), when the master
+                // has no hit of its own this frame. PSPRECOMP_TAGTEAM_ASSISTHITREG_OLD=1: old.
+                static const bool assist_old = std::getenv("PSPRECOMP_TAGTEAM_ASSISTHITREG_OLD") != nullptr;
+                if (own != att && !assist_old && ok(own, 0x12D0) && own != vic) {
+                    int m = 0; while (m < g_nhits && g_hits[m].att != own) m++;
+                    if (m == g_nhits && g_nhits < 8) { g_hits[m] = {vic, own, g_hframe}; g_nhits++; if (g_log) { static int c = 0; if (c++ < 40) std::fprintf(stderr, "[ASSISTHIT] t=%.2fs hit of %s %08X on %s %08X also registered for its caller %s %08X\n", dissidia_battle_age() / 60.0f, role_of(att), att, role_of(vic), vic, role_of(own), own); } }
+                    else if (m < g_nhits && g_hits[m].frame != g_hframe) { g_hits[m] = {vic, own, g_hframe}; if (g_log) { static int c = 0; if (c++ < 40) std::fprintf(stderr, "[ASSISTHIT] t=%.2fs hit of %s %08X on %s %08X also registered for its caller %s %08X\n", dissidia_battle_age() / 60.0f, role_of(att), att, role_of(vic), vic, role_of(own), own); } }
+                }
             }
         }
         if (g_chase_ctl_now && ok(g_chase_ctl_now, 0x40) && rd(g_chase_ctl_now) && ok(vic, 0x12D0) && g_chase_int.frame < 0) {   // a fighter outside the chase hits one in it
@@ -14087,6 +14161,7 @@ void dissidia_tagteam_install(uint8_t* rdram) {
     if (!std::getenv("PSPRECOMP_TAGTEAM_NOAFD")) { g_orig_afd424 = fn(0x08AFD424u); if (g_orig_afd424) psp_dispatch_register(0x08AFD424u, afd424_hook); }
     calllog_install();
     if (!g_orig_exrev_start) { g_orig_exrev_start = fn(0x08AC997Cu); if (g_orig_exrev_start) psp_dispatch_register(0x08AC997Cu, exrev_start_hook); }
+    if (!g_orig_sndreq && std::getenv("PSPRECOMP_TAGTEAM_SNDLOG")) { g_orig_sndreq = fn(0x088A24D4u); if (g_orig_sndreq) psp_dispatch_register(0x088A24D4u, sndreq_hook); }
     if (!g_orig_slowset) { g_orig_slowset = fn(0x08A62020u); if (g_orig_slowset) psp_dispatch_register(0x08A62020u, slowset_hook); }
     if (!g_orig_chclr) { g_orig_chclr = fn(0x08AE398Cu); if (g_orig_chclr) psp_dispatch_register(0x08AE398Cu, chclear_hook); }
     if (std::getenv("PSPRECOMP_TTCAM_EXTESTLOG") && !g_orig_ext[0]) { if ((g_orig_ext[0] = fn(0x08B320A4u))) psp_dispatch_register(0x08B320A4u, extest_hook<0>); if ((g_orig_ext[1] = fn(0x08B3214Cu))) psp_dispatch_register(0x08B3214Cu, extest_hook<1>); if ((g_orig_ext[2] = fn(0x08B321F4u))) psp_dispatch_register(0x08B321F4u, extest_hook<2>); }
