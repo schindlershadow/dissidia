@@ -42,6 +42,8 @@ void dissidia_tagteam_ffa_set(int slot, const uint8_t in[4]);
 int dissidia_tagteam_roster(uint8_t out[40]);   // the characters that can be picked
 void dissidia_tagteam_ffa_p1_get(uint8_t out[2]);   // P1 (you): {main, tag-in}
 void dissidia_tagteam_ffa_p1_set(const uint8_t in[2]);
+void dissidia_tagteam_ffa_look_set(int slot, int field, int look);
+bool dissidia_tagteam_inject_old();   // below: PSPRECOMP_TAGTEAM_INJECT_OLD / _FFA_PSOLD   // tagteam.cpp: the LOOK picked in Player Select for a Free-for-all fighter (slot 0..3, field 1 main / 2 tag-in)
 int dissidia_tagteam_ffa_players();   // P1 + the CPU slots that are on
 void dissidia_menu_draw_hand(dissidia::MenuLayer& L, float x, float y, float a);   // menu_settings.cpp: the game's pointing hand
 void dissidia_tagteam_sp_write_round(uint32_t screen);   // single player: round 1's stage / rules / judgement from the lobby   // single player: the player is the host, no beacon; Assist stays on Square
@@ -148,6 +150,7 @@ float g_appear = 0.f;
 
 uint32_t r32(uint32_t a) { uint32_t v; std::memcpy(&v, g_ram + (a & 0x07FFFFFFu), 4); return v; }
 void w32(uint32_t a, uint32_t v) { std::memcpy(g_ram + (a & 0x07FFFFFFu), &v, 4); }
+bool okp(uint32_t a) { return a >= 0x08800000u && a < 0x0A000000u; }
 
 void play_se(uint8_t* rdram, recomp_context* ctx, int id) {
     if (!g_play_se) return;
@@ -157,6 +160,15 @@ void play_se(uint8_t* rdram, recomp_context* ctx, int id) {
     *ctx = save;
 }
 
+// 26 Nov (user: no injected presses): back from the single player setup screen (the lobby's Circle) the way the screen's own Circle leaves: FUN_08AAB8B4(screen, 1) = M + 4 = 5
+// (its teardown) with no result byte set, so its state 6 reports 2 (back) and the Quick Battle app goes back to Party Select / CPU Select as on a Circle. PSPRECOMP_TAGTEAM_INJECT_OLD=1: old.
+uint32_t g_sp_screen_last_fwd();
+void sp_back_direct(uint8_t* rdram, recomp_context* ctx) {
+    const uint32_t screen = g_sp_screen_last_fwd(); FuncPtr f = ovl_menu_lookup(0x08AAB8B4u);
+    if (!(screen >= 0x08800000u && screen < 0x0A000000u) || !f) { g_inject_circle.store(6, std::memory_order_relaxed); return; }
+    const recomp_context save = *ctx; ctx->r[4] = static_cast<int32_t>(screen); ctx->r[5] = 1; f(rdram, ctx); *ctx = save;
+    std::fprintf(stderr, "[TTLOBBY] setup screen left the way its Circle does (no press)\n");
+}
 // The fighters-per-side choices the host cycles through (byte 6 of the tag bytes: bits 0-1 Party A, bits 2-3 Party B).
 constexpr int kModeCount = 5;
 constexpr uint8_t kModes[kModeCount] = {2 | (2 << 2), 2 | (1 << 2), 1 | (2 << 2), 1 | (1 << 2), 3 | (3 << 2)};   // the last: 3 v 3
@@ -316,7 +328,8 @@ std::string lobby_summary(const uint8_t* L) {
 }
 constexpr int kLobbyRows = 11;   // MODE, STAGE, RULES, JUDGMENT, EX BURST, ASSIST, CPU FILL, CPU STRENGTH, PLAYERS (single player free-for-all), ALL CPUs
 int g_all_str = 5;   // the ALL CPUs row's strength (1..9)
-uint32_t g_sp_screen_last = 0;   // the single player setup screen the lobby opened over (sp_draw)
+uint32_t g_sp_screen_last = 0;
+uint32_t g_sp_screen_last_fwd() { return g_sp_screen_last; }   // the single player setup screen the lobby opened over (sp_draw)
 bool g_no_allcpu = std::getenv("PSPRECOMP_TAGTEAM_NOALLCPU") != nullptr;
 // The rows the dialog shows (logical row numbers): single player has no ASSIST row (Square on the setup screen toggles it), CPU STRENGTH only with CPU FILL on.
 int lobby_visible(const uint8_t* L, int out[kLobbyRows]) {
@@ -533,6 +546,22 @@ bool g_ffa_then_lobby = false, g_lobby_pending = false, g_ffa_flow = false, g_ff
 bool g_ms_pre = false, g_ms_hop = false, g_ms_done = false;   // 25 Nov (user: Free-for-all goes DIRECTLY to the players menu): the players screen and the lobby are hosted by the Mode Select (retail's Party Select / CPU Select are passed by a script afterwards; g_ms_hop: the player asked for the game's selector instead)
 std::atomic<int> g_script_lim{1000}; std::atomic<int> g_ps_frames{0};   // frames Party Select's ready test ran since the script started   // the scripted pass stops after the event that starts at or before this poll
 std::atomic<int> g_hop_more{0}; std::atomic<int64_t> g_hop_at{0};
+// 26 Nov (user: every Free-for-all pick through the game's real Player Select; no pad injections, no Party Select / CPU Select): the Quick Battle app (ovl_menu, app = *0x08AA3F44,
+// P = app + 0x154) is one state machine, P + 0x910 = its state (PMF table 0x08AA3F48, run by FUN_08A97DA8), P + 0x914 = the state after a transition state.
+//   2 picks the route; 1-on-1: 4 makes Player Select (FUN_08AA0D48(app, 0)), 5 runs it (FUN_08A9E0E8): on YES the pick (FUN_08A81188 = charId) goes to P + 0x804C and the state
+//   becomes 6 with 8 (CPU Select) next; Circle: 6 with 0x30 next (0x30 / 0x31 = fade out and leave to the Battle Mode list). Party route: 16 / 17 Party Select, 20 / 21 CPU Select,
+//   22 > 28 builds the Tournament setup screen from the party records (P + 0x7C10 Party A, 0x13C bytes; P + 0x7D4C the CPU party; P + 0x82F8 the lineup), 29 runs it.
+// The Free-for-all now opens the 1-on-1 route for a pick and, on YES, takes the pick and sends the app to 0x30 (back to the list, where the players screen opens again);
+// the battle opens the Party route and jumps from 16 straight to 28 with the party records written (no Party Select / CPU Select object is ever made).
+// PSPRECOMP_TAGTEAM_FFA_PSOLD=1: the old CPU Select hop and scripted pass.
+enum QbMode { QB_NONE = 0, QB_PICK, QB_RETURN, QB_START };
+int g_qb_mode = QB_NONE;
+int g_trip_out = 0; bool g_trip_online = false; int64_t g_trip_t0 = 0, g_qb_last_ms = 0, g_main_seen_ms = 0, g_trip_in_t0 = 0;   // the trips' fades (trip_tick)
+void trip_draw(float white, bool own_frame); float trip_in_white(); void start_cover_draw(); float post_white();
+int64_t g_post_exit_t0 = 0, g_post_in_t0 = 0;
+bool g_leave_app = false, g_trip_post = false, g_start_cover = false; int64_t g_start_exit_t0 = 0;   // app levers (qb hooks below) and the start card
+bool ps_old() { static const bool o = std::getenv("PSPRECOMP_TAGTEAM_FFA_PSOLD") != nullptr; return o; }
+int g_ps_pick = 0, g_ps_look = 0;   // the last Player Select pick (charId, 0 = none / cancelled) and its LOOK (save record +0x774)
 int g_hop_slot = -1, g_hop_field = 1;   // the cursor to restore when the players screen comes back from a retail selector
 uint8_t g_seen_p1[2] = {0xFF, 0xFF}, g_seen_pick[3] = {0xFF, 0xFF, 0xFF};   // the retail values (party's first two, CPU Select's picks) already taken over (0xFF = none yet)
 bool g_ms_first = true, g_ms_ffa = false; int g_ms_sel = 1;
@@ -568,8 +597,13 @@ int modesel_frame(uint8_t* rdram, recomp_context* ctx, bool group_online) {
     modesel_draw(group_online);
     return result;
 }
+void modesel_draw_body(bool group_online);
 void modesel_draw(bool group_online) {
     g_layer.begin(std::max(2, psp_sddialog::output_scale()));
+    modesel_draw_body(group_online);
+    g_layer.publish();
+}
+void modesel_draw_body(bool group_online) {
     gs_background(); gs_title("MODE SELECT", group_online ? "Communications  >  Tag Team Battle" : "Battle Mode  >  Tag Team Battle");
     const float x0 = 70.f, x1 = 410.f, y0 = 56.f, h = 28.f;
     for (int i = 0; i < kLobbyModeCount; i++) gs_row(x0, x1, y0 + h * float(i), h - 2.f, i == g_ms_sel, kLobbyModes[i].label, "", false, 9.f);
@@ -581,7 +615,6 @@ void modesel_draw(bool group_online) {
     g_layer.text(l1, true, 6.4f, 50.f, 220.f, LayerColor{40, 42, 80, 1.f});
     if (!l2.empty()) g_layer.text(l2, true, 6.4f, 50.f, 232.f, LayerColor{40, 42, 80, 1.f});
     gs_footer("Up/Down: choose   Cross: confirm   Circle: back");
-    g_layer.publish();
 }
 
 // ---- The Free-for-all player setup (single player): up to four players, each with his own colour. P1 is you (his characters are the first two rows of your party from Party Select),
@@ -700,6 +733,13 @@ void ffa_screen(uint8_t* rdram, recomp_context* ctx, uint32_t pressed) {
             g_dlg_mode = 4; play_se(rdram, ctx, 1);
         };
         static const bool grid_main = std::getenv("PSPRECOMP_TAGTEAM_FFA_GRIDMAIN") != nullptr;
+        if (g_ffa_flow && !grid_main && g_ffa_field <= 2 && g_ms_pre && !ps_old()) {   // 26 Nov: the game's real Player Select (Quick Battle 1-on-1) for every fighter field
+            g_hop_slot = g_ffa_slot; g_hop_field = g_ffa_field;
+            g_ms_pre = false; g_ms_hop = true; g_dlg_open = false; g_dlg_mode = 0; g_ffa_then_lobby = false; g_ffa_flow = false; play_se(rdram, ctx, 2);
+            g_qb_mode = QB_PICK;
+            std::fprintf(stderr, "[FFA] players screen: P%d %s -> the game's Player Select (Quick Battle 1-on-1)\n", g_ffa_slot + 1, g_ffa_field == 1 ? "main" : "tag-in");
+            return;
+        }
         if (g_ffa_flow && !grid_main && g_ffa_field <= 2) {   // the game's own character grid (CPU Select) for every fighter field; its 1st pick comes back
             g_hop_slot = g_ffa_slot; g_hop_field = g_ffa_field;
             if (g_sp_screen_last >= 0x08800000u && g_sp_screen_last < 0x0A000000u) for (uint32_t k = 0; k < 40u; k++) g_ram[(g_sp_screen_last + 0x8B4u + k) & 0x07FFFFFFu] = 0;   // CPU Select starts empty: its 1st pick is the answer
@@ -709,7 +749,7 @@ void ffa_screen(uint8_t* rdram, recomp_context* ctx, uint32_t pressed) {
                 return;
             }
             g_dlg_open = false; g_dlg_mode = 0; g_ffa_then_lobby = false; g_ffa_flow = false; g_rearm = true; play_se(rdram, ctx, 2);
-            g_inject_circle.store(6, std::memory_order_relaxed);
+            if (dissidia_tagteam_inject_old()) g_inject_circle.store(6, std::memory_order_relaxed); else sp_back_direct(rdram, ctx);
             std::fprintf(stderr, "[FFA] players screen: P%d %s -> the game's %s\n", g_ffa_slot + 1, g_ffa_field == 1 ? "main" : "tag-in", "character select");
             return;
         }
@@ -764,7 +804,7 @@ void lobby_dialog(uint8_t* rdram, recomp_context* ctx, uint32_t pressed, float a
     }
     if ((pressed & BTN_CIRCLE) && g_lob_flow && sp && L[0] != 3 && !menuback_old()) {   // a step of the chain: back to Party Select (retail's setup screen gets one Circle once the hold is over)
         std::fprintf(stderr, "[TTLOBBY] lobby: Circle, back to Party Select\n");
-        g_dlg_open = false; g_dlg_mode = 0; g_lob_flow = false; g_rearm = true; play_se(rdram, ctx, 1); g_inject_circle.store(6, std::memory_order_relaxed);
+        g_dlg_open = false; g_dlg_mode = 0; g_lob_flow = false; g_rearm = true; play_se(rdram, ctx, 1); if (dissidia_tagteam_inject_old()) g_inject_circle.store(6, std::memory_order_relaxed); else sp_back_direct(rdram, ctx);
         return;
     }
     if (pressed & (BTN_CIRCLE | BTN_CROSS | BTN_OPEN)) {
@@ -1033,6 +1073,11 @@ void enter_hook(uint8_t* rdram, recomp_context* ctx) {
 void setup_tick_hook(uint8_t* rdram, recomp_context* ctx) {
     if (r32(OVL_BASE) != 2) { if (FuncPtr f = ovl_battle_lookup(SETUP_TICK)) f(rdram, ctx); return; }
     const uint32_t screen = static_cast<uint32_t>(ctx->r[4]);
+    // 26 Nov (user: no injected presses): the lobby panel covers the Tournament column; when the cursor lands on one of its round rows (Up from Enter Battle) it is
+    // put on the same row of the party column before the screen's update (the old way pressed Right for the screen). PSPRECOMP_TAGTEAM_INJECT_OLD=1: old.
+    if (!dissidia_tagteam_inject_old() && dissidia_tagteam_group_on() && !std::getenv("PSPRECOMP_TAGTEAM_TOURNAMENT") && r32(screen + SCR_COLUMN) == 1u && r32(screen + SCR_ROW) < 5u) {
+        uint8_t L[10]; if (dissidia_tagteam_bp_party() < 0 && dissidia_tagteam_lobby_get(L)) { w32(screen + SCR_COLUMN, 0u); std::fprintf(stderr, "[TTLOBBY] cursor on a covered round row: party column, same row (no press)\n"); }
+    }
     g_orig_tick(rdram, ctx);
     if (std::getenv("PSPRECOMP_TTCPU_CURDUMP")) {   // debug: small words of the screen object that changed this frame
         static std::vector<uint32_t> prev; static uint32_t prev_scr = 0;
@@ -1062,9 +1107,21 @@ void setup_tick_hook(uint8_t* rdram, recomp_context* ctx) {
 // TYPE rows (they apply per enemy member) and the others are covered with the panel's own colour; the pad filter keeps the cursor off them (Up on STRENGTH and Down on TYPE are
 // swallowed, a dialog that opens on STAGE gets one Down). (Writing the cursor row itself desyncs the dialog's highlight bar.)
 bool g_sp_dlg_ran = false; int g_sp_hide_round = -1; std::atomic<int> g_sp_row{-1};   // g_sp_row: the dialog cursor row while the rows are hidden, else -1 (read by the pad filter)
+int g_sp_row_set_round = -1;   // the round whose dialog hides STAGE (set after its first update; the next update starts it on STRENGTH)
 bool sp_hidden_row(int r) { return r == 0 || r == 4 || r == 5; }
 void sp_dlg_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t screen = static_cast<uint32_t>(ctx->r[4]);
+    // 26 Nov (user: no cursor is ever moved by a pressed button): the round dialog opens on STAGE, a row the tag mode hides; it used to get one injected Down. Now its
+    // cursor helper (M + 0x5CC, index + 4) starts on STRENGTH and the dialog's own row-changed step FUN_08AAD670(screen) runs before its first update (no Down,
+    // nothing moves on screen). PSPRECOMP_TAGTEAM_INJECT_OLD=1: the injected Down.
+    if (!dissidia_tagteam_inject_old() && dissidia_tagteam_sp_tag_on() && g_sp_row_set_round >= 0) {
+        const uint32_t M0 = r32(screen + SCR_M);
+        if (okp(M0) && r32(M0 + 1488u) == 0u && static_cast<int>(r32(M0 + 1444u)) == g_sp_row_set_round) {
+            w32(M0 + 1488u, 1u);
+            if (FuncPtr f = ovl_menu_lookup(0x08AAD670u)) { const recomp_context save = *ctx; ctx->r[4] = static_cast<int32_t>(screen); f(rdram, ctx); *ctx = save; }
+            std::fprintf(stderr, "[TTSP] round dialog %d: opens on STRENGTH (hidden STAGE row skipped, no press)\n", g_sp_row_set_round + 1);
+        }
+    }
     g_orig_sp_dlg(rdram, ctx);
     if (!dissidia_tagteam_sp_tag_on()) return;
     const uint32_t M = r32(screen + SCR_M); if (M < 0x08800000u || M >= 0x0A000000u) return;
@@ -1074,6 +1131,7 @@ void sp_dlg_hook(uint8_t* rdram, recomp_context* ctx) {
     static const bool r1rows = std::getenv("PSPRECOMP_TAGTEAM_R1ROWS") || std::getenv("PSPRECOMP_TAGTEAM_SPLOBBY_OFF");
     g_sp_dlg_ran = true; g_sp_hide_round = round >= (r1rows ? 1u : 0u) && round < 5u ? static_cast<int>(round) : -1;
     g_sp_row.store(g_sp_hide_round >= 0 ? row : -1, std::memory_order_relaxed);
+    g_sp_row_set_round = g_sp_hide_round;
 }
 // ---- Single player: CPU rows on the Tournament screen (docs/tag-team.md "Single player: CPU rows") ----
 // Square on one of the player's matchup rows from the 2nd on makes his member of that row a CPU partner and back; Select on a CPU row opens the CPU
@@ -1190,6 +1248,17 @@ void ffa_prefill(uint32_t screen, const uint8_t* rows, int n, int only) {
         dissidia_tagteam_ffa_set(i, sl);
     }
 }
+// 26 Nov: Enter Battle without a press: what the list does on Cross with the cursor on Enter Battle (ovl_menu 0x08AABCD8): the row's select animation (FUN_088D9F5C(M + 0x6C, 5, 1)),
+// sound 0x11, M + 0x624 = 1 (the result the screen reports: 1 = Enter Battle) and M + 4 = 5 (its own leave: 5 tears down, 6 reports the result) = FUN_08AAB8B4(screen, 0).
+void sp_enter_battle(uint8_t* rdram, recomp_context* ctx, uint32_t screen) {
+    const uint32_t M = r32(screen + SCR_M); if (!okp(M)) return;
+    const recomp_context save = *ctx;
+    if (FuncPtr f = psp_dispatch_probe_lookup(0x088D9F5Cu); f && okp(r32(M + 0x6Cu))) { ctx->r[4] = static_cast<int32_t>(r32(M + 0x6Cu)); ctx->r[5] = 5; ctx->r[6] = 1; f(rdram, ctx); *ctx = save; }
+    play_se(rdram, ctx, 0x11);
+    if (FuncPtr f = ovl_menu_lookup(0x08AAB8B4u)) { ctx->r[4] = static_cast<int32_t>(screen); ctx->r[5] = 0; f(rdram, ctx); *ctx = save; }
+    else { g_ram[(M + 0x624u) & 0x07FFFFFFu] = 1; w32(M + 4u, 5u); }
+    std::fprintf(stderr, "[FFA] setup screen: Enter Battle (the list's own step, no press)\n");
+}
 void sp_draw(uint8_t* rdram, recomp_context* ctx, uint32_t screen, bool hide) {
     dissidia_tagteam_result_done();
     g_sp_screen_last = screen;
@@ -1235,6 +1304,11 @@ void sp_draw(uint8_t* rdram, recomp_context* ctx, uint32_t screen, bool hide) {
     {   static auto last = std::chrono::steady_clock::now(); const auto now = std::chrono::steady_clock::now();
         if (g_ffa_after == 1 && now - last > std::chrono::seconds(2)) g_ffa_after = 2;
         last = now;
+        if (g_ffa_after == 2 && list && !g_dlg_open && !g_ffa_autostart && !ps_old()) {   // 26 Nov: leave the app (as on Circle) for the players screen over the list
+            sp_back_direct(rdram, ctx);   // (the screen's own teardown: state 0x1E of the app waits for it before 0x30)
+            g_ffa_after = 0; g_leave_app = true; g_qb_mode = QB_RETURN; g_post_exit_t0 = 0; g_post_in_t0 = 0; g_ps_pick = 0; g_hop_slot = -1; g_hop_field = 1; g_ms_ffa = true; g_trip_post = true;
+            std::fprintf(stderr, "[FFA] back from the battle: the app leaves to the list, the players screen opens there\n");
+        }
         if (g_ffa_after == 2 && list && !g_dlg_open && !g_ffa_autostart) {
             g_ffa_after = 0; opened_now = true; g_lob_sp = true; g_dlg_bp = false; g_dlg_sp = false; g_dlg_open = true; g_lob_row = 0;
             g_ffa_flow = true; g_dlg_mode = 3; g_ffa_then_lobby = true; g_ffa_slot = 1; g_ffa_field = 1;
@@ -1269,9 +1343,18 @@ void sp_draw(uint8_t* rdram, recomp_context* ctx, uint32_t screen, bool hide) {
     { uint8_t L[10]; dissidia_tagteam_lobby_get(L); if (mok && list && !std::getenv("PSPRECOMP_TAGTEAM_SPLOBBY_OFF")) dissidia_tagteam_sp_write_round(screen); }   // (the saved lobby is read once, the mode's switches follow it)
     if (list) g_script_t.store(-1, std::memory_order_relaxed);   // the scripted Party Select pass is over
     if (g_ffa_autostart && list && !g_dlg_open) {   // Enter Battle (the cursor starts on it)
-        g_ffa_autostart = false; g_inject_late.store(9, std::memory_order_relaxed); if (!std::getenv("PSPRECOMP_TAGTEAM_FFA_NOREOPEN")) g_ffa_after = 1; std::fprintf(stderr, "[FFA] lobby done: Enter Battle (cursor row %d)\n", row);
+        g_ffa_autostart = false; if (dissidia_tagteam_inject_old()) g_inject_late.store(9, std::memory_order_relaxed); else sp_enter_battle(rdram, ctx, screen); if (!std::getenv("PSPRECOMP_TAGTEAM_FFA_NOREOPEN")) g_ffa_after = 1; std::fprintf(stderr, "[FFA] lobby done: Enter Battle (cursor row %d)\n", row);
     }
-    const bool cover = std::chrono::steady_clock::now() < g_cover_until;
+    {   // 26 Nov (user: the stage preview must follow a lobby stage change; the Down + Up nudge is gone): when the lobby closes over the list, the screen's preview step
+        // FUN_08AA9350 (the one the list runs on a cursor move) is called once. PSPRECOMP_TAGTEAM_PREVIEW_OLD=1: not called.
+        static bool lob_was = false; const bool lob_now = g_dlg_open && g_dlg_mode == 2;
+        if (lob_was && !lob_now && list && !std::getenv("PSPRECOMP_TAGTEAM_PREVIEW_OLD")) if (FuncPtr f = psp_dispatch_probe_lookup(0x08AA9350u)) {
+            const recomp_context save = *ctx; ctx->r[4] = static_cast<int32_t>(screen); f(rdram, ctx); *ctx = save; std::fprintf(stderr, "[TTLOBBY] lobby closed: the stage preview step called\n"); }
+        lob_was = lob_now;
+    }
+    if (g_start_cover && !ps_old()) { start_cover_draw(); g_sp_layer_up = true; return; }
+    if (g_trip_post && !ps_old()) { trip_draw(post_white(), true); g_sp_layer_up = true; return; }   // after a battle: the setup screen is only passed   // the Free-for-all start card is the only layer while the setup screen passes
+    const bool cover = std::chrono::steady_clock::now() < g_cover_until && ps_old();   // (26 Nov: the start card is trip_tick's)
     const bool labels = mok && (list || g_dlg_open) && !std::getenv("PSPRECOMP_TAGTEAM_SPLABELS_OFF");
     if (!mask && !switchable && !sq_ours && !g_sp_layer_up && !hide && !labels && !cover) return;   // nothing to draw (the layer is left to the screen's other users)
     g_layer.begin(std::max(2, psp_sddialog::output_scale()));
@@ -1327,14 +1410,131 @@ void sp_tick_hook(uint8_t* rdram, recomp_context* ctx) {
     sp_draw(rdram, ctx, screen, hide);
 }
 
+// ---- 26 Nov: the Quick Battle app (see QbMode above) ----
+constexpr uint32_t QB_APP_FRAME = 0x08A97DA8u, QB_SAVE_PTR = 0x089D712Cu, QB_SAVE_PARTY_A = 0x3E75Cu;   // the save's Party A: flags, name, five members (charId, word) = the 0x48 bytes at Party record + 0xF4
+FuncPtr g_orig_qb_frame = nullptr, g_orig_sel_tick = nullptr;
+// FUN_08AA1C1C(app): the network poll the states 5 / 29 call first; 1 = leave (their own fade out and state 0x30, to the list). Offline it returns -1: forced to 1 once to leave.
+constexpr uint32_t QB_NET_POLL = 0x08AA1C1Cu;
+FuncPtr g_orig_net_poll = nullptr;
+void net_poll_hook(uint8_t* rdram, recomp_context* ctx) {
+    if (r32(OVL_BASE) != 2) { if (FuncPtr f = ovl_battle_lookup(QB_NET_POLL)) f(rdram, ctx); return; }
+    g_orig_net_poll(rdram, ctx);
+    if (g_leave_app) { g_leave_app = false; ctx->r[2] = 1; std::fprintf(stderr, "[FFA] the Quick Battle app leaves to the list (its own way out)\n"); }
+}
+constexpr uint32_t QB_SEL_TICK = 0x08A9A460u;   // FUN_08A9A460(app): ticks the select object (P + 0x92C), returns its result (2 = YES, 4 = Circle, 0 = running)
+int g_sel_force = 0;
+void sel_tick_hook(uint8_t* rdram, recomp_context* ctx) {
+    if (r32(OVL_BASE) != 2) { if (FuncPtr f = ovl_battle_lookup(QB_SEL_TICK)) f(rdram, ctx); return; }
+    if (g_sel_force) { ctx->r[2] = g_sel_force; g_sel_force = 0; return; }
+    g_orig_sel_tick(rdram, ctx);
+}
+// The party records Party Select / CPU Select leave in P (seen after a retail pass: Party A = the save's Party A, the CPU party = one pick), written for the jump from state 16 to 28.
+// Bytes not tied to a pick are retail's (a dump after Party A + Lightning, OK).
+const uint8_t kPartyHead[0x4C] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x00,0x00,0x00,0xFF,0xFF,0xFF,0xFF,0x00,0x84,0x7F,0x79,0x00,0x00,0x00,0x00,0x7E,0x78,0x76,0x7D,0x7D,0x78,0x73,0xAE,
+    0xFC,0xD8,0xF4,0xF1,0xEE,0xEB,0xE9,0xE6,0x05,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
+void ffa_fill_party(uint32_t P, int cpu_char) {
+    uint8_t* A = g_ram + ((P + 0x7C10u) & 0x07FFFFFFu);
+    std::memset(A, 0, 0x13C); std::memcpy(A, kPartyHead, sizeof kPartyHead); std::memset(A + 0x4C, 0xFF, 20);
+    const uint32_t save = r32(QB_SAVE_PTR);
+    uint8_t blk[0x48] = {};
+    if (okp(save)) std::memcpy(blk, g_ram + ((save + QB_SAVE_PARTY_A) & 0x07FFFFFFu), sizeof blk);
+    int n = 0; for (int i = 0; i < 5; i++) { const uint32_t c = blk[0x20 + 8 * i]; if (c >= 1 && c <= 40) n++; }
+    if (n == 0) {   // no saved Party A: the Free-for-all's own P1 (the battle uses its own team anyway)
+        uint8_t p1[2] = {0, 255}; dissidia_tagteam_ffa_p1_get(p1); const uint8_t c = p1[0] ? p1[0] : 31;
+        std::memset(blk, 0, sizeof blk); blk[0] = 1; blk[2] = 1; blk[0x20] = c; blk[0x24] = 1; n = 1;
+    }
+    std::memcpy(A + 0xF4, blk, sizeof blk);
+    uint8_t* C = g_ram + ((P + 0x7D4Cu) & 0x07FFFFFFu);   // the CPU party: one member
+    std::memset(C, 0, 0x13C); C[0] = 1; std::memset(C + 8, 0xFF, 4); C[0xC] = 5; C[0xE6] = 1; C[0x104] = static_cast<uint8_t>(cpu_char);
+    for (int k = 0; k < 4; k++) std::memset(C + 0x110 + 8 * k, 0xFF, 4);
+    uint8_t* L = g_ram + ((P + 0x82F8u) & 0x07FFFFFFu);   // the lineup: the party's five, then the CPU's
+    std::memset(L, 0, 0x50);
+    for (int i = 0; i < 5; i++) std::memcpy(L + 8 * i, blk + 0x20 + 8 * i, 8);
+    L[0x28] = static_cast<uint8_t>(cpu_char); L[0x2C] = 1; std::memset(L + 0x34, 0xFF, 4); L[0x44] = 1; std::memset(L + 0x4C, 0xFF, 4);
+    std::fprintf(stderr, "[FFA] party records written for the setup screen (Party A: %d members, CPU %d)\n", n, cpu_char);
+}
+void qb_frame_hook(uint8_t* rdram, recomp_context* ctx) {
+    if (r32(OVL_BASE) != 2) { if (FuncPtr f = ovl_battle_lookup(QB_APP_FRAME)) f(rdram, ctx); return; }
+    const uint32_t app = static_cast<uint32_t>(ctx->r[4]), P = okp(app) ? r32(app + 0x154u) : 0u;
+    const int before = okp(P) ? static_cast<int>(r32(P + 0x910u)) : -1;
+    g_qb_last_ms = steady_ms();
+    if (g_qb_mode == QB_START && before == 16) {   // the Free-for-all battle: no Party Select / CPU Select, straight to the setup screen
+        uint8_t sl[4] = {1, 0, 0, 5}; dissidia_tagteam_ffa_get(0, sl);
+        ffa_fill_party(P, sl[1] ? sl[1] : 31);
+        w32(P + 0x910u, 28u); g_qb_mode = QB_NONE; g_start_cover = true; g_start_exit_t0 = 0;
+        std::fprintf(stderr, "[FFA] Quick Battle (Party): state 16 -> 28 (setup screen)\n");
+    }
+    if (g_qb_mode == QB_PICK && before == 16) { g_qb_mode = QB_NONE; std::fprintf(stderr, "[FFA] Player Select trip: the app took the Party route (state 16), dropped\n"); }
+    g_orig_qb_frame(rdram, ctx);
+    if (g_start_cover && !g_start_exit_t0 && okp(P) && r32(P + 0x910u) >= 0x30u) g_start_exit_t0 = steady_ms();   // the battle start's fade out
+    if (g_trip_post && !g_post_exit_t0 && okp(P) && r32(P + 0x910u) >= 0x30u) g_post_exit_t0 = steady_ms();   // after a battle: the app's way out to the list
+    if (g_qb_mode == QB_PICK && before == 5 && okp(P) && r32(P + 0x910u) == 6u) {
+        const uint32_t next = r32(P + 0x914u);
+        if (next == 8u || next == 0xCu) {   // YES on "Play as this character?": the pick, then back to the list instead of CPU Select
+            g_ps_pick = static_cast<int>(r32(P + 0x804Cu));
+            const uint32_t save = r32(QB_SAVE_PTR); g_ps_look = 0;
+            for (uint32_t i = 0; i < 31 && okp(save); i++) if (g_ram[(0x089CBC98u + i) & 0x07FFFFFFu] == g_ps_pick) { g_ps_look = g_ram[(save + 0xF58u + 0x778u * i + 0x774u) & 0x07FFFFFFu]; break; }
+            // leave the way Circle does (its fade out, then 0x30): the state goes back to 5 and the next select tick reports 4 (= Circle) to the state's own code
+            w32(P + 0x910u, 5u); g_sel_force = 4; g_qb_mode = QB_RETURN;
+            std::fprintf(stderr, "[FFA] Player Select: YES on char %d (look %d): the app leaves to the list as on Circle (not CPU Select, state %u)\n", g_ps_pick, g_ps_look, next);
+        } else { g_ps_pick = 0; g_qb_mode = QB_RETURN; std::fprintf(stderr, "[FFA] Player Select: left without a pick (next state %u)\n", next); }
+    }
+}
+
+// The Free-for-all trips to the Quick Battle app and back, drawn so that no other screen shows: retail fades the list to white (~10 frames), stays white while the app
+// loads, then fades the next screen in; the players screen (or the "Starting the battle" card) follows the same fades on the game layer.
+constexpr float kTripFadeMs = 330.f;
+void trip_draw(float white, bool own_frame) {
+    if (own_frame) { ge_draw_set_game_layer_ttl(90); g_layer.begin(std::max(2, psp_sddialog::output_scale())); }
+    else g_layer.begin(std::max(2, psp_sddialog::output_scale()));
+    if (g_trip_out == 2) modesel_draw_body(g_trip_online);
+    else if (g_qb_mode == QB_START || g_ms_done || g_start_cover) { gs_background(); gs_title("FREE-FOR-ALL", "Everyone fights for himself"); const char* t = "Starting the battle..."; const float w = g_layer.text(t, true, 9.f, 0, 0, LayerColor{0, 0, 0, 0}, true); g_layer.text(t, true, 9.f, (kScrW - w) / 2.f, 140.f, LayerColor{40, 42, 80, 1.f}); }
+    else { const int sl = g_ffa_slot, fi = g_ffa_field, dm = g_dlg_mode; const bool fl = g_ffa_flow; g_ffa_flow = true; g_dlg_mode = 3; ffa_screen(nullptr, nullptr, 0u); g_ffa_flow = fl; g_ffa_slot = sl; g_ffa_field = fi; g_dlg_mode = dm; }
+    if (white > 0.f) g_layer.band(0.f, 0.f, kScrW, 272.f, [&](float, float) { return LayerColor{255, 255, 255, std::min(1.f, white)}; });
+    if (own_frame) g_layer.publish();
+}
+
+float post_white() {   // after a battle: fade in from retail's white as the setup screen comes, fade out with the app's way out
+    const int64_t now = steady_ms(); if (!g_post_in_t0) g_post_in_t0 = now;
+    const float in = std::max(0.f, 1.f - static_cast<float>(now - g_post_in_t0) / kTripFadeMs);
+    return std::max(in, g_post_exit_t0 ? std::min(1.f, static_cast<float>(now - g_post_exit_t0) / kTripFadeMs) : 0.f);
+}
+void start_cover_draw() {   // the battle start: the card from the lobby's Cross until the app leaves for the battle, then its fade to white with retail's
+    if (!g_start_exit_t0) { trip_draw(0.f, true); return; }
+    const float t = static_cast<float>(steady_ms() - g_start_exit_t0) / kTripFadeMs;
+    if (t < 1.3f) trip_draw(t, true); else g_start_cover = false;
+}
+float trip_in_white() {   // the fade in after the trip back (1 = white .. 0)
+    if (!g_trip_in_t0) return 0.f;
+    const float t = static_cast<float>(steady_ms() - g_trip_in_t0) / kTripFadeMs;
+    if (t >= 1.f) { g_trip_in_t0 = 0; return 0.f; }
+    return 1.f - t;
+}
+void trip_tick() {   // every pad poll
+    if (ps_old()) return;
+    const int64_t now = steady_ms();
+    if (g_start_cover) start_cover_draw();
+    if (g_trip_post && g_qb_mode == QB_RETURN && now - g_qb_last_ms <= 100) trip_draw(post_white(), true);   // after a battle: the players screen over the setup screen, fading to white with the app's way out
+    if (g_trip_out) { const float t = static_cast<float>(now - g_trip_t0) / kTripFadeMs; if (t < 1.3f && now - g_qb_last_ms > 200) trip_draw(t, true); else g_trip_out = 0; }
+    if (g_qb_mode == QB_RETURN && now - g_qb_last_ms > 100) {   // the app is gone: white until the start menu runs again, then the players screen fades in
+        if (g_main_seen_ms > g_qb_last_ms + 50) { if (!g_trip_in_t0) g_trip_in_t0 = now; trip_draw(trip_in_white(), true); }
+        else trip_draw(1.f, true);
+    }
+}
+
 }  // namespace
 
+void dissidia_tagteam_main_tick_seen() { g_main_seen_ms = steady_ms(); }   // menu_settings.cpp: the start menu's top level or sub-list ran
+
+void dissidia_menu_rows_fade_tick();
 uint32_t dissidia_tagteam_menu_pad(uint32_t raw) {
+    trip_tick(); dissidia_menu_rows_fade_tick();
     g_raw_pad.store(raw, std::memory_order_relaxed);
     const int sr = g_sp_row.load(std::memory_order_relaxed);
     if (sr >= 0) {   // single player tag mode, round dialog of the 2nd round on: the cursor stays on STRENGTH / LEVEL / TYPE
         static bool inj = false;
-        if (sr == 0) { inj = !inj; raw = inj ? (raw | BTN_DOWN) : (raw & ~BTN_DOWN); }   // opened on STAGE: one Down (pressed on alternate frames until the cursor moved)
+        if (sr == 0 && dissidia_tagteam_inject_old()) { inj = !inj; raw = inj ? (raw | BTN_DOWN) : (raw & ~BTN_DOWN); }   // opened on STAGE: one Down (old; now sp_dlg_hook starts it on STRENGTH)
+        else if (sr == 0) raw &= ~BTN_UP;
         else if (sr == 1) raw &= ~BTN_UP;
         else if (sr == 3) raw &= ~BTN_DOWN;
     }
@@ -1368,7 +1568,7 @@ uint32_t dissidia_tagteam_menu_pad(uint32_t raw) {
             raw = (raw & ~(BTN_CROSS | BTN_DOWN | BTN_UP | BTN_CIRCLE)) | m;
         }
     }
-    if (const int cf = g_col_fix.load(std::memory_order_relaxed); cf && g_pad_polls.load(std::memory_order_relaxed) - g_enter_stamp.load(std::memory_order_relaxed) < 40u) {
+    if (const int cf = g_col_fix.load(std::memory_order_relaxed); cf && (cf == 1 || dissidia_tagteam_inject_old()) && !std::getenv("PSPRECOMP_TAGTEAM_COLFIX_OFF") && g_pad_polls.load(std::memory_order_relaxed) - g_enter_stamp.load(std::memory_order_relaxed) < 40u) {
         if (cf == 1) raw &= ~(BTN_RIGHT | BTN_LEFTK);
         else { static bool inj = false; inj = !inj; raw &= ~(BTN_CROSS | BTN_LEFTK); raw = inj ? (raw | BTN_RIGHT) : (raw & ~BTN_RIGHT); }   // a round row: back to the party column
     }
@@ -1390,7 +1590,10 @@ int dissidia_tagteam_modesel_frame(uint8_t* rdram, recomp_context* ctx, bool onl
     if (g_ms_pre) {   // the Free-for-all's players screen / lobby, hosted here
         const uint32_t b = g_raw_pad.load(std::memory_order_relaxed), pressed = b & ~g_prev_buttons; g_prev_buttons = b;
         g_layer.begin(std::max(2, psp_sddialog::output_scale()));
+        const bool was_lobby = g_dlg_mode == 2;
         if (g_dlg_mode == 2) lobby_dialog(rdram, ctx, pressed, 1.f); else ffa_screen(rdram, ctx, pressed);
+        if (!ps_old() && (!g_ms_pre || !g_dlg_open)) { if (was_lobby && !g_dlg_open) g_start_cover = true; trip_draw(0.f, false); }   // the choice was made this frame: the screen stays (the trip's fade to white follows)
+        else { const float w = trip_in_white(); if (w > 0.f) g_layer.band(0.f, 0.f, kScrW, 272.f, [&](float, float) { return LayerColor{255, 255, 255, w}; }); }
         g_layer.publish();
         if (g_ms_pre && !g_dlg_open) { g_ms_pre = false; g_ms_done = true; g_dlg_mode = 0; std::fprintf(stderr, "[FFA] Mode Select: players and lobby done, the game's screens are passed by the script\n"); return 1; }
         if (!g_ms_pre && g_ms_hop && !g_dlg_open) return 1;
@@ -1412,9 +1615,25 @@ void dissidia_menu_style_list(const std::string& title, const std::string& sub, 
 }
 void dissidia_menu_style_clear() { g_layer.begin(std::max(2, psp_sddialog::output_scale())); g_layer.publish(); }
 void dissidia_menu_play_se(uint8_t* rdram, recomp_context* ctx, int id) { play_se(rdram, ctx, id); }
-void dissidia_tagteam_modesel_draw_frozen(bool online) { ge_draw_set_game_layer_ttl(kHoldTtlMs); modesel_draw(online); }   // after a choice: the Mode Select stays on screen, cursor on the chosen row, until the next menu opens (the layer expires 150 ms after the last draw)
+void dissidia_tagteam_modesel_draw_frozen(bool online) {
+    if (g_trip_out && !dissidia_tagteam_inject_old()) return;   // (trip_tick draws it)
+    ge_draw_set_game_layer_ttl(kHoldTtlMs);
+    if (g_ms_ffa && !ps_old() && (g_qb_mode == QB_PICK || g_qb_mode == QB_START)) return;   // the Free-for-all trips draw their own fade (trip_tick)
+    modesel_draw(online);
+}   // after a choice: the Mode Select stays on screen, cursor on the chosen row, until the next menu opens (the layer expires 150 ms after the last draw)
+// The list row the confirm starts (menu_settings.cpp writes it to the sub-list cursor): a Free-for-all pick opens Quick Battle (1-on-1) (row 0) for its Player Select.
+uint32_t dissidia_tagteam_modesel_target(bool sp, uint32_t def) { return (sp && g_ms_ffa && !ps_old() && g_qb_mode == QB_PICK) ? 0u : def; }
+bool dissidia_tagteam_inject_old() { static const bool o = std::getenv("PSPRECOMP_TAGTEAM_INJECT_OLD") != nullptr || std::getenv("PSPRECOMP_TAGTEAM_FFA_PSOLD") != nullptr; return o; }   // 26 Nov: the list confirm is called, not pressed
 void dissidia_tagteam_modesel_confirm(bool sp) {
-    g_inject_late.store(9, std::memory_order_relaxed);
+    if (dissidia_tagteam_inject_old()) g_inject_late.store(9, std::memory_order_relaxed);
+    else { g_trip_out = 2; g_trip_online = !sp; g_trip_t0 = steady_ms(); }   // 26 Nov: the Mode Select fades to white with the list (the list is never seen behind it)
+    if (sp && g_ms_ffa && !ps_old() && !std::getenv("PSPRECOMP_TAGTEAM_FFA_KEEPPARTY") && !std::getenv("PSPRECOMP_TAGTEAM_FFA_PREOLD")) {
+        if (g_ms_hop) g_qb_mode = QB_PICK; else { g_qb_mode = QB_START; g_ffa_autostart = true; }
+        if (g_qb_mode == QB_PICK) { g_trip_out = 1; g_trip_t0 = steady_ms(); } else { g_trip_out = 0; g_start_cover = true; g_start_exit_t0 = 0; }
+        g_trip_in_t0 = 0;
+        std::fprintf(stderr, "[FFA] list confirm: %s\n", g_qb_mode == QB_PICK ? "Quick Battle (1-on-1) for the Player Select pick" : "Quick Battle (Party) straight to the setup screen (no Party Select / CPU Select)");
+        return;
+    }
     if (sp && g_ms_ffa && !std::getenv("PSPRECOMP_TAGTEAM_FFA_KEEPPARTY") && !std::getenv("PSPRECOMP_TAGTEAM_FFA_PREOLD")) {
         if (g_ms_hop) { g_lobby_pending = true; g_script_lim.store(220, std::memory_order_relaxed); }   // the player's own trip to the game's selector (P2..P4: Party Select is passed for him)
         else g_script_lim.store(1000, std::memory_order_relaxed);
@@ -1422,7 +1641,28 @@ void dissidia_tagteam_modesel_confirm(bool sp) {
         if (g_script_lim.load() >= 0) g_script_t.store(0, std::memory_order_relaxed);
     }
 }   // the start menu sees a Cross press after the hold
-void dissidia_tagteam_lobby_pending(bool on) { if (on && g_ms_done) { g_ms_done = false; return; } g_lobby_pending = on; }   // (a Free-for-all that was set up in the Mode Select goes straight on)
+// menu_settings.cpp, when the Battle Mode list comes back after the Quick Battle app: a Free-for-all pick trip ends on the players screen (hosted over the list again), with the pick
+// in its field. Returns true when it took over (the Mode Select is not reopened).
+bool dissidia_tagteam_ffa_ps_return() {
+    if (g_qb_mode != QB_RETURN) return false;
+    g_qb_mode = QB_NONE;
+    if (g_ps_pick >= 1 && g_ps_pick <= 33 && g_hop_slot >= 0) {
+        const int pick = g_ps_pick;
+        if (g_hop_slot == 0) { uint8_t p1[2] = {0, 255}; dissidia_tagteam_ffa_p1_get(p1); const int f = g_hop_field - 1; p1[f] = static_cast<uint8_t>(pick); if (f == 0 && p1[1] == pick) p1[1] = 255; if (f == 1 && p1[0] == pick) p1[0] = 0; dissidia_tagteam_ffa_p1_set(p1); }
+        else { uint8_t sl[4] = {1, 0, 0, 5}; dissidia_tagteam_ffa_get(g_hop_slot - 1, sl); if (g_hop_field == 1) { sl[0] = 1; sl[1] = static_cast<uint8_t>(pick); if (sl[2] == pick) sl[2] = 0; } else sl[2] = static_cast<uint8_t>(pick); dissidia_tagteam_ffa_set(g_hop_slot - 1, sl); }
+        dissidia_tagteam_ffa_look_set(g_hop_slot, g_hop_field, g_ps_look);
+    }
+    std::fprintf(stderr, "[FFA] back from Player Select: P%d %s = %d (look %d): the players screen again\n", g_hop_slot + 1, g_hop_field == 1 ? "main" : "tag-in", g_ps_pick, g_ps_look);
+    g_ms_pre = true; g_ms_hop = false; g_ms_ffa = true; g_ffa_flow = true; g_ffa_then_lobby = true; g_dlg_mode = 3; g_dlg_open = true; g_lob_sp = true; g_dlg_bp = false; g_dlg_sp = false; g_lob_row = 0;
+    g_ffa_slot = g_hop_slot >= 0 ? g_hop_slot : 1; g_ffa_field = g_hop_field; g_hop_slot = -1; g_ps_pick = 0; g_prev_buttons = g_raw_pad.load(std::memory_order_relaxed);
+    if (!g_trip_in_t0) g_trip_in_t0 = steady_ms();
+    g_trip_post = false;
+    return true;
+}
+void dissidia_tagteam_lobby_pending(bool on) {
+    if (on && !ps_old() && (g_qb_mode == QB_PICK || g_qb_mode == QB_START || g_start_cover)) { g_lobby_pending = false; g_ms_done = false; return; }   // (26 Nov: the FFA trips go on by themselves)
+    if (on && g_ms_done) { g_ms_done = false; return; } g_lobby_pending = on;
+}   // (a Free-for-all that was set up in the Mode Select goes straight on)
 
 void dissidia_tagteam_menu_install(uint8_t* rdram) {
     g_ram = rdram;
@@ -1436,6 +1676,9 @@ void dissidia_tagteam_menu_install(uint8_t* rdram) {
     if (g_orig_ready) psp_dispatch_register(READY_TEST, ready_hook);
     if (g_orig_enter) psp_dispatch_register(ENTER_STEP, enter_hook);
     // single player Tournament screen: the round dialog of matchups 2.. (tag mode) and the CPU rows (docs/tag-team.md "Single player: CPU rows"), one tick hook
+    if (!std::getenv("PSPRECOMP_TAGTEAM_FFA_PSOLD") && (g_orig_qb_frame = ovl_menu_lookup(QB_APP_FRAME))) { psp_dispatch_register(QB_APP_FRAME, qb_frame_hook); if ((g_orig_sel_tick = ovl_menu_lookup(QB_SEL_TICK))) psp_dispatch_register(QB_SEL_TICK, sel_tick_hook);
+        if ((g_orig_net_poll = ovl_menu_lookup(QB_NET_POLL))) psp_dispatch_register(QB_NET_POLL, net_poll_hook);
+}
     g_orig_sp_tick = ovl_menu_lookup(SP_TICK); g_orig_sp_dlg = ovl_menu_lookup(SP_DLG);
     if (g_orig_sp_tick) psp_dispatch_register(SP_TICK, sp_tick_hook);
     else std::fprintf(stderr, "[TTSP] Tournament screen hook not installed\n");

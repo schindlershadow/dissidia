@@ -154,6 +154,7 @@ void team_swap() {
 // Called by the pad filter of framerate.cpp for every poll; returns the buttons to hand the game.
 int dissidia_tagteam_ffa_human_chars(uint8_t out[2]);   // tagteam.cpp: the single player Free-for-all's P1 {main, tag-in}, count 0 = not in use
 int dissidia_tagteam_ffa_enemy_char();   // tagteam.cpp: the single player Free-for-all's P2 (0 = none)
+int dissidia_tagteam_ffa_char_look(int charId);   // tagteam.cpp: the LOOK picked for that fighter (0 = none)
 namespace {
 // The single player Free-for-all's P2 is the Tournament screen's CPU fighter of round 1: its record's charId, model and 1-on-1 team struct are set to the player's choice
 // before the loading screen (same fields as the test swap above).
@@ -164,7 +165,11 @@ void force_cpu_char(int to) {
     if (rec[1] < 1 || rec[1] > 100 || to <= 0) return;
     const int from = rec[0];
     if (from != to) { if (ids[-6] == 1 && ids[0] == from && ids[1] == 0xFF) ids[0] = static_cast<uint8_t>(to); rec[0] = static_cast<uint8_t>(to); std::fprintf(stderr, "[FFA] enemy fighter of round 1: charId %d -> %d\n", from, to); }
-    const int want = model_id(to); uint16_t m; std::memcpy(&m, rec + 0xF3A, 2);
+    // 26 Nov: the LOOK picked for P2 in Player Select (Alt 1 / Alt 2 = the 2P / 3P model entry; every look in the record's +0x774, as retail's 1-on-1 record). PSPRECOMP_TAGTEAM_FFA_LOOK_OLD=1: old.
+    int want = model_id(to); const int lk = std::getenv("PSPRECOMP_TAGTEAM_FFA_LOOK_OLD") ? 0 : dissidia_tagteam_ffa_char_look(to);
+    if (lk >= 2 && lk <= 3) { const int mm = model_id(to, lk); if (mm >= 0) want = mm; }
+    if (lk >= 1 && lk <= 8 && rec[0x774] != lk) { rec[0x774] = static_cast<uint8_t>(lk); std::fprintf(stderr, "[FFA] P2 %d: look %d (model id %d)\n", to, lk, want); }
+    uint16_t m; std::memcpy(&m, rec + 0xF3A, 2);
     if (want >= 0 && m != want) { const uint16_t w = static_cast<uint16_t>(want); std::memcpy(rec + 0xF3A, &w, 2); }
 }
 // P1 (the human side, record 0): his main's own save record, model and a team struct of {main, tag-in}: the 5-member Party Select is not needed.
@@ -184,7 +189,7 @@ void force_human_chars(const uint8_t* c, int n) {
     // plain P_GST130_1P entry, not the _PUB one) and the look in the record's +0x774 (4): the loader applies it. So the model stays the first entry and the record's +0x774 is the save's look,
     // also when the record already holds this character (the Party Select lead's look was kept before). PSPRECOMP_TAGTEAM_FFA_COSTUME_OLD=1: not copied.
     int want = model_id(to); uint8_t lkv = 1;
-    if (!std::getenv("PSPRECOMP_TAGTEAM_FFA_COSTUME_OLD")) { const uint32_t src = save_record(to); if (src) { const uint8_t lk = *g_at(src + 0x774u); lkv = lk;
+    if (!std::getenv("PSPRECOMP_TAGTEAM_FFA_COSTUME_OLD")) { const uint32_t src = save_record(to); if (src) { const int pl = dissidia_tagteam_ffa_char_look(to); const uint8_t lk = pl ? static_cast<uint8_t>(pl) : *g_at(src + 0x774u); lkv = lk;
         if (lk >= 2 && lk <= 3) { const int mm = model_id(to, lk); if (mm >= 0) want = mm; }   // retail (checked with Lightning in 1-on-1: Alt 1 = look 2 -> model id 597 = P_GST130_2P, DLC 1 = look 4 -> 596 = the 1P entry + look 4 in the record)
         if (lk >= 1 && lk <= 8 && rec[0x774] != lk) { rec[0x774] = lk; static int lg = 0; if (lg++ < 6) std::fprintf(stderr, "[FFA] human main %d: look %d (model id %d)\n", to, lk, want); } } }
     uint16_t m; std::memcpy(&m, rec + 0xF3A, 2);

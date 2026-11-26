@@ -4661,6 +4661,34 @@ static void present_service_window_capture() {
     if (g_wc_state == 1) { g_wc_state = 2; g_wc_cv.notify_all(); }
 }
 
+// Debug socket 'REC <n> <dir>': write each of the next n presented frames (whole window) as <dir>/f<NNNNN>_<ms>.tga, numbered from 0
+// (<ms> = steady-clock milliseconds), for frame-by-frame checks of menu transitions. Test aid only; costs a read-back per frame while armed.
+static std::atomic<int> g_rec_left{0};
+static int g_rec_n = 0;
+static char g_rec_dir[200];
+void ge_draw_record_frames(int n, const char* dir) {
+    std::lock_guard<std::mutex> lock(g_wc_mutex);
+    std::strncpy(g_rec_dir, dir, sizeof(g_rec_dir) - 1); g_rec_dir[sizeof(g_rec_dir) - 1] = '\0';
+    g_rec_n = 0; g_rec_left.store(n);
+}
+static void present_service_record() {
+    if (g_rec_left.load(std::memory_order_relaxed) <= 0) return;
+    SDL_Window* window = psp_get_sdl_window();
+    int dw = 0, dh = 0;
+    psp_gl_drawable_size(window, &dw, &dh);
+    std::vector<uint8_t> px(size_t(dw) * dh * 4), fl(px.size());
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glReadBuffer(GL_BACK);
+    glReadPixels(0, 0, dw, dh, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    for (int y = 0; y < dh; y++)
+        std::memcpy(fl.data() + size_t(y) * dw * 4, px.data() + size_t(dh - 1 - y) * dw * 4, size_t(dw) * 4);
+    char path[260];
+    const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    std::snprintf(path, sizeof path, "%s/f%05d_%lld.tga", g_rec_dir, g_rec_n++, ms);
+    write_tga(path, fl.data(), dw, dh);
+    g_rec_left.fetch_sub(1);
+}
+
 // Utility-dialog overlay (sceUtilitySavedata list): the HLE renders the
 // dialog into an RGBA canvas at an integer multiple (1..4) of 480x272 chosen
 // from the output size (psp_sddialog::set_output_scale, updated each present)
@@ -6071,6 +6099,7 @@ static void present_blit(GLuint fbo, const char* why = "flip") {
         }
     }
     present_service_window_capture();
+    present_service_record();
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     if (g_sync_mode == 3) glFinish();
     {
