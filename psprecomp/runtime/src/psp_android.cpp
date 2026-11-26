@@ -321,7 +321,15 @@ static bool import_from_host(const std::string& wd) {
 void psp_android_init() {
     const std::string wd = psp_android_workdir();
     // stderr -> logcat (tag psprecomp) and <workdir>/last_run.log, like the desktop launcher's log
+    // keep the previous run's log as prev_run.log (a restart after a crash / freeze must not erase the evidence). Only a real session replaces it:
+    // a log under 64 KB (a start that died at once, or a second restart) leaves the older prev_run.log alone.
+    {
+        const std::string cur = wd + "/last_run.log", prev = wd + "/prev_run.log";
+        struct stat sb;
+        if (stat(cur.c_str(), &sb) == 0 && sb.st_size >= (64 << 10)) { std::remove(prev.c_str()); std::rename(cur.c_str(), prev.c_str()); }
+    }
     g_logfile = std::fopen((wd + "/last_run.log").c_str(), "w");
+    if (g_logfile) setvbuf(g_logfile, nullptr, _IOLBF, 0);   // a line at a time (the pump also flushes after every read)
     if (pipe(g_pipe) == 0) {
         dup2(g_pipe[1], 2);
         dup2(g_pipe[1], 1);

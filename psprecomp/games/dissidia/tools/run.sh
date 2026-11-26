@@ -220,6 +220,8 @@ if [ -z "${PSPRECOMP_FONT:-}" ]; then
 fi
 
 [ -n "$LOG" ] || LOG="$WORK/last_run.log"
+# keep the previous run's log as prev_run.log next to it (a restart must not erase the evidence); only a real session (>= 64 KB) replaces it
+if [ -f "$LOG" ] && [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -ge 65536 ]; then mv -f "$LOG" "$(dirname "$LOG")/prev_run.log" 2>/dev/null || true; fi
 echo "Dissidia 012 (native)  saves: $PSPRECOMP_MS0/PSP/SAVEDATA   log: $LOG" >&2
 cd "$WORK"
 "$BIN" 2> >(tee "$LOG" >&2) &

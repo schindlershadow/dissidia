@@ -67,6 +67,8 @@ final class ReportClient {
         try {
             File game = new File(Engine.gameDir(), "last_run.log");
             if (game.canRead()) add(files, s, "last_run.log", game);
+            File prev = new File(Engine.gameDir(), "prev_run.log");
+            if (prev.canRead()) add(files, s, "prev_run.log", prev);
         } catch (Throwable t) {
             // no game folder yet
         }
