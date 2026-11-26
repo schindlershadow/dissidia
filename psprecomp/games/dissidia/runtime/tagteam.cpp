@@ -4629,6 +4629,8 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
             else if (who == "human") a = H; else if (who == "cpu") a = C;
             else for (int i = 0; i < g_nextra; i++) if (g_extra[i].started && !is_down(g_extra[i].actor) && alive(g_extra[i].actor) && ((who == "enemy2" && side_of(g_extra[i].actor) == side_of(C)) || (who == "partner" && side_of(g_extra[i].actor) == side_of(H)))) a = g_extra[i].actor;
             static const bool nat = std::getenv("PSPRECOMP_TAGTEAM_KOLIST_NAT") != nullptr;   // slot fighters with somebody to come in: like a natural lethal hit (dmg_hook: damage HP-1, g_ko_mark), not HP 0 (that reaches the retail KO chain: bs+72 -> 4, and the finish presentation 5.8 s later runs the LOCAL fighter's win / lose script per machine, a split)
+            if (ok(a, 0x12D0) && std::getenv("PSPRECOMP_TAGTEAM_KOLIST_HFOE")) for (int i = 0; i < g_nextra; i++) if (g_extra[i].started && g_extra[i].actor != a && side_of(g_extra[i].actor) == side_of(H) && alive(g_extra[i].actor)) {   // test aid (27 Nov doubleko): the human's foe is his side's living extra when the KO happens (retail's finish marks the human's foe)
+                call(SET_FOE, H, g_extra[i].actor); call(LOCK_SET, rd(H + 0x5ACu), g_extra[i].actor); std::fprintf(stderr, "[KOLIST] human's foe set to %s %08X\n", role_of(g_extra[i].actor), g_extra[i].actor); break; }
             if (ok(a, 0x12D0) && ok(rd(a + 0x52Cu), 0x40)) {
                 const uint32_t st = rd(a + 0x52Cu); bool mark = false;
                 if (nat && is_slot_fighter(a)) { bool mate = false; for (int i = 0; i < g_nextra; i++) if (g_extra[i].started && g_extra[i].actor != a && side_of(g_extra[i].actor) == side_of(a) && alive(g_extra[i].actor)) mate = true; mark = ffa_now() ? ffa_keep(a) : (mate || reserve_left(team_of(side_of(a))) > 0); }
@@ -4865,6 +4867,7 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
                 tp_vec("pull away", v, vec); call(PLACE, v, vec, 1);
                 g_ctx->f[12] = 0.0f; g_ctx->f[13] = 0.0f;
                 if (hpm_also >= 0 && ok(F[hpm_also], 0x12D0)) { wrf(vec + 8, rdf(a + 0x88u) + hpm_dz); call(PLACE, F[hpm_also], vec, 1); g_ctx->f[12] = 0.0f; g_ctx->f[13] = 0.0f; }
+                if (hpm_also >= 0 && std::getenv("PSPRECOMP_TAGTEAM_HPM_ALSO_HP") && ok(F[hpm_also], 0x12D0)) { const uint32_t sa = rd(F[hpm_also] + 0x52Cu); if (ok(sa, 0x40)) { wr(sa + 0xCu, static_cast<uint32_t>(std::atoi(std::getenv("PSPRECOMP_TAGTEAM_HPM_ALSO_HP")))); wr(sa + 0x8u, 0u); wr(sa + 0x14u, rd(sa + 0x14u) & 0xFFFF0000u); std::fprintf(stderr, "[HPM] the second victim %s live HP set to %s\n", R[hpm_also], std::getenv("PSPRECOMP_TAGTEAM_HPM_ALSO_HP")); } }   // test aid (27 Nov doubleko): both victims of one HP attack at low HP
                 tagteam_hpm_marker(a, v, step);
                 if (hpmb_a >= 0 && ok(F[hpmb_a], 0x12D0) && ok(F[hpmb_v], 0x12D0) && F[hpmb_a] != a && F[hpmb_a] != v && F[hpmb_v] != a && F[hpmb_v] != v) {   // the second attack's pair, 8 m beside the first
                     wrf(vec, rdf(a + 0x80u)); wrf(vec + 4, rdf(a + 0x84u)); wrf(vec + 8, rdf(a + 0x88u) + (std::getenv("PSPRECOMP_TAGTEAM_HPM_BDZ") ? static_cast<float>(std::atof(std::getenv("PSPRECOMP_TAGTEAM_HPM_BDZ"))) : 8.0f)); call(PLACE, F[hpmb_a], vec, 1); g_ctx->f[12] = 0.0f; g_ctx->f[13] = 0.0f;
@@ -5443,6 +5446,8 @@ static void hpstep_core(uint8_t* rdram, recomp_context* ctx, uint32_t forced) {
     }
     if (real) { wr(m, slotv); if (g_log) std::fprintf(stderr, "[TAGTEAM] t=%.2fs HP damage by %s %08X goes to the fighter it hit: %s %08X (not %s %08X), damage taken %d -> %d\n", dissidia_battle_age() / 60.0f, role_of(ratt), ratt, role_of(real), real, role_of(slotv), slotv, pd0, ok(st, 0x40) ? static_cast<int>(rd(st + 0x8u)) : -1); }
     hp_hit_indicator(a, ratt, dmg_hp0, hold && g_ko_mark.count(a) != 0);
+    if (ok(a, 0x12D0) && dmg_hp0 > 0 && hp_eff(a) <= 0) {   // always on (27 Nov doubleko): every lethal HP hit, to read a KO off a device log; the booking lines follow from the KO flow
+        static int kc = 0; if (kc++ < 400) std::fprintf(stderr, "[KOEVT] t=%.2fs LETHAL HP hit: victim %s %08X (char %d s%u) hp %d -> %d (pending damage %d) by %s %08X (char %d), %s victim of this attack, victim script %d, held %d, KO mark %d\n", dissidia_battle_age() / 60.0f, role_of(a), a, actor_char(a), side_of(a), dmg_hp0, hp_eff(a), ok(st, 0x40) ? static_cast<int>(rd(st + 0x8u)) : -1, ok(ratt, 0x12D0) ? role_of(ratt) : "?", ratt, ok(ratt, 0x12D0) ? actor_char(ratt) : -1, forced ? "a further" : "the first", static_cast<int16_t>(rd(a + 0x180u) & 0xFFFFu), hold ? 1 : 0, g_ko_mark.count(a) ? 1 : 0); }
     g_hp_last_victim = a;
     static int n = 0;
     if (g_log && std::getenv("PSPRECOMP_TAGTEAM_HPSTEPLOG") && n++ < 400) std::fprintf(stderr, "[HPSTEP] t=%.2fs r4 %08X msg %08X actor %s %08X (handler %08X h+16 %s %08X) r6 %08X r7 %08X r8 %08X: hp %d -> %d pend %d -> %d\n", dissidia_battle_age() / 60.0f, static_cast<uint32_t>(ctx->r[4]), m, ok(a, 0x12D0) ? role_of(a) : "?", a, h, ok(h, 0x40) && ok(rd(h), 0x12D0) ? role_of(rd(h)) : "-", ok(h, 0x40) ? rd(h) : 0u, static_cast<uint32_t>(ctx->r[6]), static_cast<uint32_t>(ctx->r[7]), static_cast<uint32_t>(ctx->r[8]), hp0, ok(st, 0x40) ? static_cast<int>(rd(st + 0xCu)) : -1, pd0, ok(st, 0x40) ? static_cast<int>(rd(st + 0x8u)) : -1);
@@ -7369,6 +7374,7 @@ void ko_oneround() {
             if (g_log) std::fprintf(stderr, "[TAGTEAM] t=%.1fs finish phase with slot %u %08X fallen at hp %d: forfeit, team %d loses the whole group battle\n", age / 60.0f, k, S, hp_eff(S), team_of(side_of(S)));
             group_decided(team_of(side_of(S))); return;
         }
+        { static int kb = 0; if (kb++ < 400) std::fprintf(stderr, "[KOEVT] t=%.2fs BOOKED slot %u %s %08X (char %d s%u) KO: hp %d, script %d, KO mark %d\n", age / 60.0f, k, role_of(S), S, actor_char(S), side_of(S), hp_eff(S), static_cast<int16_t>(rd(S + 0x180u) & 0xFFFFu), g_ko_mark.count(S) ? 1 : 0); }
         Extra* te = nullptr;
         { static const bool kolast = std::getenv("PSPRECOMP_TAGTEAM_KOLASTMATE") != nullptr; for (int i = 0; i < g_nextra; i++) if (g_extra[i].started && g_extra[i].actor != S && side_of(g_extra[i].actor) == side_of(S) && alive(g_extra[i].actor)) { te = &g_extra[i]; if (!kolast) break; } }   // (3 v 3: the FIRST living partner comes in, as the party order lists them; PSPRECOMP_TAGTEAM_KOLASTMATE=1: old, the last)
         const bool spk = team_of(side_of(S)) == 0 && sp_cpu_battle(), sp_own = spk && sp_left(true) > 0;
@@ -7548,7 +7554,52 @@ void ko_oneround() {
             std::fprintf(stderr, "[VPDUMP] %08X vp %08X:", A2, vp);
             for (uint32_t o = 0; ok(vp, 0x400) && o < 0x400u; o += 4) { const uint32_t v = rd(vp + o); if (v > 1000000u) std::fprintf(stderr, " +%X=%u%s", o, v, call(0x088A4364u, v, v, 1) ? "*" : ""); }
             std::fprintf(stderr, "\n"); g_ctx->r[29] = static_cast<int32_t>(sp0); } }
+        { static int kb = 0; if (kb++ < 400) std::fprintf(stderr, "[KOEVT] t=%.2fs BOOKED extra %s %08X (char %d s%u) down: hp %d, script %d\n", age / 60.0f, role_of(e.actor), e.actor, actor_char(e.actor), e.side, hp_eff(e.actor), static_cast<int16_t>(rd(e.actor + 0x180u) & 0xFFFFu)); }
         if (g_log) std::fprintf(stderr, "[TAGTEAM] t=%.1fs extra %08X (side %u) is down (hp %d, script %d), reserve %d\n", age / 60.0f, e.actor, e.side, ok(rd(e.actor + 0x52Cu), 0x40) ? static_cast<int>(rd(rd(e.actor + 0x52Cu) + 0xCu)) : -1, static_cast<int16_t>(rd(e.actor + 0x180u) & 0xFFFFu), reserve_left(team_of(side_of(e.actor))));
+    }
+    {   // [KOFIX] safety net (27 Nov, doubleko): a fighter with HP <= 0 that is still ACTING (no fall / landing script, not rebuilding, no burst) after 1 s gets its KO booked: the fall is asked again with the AI gated, an extra not yet
+        // down is put on the down list (call-in / park as any fallen extra), a slot fighter's KO flow is run again. Battle ticks and game state only (lock-step safe). PSPRECOMP_TAGTEAM_NOKOFIX=1: off.
+        static const bool nokofix = std::getenv("PSPRECOMP_TAGTEAM_NOKOFIX") != nullptr;
+        static std::map<uint32_t, float> kf_since; static uint32_t kf_gen = ~0u; if (kf_gen != g_battle_gen) { kf_gen = g_battle_gen; kf_since.clear(); }
+        if (!nokofix && g_bs && age > 300.f) for (const uint32_t f : all_fighters_any()) {
+            const uint32_t fst = rd(f + 0x52Cu); const int sc = static_cast<int16_t>(rd(f + 0x180u) & 0xFFFFu);
+            const bool fall = (sc >= 1200 && sc < 1300) || sc == 551 || sc < 0 || std::fabs(rdf(f + 0x80u) - 5000.f) < 1.f;
+            if (!ok(fst, 0x40) || hp_eff(f) > 0 || fall || exb_in(f) || is_rebuilding(f) || exb_busy()) { kf_since.erase(f); continue; }
+            auto it = kf_since.find(f); if (it == kf_since.end()) { kf_since[f] = age; continue; }
+            if (age - it->second < 60.f) continue;
+            it->second = age;
+            Extra* xe = extra_of(f); int sk = -1; for (uint32_t q = 0; q < 2; q++) if (srd(g_bs + 56u + 4u * q) == f) sk = static_cast<int>(q);
+            static int kfn = 0; if (kfn++ < 100) std::fprintf(stderr, "[KOFIX] t=%.2fs %s %08X (char %d) has HP %d but is still acting (script %d, %s, down %d): KO booked now\n", age / 60.0f, role_of(f), f, actor_char(f), hp_eff(f), sc, xe ? "extra" : sk >= 0 ? "slot fighter" : "other", is_down(f) ? 1 : 0);
+            wr(f + 0x380u, rd(f + 0x380u) | 2u);
+            { const uint32_t sp0 = static_cast<uint32_t>(g_ctx->r[29]); g_ctx->r[29] = static_cast<int32_t>(sp0 - 0x40u); g_ctx->f[12] = 0.0f; g_ctx->f[13] = 0.0f; call(START_ACTION, f + 304u, 1210, 0); g_ctx->r[29] = static_cast<int32_t>(sp0); }
+            if (xe && xe->started && !is_down(f)) { g_down.push_back(f); g_downrec.push_back({f, age, side_of(f)}); ko_voice(f); g_defeat_hold[f] = 46.0f; g_park.push_back({f, age + 4.0f * 60.f}); }
+            else if (sk >= 0 && !is_down(f) && std::find(g_ffa_down.begin(), g_ffa_down.end(), f) == g_ffa_down.end() && g_slot_callin.empty()) handled[sk] = false;
+        }
+    }
+    {   // [KOFIX] the finish marks left on a LIVING extra (the human's foe at a slot KO's finish start, or a body rebuilt as a tag-in after it: RP6 26 Nov, Emperor / Feral Chaos "move and attack but nobody can hit them", +380 = 20002000 /
+        // 20000000, decided byte 1, victory state, lock block +0x126 = 0): after 2 s outside the finish phase / a burst / an entrance / a rebuild they are put back (battle state only). PSPRECOMP_TAGTEAM_NOKOFIX=1 / NOEXTRAFINFIX=1: off.
+        static const bool noext2 = std::getenv("PSPRECOMP_TAGTEAM_NOKOFIX") != nullptr || std::getenv("PSPRECOMP_TAGTEAM_NOEXTRAFINFIX") != nullptr;
+        static std::map<uint32_t, float> mk_since; static uint32_t mk_gen = ~0u; if (mk_gen != g_battle_gen) { mk_gen = g_battle_gen; mk_since.clear(); }
+        if (!noext2 && g_bs) for (int i = 0; i < g_nextra; i++) {
+            const uint32_t a = g_extra[i].actor;
+            if (!g_extra[i].started || !ok(a, 0x12D0) || !alive(a) || rd(g_bs + 72u) == 4u || exb_busy() || exb_in(a) || is_rebuilding(a) || entrance_busy() || a == g_entrant || a == srd(g_bs + 56u) || a == srd(g_bs + 60u)) { mk_since.erase(a); continue; }
+            const uint32_t f0 = rd(a + 0x380u), w0 = rd(a + 908u); const uint32_t L = rd(a + 0x5ACu);
+            if (!(f0 & 0x20000000u)) { mk_since.erase(a); continue; }
+            auto it = mk_since.find(a); if (it == mk_since.end()) { mk_since[a] = age; continue; }
+            if (age - it->second < 120.f) continue;
+            const uint8_t d0 = g_ram[(a + 0x126Bu) & 0x07FFFFFFu], l0 = ok(L, 0x200) ? g_ram[(L + 0x126u) & 0x07FFFFFFu] : static_cast<uint8_t>(0);
+            wr(a + 0x380u, f0 & ~0x20000000u); wr(a + 908u, w0 & ~2u); g_ram[(a + 0x126Bu) & 0x07FFFFFFu] = 0;   // (an extra's lock block +0x126 is 0 anyway, only the slot fighters' is 1: left alone)
+            mk_since.erase(a);
+            std::fprintf(stderr, "[KOFIX] t=%.2fs living extra %s %08X (char %d) carried finish marks for %.1f s (+380 %08X, +908 %08X, decided byte %u, lock +0x126 %u): cleared (+380 bit 0x20000000, victory state, decided byte 0)\n", age / 60.0f, role_of(a), a, actor_char(a), (age - it->second) / 60.0f, f0, w0, d0, l0);
+        }
+    }
+    {   // test aid (27 Nov doubleko): PSPRECOMP_TAGTEAM_MARKX=<extra index>:<s>: the finish marks on that extra at that battle second (what retail's finish start did to the human's foe), once
+        static const char* mx = std::getenv("PSPRECOMP_TAGTEAM_MARKX"); static uint32_t mxg = ~0u;
+        int xi = 0; float xs = 0; if (mx && std::sscanf(mx, "%d:%f", &xi, &xs) == 2 && mxg != g_battle_gen && age >= xs * 60.f && xi >= 0 && xi < g_nextra && ok(g_extra[xi].actor, 0x12D0) && g_extra[xi].started) {
+            mxg = g_battle_gen; const uint32_t a = g_extra[xi].actor, L = rd(a + 0x5ACu); wr(a + 0x380u, rd(a + 0x380u) | 0x20000000u); wr(a + 908u, rd(a + 908u) | 2u); g_ram[(a + 0x126Bu) & 0x07FFFFFFu] = 1; if (ok(L, 0x200)) g_ram[(L + 0x126u) & 0x07FFFFFFu] = 0;
+            std::fprintf(stderr, "[MARKX] t=%.2fs finish marks put on extra %d %s %08X (char %d)\n", age / 60.0f, xi, role_of(a), a, actor_char(a)); }
+        static float mxlast = -1e9f; if (mx && xi >= 0 && xi < g_nextra && ok(g_extra[xi].actor, 0x12D0) && age - mxlast >= 60.f) { mxlast = age; const uint32_t a = g_extra[xi].actor, L = rd(a + 0x5ACu);
+            std::fprintf(stderr, "[MARKXW] t=%.2fs extra %d %08X +380 %08X +908 %08X dec %u lock126 %u hp %d script %d\n", age / 60.0f, xi, a, rd(a + 0x380u), rd(a + 908u), g_ram[(a + 0x126Bu) & 0x07FFFFFFu], ok(L, 0x200) ? g_ram[(L + 0x126u) & 0x07FFFFFFu] : 255u, hp_eff(a), static_cast<int16_t>(rd(a + 0x180u) & 0xFFFFu)); }
     }
     for (auto& dh : g_defeat_hold) {   // the fallen extra stays lying: the fall (1210) chains into the landing (551) and then into a stand (1); the last pose of the landing is held
         const uint32_t a = dh.first; if (!ok(a, 0x12D0) || std::fabs(rdf(a + 0x80u) - 5000.f) < 1.f) continue;
@@ -7710,12 +7761,15 @@ void kodiff_dump(const char* tag) {
 // The finish machine's start (FUN_08B09D88) marks both slot fighters as "decided": FUN_08B34E98(fighter, 3) sets fighter +0x380 bit 0x20000000 and the byte +0x126B (fighter + 4712 + 3) = 1, the world flags
 // (+908 |= 2: the winner's victory state) and it clears the byte +0x126 of each fighter's lock block (fighter +0x5AC): lock-on disabled. For a mid-battle KO the match goes on, so these are put back to what they were
 // at the finish start when the KO flow is done (RP6 25 Nov: after the first kill no BRV gain, no lock-on reticle, no chase prompt). PSPRECOMP_TAGTEAM_NOFINRESTORE=1 = old.
-struct FinSnap { bool have = false; uint32_t actor[2] = {0, 0}, lock[2] = {0, 0}; uint8_t dec[2] = {0, 0}, lk126[2] = {0, 0}; } g_finsnap;
+struct FinSnap { bool have = false; uint32_t actor[2] = {0, 0}, lock[2] = {0, 0}; uint8_t dec[2] = {0, 0}, lk126[2] = {0, 0}; std::map<uint32_t, std::pair<uint8_t, uint8_t>> ext; uint32_t gen = ~0u; } g_finsnap;   // (ext: the extras' own decided byte / lock +0x126 before the finish: 27 Nov doubleko, the finish marks the WINNER, who can be an extra)
 void finsnap_take() {
     g_finsnap.have = false;
     for (uint32_t k = 0; k < 2; k++) { const uint32_t a = srd(g_bs + 56u + 4u * k); g_finsnap.actor[k] = 0; if (!ok(a, 0x12D0)) continue;
         const uint32_t L = rd(a + 0x5ACu); g_finsnap.actor[k] = a; g_finsnap.lock[k] = ok(L, 0x200) ? L : 0u; g_finsnap.dec[k] = g_ram[(a + 0x126Bu) & 0x07FFFFFFu]; g_finsnap.lk126[k] = g_finsnap.lock[k] ? g_ram[(L + 0x126u) & 0x07FFFFFFu] : 0;
         g_finsnap.have = true; }
+    g_finsnap.ext.clear(); g_finsnap.gen = g_battle_gen;
+    for (int i = 0; i < g_nextra; i++) { const uint32_t a = g_extra[i].actor; if (!g_extra[i].started || !ok(a, 0x12D0)) continue;
+        const uint32_t L = rd(a + 0x5ACu); g_finsnap.ext[a] = {g_ram[(a + 0x126Bu) & 0x07FFFFFFu], ok(L, 0x200) ? g_ram[(L + 0x126u) & 0x07FFFFFFu] : static_cast<uint8_t>(0)}; }
 }
 void finsnap_restore() {
     if (!g_finsnap.have || std::getenv("PSPRECOMP_TAGTEAM_NOFINRESTORE")) { g_finsnap.have = false; return; }
@@ -7731,6 +7785,20 @@ void finsnap_restore() {
         const uint32_t L = rd(a + 0x5ACu); uint8_t l0 = 0, l1 = 0; const bool same = L && L == g_finsnap.lock[k] && ok(L, 0x200);
         if (same) { l0 = g_ram[(L + 0x126u) & 0x07FFFFFFu]; g_ram[(L + 0x126u) & 0x07FFFFFFu] = g_finsnap.lk126[k]; l1 = g_finsnap.lk126[k]; }
         if (g_log) std::fprintf(stderr, "[KOCAM] t=%.2fs slot fighter %08X: finish marks put back (decided byte +0x126B %u -> %u; lock block %08X +0x126 %u -> %u%s)\n", dissidia_battle_age() / 60.0f, a, d0, g_finsnap.dec[k], L, l0, l1, same ? "" : ", lock block replaced: left"); }
+    // 27 Nov (doubleko, RP6 FFA): the finish marks the WINNER (pair object +180), which for a slot fighter's KO in a Free-for-all is that fighter's FOE: here an EXTRA (Emperor). The extra got the
+    // decided byte +0x126B, +0x380 bit 0x20000000, the victory state (+908 bit 2) and its lock block's +0x126 = 0, and kept them for the rest of the match (moving and attacking, but nobody could hit him).
+    // The marks are put back for every living extra. PSPRECOMP_TAGTEAM_NOEXTRAFINFIX=1: old.
+    static const bool noext = std::getenv("PSPRECOMP_TAGTEAM_NOEXTRAFINFIX") != nullptr;
+    if (!noext && g_finsnap.gen == g_battle_gen) for (const auto& kv : g_finsnap.ext) {
+        const uint32_t a = kv.first; Extra* e = extra_of(a);
+        if (!e || !e->started || !ok(a, 0x12D0) || !alive(a)) continue;
+        const uint32_t f0 = rd(a + 0x380u), w0 = rd(a + 908u); const uint8_t d0 = g_ram[(a + 0x126Bu) & 0x07FFFFFFu];
+        const uint32_t L = rd(a + 0x5ACu); const uint8_t l0 = ok(L, 0x200) ? g_ram[(L + 0x126u) & 0x07FFFFFFu] : static_cast<uint8_t>(0);
+        const bool marked = (f0 & 0x20000000u) || ((w0 & 2u) && d0 != kv.second.first) || d0 != kv.second.first;
+        if (!marked) continue;
+        wr(a + 0x380u, f0 & ~0x20000000u); wr(a + 908u, w0 & ~2u); g_ram[(a + 0x126Bu) & 0x07FFFFFFu] = kv.second.first; if (ok(L, 0x200)) g_ram[(L + 0x126u) & 0x07FFFFFFu] = kv.second.second;
+        std::fprintf(stderr, "[KOFIX] t=%.2fs extra %s %08X (char %d) carried the finish marks of a slot KO (+380 %08X -> %08X, +908 %08X -> %08X, decided byte %u -> %u, lock +0x126 %u -> %u): put back\n", dissidia_battle_age() / 60.0f, role_of(a), a, actor_char(a), f0, f0 & ~0x20000000u, w0, w0 & ~2u, d0, kv.second.first, l0, kv.second.second);
+    }
     g_finsnap.have = false;
 }
 // A mid-battle KO whose finish starts while an EX Burst runs or has just ended (the retail finish waits for the burst's end): the finish camera was aimed at the victim's burst-scene
@@ -7748,12 +7816,17 @@ void finstart_hook(uint8_t* rdram, recomp_context* ctx) {
     if (mid) cam_snap("finish start"); else g_camsnap.have = false;
     if (mid) { g_sndenable_gen = g_battle_gen; g_sndenable_val = rd(0x089D6C98u) & 0xFFu; } else g_sndenable_gen = ~0u;
     if (mid) finsnap_take(); else g_finsnap.have = false;
+    if (mid) { std::fprintf(stderr, "[KOEVT] t=%.2fs finish snapshot (before the marks):", dissidia_battle_age() / 60.0f); for (uint32_t f : all_fighters_any()) { const uint32_t L = rd(f + 0x5ACu); std::fprintf(stderr, " %s %08X[+380 %08X +908 %08X dec %u lock126 %u foe %08X]", role_of(f), f, rd(f + 0x380u), rd(f + 908u), g_ram[(f + 0x126Bu) & 0x07FFFFFFu], ok(L, 0x200) ? g_ram[(L + 0x126u) & 0x07FFFFFFu] : 255u, rd(f + 0x2FCu)); } std::fprintf(stderr, "\n"); }
     if (mid && !std::getenv("PSPRECOMP_TAGTEAM_EXBKOCHANCE_OLD")) {   // the burst chance of a fight that just ended with a KO: flags off (see exb_busy)
         uint32_t f[8]; const int nf = all_fighters(f);
         for (int i = 0; i < nf; i++) { uint8_t& b = g_ram[(f[i] + 0x5B2u) & 0x07FFFFFFu]; if (b & 0x10u) { b = static_cast<uint8_t>(b & ~0x10u); if (g_log) std::fprintf(stderr, "[EXBKO] t=%.2fs %s %08X: burst chance flag cleared at the KO finish (victim down)\n", dissidia_battle_age() / 60.0f, role_of(f[i]), f[i]); } }
     }
     if (g_log && std::getenv("PSPRECOMP_TAGTEAM_KOSHOT")) { const float a = dissidia_battle_age() / 60.0f; tagteam_breakshot_event(a, g_battle_gen, "kofin", 0, "a", nullptr); tagteam_breakshot_event(a + 2.f, g_battle_gen, "kofin", 0, "b", nullptr); }   // debug: shots at the finish start +0 / 0.5 / 1.5 and +2 / 2.5 / 3.5 s
     g_orig_finstart(rdram, ctx);
+    if (mid) { const uint32_t pm = rd(0x089D69F8u), wnr = ok(pm, 0x100) ? rd(pm + 180u) : 0u;   // always on: who retail named the winner and who carries its marks now
+        std::fprintf(stderr, "[KOEVT] t=%.2fs finish start for a mid-battle KO of %s: retail winner %s %08X (char %d); marked (+380 bit 0x20000000):", dissidia_battle_age() / 60.0f, who && ok(who, 0x12D0) ? role_of(who) : "?", ok(wnr, 0x12D0) ? role_of(wnr) : "-", wnr, ok(wnr, 0x12D0) ? actor_char(wnr) : -1);
+        for (uint32_t f : all_fighters_any()) if (rd(f + 0x380u) & 0x20000000u) std::fprintf(stderr, " %s %08X", role_of(f), f);
+        std::fprintf(stderr, "\n"); }
 }
 // The finish also silences the battle (retail: nothing plays on to the results). For a mid-battle KO the match goes on, so these stops are skipped (user, RP6 25 Nov: all audio gone after the KO):
 //  - FUN_08895FE4(sound list, ...) stops every sound player of the SE list: called by the phase change FUN_0888B21C (ra 0888B2F8, before the finish start: decided with mid_ko_now) and by the finish machine's
