@@ -1383,6 +1383,12 @@ uint32_t spawn_fighter(uint32_t bs, uint32_t side, uint32_t foe, uint32_t cpu_si
     }
     if (g_log && std::getenv("PSPRECOMP_TAGTEAM_SCAN")) { std::fprintf(stderr, "[TAGTEAM] slots: %08X %08X human slot %u\n", rd(bs + 56), rd(bs + 60), rd(bs + 84)); scan_refs(mem, side ? "extra side 1" : "extra side 0"); }
     if (g_log && std::getenv("PSPRECOMP_TAGTEAM_OWNLOG")) { std::fprintf(stderr, "[OWN] extra %08X owns %zu blocks:", mem, g_owned[mem].size()); for (auto& b : g_owned[mem]) std::fprintf(stderr, " %08X+%X", b.addr, b.size); std::fprintf(stderr, "\n"); }
+    if (std::getenv("PSPRECOMP_NETSYNC_SPAWNDUMP")) {   // diagnostic (desync hunt): the new fighter's actor, brain and lock block right after its constructor / init ([XCTOR] lines)
+        const uint32_t blocks[3][2] = {{mem, 0x1100u}, {rd(mem + ACT_BRAIN), 0x800u}, {rd(mem + ACT_LOCKBLK), 0x400u}};
+        for (int bi = 0; bi < 3; bi++) { const uint32_t base = blocks[bi][0]; if (!ok(base, blocks[bi][1])) continue;
+            for (uint32_t o = 0; o < blocks[bi][1]; o += 0x100u) { std::string line; char t[12]; for (uint32_t i = 0; i < 0x100u; i += 4) { std::snprintf(t, sizeof t, " %08X", rd(base + o + i)); line += t; }
+                std::fprintf(stderr, "[XCTOR] t=%.2f extra %08X part %d +%03X%s\n", dissidia_battle_age() / 60.f, mem, bi, o, line.c_str()); } }
+    }
     g_last_undo = undo;
     if (guard && std::getenv("PSPRECOMP_TAGTEAM_GLOBDIFF")) { g_glob_snap.assign(snap.begin(), snap.begin() + (0x08C40000u - SB) / 4); g_glob_snap_for = mem; }
     g_own_ctx = 0;
@@ -1582,6 +1588,7 @@ void entrance_effect(uint32_t A, const std::string& name, bool banter = false);
 int actor_char(uint32_t a);   // below
 void voice_banks_release();   // below (member voice banks)
 void portrait_show(uint32_t side, int c);   // below (big-panel portrait)
+void portrait_prepare(int c); void portrait_prepare_all();   // below (deterministic portrait loads)
 void portrait_reset(bool hud_gone);          // below
 void face_foe(uint32_t A);   // below (entrance: turn toward the foe)
 void model_face_yaw(uint32_t A);   // below (entrance: the model matrix follows the yaw)
@@ -1698,6 +1705,12 @@ void start_extra(Extra& e) {
     }
     if (g_log && g_bs) { const uint32_t hs = rd(g_bs + 84u); for (uint32_t a : {srd(g_bs + 56u + 4u * hs), e.actor}) std::fprintf(stderr, "[TAGTEAM] flags %08X: +5B0 %02X +380 %08X brain %08X +54 %u\n", a, g_ram[(a + 0x5B0u) & 0x07FFFFFFu], rd(a + 0x380u), rd(a + 0x5C4u), rd(rd(a + 0x5C4u) + 0x54u)); }
     if (g_log) std::fprintf(stderr, "[TAGTEAM] extra %08X (side %u) started, target %08X foe %08X\n", e.actor, e.side, rd(e.actor + 0x2FCu), e.foe);
+    if (std::getenv("PSPRECOMP_NETSYNC_SPAWNDUMP")) {   // diagnostic (desync hunt): the new extra's actor, brain and lock block as it starts, word by word ([XSPAWN] lines, diff the two players' logs)
+        const uint32_t blocks[3][2] = {{e.actor, 0x1100u}, {rd(e.actor + ACT_BRAIN), 0x800u}, {rd(e.actor + ACT_LOCKBLK), 0x400u}};
+        for (int bi = 0; bi < 3; bi++) { const uint32_t base = blocks[bi][0]; if (!ok(base, blocks[bi][1])) continue;
+            for (uint32_t o = 0; o < blocks[bi][1]; o += 0x100u) { std::string line; char t[12]; for (uint32_t i = 0; i < 0x100u; i += 4) { std::snprintf(t, sizeof t, " %08X", rd(base + o + i)); line += t; }
+                std::fprintf(stderr, "[XSPAWN] t=%.2f extra %08X part %d +%03X%s\n", dissidia_battle_age() / 60.f, e.actor, bi, o, line.c_str()); } }
+    }
     if (g_log && std::getenv("PSPRECOMP_TAGTEAM_ACTORDUMP")) {   // debug: every word of the extra's actor (diff a clone against another character)
         for (uint32_t o = 0; o < 0x12D0; o += 4) std::fprintf(stderr, "[ACTORDUMP] %04X %08X\n", o, rd(e.actor + o));
     }
@@ -4101,6 +4114,7 @@ bool rebuild_begin(uint32_t A, int charId, int hp, int brv) {
     if (g_log) std::fprintf(stderr, "[TAGTEAM] rebuild %08X: built as char %d (new lock block %08X, %d registration words to take back when ready, %d object-list links kept), waiting for its files\n", A, actor_char(A), new_lb, undone, kept);
     g_rebuild.push_back(j); g_rebuilt.insert(A); g_rebuild_count++;
     { int slot = -1; for (uint32_t k = 0; k < 2; k++) if (g_bs && srd(g_bs + 56u + 4u * k) == A) slot = static_cast<int>(k); if (slot >= 0) dissidia_ttnet_slot_rebuilt(slot, charId); }   // tagteam_net.cpp: who plays the slot now
+    portrait_prepare(charId);   // (its HUD portrait now, the same frame on every machine)
     if (std::getenv("PSPRECOMP_TAGTEAM_HANGDUMP")) { hang_watch_start(); g_hang_watch = true; }
     return true;
 }
@@ -4444,7 +4458,7 @@ void spawn_late_queue() {
     for (const Late& l : g_late_q) {
         Extra& e = g_extra[g_nextra];
         e.actor = spawn_fighter(g_bs, l.side, l.foe, l.cpu_side, l.info_slot, l.slot_actor); e.side = l.side; e.foe = l.foe; e.slot_actor = l.slot_actor; e.started = false; e.callin = l.callin; e.charId = l.charId; e.replaced = false; e.driver = l.driver; e.pad = 0; e.camslot = -1; e.hp_carry = l.hp; e.brv_carry = l.brv; e.quiet = l.quiet;
-        if (e.actor) { e.undo = g_last_undo; g_nextra++; if (g_pre_hold && !l.callin && !std::getenv("PSPRECOMP_BANTER_NOHIDE")) { wr(e.actor + 900u, rd(e.actor + 900u) | 0x1000u); g_hide_new[e.actor] = -1.f; } }
+        if (e.actor) { e.undo = g_last_undo; g_nextra++; if (g_pre_hold && !l.callin && !std::getenv("PSPRECOMP_BANTER_NOHIDE")) { wr(e.actor + 900u, rd(e.actor + 900u) | 0x1000u); g_hide_new[e.actor] = -1.f; } portrait_prepare(l.charId); }
         else if (l.callin) { const int t = team_of_side(l.side); if (g_called[t] > 0) g_called[t]--; if (t == 0) sp_mark(l.charId, false); }   // spawn failed: the member stays in reserve
     }
     g_late_q.clear(); gfx_dump("after the spawns");
@@ -4454,6 +4468,7 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
     g_ram = rdram; g_ctx = ctx;
     const uint32_t owner = rd(brain + 4);
     if (g_bs && owner == rd(g_bs + 56u)) g_tt_age += dissidia_logic_tick_len();   // the tag clock: one step per battle frame
+    if (g_bs && owner == rd(g_bs + 56u)) portrait_prepare_all();   // every fighter's HUD portrait made at the same battle frame on every machine (see portrait_prepare)
     if (g_bs && owner == rd(g_bs + 56u)) exb_debug_start();   // debug (PSPRECOMP_TAGTEAM_EXBAT): start EX Bursts at fixed tag-clock times
     // the HUD / reserve refresh runs on one extra's brain tick: extra 0's. With four extras (3 v 3) that one is more often down (a fallen extra's
     // brain may stop), which froze the panels while the others fought (23 Nov). Now the first started extra that is not down ticks it.
@@ -4833,9 +4848,9 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
         static int first_intro = 0; static uint32_t fi_gen = ~0u; if (fi_gen != g_battle_gen) { fi_gen = g_battle_gen; first_intro = 0; }
         static const bool bl = std::getenv("PSPRECOMP_TAGTEAM_BANTERLATE") != nullptr;
         if (cur >= 1000) {
-            intro_seen = true;   // (online: the partners still come in after the intro until the rare lock-step divergence of the early mode is found, Batch twenty-three)
+            intro_seen = true;   // (online too since 26 Nov: the rare lock-step divergence blamed on the early mode was the chase camera step, Batch forty-three)
             if (!first_intro) first_intro = cur;
-            else if (cur != first_intro && !bl && g_late_wait && (!comms_battle() || std::getenv("PSPRECOMP_TAGTEAM_BANTERNET"))) {  g_late_ready = true; g_pre_hold = true; g_pre_used = true; g_hold_t0 = dissidia_battle_age(); dissidia_pause_match(0, 30.f); g_hold_tasks_at = g_hold_t0 + (std::getenv("PSPRECOMP_BANTER_HOLDDELAY") ? static_cast<float>(std::atof(std::getenv("PSPRECOMP_BANTER_HOLDDELAY"))) : 0.f); if (g_hold_tasks_at <= g_hold_t0) { pre_hold_tasks(true); g_hold_tasks_at = -1.f; } if (g_log) std::fprintf(stderr, "[TAGTEAM] t=%.2fs intro script %d -> %d: the retail flow is held, the partners come in before the vs display\n", dissidia_battle_age() / 60.f, first_intro, cur); }
+            else if (cur != first_intro && !bl && g_late_wait) {  g_late_ready = true; g_pre_hold = true; g_pre_used = true; g_hold_t0 = dissidia_battle_age(); dissidia_pause_match(0, 30.f); g_hold_tasks_at = g_hold_t0 + (std::getenv("PSPRECOMP_BANTER_HOLDDELAY") ? static_cast<float>(std::atof(std::getenv("PSPRECOMP_BANTER_HOLDDELAY"))) : 0.f); if (g_hold_tasks_at <= g_hold_t0) { pre_hold_tasks(true); g_hold_tasks_at = -1.f; } if (g_log) std::fprintf(stderr, "[TAGTEAM] t=%.2fs intro script %d -> %d: the retail flow is held, the partners come in before the vs display\n", dissidia_battle_age() / 60.f, first_intro, cur); }
         }
         else if (intro_seen && (cur == 1 || cur == 2)) g_late_ready = true;
         if (!g_late_wait) g_late_ready = true;
@@ -9060,10 +9075,21 @@ void dissidia_tt_chase_step_log(uint32_t actor, float before, float after) {   /
     if (!on || !g_bs || !g_chase_ctl_now || !ok(g_chase_ctl_now, 0x40) || rd(g_chase_ctl_now) == 0 || !ok(actor, 0x12D0) || g_ram[(actor + 0x542u) & 0x07FFFFFFu] != 0) return;
     std::fprintf(stderr, "[CHSTEP] t=%.3fs %s %08X chase %s step %.4f (game %.4f) clk %.3f ch1 %.3f state %u pos %.2f %.2f %.2f\n", dissidia_battle_age() / 60.0f, role_of(actor), actor, chase_member(actor) ? "IN " : "out", after, before, rdf(actor + 0x3C8u), ok(rd(0x08A62280u), 0x40) ? rdf(rd(0x08A62280u) + 8u) : -1.f, rd(g_chase_ctl_now), rdf(actor + 0x80u), rdf(actor + 0x84u), rdf(actor + 0x88u));
 }
-float dissidia_tt_chase_cam_scale(float ticks) {   // the view of a local fighter outside the chase runs at normal speed; the chasers' view keeps retail's look
+// The camera step (FUN_08B3B4FC, a0 = the camera: a fighter's lock block) is SIMULATION state: every lock block in the camera manager's slot table is
+// stepped every update, and a fighter's stick is turned into a world direction with its lock block's camera (camera.cpp, view_slot_frame). The
+// compensation therefore follows the camera's OWNER (lock block +0xF8), battle state only: the camera of a fighter outside the chase runs at the
+// normal speed, a chaser's keeps retail's slow look - the same on every machine. (26 Nov: it followed THIS machine's local fighter instead, for
+// every camera: in a lock-step battle, during a chase of a slot fighter and an extra, the machine whose player stood outside the chase stepped
+// every lock block camera, the chasing slot fighter's included, x15 / x40 (dt 80 against 2 on the other machine; the chase camera's player
+// at +0x1E0 ran ahead): that fighter's walk direction split and the positions followed, 10 - 40 s into the fight. PSPRECOMP_TAGTEAM_CHASECAM_VIEW_OLD=1:
+// old.) A camera that is not a fighter's lock block keeps the retail step.
+float dissidia_tt_chase_cam_scale(uint32_t cam, float ticks) {
     const float sc = chase_other_scale(ticks); if (sc == 1.0f) return 1.0f;
-    const uint32_t H = srd(g_bs + 56u + 4u * (rd(g_bs + 84u) & 1u));
-    return (ok(H, 0x12D0) && !chase_member(H)) ? sc : 1.0f;
+    static const bool old = std::getenv("PSPRECOMP_TAGTEAM_CHASECAM_VIEW_OLD") != nullptr;
+    if (old) { const uint32_t H = srd(g_bs + 56u + 4u * (rd(g_bs + 84u) & 1u)); return (ok(H, 0x12D0) && !chase_member(H)) ? sc : 1.0f; }
+    const uint32_t owner = ok(cam, 0x200) ? rd(cam + 0xF8u) : 0u;
+    if (!ok(owner, 0x12D0) || g_ram[(owner + 0x542u) & 0x07FFFFFFu] != 0 || rd(owner + ACT_LOCKBLK) != cam) return 1.0f;   // a fighter's own lock block only
+    return chase_member(owner) ? 1.0f : sc;
 }
 
 // ---- "Chase slow: chasers only", everything that reads the global step directly (26 Nov, tree ttcfx, docs "Batch forty-two") ----
@@ -9967,6 +9993,23 @@ uint32_t portrait_for(int c) {
     if (ok(obj2, 0x40)) g_ram[(obj2 + 22u) & 0x07FFFFFFu] = 0;   // hidden: only its picture is used
     if (g_log) std::fprintf(stderr, "[TAGTEAM] portrait of char %d: sprite %08X (picture %08X)\n", c, obj2, ok(obj2, 0x40) ? rd(obj2 + 0x10u) : 0u);
     return g_port_obj[c] = obj2;
+}
+// 26 Nov (lock-step desync, Batch forty-three): the big panel follows THIS machine's player's lock-on target, so a portrait for an extra was made only on
+// the machine whose player locked on to it, at that moment: the sprite and its picture (~17 KB) are allocated from the game's model pool, which also
+// holds the fighters' files. The pools of the two machines then differed (model pool free 20401 / 20418 KB at the next call-in), the call-in's assist
+// file and motion buffers landed elsewhere and its AI acted differently on the two machines (positions split a few seconds later). Now every
+// character on the stage gets its portrait as it comes in (spawn, rebuild, and a sweep in the slot fighter's tick), from battle state only, so the
+// allocations are the same on every machine; the view only picks one. PSPRECOMP_TAGTEAM_PORTRAIT_LAZY=1: old (made on first view).
+bool portrait_lazy() { static const bool on = std::getenv("PSPRECOMP_TAGTEAM_PORTRAIT_LAZY") != nullptr; return on; }
+void portrait_prepare(int c) {
+    if (portrait_lazy() || c <= 0 || !ok(g_port_hud, 0x200) || g_port_obj.count(c)) return;
+    for (const auto& kv : g_port_pic_char) if (kv.second == c) return;   // a picture the HUD set-up made (a slot's own character): shown without a new one
+    portrait_for(c);
+}
+void portrait_prepare_all() {
+    if (portrait_lazy() || !g_bs || !ok(g_port_hud, 0x200)) return;
+    for (uint32_t k = 0; k < 2; k++) { const uint32_t S = srd(g_bs + 56u + 4u * k); if (ok(S, 0x12D0)) portrait_prepare(actor_char(S)); }
+    for (int i = 0; i < g_nextra; i++) if (g_extra[i].actor) portrait_prepare(g_extra[i].charId);
 }
 // The portrait state belongs to one battle's HUD: the cached sprites (g_port_obj) and the side's own picture (g_port_orig_pic) of the previous battle
 // were reused in the next one when its HUD object had the same address (fz1, 18 Nov: second battle after a forfeit, both big portraits white -
@@ -12411,7 +12454,8 @@ void dissidia_tagteam_frame(uint8_t* rdram, recomp_context* ctx) {
             if (open && last_open != a) {
                 uint32_t foe = rd(a + 0x300u);
                 if (std::getenv("PSPRECOMP_TAGTEAM_FORCECHASE_HUMAN")) { const uint32_t hh = srd(g_bs + 56u + 4u * rd(g_bs + 84u)); if (ok(hh, 0x12D0) && side_of(hh) != side_of(a)) foe = hh; }   // debug: the chase is against the human's fighter
-                if (const char* ff = std::getenv("PSPRECOMP_TAGTEAM_FORCECHASE_FOE")) if (!std::strncmp(ff, "slot", 4) && ff[4]) { const uint32_t f2 = srd(g_bs + 56u + 4u * static_cast<uint32_t>(ff[4] == '1')); if (ok(f2, 0x12D0)) foe = f2; }   // debug: the foe by absolute slot
+                if (const char* ff = std::getenv("PSPRECOMP_TAGTEAM_FORCECHASE_FOE")) { if (!std::strncmp(ff, "slot", 4) && ff[4]) { const uint32_t f2 = srd(g_bs + 56u + 4u * static_cast<uint32_t>(ff[4] == '1')); if (ok(f2, 0x12D0)) foe = f2; }
+                    else if (!std::strncmp(ff, "extra", 5) && ff[5]) { const int xi = ff[5] - '0'; if (xi >= 0 && xi < g_nextra && g_extra[xi].started && ok(g_extra[xi].actor, 0x12D0) && alive(g_extra[xi].actor)) foe = g_extra[xi].actor; } }   // debug: extra<i> = that extra (spawn order, the same on every machine); the foe by absolute slot
                 if (ok(foe, 0x12D0)) {
                     { std::fprintf(stderr, "[G63310] t=%.2fs:", dissidia_battle_age() / 60.0f); for (uint32_t o = 0; o < 0x100u; o += 4) std::fprintf(stderr, " %08X", rd(0x08B63310u + o)); std::fprintf(stderr, "\n");
                       uint32_t f[6]; const int nf = all_fighters(f); for (int i = 0; i < nf; i++) std::fprintf(stderr, "[G63310]   %s %08X\n", role_of(f[i]), f[i]); }
@@ -12973,6 +13017,12 @@ void fa2ac_hook(uint8_t* rdram, recomp_context* ctx) {
 void dissidia_ttnet_install(uint8_t* rdram);   // tagteam_net.cpp: the lock-step players and the slot fighters
 bool dissidia_tagteam_comms_battle() { return comms_battle(); }
 // netplay.cpp's desync check: the fighters on the stage (count << 24 | a hash of their characters, in order), 0 outside a tag battle.
+// netplay.cpp (PSPRECOMP_NETSYNC_WIDE=1, the desync check's extra fields): the extras in spawn order (0 = an empty entry), bit 0 of flags[i] = started.
+int dissidia_tagteam_extra_actors(uint32_t out[4], uint32_t flags[4]) {
+    int n = 0;
+    for (int i = 0; i < g_nextra && n < 4; i++) { out[n] = g_extra[i].actor; flags[n] = (g_extra[i].started ? 1u : 0u) | (g_extra[i].callin ? 2u : 0u); n++; }
+    return n;
+}
 uint32_t dissidia_tagteam_fighter_sig() {
     if (!g_ram || !g_bs) return 0;
     uint32_t f[6]; const int n = all_fighters(f); uint32_t h = 2166136261u;

@@ -28,7 +28,7 @@ std::atomic<int> g_check{-1};
 // ---- desync check ----
 // Message: "NSYN", version, value count, 2 spare bytes, frame (u32 LE), then the values (u32 LE each).
 constexpr uint8_t MSG_VERSION = 1;
-constexpr size_t MSG_HDR = 12, MAX_VALUES = 120;
+constexpr size_t MSG_HDR = 12, MAX_VALUES = 160;
 constexpr uint32_t KEEP_FRAMES = 600;   // frames kept waiting for the other side's values
 using Mac = std::array<uint8_t, 6>;
 using Values = std::vector<uint32_t>;
@@ -43,6 +43,7 @@ bool g_have_local = false;
 uint64_t g_compared = 0, g_mismatched = 0;
 int g_reports = 0;                             // mismatching frames reported in full so far (the first few: tells a fixed difference, e.g. leftover memory, from a growing one, e.g. float drift)
 int64_t g_next_summary = 0;
+std::atomic<uint32_t> g_first_bad{0xFFFFFFFFu};   // the first mismatching frame of this battle (psp_netplay_first_mismatch)
 
 int64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -69,6 +70,12 @@ void compare(const Mac& peer, uint32_t frame, const Values& mine, const Values& 
     if (mine.size() != theirs.size()) differ++;
     if (!differ) return;
     g_mismatched++;
+    if (g_reports >= 3 && (g_mismatched % 150) == 0) {   // later on: which fields still differ (a fixed word or a spreading split)
+        std::string names;
+        for (size_t i = 0; i < n; i++) if (mine[i] != theirs[i]) { names += ' '; names += field_name((int)i); }
+        std::fprintf(stderr, "[NETSYNC] frame %u: %d fields differ:%s\n", frame, differ, names.c_str());
+    }
+    if (frame < g_first_bad.load(std::memory_order_relaxed)) g_first_bad.store(frame, std::memory_order_relaxed);
     if (g_reports >= 3) return;
     g_reports++;
     char msg[160];
@@ -98,6 +105,7 @@ void psp_netplay_frame_end(bool battle) {
     g_frame.fetch_add(1, std::memory_order_relaxed);
     g_battle.store(battle, std::memory_order_relaxed);
 }
+uint32_t psp_netplay_first_mismatch() { return g_first_bad.load(std::memory_order_relaxed); }
 uint64_t psp_netplay_frame() { return g_frame.load(std::memory_order_relaxed); }
 
 int psp_netplay_delay_setting() {
@@ -165,6 +173,7 @@ void psp_netplay_submit_state(uint32_t frame, const uint32_t* values, int count)
                 for (auto it = m.begin(); it != m.end();) it = it->first >= frame + KEEP_FRAMES ? m.erase(it) : std::next(it);
             g_compared = g_mismatched = 0;
             g_reports = 0;
+            g_first_bad.store(0xFFFFFFFFu, std::memory_order_relaxed);
         }
         g_have_local = true;
         g_last_local = frame;
