@@ -64,6 +64,7 @@ static inline void backtrace_symbols_fd(void* const*, int, int) {}
 extern FuncPtr ovl_battle_lookup(uint32_t vaddr);
 extern FuncPtr ovl_menu_lookup(uint32_t vaddr);
 FuncPtr dissidia_ovl_menu_lookup(uint32_t vaddr);    // xdelta_mods.cpp (the loaded overlay at a battle-overlay address)
+int dissidia_tagteam_ffa_char_look(int charId);   // below: the LOOK a single player Free-for-all fighter of this character was given (0 = none / not that mode)
 FuncPtr dissidia_ovl_extra_lookup(uint32_t vaddr);
 int dissidia_test_action(uint8_t* rdram, recomp_context* ctx, uint32_t actor, int id);   // roster.cpp (debug: start an action by id)
 void psp_dump_func_ring(const char* tag);   // runtime/src/psp_dispatch.cpp
@@ -746,9 +747,31 @@ std::string code_for_char(int charId) {
     std::string c = n.substr(2, 6); for (char& ch : c) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     return c;
 }
+// 26 Nov (user: every FFA pick's LOOK in battle): retail's Alt 1 / Alt 2 looks (2 / 3) are other model entries (P_<code>_2P / _3P), the DLC looks (4..) the 1P entry with the
+// look in the record's +0x774. In a single player Free-for-all every lookup of a picked character's entry (model load, extras, slot rebuilds, file finds) gives the look's entry.
+// PSPRECOMP_TAGTEAM_FFA_LOOK_OLD=1: the 1P entry always.
+uint32_t info_for_char_look(int charId, int look) {
+    const uint32_t t = rd(0x089D4968u), h = ok(t, 8) ? rd(t) : 0u;
+    if (!ok(h, 16) || look < 2 || look > 3) return 0;
+    const uint32_t n = rd(h + 4u);
+    for (uint32_t i = 0; i < n && i < 4000; i++) {
+        const uint32_t r = h + 8u + 0x44u * i; if (!ok(r, 0x44)) break;
+        if (static_cast<int8_t>(g_ram[(r + 6u) & 0x07FFFFFFu]) != charId) continue;
+        const uint8_t ty = g_ram[(r + 8u) & 0x07FFFFFFu]; if (ty == 5 || ty == 8 || ty == 13) continue;
+        char nm[17] = {}; std::memcpy(nm, g_ram + ((r + 36u) & 0x07FFFFFFu), 16);
+        const size_t len = strnlen(nm, 16);
+        if (len >= 6 && nm[0] == 'P' && nm[1] == '_' && nm[len - 1] == 'P' && nm[len - 3] == '_' && nm[len - 2] == '0' + look) {
+            static std::set<int> logged; if (logged.insert(charId * 16 + look).second) std::fprintf(stderr, "[FFA] char %d look %d: model entry %s (id %u)\n", charId, look, nm, rdh(r));
+            return r;
+        }
+    }
+    return 0;
+}
 uint32_t info_for_char(int charId) {
     const uint32_t t = rd(0x089D4968u), h = ok(t, 8) ? rd(t) : 0u;
     if (!ok(h, 16)) return 0;
+    static const bool look_old = std::getenv("PSPRECOMP_TAGTEAM_FFA_LOOK_OLD") != nullptr;
+    if (!look_old) if (const int lk = dissidia_tagteam_ffa_char_look(charId); lk == 2 || lk == 3) if (const uint32_t r = info_for_char_look(charId, lk)) return r;
     const uint32_t base = h + 8u, n = rd(h + 4u);
     for (uint32_t i = 0; i < n && i < 4000; i++) { const uint32_t r = base + 0x44u * i; if (!ok(r, 0x44)) break; if (static_cast<int8_t>(g_ram[(r + 6u) & 0x07FFFFFFu]) == charId) return r; }
     return 0;
@@ -1112,6 +1135,7 @@ void rules_filter_record(uint32_t R) {
 }
 uint32_t record_for(uint32_t G, int newChar) {
     const uint32_t R = record_for_raw(G, newChar);
+    if (R == g_rec_scratch && R && !std::getenv("PSPRECOMP_TAGTEAM_FFA_LOOK_OLD")) if (const int lk = dissidia_tagteam_ffa_char_look(newChar); lk >= 1 && lk <= 8) g_ram[(R + 0x774u) & 0x07FFFFFFu] = static_cast<uint8_t>(lk);   // the FFA pick's LOOK
     if (R != G && R == g_rec_scratch && R) rules_filter_record(R);
     return R;
 }
@@ -12854,12 +12878,23 @@ bool sp_ffa_custom() { return lobby_sp() && g_lobby_init && g_lobby.mode == 3 &&
 void dissidia_tagteam_ffa_get(int i, uint8_t out[4]) { if (i < 0 || i > 2) return; out[0] = g_ffa_cfg[i].on; out[1] = g_ffa_cfg[i].main; out[2] = g_ffa_cfg[i].tag; out[3] = g_ffa_cfg[i].str; }
 void dissidia_tagteam_ffa_set(int i, const uint8_t in[4]) {
     if (i < 0 || i > 2) return;
-    g_ffa_cfg[i].on = i == 0 ? 1 : (in[0] ? 1 : 0); g_ffa_cfg[i].main = in[1] <= 33 ? in[1] : 0; g_ffa_cfg[i].tag = (in[2] <= 33 || in[2] == 255) ? in[2] : 0;   // tag-in: 0 = Random, 255 = None g_ffa_cfg[i].str = static_cast<uint8_t>(std::clamp<int>(in[3], 1, 9));
+    g_ffa_cfg[i].on = i == 0 ? 1 : (in[0] ? 1 : 0); g_ffa_cfg[i].main = in[1] <= 33 ? in[1] : 0; g_ffa_cfg[i].tag = (in[2] <= 33 || in[2] == 255) ? in[2] : 0; g_ffa_cfg[i].str = static_cast<uint8_t>(std::clamp<int>(in[3], 1, 9));   // tag-in: 0 = Random, 255 = None (26 Nov: the strength assignment had slipped into this comment: STRENGTH never changed)
     std::fprintf(stderr, "[FFA] player P%d: %s, main %d, tag-in %d, strength %d\n", i + 2, g_ffa_cfg[i].on ? "CPU" : "off", g_ffa_cfg[i].main, g_ffa_cfg[i].tag, g_ffa_cfg[i].str);
 }
 // P1 (the human): main and tag-in picked on the player setup screen (0 = Random, tag-in 255 = None); with the 5-member Party Select skipped the battle's team record is filled from these.
 uint8_t g_ffa_p1[2] = {0, 0}; uint8_t g_ffa_p1_res[2] = {0, 0}; uint32_t g_ffa_p1_res_gen = 0xFFFFFFFFu;
 void dissidia_tagteam_ffa_p1_get(uint8_t out[2]) { out[0] = g_ffa_p1[0]; out[1] = g_ffa_p1[1]; }
+// 26 Nov: the LOOK each Free-for-all fighter was given in Player Select (slot 0 = P1 .. 3 = P4; [0] main, [1] tag-in; 0 = not picked there: the save's)
+uint8_t g_ffa_look[4][2] = {};
+void dissidia_tagteam_ffa_look_set(int slot, int field, int look) { if (slot < 0 || slot > 3 || field < 1 || field > 2) return; g_ffa_look[slot][field - 1] = static_cast<uint8_t>(look >= 1 && look <= 8 ? look : 0); }
+int dissidia_tagteam_ffa_char_look(int charId) {
+    if (!sp_ffa_custom() || charId <= 0) return 0;
+    const int picks[4][2] = {{g_ffa_p1[0], g_ffa_p1[1] == 255 ? 0 : g_ffa_p1[1]},   // (the picked characters only: a Random field has no LOOK)
+                               {g_ffa_cfg[0].main, g_ffa_cfg[0].tag}, {g_ffa_cfg[1].main, g_ffa_cfg[1].tag}, {g_ffa_cfg[2].main, g_ffa_cfg[2].tag}};
+    for (int sl = 0; sl < 4; sl++) for (int f = 0; f < 2; f++) if (picks[sl][f] == charId && g_ffa_look[sl][f]) return g_ffa_look[sl][f];
+    return 0;
+}
+int dissidia_tagteam_ffa_look_get(int slot, int field) { return (slot < 0 || slot > 3 || field < 1 || field > 2) ? 0 : g_ffa_look[slot][field - 1]; }
 void dissidia_tagteam_ffa_p1_set(const uint8_t in[2]) {
     g_ffa_p1[0] = in[0] <= 33 ? in[0] : 0; g_ffa_p1[1] = (in[1] <= 33 || in[1] == 255) ? in[1] : 0;
     std::fprintf(stderr, "[FFA] player P1 (you): main %d, tag-in %d\n", g_ffa_p1[0], g_ffa_p1[1]);

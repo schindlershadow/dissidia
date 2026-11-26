@@ -2,6 +2,7 @@
 
 ## TODO (kept up to date; newest first)
 
+- ~~FFA: every pick through the game's real Player Select (LOOK / SET, "Play as this character?"), never Party Select / CPU Select; no forced cursor / injected presses in the tag menus~~ DONE 26 Nov (tree ttffap, branch tt-ffaplayer, "Batch forty-one"). Open: FFA tag-ins of CPU slots are still not played (a KO'd CPU slot takes another fighter of the line-up, pre-existing), the Add CPU Cross (see there).
 - ~~Out-of-bounds fighters (user, 26 Nov: "if a player is outside the map and they should not be, teleport them back")~~ DONE 26 Nov (branch tt-oobfix, see "Batch: out-of-bounds teleport").
 - **Pre-battle "Round N / VS" page (user, 25 Nov): shows the real tag line-up (tree ttvs, branch tt-vsscreen).** Done on the host and with two linked copies: see "Batch forty". Open: Opponent Info (the page after it) still shows the retail target; rules text is not on the page; devices not run.
 - **User play-test 25 Nov evening (RP6):**
@@ -5816,3 +5817,48 @@ User: "update this screen in all new game modes to reflect what is actually happ
 - **Opt-out.** `PSPRECOMP_TAGTEAM_VSPAGE_OLD=1`: retail page, partners planned at battle start as before. `[TTVS]` log lines with `PSPRECOMP_TAGTEAM_LOG=1`.
 - **Tested.** Screens (before = `VSPAGE_OLD`, after): SP 2v2 with a CPU row (Jecht + Squall, reserve Terra / Yuna vs Vaan + Laguna), 3v3 (two partners), FFA 3 and 4 (headless GUI walk, `~/dissidia/tt/s2/ttvs/shots/`, montages `montage_sp_before_after.png`, `montage_comms_before_afterA_afterB.png`), Communications 2 copies (`mp/o3`). Played on after the page: same partners spawned and started. Regression `PSPRECOMP_CLOUD=0 tagteam_test.py --baseline`: PASS (`~/dissidia/tt/s2/ttvs/reg_vs`). No Google Drive sync lines.
 - **Not done / unverified.** Opponent Info (next page) unchanged; the rules text is not shown on the page; online names for 3+ humans / PvE with a CPU party and Android not run; the 3-row cards are small at 480 x 272; a CPU fill's level is the side's lead level until its record is made.
+
+### Batch forty-one (26 Nov, tree ttffap, branch tt-ffaplayer): Free-for-all picks in the real Player Select, no injected presses in the tag menus
+- **The Quick Battle app** (ovl_menu; app = `*0x08AA3F44`, P = app + 0x154) is one state machine: P + 0x910 the state (PMF table 0x08AA3F48, 53 entries, run by FUN_08A97DA8), P + 0x914 the state after a
+  transition state, P + 0x91C flags. State 2 picks the route; 1-on-1: 4 makes the select object (FUN_08AA0D48(app, 0) = Player Select, 1 = CPU Select; object at P + 0x92C), 5 runs it (FUN_08A9E0E8).
+  FUN_08A9A460 ticks the select object and returns its result: 2 = YES on "Play as this character?" (the pick = FUN_08A81188 -> P + 0x804C = charId; next state 8 = CPU Select, via 6 / 7),
+  4 = Circle (leave: P + 0x91C |= 1, fade, 6 -> 0x30 / 0x31 -> the Battle Mode list). Party route: 16 / 17 Party Select, 20 / 21 CPU Select, 22 -> 28 builds the Tournament setup screen
+  (FUN_08AA1420) from the party records P + 0x7C10 (Party A, 0x13C bytes: +0xF4 = the save's Party A block, save + 0x3E75C: flags, name, five (charId, word) members), P + 0x7D4C (the CPU party:
+  +0 count 1, +0x104 its charId) and the line-up P + 0x82F8 (10 x 8 bytes); 29 runs it (FUN_08A9F190; FUN_08A9B1B8 ticks the screen: result 1 = Enter Battle -> P + 0x8058 = 1 and the way out to the battle,
+  2 = back). The setup screen's own states (M + 4): 2 list, 5 teardown, 6 reports M + 0x624 = 1 (Enter Battle) / none = 2 (back); its list does Enter Battle as FUN_088D9F5C(M + 0x6C, 5, 1),
+  sound 0x11, FUN_08AAB8B4(screen, 0) (= M + 0x624 = 1, M + 4 = 5). FUN_08AA1C1C(app), the network poll states 5 / 29 call first, returning 1 = leave the app (offline it returns -1).
+- **The list's confirm without a press.** FUN_089E4A60's Cross branch (0x089E4BE8): cursor memory `0x09B6D830 + 4` = row, sound 1, `+ 8` = the screen to open (Battle Mode: row + 2,
+  Communications: row + 6), state 4. `list_confirm_direct` (menu_settings.cpp) runs exactly that after a Mode Select choice (every mode, single player and Communications) and for the
+  Training row; the injected Cross (`g_inject_late`, Training's `g_inject_cross`) is gone. Found by FIRSTCALL phases (`PSPRECOMP_FIRSTCALL=87FFF00:<file>`, gate written over the socket).
+- **Free-for-all flow now.** Mode Select > Free-for-all > players screen (over the list). Cross on any MAIN / TAG-IN (P1 too): the list's confirm on row 0 (Quick Battle 1-on-1) -> retail's
+  Player Select (character grid, LOOK / SET, "Play as this character?"). On YES `qb_frame_hook` (FUN_08A97DA8) takes the pick and its LOOK (the save record's +0x774, which Player Select's
+  Square writes), puts the state back to 5 and makes the next select tick report 4 (`sel_tick_hook`): the app leaves as on Circle (its own fade) to the list, where `dissidia_tagteam_ffa_ps_return`
+  opens the players screen again on the same field with the pick (Circle in Player Select: back without a change). DONE > lobby > Cross: the list's confirm on row 1 (Quick Battle (Party));
+  at state 16 the party records are written (`ffa_fill_party`) and the state jumps to 28: no Party Select / CPU Select object is ever made; on the setup screen `sp_enter_battle` does the
+  list's own Enter Battle step (no Cross). After the battle ("Return to Battle Setup") the setup screen is torn down (FUN_08AAB8B4(screen, 1)) and the app leaves through FUN_08AA1C1C = 1:
+  the players screen over the list again. The trips are drawn so nothing else shows: the players screen / Mode Select fade to white with retail's fade (`trip_tick` in the pad filter,
+  0.33 s), white while the app loads, the players screen fades in when the start menu runs again; the battle start shows a "Starting the battle..." card from the lobby's Cross until
+  the app leaves for the battle (then fades to white with it). Times (host, 30 fps): players screen -> Player Select up ~0.8 s (retail list -> Player Select the same), YES -> players screen
+  ~2 s (retail's own way out of the app: ~1.2 s white while the start menu reloads), lobby Cross -> VS screen ~4 s.
+- **LOOK in battle.** Every FFA fighter's pick keeps its LOOK (`dissidia_tagteam_ffa_look_set`, per slot / field; `dissidia_tagteam_ffa_char_look`): Alt 1 / Alt 2 (2 / 3) are other model entries
+  (P_<code>_2P / _3P): `info_for_char` gives that entry for a picked character in a single player FFA (extras, slot rebuilds, file finds alike), P2's record (`force_cpu_char`) gets
+  `model_id(char, look)` and +0x774, P1 as before (now the pick's look first), made records (`record_for`) +0x774. `PSPRECOMP_TAGTEAM_FFA_LOOK_OLD=1`: old.
+- **No injected presses left in the tag menus** (`PSPRECOMP_TAGTEAM_INJECT_OLD=1` = all the old injections; `PSPRECOMP_TAGTEAM_FFA_PSOLD=1` = the old FFA flow with the CPU Select hop and the script):
+  team-mode lobby Circle -> back: FUN_08AAB8B4(screen, 1) (the screen's own teardown, result 2) instead of the injected Circle; Mode Select / Training confirm: `list_confirm_direct`;
+  FFA: Party Select / CPU Select passes and the Enter Battle Cross gone (above); Communications setup (`g_col_fix`): a cursor that lands on a covered round row (Up from Enter Battle) is
+  put on the same row of the party column before the screen's update (column word = 0; seen online: hand and highlight follow, `mpc3`) instead of an injected Right; the round dialog
+  (single player team modes) starts on STRENGTH: its cursor helper (M + 0x5CC, index + 4) = 1 and its row-changed step FUN_08AAD670(screen) before its first update, instead of an
+  injected Down (Up on STRENGTH is still swallowed). The stage preview after a lobby change: the list's preview step FUN_08AA9350(screen) is called when the lobby closes
+  (`PSPRECOMP_TAGTEAM_PREVIEW_OLD=1`: not; A/B: old shows "?", new the chosen stage). The Training row and the Tag Team Battle row stay drawn and fade with the list after the confirm.
+  **Remaining:** the Communications setup screen's "Add CPU" (L on the free row) still hands the screen one Cross to open Player Select for that row: no cursor moves (the cursor is on that
+  row; it is the player's own L press turned into the screen's confirm in the same frame). The pad filters that only swallow presses (Square / Start / Circle / Up blocks) are not injections.
+- Fixed on the way: `dissidia_tagteam_ffa_set` never stored STRENGTH (the assignment was inside a comment).
+- **Tested** (host, 30 fps, `~/dissidia/tt/s2/ttffap`: `t3.py` drives the real menus, `REC <n> <dir>` = every presented frame as TGA (new debug-socket command), `bin/check.py` flags any frame that
+  shows or fades through the main menu / Battle Mode list / Party Select / CPU Select / setup screen): FFA 4 (`t3_4`) and FFA 3 (`t3_3`): all 8 (6) fields picked in Player Select with LOOK
+  Alt 2 (Vaan, Laguna, Yuna, Kain, Bartz, Terra, Squall, Lightning), every trip recorded (to / back, battle start, after-battle return): 0 frames flagged; battle with P1 Vaan in his Alt 2 model,
+  `[FFA] char 9 look 3: model entry P_FIV100_3P`, `P2 28: look 3 (model id 586)`, `char 15 look 3: P_EHT100_3P`; after a forced human KO "Return to Battle Setup" -> players screen.
+  Team 2 vs 2 (`t5`): Mode Select -> Party Select with no list frame, lobby STAGE change -> preview Pandaemonium, round dialog opens on STRENGTH, lobby Circle -> CPU Select. Training row (`t6`).
+  Online: two copies, Communications FFA (`mp2`): NETSYNC 2690 frames, 0 mismatched; Communications setup cursor (`mpc3`). Regression `tagteam_test.py --baseline`: PASS (`reg_ffaplayer.013907`, after the rebase `reg_ffaplayer.015318`).
+  Not tested: Android / RP6, 3+ humans online. The FFA tag-ins of CPU slots are picked (with LOOK) but, as before, not played (a KO'd CPU slot takes another fighter of the line-up); the human's
+  fall ends the battle, so his tag-in never comes in either.
+
