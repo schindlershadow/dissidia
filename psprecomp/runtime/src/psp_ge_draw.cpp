@@ -4817,16 +4817,25 @@ static std::chrono::steady_clock::time_point g_gl_time;
 static int g_gl_next_ttl = 150, g_gl_ttl = 150;   // ms the layer stays without a new publish (ge_draw_set_game_layer_ttl: for the next publish only)
 void ge_draw_set_game_layer_ttl(int ms) { std::lock_guard<std::mutex> lk(g_gl_mu); g_gl_next_ttl = std::clamp(ms, 50, 2000); }
 static std::vector<GeLayerCopy> g_gl_copies;
+static uint64_t g_gl_serial = 0;
+uint64_t ge_draw_game_layer_serial() { std::lock_guard<std::mutex> lk(g_gl_mu); return g_gl_serial; }
+bool ge_draw_game_layer_touch() {
+    std::lock_guard<std::mutex> lk(g_gl_mu);
+    const auto now = std::chrono::steady_clock::now();
+    if (g_gl_w <= 0 || now - g_gl_time > std::chrono::milliseconds(g_gl_ttl)) return false;
+    g_gl_time = now; g_gl_ttl = g_gl_next_ttl; g_gl_next_ttl = 150;
+    return true;
+}
 void ge_draw_set_game_layer(const uint32_t* rgba, int w, int h) {
     if (!rgba || w <= 0 || h <= 0) { ge_draw_clear_game_layer(); return; }
     std::lock_guard<std::mutex> lk(g_gl_mu);
     g_gl_px.assign(rgba, rgba + size_t(w) * size_t(h));
-    g_gl_w = w; g_gl_h = h; g_gl_dirty = true;
+    g_gl_w = w; g_gl_h = h; g_gl_dirty = true; g_gl_serial++;
     g_gl_time = std::chrono::steady_clock::now(); g_gl_ttl = g_gl_next_ttl; g_gl_next_ttl = 150;
 }
 void ge_draw_clear_game_layer() {
     std::lock_guard<std::mutex> lk(g_gl_mu);
-    g_gl_px.clear(); g_gl_w = g_gl_h = 0; g_gl_dirty = true;
+    g_gl_px.clear(); g_gl_w = g_gl_h = 0; g_gl_dirty = true; g_gl_serial++;
     g_gl_copies.clear();
 }
 void ge_draw_set_game_layer_copies(const GeLayerCopy* c, int n) {

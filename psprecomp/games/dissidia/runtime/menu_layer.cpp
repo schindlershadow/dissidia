@@ -202,15 +202,25 @@ float MenuLayer::serif_caps(const std::string& str, float em, float small, float
     return (pen - pen0) / S() - track;
 }
 
-void MenuLayer::publish() {
-    std::vector<uint32_t> out(size_t(w_) * size_t(h_));
-    for (size_t i = 0; i < out.size(); i++) {
+std::shared_ptr<const std::vector<uint32_t>> MenuLayer::bake() const {
+    auto out = std::make_shared<std::vector<uint32_t>>(size_t(w_) * size_t(h_));
+    for (size_t i = 0; i < out->size(); i++) {
         const float* p = &px_[i * 4];
         auto ch = [](float v) { return uint32_t(std::min(255.f, std::max(0.f, v + 0.5f))); };
-        out[i] = ch(p[0]) | ch(p[1]) << 8 | ch(p[2]) << 16 | uint32_t(std::min(255.f, p[3] * 255.f + 0.5f)) << 24;
+        (*out)[i] = ch(p[0]) | ch(p[1]) << 8 | ch(p[2]) << 16 | uint32_t(std::min(255.f, p[3] * 255.f + 0.5f)) << 24;
     }
+    return out;
+}
+
+void MenuLayer::publish_baked(const std::vector<uint32_t>& img, int w, int h) {
+    ge_draw_set_game_layer_copies(nullptr, 0);
+    ge_draw_set_game_layer(img.data(), w, h);
+}
+
+void MenuLayer::publish() {
+    const auto out = bake();
     ge_draw_set_game_layer_copies(copies_.data(), int(copies_.size()));
-    ge_draw_set_game_layer(out.data(), w_, h_);
+    ge_draw_set_game_layer(out->data(), w_, h_);
 }
 
 void MenuLayer::clear() { ge_draw_clear_game_layer(); }

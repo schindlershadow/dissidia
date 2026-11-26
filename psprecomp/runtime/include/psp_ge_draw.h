@@ -140,6 +140,11 @@ void ge_draw_set_game_layer(const uint32_t* rgba, int w, int h);
 void ge_draw_clear_game_layer();
 /// The next ge_draw_set_game_layer stays shown this many ms without a newer one (default 150).
 void ge_draw_set_game_layer_ttl(int ms);
+/// Counts every set / clear of the layer; a module that caches its own image compares it to know the layer is still its own.
+uint64_t ge_draw_game_layer_serial();
+/// Keeps the layer shown as it is for another ttl (the one set by ge_draw_set_game_layer_ttl, else 150 ms) without a new image (no upload).
+/// False when no layer is held (it expired or was cleared): publish again.
+bool ge_draw_game_layer_touch();
 /// Parts of the game's own picture redrawn elsewhere under the game layer, this frame's pixels (e.g. a neighbouring row's underline
 /// for an added menu row, whatever texture pack draws it): source and destination rectangles in PSP units (480x272, y down), a
 /// destination of another size stretches. Opaque. Kept with the layer image; set them before ge_draw_set_game_layer.
