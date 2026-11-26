@@ -12602,6 +12602,37 @@ bool dissidia_tagteam_roster_adopt(const uint8_t* d, int n) {   // a member: the
     return true;
 }
 bool dissidia_tagteam_decided() { return g_decided; }
+// A player forfeits an online tag battle (pause menu > Forfeit, docs "Batch twenty-nine"). Called by the lock-step on EVERY other machine at the same lock-step frame,
+// before that frame's input words are delivered (tagteam_net.cpp). Lock-step state only: the forfeiter's rows are used up (nobody comes in for him: comms_next_entry,
+// reserve_left), and every fighter he drives at this frame (a slot fighter, a tag extra) is KO'd the way the natural KO is (marked for the tag flow when the side
+// has somebody left, HP 0 otherwise: the side is out and the retail finish decides). The caller sends his streams to nobody afterwards.
+void dissidia_tagteam_forfeit_apply(const uint8_t* mac, uint32_t frame) {
+    if (!g_bs || !g_ram || g_decided) { std::fprintf(stderr, "[TTPAUSE] forfeit of a player at frame %u: no battle running / already decided, nothing to do\n", frame); return; }
+    const int who = player_of_mac(mac);
+    for (int sd = 0; sd < 2; sd++) {
+        TagEntry l[10]; const int n = party_order(sd, l, 10);
+        if (!g_order_used[sd]) { const int st = stage_index(sd, l, n); if (st >= 0) order_mark(sd, st); }
+        for (int i = 0; i < n; i++) if (who >= 0 && !l[i].is_cpu && l[i].owner == who) order_mark(sd, i);
+    }
+    std::vector<uint32_t> victims;
+    auto add = [&](uint32_t a) { if (ok(a, 0x12D0) && alive(a) && std::find(victims.begin(), victims.end(), a) == victims.end()) victims.push_back(a); };
+    uint8_t m[6];
+    for (int k = 0; k < 2; k++) if (dissidia_ttnet_driver_mac(k, frame, false, m) && std::memcmp(m, mac, 6) == 0) add(srd(g_bs + 56u + 4u * static_cast<uint32_t>(k)));
+    for (int i = 0; i < g_nextra; i++) if (g_extra[i].started && dissidia_ttnet_driver_mac(2 + i, frame, false, m) && std::memcmp(m, mac, 6) == 0) add(g_extra[i].actor);
+    for (uint32_t a : victims) {
+        const uint32_t st = rd(a + 0x52Cu); if (!ok(st, 0x40)) continue;
+        bool mark = false;
+        if (is_slot_fighter(a)) {
+            bool mate = false;
+            for (int i = 0; i < g_nextra; i++) if (g_extra[i].started && g_extra[i].actor != a && side_of(g_extra[i].actor) == side_of(a) && alive(g_extra[i].actor) && std::find(victims.begin(), victims.end(), g_extra[i].actor) == victims.end()) mate = true;
+            mark = ffa_now() ? ffa_keep(a) : (mate || reserve_left(team_of(side_of(a))) > 0);
+        }
+        if (mark) { const uint32_t hp = rd(st + 0xCu), keep = hp > 1 ? hp - 1 : 0; wr(st + 0x8u, keep); wr(st + 0x20u, keep); wr(st + 0x0u, (rd(st + 0x0u) & 0xFFFFu) | (keep << 16)); g_ko_mark.insert(a); }
+        else wr(st + 0xCu, rd(st + 0x8u));
+        std::fprintf(stderr, "[TTPAUSE] frame %u: player %d forfeits: %s %08X (char %d) -> %s\n", frame, who, role_of(a), a, actor_char(a), mark ? "lethal damage + KO mark (the side's next member comes in)" : "HP 0");
+    }
+    if (victims.empty()) std::fprintf(stderr, "[TTPAUSE] frame %u: player %d forfeits: no fighter on the stage (his rows are used up)\n", frame, who);
+}
 int dissidia_tagteam_fighters(uint32_t* out, int max) { if (!g_bs || !g_ram) return 0; uint32_t f[8]; const int n = all_fighters(f); int k = 0; for (int i = 0; i < n && k < max; i++) out[k++] = f[i]; return k; }
 uint32_t dissidia_tagteam_battle_gen() { return g_battle_gen; }
 // Debug (PSPRECOMP_TAGTEAM_EXBFXLOG=1): every effect the game starts (FUN_088A9DE8(manager, id, node, a3, a4) -> handle) while an EX Burst runs, with the

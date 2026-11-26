@@ -27,6 +27,7 @@
 //   PSPRECOMP_TTLOCK_TIMEOUT=<s>    seconds without a needed peer's input before this machine leaves the battle (default 10, 0 = wait forever)
 //   PSPRECOMP_TTLOCK_LAT=1          log every delivered frame in which a stream's buttons change ([TTLAT], for the latency measurement)
 //   PSPRECOMP_TTNET_LOWHP=<slot>:<frame>   test aid: that slot fighter's live HP -> 1 at that lock-step frame
+//   PSPRECOMP_TTPAUSE_OFF=1         no pause menu / forfeit in an online tag battle (Start does nothing, as before)
 #include "psp_game_module.h"
 #include "psp_runtime.h"
 #include "psp_netplay.h"
@@ -54,6 +55,7 @@ uint32_t dissidia_tagteam_battle_gen();
 int dissidia_tagteam_fighters(uint32_t* out, int max);   // tagteam.cpp: every fighter of the battle (slots, extras)        // tagteam.cpp: +1 per battle setup
 void dissidia_netplay_frame_delivered(uint32_t frame);   // netplay.cpp: desync check / dumps for a delivered frame
 void dissidia_netplay_note_delay(int delay);
+void dissidia_tagteam_forfeit_apply(const uint8_t* mac, uint32_t frame);   // tagteam.cpp: a player forfeits at this lock-step frame (same on every machine)
 uint32_t dissidia_camera_manager();                      // camera.cpp
 
 namespace {
@@ -99,6 +101,19 @@ bool g_decided_logged = false;
 std::vector<Mac> g_roster_acked; uint32_t g_roster_calls = 0; bool g_roster_wait_logged = false;   // the host: members that have its roster
 double g_timeout_s = 10.0;   // a peer that sends nothing for this long (wall clock) while the lock-step needs its input has left: PSPRECOMP_TTLOCK_TIMEOUT
 std::chrono::steady_clock::time_point g_wait_t0;
+// ---- The pause menu (Start) and the forfeit ----
+// Start opens a small menu on THIS machine only; the battle does not stop. While it is open this player's input word is neutral (so every machine sees the
+// same, through the lock-step) and the pad is read by the menu only. "Forfeit" (YES / NO, NO first) sends a frame number with the input window: from that
+// lock-step frame on every machine treats the player as gone (tagteam.cpp dissidia_tagteam_forfeit_apply: his fighters are KO'd, his rows are used up, his
+// streams go to nobody), and his own machine leaves the battle at that frame (the same F_QUIT path as a lost peer).
+constexpr uint32_t kBtnStart = 0x8u, kBtnUp = 0x10u, kBtnRight = 0x20u, kBtnDown = 0x40u, kBtnLeft = 0x80u, kBtnCircle = 0x2000u, kBtnCross = 0x4000u;
+constexpr uint32_t kForfeitLead = 30;   // frames between the YES press and the frame every machine applies it on (a human that drives nothing is not waited for)
+bool g_pm_off = false;
+int g_pm_state = 0, g_pm_sel = 0;   // state: 0 closed, 1 menu, 2 confirm (sel 0 = NO, 1 = YES), 3 forfeit sent (waiting for its frame)
+uint32_t g_pm_prev = 0, g_pm_mask = 0; int g_pm_stick_prev = 0;
+uint32_t g_my_forfeit = 0;                  // the lock-step frame this player's forfeit takes effect on (0 = none)
+std::map<Mac, uint32_t> g_forfeit_at;       // every player's announced forfeit frame (also ours)
+std::vector<Mac> g_forfeit_done;
 struct LowHp { uint32_t slot, frame; bool done; }; std::vector<LowHp> g_lowhp;   // PSPRECOMP_TTNET_LOWHP=<slot>:<frame>[,<slot>:<frame>...]
 
 // The pad objects keep game-loop-rate state: FUN_08871BD0 counts a held button's auto-repeat timer (+0x30, a float) down once per UPDATE and clears the
@@ -138,6 +153,7 @@ uint32_t guest_call(recomp_context* ctx, FuncPtr f, uint32_t a0, uint32_t a1 = 0
 void reset(uint32_t obj) {
     g_running = true; g_obj = obj; g_F = rd(obj + OFF_FRAME); g_seq = g_F; g_waits = 0; g_delivered = 0; g_wait_since = 0; g_wait_logged = false; g_decided_logged = false;
     g_local = Ring{}; g_remote.clear(); for (LowHp& l : g_lowhp) l.done = false;
+    g_pm_state = 0; g_pm_sel = 0; g_pm_prev = g_pm_mask = 0; g_pm_stick_prev = 0; g_my_forfeit = 0; g_forfeit_at.clear(); g_forfeit_done.clear();
     for (int k = 0; k < 2; k++) { g_streams[k].s.clear(); g_streams[k].last = 0; }   // the extras' pads (2+) are registered by tagteam.cpp when they are made
     for (int k = 2; k < MAX_STREAMS; k++) if (g_streams[k].gen != dissidia_tagteam_battle_gen()) { g_streams[k].s.clear(); g_streams[k].pad = g_streams[k].ctrl = 0; g_streams[k].last = 0; }
     psp_adhoc_local_mac(g_me.data());
@@ -172,6 +188,7 @@ void receive() {
         if (cnt <= 0 || cnt > WINDOW || n < 8 + 2 * cnt) continue;
         if (first > g_F + 256u) continue;   // not this battle (a far-ahead frame number: the previous battle's packets)
         Mac m; std::memcpy(m.data(), src, 6);
+        if (n >= 8 + 2 * cnt + 4) { uint32_t ff; std::memcpy(&ff, buf + 8 + 2 * cnt, 4); if (ff && !g_forfeit_at.count(m)) { g_forfeit_at[m] = ff; std::fprintf(stderr, "[TTPAUSE] %s forfeits at lock-step frame %u (this machine is at %u)\n", mac_str(m).c_str(), ff, g_F); } }
         Ring& r = g_remote[m];
         for (int i = 0; i < cnt; i++) { uint16_t w; std::memcpy(&w, buf + 8 + 2 * i, 2); if (first + i + RING > g_F) r.put(first + i, w); }
     }
@@ -199,16 +216,51 @@ void roster_step() {
 void send_window() {
     if (g_seq == 0) return;
     const uint32_t first = g_seq > WINDOW ? g_seq - WINDOW : 0; const int cnt = static_cast<int>(g_seq - first);
-    uint8_t b[8 + 2 * WINDOW]; b[0] = 'T'; b[1] = 'L'; b[2] = 1; b[3] = static_cast<uint8_t>(cnt); std::memcpy(b + 4, &first, 4);
+    uint8_t b[8 + 2 * WINDOW + 4]; b[0] = 'T'; b[1] = 'L'; b[2] = 1; b[3] = static_cast<uint8_t>(cnt); std::memcpy(b + 4, &first, 4);
     for (int i = 0; i < cnt; i++) { const uint16_t w = g_local.w[(first + i) % RING]; std::memcpy(b + 8 + 2 * i, &w, 2); }
+    int len = 8 + 2 * cnt;
+    if (g_my_forfeit) { std::memcpy(b + len, &g_my_forfeit, 4); len += 4; }   // (older receivers ignore the trailing word)
     uint8_t macs[16][6]; const int n = psp_adhoc_group_macs(macs, nullptr, 16);
-    for (int i = 0; i < n && i < 16; i++) psp_adhoc_side_send(macs[i], CH_INPUT, b, 8 + 2 * cnt);
+    for (int i = 0; i < n && i < 16; i++) psp_adhoc_side_send(macs[i], CH_INPUT, b, len);
+}
+
+// The pause menu's state machine, fed with the pad this sample read (edges). Returns true while this player's input must be neutral.
+bool pause_step(uint32_t btn, uint32_t ly) {
+    const uint32_t pressed = btn & ~g_pm_prev; g_pm_prev = btn;
+    const int stick = ly < 64 ? -1 : ly > 192 ? 1 : 0;
+    const bool su = stick < 0 && g_pm_stick_prev >= 0, sd = stick > 0 && g_pm_stick_prev <= 0; g_pm_stick_prev = stick;
+    const bool up = (pressed & kBtnUp) || su, down = (pressed & kBtnDown) || sd;
+    if (g_pm_state == 0) {
+        g_pm_mask &= btn;   // held buttons that closed the menu stay out of the game until released
+        if ((pressed & kBtnStart) && g_F > 30 && !dissidia_tagteam_decided()) { g_pm_state = 1; g_pm_sel = 0; g_pm_mask |= btn; std::fprintf(stderr, "[TTPAUSE] frame %u: menu open (the battle goes on, this player's input is neutral)\n", g_F); return true; }
+        else return false;
+    }
+    g_pm_mask |= btn;
+    if (g_pm_state == 1) {
+        if (up || down) g_pm_sel ^= 1;
+        else if (pressed & kBtnCross) { if (g_pm_sel == 0) { g_pm_state = 0; std::fprintf(stderr, "[TTPAUSE] frame %u: resume\n", g_F); } else { g_pm_state = 2; g_pm_sel = 0; } }
+        else if (pressed & (kBtnCircle | kBtnStart)) { g_pm_state = 0; std::fprintf(stderr, "[TTPAUSE] frame %u: menu closed\n", g_F); }
+    } else if (g_pm_state == 2) {
+        if (up || down || (pressed & (kBtnLeft | kBtnRight))) g_pm_sel ^= 1;
+        else if (pressed & kBtnCross) {
+            if (g_pm_sel == 1) { g_pm_state = 3; g_my_forfeit = g_seq + kForfeitLead; g_forfeit_at[g_me] = g_my_forfeit; std::fprintf(stderr, "[TTPAUSE] frame %u: FORFEIT confirmed, takes effect at lock-step frame %u\n", g_F, g_my_forfeit); }
+            else { g_pm_state = 1; g_pm_sel = 1; }
+        } else if (pressed & kBtnCircle) { g_pm_state = 1; g_pm_sel = 1; }
+        else if (pressed & kBtnStart) { g_pm_state = 0; }
+    }
+    return true;
 }
 
 uint16_t sample_local(recomp_context* ctx) {
     const uint32_t buf = static_cast<uint32_t>(ctx->r[29]) - 64u;   // SceCtrlData scratch (below our callees' frames)
     for (uint32_t o = 0; o < 16; o += 4) wr(buf + o, 0);
     guest_call(ctx, g_ctrl_read, buf, 1);
+    if (!g_pm_off) {
+        const uint32_t btn = rd(buf + 4), ly = (rd(buf + 8) >> 8) & 0xFFu;
+        const bool neutral = pause_step(btn, ly);
+        if (neutral) { wr(buf + 4, 0); wr(buf + 8, 0x8080u); }   // buttons up, both stick axes centred
+        else if (g_pm_mask) wr(buf + 4, btn & ~g_pm_mask);
+    }
     return static_cast<uint16_t>(guest_call(ctx, g_pack, g_obj, buf) & 0xFFFFu);
 }
 
@@ -275,6 +327,21 @@ void dispatch_hook(uint8_t* rdram, recomp_context* ctx) {
         ctx->r[2] = 1; return;
     }
     g_wait_since = 0; g_wait_logged = false;
+    // A forfeit announced for this frame (or an earlier one this machine only just heard of): applied here, before the frame's words are delivered, on every machine.
+    for (const auto& [fm, ff] : g_forfeit_at) {
+        if (g_F < ff || std::find(g_forfeit_done.begin(), g_forfeit_done.end(), fm) != g_forfeit_done.end()) continue;
+        g_forfeit_done.push_back(fm);
+        if (fm == g_me) {   // this player: the game's own leave path (as a lost peer), back to the room
+            std::fprintf(stderr, "[TTPAUSE] frame %u: this player forfeits, the battle is left\n", g_F);
+            psp_net_notice("link_end", 0, "You forfeited the match.");
+            wr(obj + OFF_FLAGS, rd(obj + OFF_FLAGS) | 4u); wr(obj + 12u, g_F);
+            g_pm_state = 0; g_running = false;
+            ctx->r[2] = 3; return;
+        }
+        std::fprintf(stderr, "[TTPAUSE] frame %u: %s forfeits: his fighters are KO'd, his rows are used up\n", g_F, mac_str(fm).c_str());
+        dissidia_tagteam_forfeit_apply(fm.data(), g_F);   // (reads his drivers at this frame first)
+        for (int s = 0; s < MAX_STREAMS; s++) { Mac m; if (driver_at(s, g_F, &m) && m == fm) { std::vector<Sched>& v = g_streams[s].s; while (!v.empty() && v.back().from >= g_F) v.pop_back(); v.push_back({g_F, false, {}}); } }
+    }
     for (int s = 0; s < MAX_STREAMS; s++) {
         Stream& st = g_streams[s]; if (!st.pad) continue;
         Mac m; uint16_t w = 0;
@@ -400,6 +467,8 @@ bool dissidia_ttnet_driver_mac(int stream, uint32_t f, bool first, uint8_t* mac)
 }
 void dissidia_ttnet_slot_rebuilt(int slot, int charId) { std::fprintf(stderr, "[TTLOCK] slot %d rebuilt as char %d at lock-step frame %u\n", slot, charId, g_F); }
 uint32_t dissidia_ttnet_object() { return g_obj; }
+// The pause menu for the HUD: 0 closed, 1 menu (sel 0 Resume / 1 Forfeit), 2 forfeit confirm (sel 0 NO / 1 YES), 3 forfeit sent. This machine only (view).
+int dissidia_ttnet_pause_menu(int* sel) { if (!g_running || g_pm_off) return 0; if (sel) *sel = g_pm_sel; return g_pm_state; }
 
 void dissidia_ttnet_install(uint8_t* rdram) {
     g_ram = rdram;
@@ -409,6 +478,7 @@ void dissidia_ttnet_install(uint8_t* rdram) {
     g_lat = std::getenv("PSPRECOMP_TTLOCK_LAT") != nullptr;
     if (const char* e = std::getenv("PSPRECOMP_TTLOCK_TIMEOUT")) g_timeout_s = std::atof(e);
     g_log2 = std::getenv("PSPRECOMP_TTLOCK_LOG2") != nullptr;
+    g_pm_off = std::getenv("PSPRECOMP_TTPAUSE_OFF") != nullptr;
     g_padevery = std::getenv("PSPRECOMP_TTLOCK_PADEVERY") != nullptr;
     if (const char* e = std::getenv("PSPRECOMP_TTNET_LOWHP")) { for (const char* q = e; q && *q;) { unsigned sl = 0, fr = 0; if (std::sscanf(q, "%u:%u", &sl, &fr) == 2) g_lowhp.push_back({sl, fr, false}); q = std::strchr(q, ','); if (q) q++; } }
     g_orig_dispatch = psp_dispatch_probe_lookup(NET_DISPATCH);
