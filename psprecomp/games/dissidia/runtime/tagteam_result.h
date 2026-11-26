@@ -14,6 +14,7 @@ struct FfaResRow {
     int falls = 0;        // times a body of his fell
     int dmg = 0;          // HP damage dealt
     int by = 0;           // the character whose hit made his last fall (0 = unknown / still standing)
+    int key = 0;          // the stats key (the fighter, not his character: two on one character are two rows)
     int slot = -1;        // 0..3 = P1..P4 in the single player set-up, else the order of the line-up
     bool you = false;     // this machine's player
     bool cpu = true;      // the AI plays it

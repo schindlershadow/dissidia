@@ -177,7 +177,7 @@ void draw_screen(const FfaResult& R, float t, float white) {
         return LayerColor{(l ? 20.f : 120.f) * c + 20.f, (l ? 28.f : 24.f) * c + 10.f, (l ? 120.f : 76.f) * c + 20.f, 0.92f * ba * edge};
     });
     { std::string head;
-      if (n > 0) { const FfaResRow& w = R.rows[0]; head = dissidia_tagteam_char_name(w.ch) + (w.you ? "  (you)" : "") + "  wins"; }
+      if (n > 0) { const FfaResRow& w = R.rows[0]; head = dissidia_tagteam_char_name(w.ch) + " (P" + std::to_string(w.slot + 1) + ")" + (w.you ? "  (you)" : "") + "  wins"; }
       const float w = tw(head, 8.2f); label(head, 8.2f, 240.f - w / 2.f, 32.f, LayerColor{255, 255, 255, ba}); }
     for (int i = n - 1; i >= 0; i--) draw_row(R.rows[i], n, t, 1.f);
     // the banner: VICTORY! / DEFEATED... / DRAW, popping in (retail: it glows in over the rows)
