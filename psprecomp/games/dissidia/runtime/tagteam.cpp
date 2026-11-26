@@ -7408,7 +7408,14 @@ void ko_oneround() {
     // When the KO flow has handled it (nobody of the slots is in a KO state any more, no call-in / rebuild pending, the match not decided) the phase goes back to 3 and the
     // finish latch bit (+0x380 0x20000000) is cleared, so the next fall is not taken for the finish of the match. PSPRECOMP_TAGTEAM_NOPHASEBACK=1: left at 4.
     if (!g_decided && rd(g_bs + 72u) == 4u && !std::getenv("PSPRECOMP_TAGTEAM_NOPHASEBACK") && !std::getenv("PSPRECOMP_TAGTEAM_KOHOLD") && g_slot_callin.empty() && g_rebuild.empty() && !exb_busy()) {
-        bool ko_any = false; for (uint32_t k = 0; k < 2; k++) { const uint32_t a2 = srd(g_bs + 56u + 4u * k); if (ok(a2, 0x12D0) && (ko_state(a2) || hp_eff(a2) <= 0 || g_ko_swap_at.count(a2))) ko_any = true; }
+        // FFA: a fallen slot fighter held out for good (no tag-in left, "slot N is out; the others fight on", g_ffa_down) is handled, his body stays at HP 0 / in the fall for the rest of the match: it
+        // must not keep the finish phase on (RP6 26 Nov, host d1: second KO of P2 -> phase 4 for ever, the human frozen, no pause). PSPRECOMP_TAGTEAM_NOFFADOWNFIX=1: old.
+        static const bool noffadown = std::getenv("PSPRECOMP_TAGTEAM_NOFFADOWNFIX") != nullptr;
+        bool ko_any = false; for (uint32_t k = 0; k < 2; k++) { const uint32_t a2 = srd(g_bs + 56u + 4u * k); if (!noffadown && std::find(g_ffa_down.begin(), g_ffa_down.end(), a2) != g_ffa_down.end()) continue; if (ok(a2, 0x12D0) && (ko_state(a2) || hp_eff(a2) <= 0 || g_ko_swap_at.count(a2))) ko_any = true; }
+        // Watchdog: the finish phase on for more than 900 ticks (15 s) with no call-in / rebuild pending and no burst running ends here whatever still looks like a KO (the human is frozen and cannot pause in phase 4).
+        // Battle ticks and game state only. PSPRECOMP_TAGTEAM_NOP4WATCHDOG=1: off.
+        { static const bool nowd = std::getenv("PSPRECOMP_TAGTEAM_NOP4WATCHDOG") != nullptr; static uint32_t pg = ~0u; static float p4 = -1.f, p4last = -1e9f; if (pg != g_battle_gen) { pg = g_battle_gen; p4 = -1.f; } if (p4 < 0.f || age - p4last > 120.f) p4 = age; p4last = age;
+          if (!nowd && ko_any && age - p4 > 900.f && !exb_running()) { ko_any = false; if (g_log) std::fprintf(stderr, "[P4WATCHDOG] t=%.2fs the finish phase has run %.1f s with nothing loading: the KO flow is ended here\n", age / 60.0f, (age - p4) / 60.0f); } }
         static uint32_t fin_gen = 0xFFFFFFFFu; static float fin_since = 0.f; if (fin_gen != g_battle_gen) { fin_gen = g_battle_gen; fin_since = 0.f; }
         if (!ko_any) { if (fin_since == 0.f) fin_since = age; if (age - fin_since >= 5.f) {
             { const uint32_t mg = rd(0x08A62280u); if (ok(mg, 0x40) && rdf(mg + 4u) < 1.99f) { const uint32_t sp1 = static_cast<uint32_t>(g_ctx->r[29]); g_ctx->r[29] = static_cast<int32_t>(sp1 - 0x40u); call(0x08A620B0u, mg, 0u); g_ctx->r[29] = static_cast<int32_t>(sp1); if (g_log) std::fprintf(stderr, "[TAGTEAM] t=%.2fs finish slow motion (channel 0) released by hand\n", age / 60.0f); } }
