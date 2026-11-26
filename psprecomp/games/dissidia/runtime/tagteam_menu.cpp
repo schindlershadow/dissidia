@@ -18,6 +18,7 @@
 void dissidia_tagteam_result_install(FuncPtr orig_request);
 #include "psp_ge_draw.h"
 #include "../../../runtime/src/hle/psp_savedata_dialog.h"
+#include <map>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -575,7 +576,11 @@ const char* const kModeSelHelp[] = {
     "Everyone for himself, up to 4 players with a character each (and a tag-in). Party Select, then the Free-for-all player setup.",
 };
 std::atomic<int> g_ms_result{0};
-void modesel_draw(bool group_online);
+// 26 Nov (user: the Mode Select is laggy): PSPRECOMP_TAGTEAM_MSLOG=1 logs the press -> detect -> drawn latency and the draw cost per frame ([MSLAT])
+bool ms_log() { static const bool v = std::getenv("PSPRECOMP_TAGTEAM_MSLOG") != nullptr; return v; }
+std::chrono::steady_clock::time_point g_ms_press_t{};
+bool ms_lag_old() { static const bool v = std::getenv("PSPRECOMP_TAGTEAM_MSLAG_OLD") != nullptr; return v; }
+void modesel_draw(bool group_online); void modesel_prebake(bool group_online);
 // Returns 0 while open, 1 = chosen (the lobby holds the mode now), 2 = cancelled.
 int modesel_frame(uint8_t* rdram, recomp_context* ctx, bool group_online) {
     const auto now = std::chrono::steady_clock::now();
@@ -587,8 +592,19 @@ int modesel_frame(uint8_t* rdram, recomp_context* ctx, bool group_online) {
     dissidia_tagteam_lobby_get(L);
     if (g_ms_first) { g_ms_first = false; pressed = 0; g_ms_sel = lobby_mode_index(L); (void)dt; }
     int result = 0;
-    if (pressed & BTN_UP) { g_ms_sel = (g_ms_sel + kLobbyModeCount - 1) % kLobbyModeCount; play_se(rdram, ctx, 1); }
-    if (pressed & BTN_DOWN) { g_ms_sel = (g_ms_sel + 1) % kLobbyModeCount; play_se(rdram, ctx, 1); }
+    static auto last_f = now;
+    if (ms_log()) { std::fprintf(stderr, "[MSLAT] frame gap %.1f ms%s\n", std::chrono::duration<double, std::milli>(now - last_f).count(), (pressed & (BTN_UP | BTN_DOWN)) ? " PRESS" : ""); last_f = now; }
+    // 26 Nov (user: "just moving up and down takes too long"): a held Up / Down repeats like the retail lists (first after 400 ms, then every 100 ms). PSPRECOMP_TAGTEAM_MSLAG_OLD=1: old (no repeat)
+    uint32_t moves = pressed & (BTN_UP | BTN_DOWN);
+    if (!ms_lag_old()) {
+        static std::chrono::steady_clock::time_point next{}; static uint32_t held = 0;
+        const uint32_t dir = b & (BTN_UP | BTN_DOWN) & ~((b & BTN_UP) ? BTN_DOWN : 0u);   // (Up wins when both are down)
+        if (!dir) held = 0;
+        else if (dir != held || moves) { held = dir; next = now + std::chrono::milliseconds(400); }
+        else if (now >= next) { moves |= dir; if (ms_log()) std::fprintf(stderr, "[MSLAT] repeat\n"); next = std::max(next + std::chrono::milliseconds(100), now - std::chrono::milliseconds(100)); }
+    }
+    if (moves & BTN_UP) { g_ms_sel = (g_ms_sel + kLobbyModeCount - 1) % kLobbyModeCount; play_se(rdram, ctx, 1); }
+    else if (moves & BTN_DOWN) { g_ms_sel = (g_ms_sel + 1) % kLobbyModeCount; play_se(rdram, ctx, 1); }
     if (pressed & BTN_CROSS) { g_ms_ffa = kLobbyModes[g_ms_sel].mode == 3; g_seen_p1[0] = g_seen_p1[1] = 0xFF; g_seen_pick[0] = g_seen_pick[1] = g_seen_pick[2] = 0xFF; g_hop_slot = -1; g_ms_hop = false; g_ms_done = false; L[0] = kLobbyModes[g_ms_sel].mode; L[1] = kLobbyModes[g_ms_sel].size; dissidia_tagteam_lobby_set(L); play_se(rdram, ctx, 2); result = 1;
         if (g_ms_ffa && !group_online && !std::getenv("PSPRECOMP_TAGTEAM_FFA_PREOLD")) {   // the Free-for-all: no Party Select first, the players screen (then the lobby) right here
             result = 0; g_ms_pre = true; g_ffa_flow = true; g_ffa_then_lobby = true; g_dlg_mode = 3; g_lob_sp = true; g_dlg_bp = false; g_dlg_sp = false; g_ffa_slot = 1; g_ffa_field = 1; g_lob_row = 0;
@@ -596,14 +612,41 @@ int modesel_frame(uint8_t* rdram, recomp_context* ctx, bool group_online) {
             std::fprintf(stderr, "[FFA] Mode Select: Free-for-all, the players screen first\n");
         } }
     else if (pressed & BTN_CIRCLE) { play_se(rdram, ctx, 1); result = 2; }
+    const auto d0 = std::chrono::steady_clock::now();
     modesel_draw(group_online);
+    if (!result && !moves) modesel_prebake(group_online);
+    if (ms_log()) { const auto d1 = std::chrono::steady_clock::now(); std::fprintf(stderr, "[MSLAT] draw %.1f ms%s\n", std::chrono::duration<double, std::milli>(d1 - d0).count(),
+        (pressed & (BTN_UP | BTN_DOWN)) ? "" : ""); if (pressed & (BTN_UP | BTN_DOWN)) std::fprintf(stderr, "[MSLAT] press -> published %.1f ms (sel %d)\n", std::chrono::duration<double, std::milli>(d1 - g_ms_press_t).count(), g_ms_sel); }
     return result;
 }
 void modesel_draw_body(bool group_online);
+// 26 Nov (user: the Mode Select is laggy; measured on the host 33 ms per frame, ~20 fps): the whole 960x544 layer was rasterised again every frame (gradients, glows, serif title,
+// text) although only the cursor row changes. Now each finished image (cursor row x online x scale) is baked once and kept; a frame that shows the same image only extends the layer's
+// life (no raster, no upload), a move publishes the cached image of the new row, and the other rows are rendered ahead on idle frames. PSPRECOMP_TAGTEAM_MSLAG_OLD=1: old.
+struct MsImg { std::shared_ptr<const std::vector<uint32_t>> img; int w = 0, h = 0; };
+std::map<int, MsImg> g_ms_cache; uint64_t g_ms_pub_serial = 0; int g_ms_pub_key = -1;
+int ms_key(int sel, bool online, int sc) { return (sc << 8) | (online ? 16 : 0) | sel; }
+const MsImg& ms_bake(int sel, bool online, int sc) {
+    auto it = g_ms_cache.find(ms_key(sel, online, sc));
+    if (it != g_ms_cache.end()) return it->second;
+    const int keep = g_ms_sel; g_ms_sel = sel;
+    g_layer.begin(sc); modesel_draw_body(online); g_ms_sel = keep;
+    MsImg m; m.img = g_layer.bake(); m.w = g_layer.width(); m.h = g_layer.height();
+    return g_ms_cache.emplace(ms_key(sel, online, sc), std::move(m)).first->second;
+}
 void modesel_draw(bool group_online) {
-    g_layer.begin(std::max(2, psp_sddialog::output_scale()));
-    modesel_draw_body(group_online);
-    g_layer.publish();
+    const int sc = std::max(2, psp_sddialog::output_scale());
+    if (ms_lag_old()) { g_layer.begin(sc); modesel_draw_body(group_online); g_layer.publish(); return; }
+    const int key = ms_key(g_ms_sel, group_online, sc);
+    if (key == g_ms_pub_key && ge_draw_game_layer_serial() == g_ms_pub_serial && ge_draw_game_layer_touch()) return;
+    const MsImg& m = ms_bake(g_ms_sel, group_online, sc);
+    dissidia::MenuLayer::publish_baked(*m.img, m.w, m.h);
+    g_ms_pub_serial = ge_draw_game_layer_serial(); g_ms_pub_key = key;
+}
+void modesel_prebake(bool group_online) {   // one missing row's image per idle frame
+    if (ms_lag_old()) return;
+    const int sc = std::max(2, psp_sddialog::output_scale());
+    for (int k = 0; k < kLobbyModeCount; k++) if (!g_ms_cache.count(ms_key(k, group_online, sc))) { ms_bake(k, group_online, sc); return; }
 }
 void modesel_draw_body(bool group_online) {
     gs_background(); gs_title("MODE SELECT", group_online ? "Communications  >  Tag Team Battle" : "Battle Mode  >  Tag Team Battle");
@@ -1533,6 +1576,7 @@ void dissidia_tagteam_main_tick_seen() { g_main_seen_ms = steady_ms(); }   // me
 void dissidia_menu_rows_fade_tick();
 uint32_t dissidia_tagteam_menu_pad(uint32_t raw) {
     trip_tick(); dissidia_menu_rows_fade_tick();
+    if (ms_log()) { static uint32_t prev = 0; const uint32_t e = raw & ~prev; prev = raw; if (e & (BTN_UP | BTN_DOWN)) g_ms_press_t = std::chrono::steady_clock::now(); }
     g_raw_pad.store(raw, std::memory_order_relaxed);
     const int sr = g_sp_row.load(std::memory_order_relaxed);
     if (sr >= 0) {   // single player tag mode, round dialog of the 2nd round on: the cursor stays on STRENGTH / LEVEL / TYPE

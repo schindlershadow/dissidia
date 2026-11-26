@@ -30,6 +30,11 @@ public:
     float serif_caps(const std::string& s, float em, float small, float track, float x, float baseline, LayerColor c, bool measure_only = false);
     // Part of the game's own picture drawn again under the layer (ge_draw_set_game_layer_copies), PSP units.
     void copy(float sx0, float sy0, float sx1, float sy1, float dx0, float dy0, float dx1, float dy1) { copies_.push_back({sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1}); }
+    // publish() in two steps, for a screen that caches its finished image: bake() converts, publish_baked() hands it over (no copies).
+    std::shared_ptr<const std::vector<uint32_t>> bake() const;
+    int width() const { return w_; }
+    int height() const { return h_; }
+    static void publish_baked(const std::vector<uint32_t>& img, int w, int h);
     void publish();   // hand the image to the runtime (ge_draw_set_game_layer)
     void clear();     // remove it
 
