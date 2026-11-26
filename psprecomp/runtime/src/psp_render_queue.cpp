@@ -15,6 +15,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <chrono>
+#include <atomic>
+#include <filesystem>
 
 // ---------------------------------------------------------------------------
 // Shared mutex and condvar (used by both blocking single-slot and GE FIFO)
@@ -37,6 +39,10 @@ static std::condition_variable g_ge_done_cv;
 // Start at 1: PPSSPP returns 1-based GE list IDs; game passes the
 // returned uid back to UpdateStallAddr so uid=0 causes a mismatch.
 static int g_ge_uid_counter = 1;
+// Progress of the GE interpreter (render thread): g_ge_busy is set while it is inside a list, g_ge_activity counts the lists it has run (or
+// stalled). DrawSync(0) uses them to tell a slow GE (a 10-fighter battle, a loaded machine) from a lost list.
+static std::atomic<bool> g_ge_busy{false};
+static std::atomic<uint64_t> g_ge_activity{0};
 
 // ---------------------------------------------------------------------------
 // render_queue_post -- blocking single-slot path for FramePresent
@@ -166,12 +172,25 @@ int render_queue_draw_sync(int mode) {
     std::unique_lock<std::mutex> lock(g_render_mutex);
 
     if (mode == 0) {
-        // Blocking: wait until all GE lists are drained (500ms safety valve).
-        // Timeout prevents infinite hang when a list is stalled with no
-        // further UpdateStallAddr call (e.g. uid mismatch or lost list).
-        bool drained = g_ge_done_cv.wait_for(lock,
-            std::chrono::milliseconds(500),
-            [] { return g_ge_queue.empty() || g_should_exit.load(); });
+        // Blocking: wait until all GE lists are drained. Safety valve: 500 ms without any progress of the GE (a stalled list with no further
+        // UpdateStallAddr, a lost list) gives up. A GE that is still working (inside a list, or finished lists since the last slice: a battle with
+        // many fighters on a slow machine takes more than 500 ms per frame) is waited for, up to 30 s: giving up early let the game free and
+        // reuse model / effect memory that a running list still read ("Unknown cmd", "Hit command limit" without END, a GE fault in 10-player
+        // 3 v 3 battles). PSPRECOMP_GE_SYNC_OLD=1: the old fixed 500 ms.
+        static const bool old_sync = std::getenv("PSPRECOMP_GE_SYNC_OLD") != nullptr;
+        const auto t0 = std::chrono::steady_clock::now();
+        uint64_t seen = g_ge_activity.load();
+        bool drained = false;
+        for (;;) {
+            drained = g_ge_done_cv.wait_for(lock, std::chrono::milliseconds(500),
+                [] { return g_ge_queue.empty() || g_should_exit.load(); });
+            if (drained || old_sync) break;
+            const uint64_t now_act = g_ge_activity.load();
+            const bool progress = g_ge_busy.load() || now_act != seen;
+            seen = now_act;
+            if (!progress || std::chrono::steady_clock::now() - t0 > std::chrono::seconds(30)) break;
+            static int n = 0; if (n++ < 20) std::fprintf(stderr, "[GE] DrawSync: the GE is still working (%lld ms), waiting\n", static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count()));
+        }
         if (!drained) {
             std::fprintf(stderr,
                 "[GE] DrawSync timeout: %zu lists still pending\n",
@@ -194,6 +213,7 @@ bool render_queue_all_ge_done() {
 
 int render_queue_wait_caught_up(int timeout_ms) {
     const auto t0 = std::chrono::steady_clock::now();
+    uint64_t seen_act = g_ge_activity.load();
     for (;;) {
         {
             std::unique_lock<std::mutex> lock(g_render_mutex);
@@ -203,7 +223,15 @@ int render_queue_wait_caught_up(int timeout_ms) {
                 return static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count());
             g_work_cv.notify_one();
         }
-        if (std::chrono::steady_clock::now() - t0 >= std::chrono::milliseconds(timeout_ms)) return -1;
+        // A GE that is still working (inside a list, or lists finished since the last check) is waited for beyond timeout_ms (up to 30 s
+        // in all): a 3 s limit let a rebuild free model memory under a running list on a slow machine. PSPRECOMP_GE_SYNC_OLD=1: the plain limit.
+        static const bool old_sync = std::getenv("PSPRECOMP_GE_SYNC_OLD") != nullptr;
+        const auto el = std::chrono::steady_clock::now() - t0;
+        if (el >= std::chrono::milliseconds(timeout_ms)) {
+            const uint64_t act = g_ge_activity.load();
+            if (old_sync || el >= std::chrono::seconds(30) || !(g_ge_busy.load() || act != seen_act)) return -1;
+            seen_act = act;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
@@ -270,6 +298,11 @@ void render_queue_process() {
 
         lock.unlock();
 
+        // Test aid PSPRECOMP_GE_SLOW="<ms>:<every>": sleep <ms> after every <every>-th list (a slow GE, to reproduce what a 10-player battle does to DrawSync)
+        static int slow_ms = 0, slow_every = 1; static bool slow_init = false;
+        if (!slow_init) { slow_init = true; if (const char* e = std::getenv("PSPRECOMP_GE_SLOW")) { std::sscanf(e, "%d:%d", &slow_ms, &slow_every); if (slow_every < 1) slow_every = 1; } }
+        static int slow_n = 0;
+        g_ge_busy.store(true);
         for (auto& entry : to_process) {
             psp_prof::seq("list-begin", entry.uid);
             ge_interp_list_tag(entry.ip_tag);
@@ -285,7 +318,13 @@ void render_queue_process() {
             } else {
                 entry.stalled = true;
             }
+            g_ge_activity.fetch_add(1);
+            if (slow_ms > 0 && ++slow_n % slow_every == 0) {   // (PSPRECOMP_GE_SLOW_FILE=<path>: only while that file exists, so the loading is not slowed)
+                static const char* gate = std::getenv("PSPRECOMP_GE_SLOW_FILE");
+                if (!gate || std::filesystem::exists(gate)) std::this_thread::sleep_for(std::chrono::milliseconds(slow_ms));
+            }
         }
+        g_ge_busy.store(false);
 
         lock.lock();
 
