@@ -5348,6 +5348,12 @@ static std::string g_toast_text;
 static std::chrono::steady_clock::time_point g_toast_until{};
 static bool g_toast_dirty = false;
 static int g_toast_y = 10;
+static std::string g_toast_pending; static int g_toast_pending_ms = 0, g_toast_pending_y = 10;   // shown from the first present on (the message is queued before the game draws)
+
+void ge_draw_toast_deferred(const char* text, int ms, int y_px) {
+    std::lock_guard<std::mutex> lk(g_toast_mu);
+    g_toast_pending = text ? text : ""; g_toast_pending_ms = ms; g_toast_pending_y = y_px;
+}
 
 void ge_draw_toast(const char* text, int ms, int y_px) {
     std::lock_guard<std::mutex> lk(g_toast_mu);
@@ -5652,6 +5658,11 @@ static void present_toast(const PresentRect& pr) {
     bool dirty;
     {
         std::lock_guard<std::mutex> lk(g_toast_mu);
+        if (g_toast_pending_ms > 0) {
+            g_toast_text = g_toast_pending; g_toast_y = g_toast_pending_y;
+            g_toast_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(g_toast_pending_ms);
+            g_toast_dirty = true; g_toast_pending_ms = 0;
+        }
         if (g_toast_text.empty() || std::chrono::steady_clock::now() >= g_toast_until) return;
         text = g_toast_text;
         dirty = g_toast_dirty;
