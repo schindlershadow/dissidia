@@ -63,6 +63,7 @@ struct Extra {
     std::string parent;         // shown (and used) only while this switch is on (e.g. the texture pack under HD textures)
     ExtraDisc disc;
     bool desktop = true, android = true;
+    long long need_bytes = 0;   // free space it needs while it is applied (an estimate; the installers check it before they start)
     // An action rather than a state (e.g. add a texture pack): asks for its file every time it is turned on, and is shown off again
     // after it ran (Options::clear_discs resets it, as the installers do once a run is done).
     bool action = false;
@@ -84,6 +85,10 @@ void plan_extra_steps(std::vector<Step>& p, const ExtraCtx& ctx, const Options& 
 
 // The extras that still need their disc picked before `now` can be applied (prev as above): their keys, in order.
 std::vector<std::string> extras_needing_disc(const Layout& l, bool android, const Options& now, const Options* prev);
+
+// Looks for the disc an extra needs (a .iso / .cso that passes its check: right game id, right voices) in the folder of the first
+// image the player picked, `near_file`. "" when there is none (or the extra's file is not a disc image); then the player is asked.
+std::string find_extra_disc(const std::string& key, const std::string& near_file);
 
 // The check of an extra's disc (ExtraDisc::check); "" when it has none or the disc is right.
 std::string extra_disc_problem(const std::string& key, const std::string& path);

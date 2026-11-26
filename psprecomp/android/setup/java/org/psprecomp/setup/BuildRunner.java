@@ -45,6 +45,12 @@ final class BuildRunner {
     volatile boolean running = true, ok = false;
     volatile String error = "", note = "";
     volatile JSONObject lastProgress;
+    /** What was running when it failed (for the failure reason): the step's label, its exit code, and whether the player cancelled. */
+    volatile String failStep = "";
+    volatile int failCode = 0;
+    volatile boolean wasCancelled = false;
+    /** { kind, title, text } of Engine.explainFailure once the run failed (null: not failed, or the engine could not say). */
+    volatile String[] reason;
     private Writer out;
 
     private final Context app;
@@ -70,9 +76,15 @@ final class BuildRunner {
     }
 
     String recentText() {
+        return recentText(14);
+    }
+
+    /** The last n output lines (the failure page shows 14; the failure reason reads 40). */
+    String recentText(int n) {
         synchronized (recent) {
             StringBuilder b = new StringBuilder();
-            for (String s : recent) b.append(s).append('\n');
+            int skip = Math.max(0, recent.size() - n), i = 0;
+            for (String s : recent) if (i++ >= skip) b.append(s).append('\n');
             return b.toString().trim();
         }
     }
@@ -94,10 +106,10 @@ final class BuildRunner {
             history.add(s);
             if (history.size() > 6000) history.subList(0, 1000).clear();
         }
-        if (!s.trim().isEmpty() && !s.startsWith("FAILED:")) {
+        if (!s.trim().isEmpty() && !s.startsWith("FAILED:") && !s.startsWith("Reason (")) {
             synchronized (recent) {
                 recent.addLast(s);
-                while (recent.size() > 14) recent.removeFirst();
+                while (recent.size() > 40) recent.removeFirst();
             }
         }
         try {
@@ -193,6 +205,7 @@ final class BuildRunner {
                     continue;
                 }
                 say("===== step " + (i + 1) + "/" + plan.length() + ": " + step.optString("label") + " =====");
+                failStep = step.optString("label");
                 String err = Engine.startStep(i);
                 emitProgress(true);
                 if (!err.isEmpty()) { fail = "Could not start: " + err; break; }
@@ -217,6 +230,7 @@ final class BuildRunner {
                     }
                     code = Engine.exitCode();
                 }
+                failCode = code;
                 if (cancel) { fail = "The installation was cancelled."; break; }
                 JSONObject p = new JSONObject(Engine.progress());
                 String perr = p.optString("error");
@@ -241,8 +255,19 @@ final class BuildRunner {
         } catch (Exception e) {
             fail = "The setup stopped: " + e;
         }
-        if (fail != null) say("FAILED: " + fail);
-        else say("===== finished =====");
+        wasCancelled = cancel;
+        if (fail != null) {
+            try {
+                String stage = "";
+                try { stage = new JSONObject(Engine.progress()).optString("stage"); } catch (Exception e2) { /* no stage */ }
+                reason = Engine.explainFailure(failStep, stage, fail, recentText(40), log.getParentFile().getPath(), failCode, cancel);
+            } catch (Throwable t) {
+                reason = null;
+            }
+            say("FAILED: " + fail);
+            if (reason != null && reason.length >= 3) say("Reason (" + reason[0] + "): " + reason[2].replace("\n\n", " | ").replace("\n", " "));
+        }
+        if (fail == null) say("===== finished =====");
         emitProgress(true);
         try {
             if (out != null) out.close();
