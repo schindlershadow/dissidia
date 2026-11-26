@@ -23,6 +23,8 @@
 #include "../../../runtime/src/hle/psp_savedata_dialog.h"
 
 std::string dissidia_mods_dir();   // hooks_io.cpp
+int dissidia_ttnet_pause_menu(int* sel);   // tagteam_net.cpp: the online pause menu (0 closed, 1 menu, 2 forfeit confirm, 3 forfeit sent)
+void dissidia_menu_draw_hand(dissidia::MenuLayer& L, float x, float y, float a);   // menu_settings.cpp
 
 namespace {
 
@@ -337,6 +339,47 @@ void reserve(const TagHudReserve& r) {
     }
 }
 
+// The online pause menu (Start in a Communications tag battle; the battle goes on): a card in the game's menu look with Resume / Forfeit, then the YES / NO confirm.
+void pause_menu(int state, int sel) {
+    g_layer.band(0.f, 0.f, 480.f, 272.f, [&](float, float) { return LayerColor{8, 10, 36, 0.38f}; });
+    const float x0 = 140.f, x1 = 340.f, y0 = 78.f, y1 = state == 3 ? 150.f : 190.f;
+    g_layer.band(x0 + 1.5f, y0 + 2.f, x1 + 2.5f, y1 + 3.f, [&](float, float) { return LayerColor{20, 20, 70, 0.30f}; });
+    g_layer.band(x0, y0, x1, y1, [&](float x, float y) {
+        const float e = std::min({x - x0, x1 - x, y - y0, y1 - y}), t = (y - y0) / (y1 - y0);
+        if (e < 1.f) return LayerColor{120, 124, 188, 1.f};
+        if (e < 2.2f) return LayerColor{255, 255, 255, 1.f};
+        return LayerColor{244 - 12 * t, 246 - 12 * t, 255 - 6 * t, 0.97f};
+    });
+    g_layer.band(x0 + 2.2f, y0 + 2.2f, x1 - 2.2f, y0 + 20.f, [&](float x, float y) {   // the navy title ribbon
+        const float t = (y - y0 - 2.2f) / 17.8f, fade = x > x1 - 50.f ? std::max(0.f, 1.f - (x - (x1 - 50.f)) / 47.8f) : 1.f;
+        return LayerColor{20 + 40 * (1 - t), 22 + 38 * (1 - t), 96 + 56 * (1 - t), fade};
+    });
+    const std::string title = state == 2 ? "FORFEIT THE MATCH?" : state == 3 ? "FORFEIT" : "PAUSE";
+    shadow_text(title, true, 9.f, x0 + 12.f, y0 + 15.f, LayerColor{255, 255, 255, 1.f});
+    if (state == 3) {
+        const std::string t = "Leaving the match...";
+        g_layer.text(t, true, 7.6f, (x0 + x1) / 2.f - text_w(t, true, 7.6f) / 2.f, y0 + 46.f, LayerColor{40, 42, 65, 1.f});
+        return;
+    }
+    const std::string a = state == 2 ? "NO" : "Resume", b = state == 2 ? "YES" : "Forfeit";
+    for (int i = 0; i < 2; i++) {
+        const float ry = y0 + 28.f + 26.f * static_cast<float>(i), rh = 20.f, rx0 = x0 + 22.f, rx1 = x1 - 12.f; const bool on = sel == i;
+        const float pt = 8.f;
+        g_layer.band(rx0, ry, rx1, ry + rh, [&](float x, float yy) {
+            const float dx = std::min(x - rx0, rx1 - x), half = rh / 2.f * (dx >= pt ? 1.f : 0.45f + 0.55f * dx / pt), dy = std::fabs(yy - (ry + rh / 2.f));
+            const float m = std::clamp((half - dy) * 2.f, 0.f, 1.f), v = (yy - ry) / rh, t = std::clamp((x - rx0) / (rx1 - rx0), 0.f, 1.f);
+            if (on) { float r = 63 + 71 * t * t, g = 53 + 83 * t * t, bl = 174 + 33 * t * t; if (v < 0.22f) { r += 34; g += 36; bl += 14; } return LayerColor{r, g, bl, m}; }
+            if (std::min(dy / std::max(half, 0.01f), 1.f) > 0.86f) return LayerColor{128, 126, 164, m};
+            return LayerColor{248 - 40 * v, 249 - 40 * v, 255 - 26 * v, m};
+        });
+        const std::string& t = i == 0 ? a : b;
+        shadow_text(t, true, 8.4f, rx0 + 16.f, ry + rh / 2.f + 3.f, on ? LayerColor{255, 255, 255, 1.f} : LayerColor{40, 42, 65, 1.f});
+        if (on) dissidia_menu_draw_hand(g_layer, rx0 - 20.f, ry + rh / 2.f - 12.f, 1.f);
+    }
+    const std::string hint = state == 2 ? "Cross: select   Circle: back" : "Cross: select   Start: resume";
+    g_layer.text(hint, true, 6.2f, (x0 + x1) / 2.f - text_w(hint, true, 6.2f) / 2.f, y1 - 8.f, LayerColor{70, 74, 130, 1.f});
+}
+
 void banner(const std::string& t) {
     const float em = 10.f, tw = text_w(t, true, em), cx = 240.f, y = 50.f;
     g_layer.band(cx - tw / 2.f - 40.f, y - 9.f, cx + tw / 2.f + 40.f, y + 5.f, [&](float x, float yy) {
@@ -563,7 +606,8 @@ void tagteam_layer_frame(bool in_battle) {
     const double tnow = now_s();
     g_notices.erase(std::remove_if(g_notices.begin(), g_notices.end(), [&](const Notice& n) { return n.until <= tnow; }), g_notices.end());
     g_hits.erase(std::remove_if(g_hits.begin(), g_hits.end(), [&](const HitRec& r) { return tnow - r.t0 >= kFeedLife + 0.1; }), g_hits.end());
-    const bool any = !g_fighters.empty() || !g_hits.empty() || !g_reserves.empty() || !g_overhead.empty() || !g_lockind.by.empty() || vig_active(tnow) || !g_banner.empty() || !g_notices.empty();
+    int pm_sel = 0; const int pm = dissidia_ttnet_pause_menu(&pm_sel);
+    const bool any = pm != 0 || !g_fighters.empty() || !g_hits.empty() || !g_reserves.empty() || !g_overhead.empty() || !g_lockind.by.empty() || vig_active(tnow) || !g_banner.empty() || !g_notices.empty();
     L.lap("prep"); g_layer.begin(std::max(2, psp_sddialog::output_scale())); L.lap("begin");
     if (any) {
         for (const TagHudOverhead& o : g_overhead) if (!o.target) overhead_bar(o);   // (under the panels; the target's bar last, on top of the others)
@@ -594,6 +638,7 @@ void tagteam_layer_frame(bool in_battle) {
         { float yd = 70.f, yj = 0.f;   // falls under the join banner, job powers along the top edge
           for (const Notice& n : g_notices) { if (n.kind == 0) { notice(n, yd, tnow); yd += 13.f; } else { notice(n, yj, tnow); yj += 19.f; } } }
     }
+    if (pm) pause_menu(pm, pm_sel);
     L.lap("notices"); const bool fx = tagteam_fx_draw(g_layer); L.lap("fx");
     if (!any && !fx) { if (g_layer_shown) { g_layer.clear(); g_layer_shown = false; } return; }
     g_layer.publish(); L.lap("publish");
