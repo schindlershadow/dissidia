@@ -597,7 +597,7 @@ struct App {
         const std::string logp = !log_path.empty() ? log_path : (fs::path(wd) / "setup.log").string();
         pr.files.push_back({"setup.log", logp, 8u << 20});
         if (!wd.empty()) {
-            for (const char* n : {"last_run.log", "run.log"}) pr.files.push_back({n, (fs::path(wd) / n).string(), 8u << 20});
+            for (const char* n : {"last_run.log", "prev_run.log", "run.log"}) pr.files.push_back({n, (fs::path(wd) / n).string(), 8u << 20});
             std::error_code ec;
             for (auto it = fs::directory_iterator(wd, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
                 const std::string n = it->path().filename().string(), l = lower(n);

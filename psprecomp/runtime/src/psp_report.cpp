@@ -289,6 +289,7 @@ std::vector<Src> sources() {
         return v;
     }
     add("last_run.log", "last_run.log", kLogTail);
+    add("prev_run.log", "prev_run.log", kLogTail);   // the run before (kept by the launcher / the Android log pump)
     add("run.log", "run.log", kLogTail);
     add("setup.log", "setup.log", kLogTail);
     add("settings.ini", settings_ini_path(), kSmallTail);
