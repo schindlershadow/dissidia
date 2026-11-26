@@ -14,6 +14,8 @@
 #include "recomp.h"
 #include "hle/psp_hle.h"
 #include "menu_layer.h"
+#include "tagteam_result.h"
+void dissidia_tagteam_result_install(FuncPtr orig_request);
 #include "psp_ge_draw.h"
 #include "../../../runtime/src/hle/psp_savedata_dialog.h"
 #include <algorithm>
@@ -1454,6 +1456,7 @@ void ffa_fill_party(uint32_t P, int cpu_char) {
     std::fprintf(stderr, "[FFA] party records written for the setup screen (Party A: %d members, CPU %d)\n", n, cpu_char);
 }
 void qb_frame_hook(uint8_t* rdram, recomp_context* ctx) {
+    dissidia_tagteam_result_frame(rdram, ctx);   // (the result screen's sound cues)
     if (r32(OVL_BASE) != 2) { if (FuncPtr f = ovl_battle_lookup(QB_APP_FRAME)) f(rdram, ctx); return; }
     const uint32_t app = static_cast<uint32_t>(ctx->r[4]), P = okp(app) ? r32(app + 0x154u) : 0u;
     const int before = okp(P) ? static_cast<int>(r32(P + 0x910u)) : -1;
@@ -1524,6 +1527,7 @@ void trip_tick() {   // every pad poll
 
 }  // namespace
 
+bool dissidia_tagteam_post_flow() { return g_trip_post && g_qb_mode == QB_RETURN; }
 void dissidia_tagteam_main_tick_seen() { g_main_seen_ms = steady_ms(); }   // menu_settings.cpp: the start menu's top level or sub-list ran
 
 void dissidia_menu_rows_fade_tick();
@@ -1573,6 +1577,8 @@ uint32_t dissidia_tagteam_menu_pad(uint32_t raw) {
         else { static bool inj = false; inj = !inj; raw &= ~(BTN_CROSS | BTN_LEFTK); raw = inj ? (raw | BTN_RIGHT) : (raw & ~BTN_RIGHT); }   // a round row: back to the party column
     }
     dissidia_tagteam_result_tick();   // (a decided Free-for-all: the result screen's rows)
+    raw = dissidia_tagteam_result_pad(raw);   // the Free-for-all result screen (own, tagteam_result.cpp)
+    if (dissidia_tagteam_result_active()) return raw;
     static std::atomic<int> hold{0};   // a button that closed a dialog stays down for a few polls: the screen under it must not see it
     if (g_dlg_open.load(std::memory_order_relaxed)) { hold.store(12, std::memory_order_relaxed); return 0u; }
     if (const int h = hold.load(std::memory_order_relaxed); h > 0) { hold.store(h - 1, std::memory_order_relaxed); return 0u; }
@@ -1669,6 +1675,20 @@ void dissidia_tagteam_menu_install(uint8_t* rdram) {
     if (std::getenv("PSPRECOMP_MENU_NOTAGTEAM")) return;
     g_orig_tick = ovl_menu_lookup(SETUP_TICK);
     g_play_se = psp_dispatch_probe_lookup(PLAY_SE);
+    {   // every sound request of the game passes here: the SELOG debug log, and the retail result scene's own requests are replaced while our result screen is up (tagteam_result.cpp)
+        static FuncPtr o_se = g_play_se, o_req = psp_dispatch_probe_lookup(0x088A24D4u);
+        static const bool lg = std::getenv("PSPRECOMP_TAGTEAM_SELOG") != nullptr;
+        if (o_req) {
+            dissidia_tagteam_result_install(o_req);
+            psp_dispatch_register(0x088A24D4u, [](uint8_t* rdram, recomp_context* ctx) {
+                const uint32_t ra = static_cast<uint32_t>(ctx->r[31]);
+                if (lg) std::fprintf(stderr, "[SELOG] t=%lld request a0=%u a1=%u a2=%u (ra %08X)%s\n", static_cast<long long>(steady_ms()), static_cast<uint32_t>(ctx->r[4]), static_cast<uint32_t>(ctx->r[5]), static_cast<uint32_t>(ctx->r[6]), ra, dissidia_tagteam_result_mute_scene(ra) ? " muted" : "");
+                if (dissidia_tagteam_result_mute_scene(ra)) { ctx->r[2] = 0; return; }
+                o_req(rdram, ctx);
+            });
+        }
+        (void)o_se;
+    }
     if (!g_orig_tick) { std::fprintf(stderr, "[TTCPU] setup screen hook not installed\n"); return; }
     psp_dispatch_register(SETUP_TICK, setup_tick_hook);
     // Proper PvE (docs/tag-team.md): Party Select accepts an empty CPU party; Enter Battle's table step builds the CPU party's blocks on its owner's machine
