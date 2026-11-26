@@ -129,6 +129,14 @@ std::string remap_ms_path(const std::string& host) {
     // the game asks for a lower-case name; PPSSPP's card has F6207479.EDAT
     for (auto d = fs::directory_iterator(fs::u8path(host.substr(0, slash)), ec); !ec && d != fs::directory_iterator(); d.increment(ec))
         if (lower(d->path().filename().u8string()) == name) return d->path().u8string();
+    // the DLC folder of another region (ULES01505 with a US game): any folder under PSP/GAME that holds the file, by name without case
+    ec.clear();
+    for (auto g = fs::directory_iterator(fs::u8path(ms0 + "/PSP/GAME"), ec); !ec && g != fs::directory_iterator(); g.increment(ec)) {
+        std::error_code e2;
+        if (!g->is_directory(e2)) continue;
+        for (auto d = fs::directory_iterator(g->path(), e2); !e2 && d != fs::directory_iterator(); d.increment(e2))
+            if (lower(d->path().filename().u8string()) == name) return d->path().u8string();
+    }
     return "";
 }
 

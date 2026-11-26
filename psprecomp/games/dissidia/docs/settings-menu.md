@@ -87,7 +87,7 @@ decrypts an EDAT (`"\0PSPEDAT"` + PGD, `psp_npdrm.cpp`, ported from PPSSPP's amc
 plain data and is read as it is. Install DLC from a Folder / from a Zip (Settings > Mods, or the installer's Import DLC row, which finds
 PPSSPP and memory sticks itself) copies the files into the mod folder `mods/dissidia-dlc/dlc/` (`mod.json` with `"kind": "dlc"`), which shows
 in the list below with its switch (applies at the next start; with every DLC folder off the game finds no DLC). Files copied by hand into
-`ms0/PSP/GAME/<id>/` are found too, by name without regard to case, when there is no DLC mod folder. `PSPRECOMP_DLC_IMPORT=<folder or .zip>`
+`ms0/PSP/GAME/<id>/` are found too, by name without regard to case, in any folder under `PSP/GAME` (a ULES01505 DLC folder works with a US game: the id is not matched), when there is no DLC mod folder. `PSPRECOMP_DLC_IMPORT=<folder or .zip>`
 installs one at start and exits (tests). The async open of an EDAT leaves its completion callback queued instead of running it inside
 `sceIoSetAsyncCallback`: the game stores the fd that `sceIoOpenAsync` returned only after that call returns, and the callback reads it back
 (running it in place made it see fd -1; the EDAT was then never keyed and its encrypted bytes were parsed as data).
