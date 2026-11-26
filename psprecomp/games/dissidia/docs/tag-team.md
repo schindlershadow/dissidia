@@ -1,6 +1,7 @@
 # Tag team battles (2 v 2): research notes and plan
 
 ## TODO (kept up to date; newest first)
+- ~~HUD marks (lock-on indicator, overhead bars, entrance FX) and retail's lock-on ring step at 30 Hz at 60 / 120 fps (user, 26 Nov)~~ DONE 26 Nov (tree tthudsm, branch tt-hudsmooth, "Batch sixty-five"): positions blended like the renderer's scene, pulse clock follows slow motion, retail ring found by content so it moves with the interpolated fighter. `PSPRECOMP_TAGTEAM_HUDSMOOTH_OLD=1` = old. Not on a device.
 - ~~Assist Off call: the partner is sent back to where it was; a dismissed assist stays on the stage (user, RP6 26 Nov)~~ DONE 26 Nov (tree ttaspos, branch tt-assistpos, "Batch sixty-three"): the partner now stays where the assist actor ends (position, facing, stand / air state); dismissed forced assists are parked off the stage. Still unverified on the device.
 
 - ~~FFA: after a KO an enemy "moves and attacks but nobody can hit him" (Emperor +380 = 20002000, Feral Chaos +380 = 20000000; user, RP6 26 Nov, `desk_logs/rp6_doubleko_live_1126_1514.log`, `rp6_feral_invuln_1126_1529.log`)~~ FIXED on the host 27 Nov (tree ttdblko, branch tt-doubleko, "Batch sixty-four"): retail's finish start marks the HUMAN and the human's FOE as decided; in FFA the foe can be an EXTRA, and only slot fighters had the marks put back. Not a missed double KO (the user's "killed two" was Lightning + the marked foe). Device check open.
@@ -6187,3 +6188,27 @@ User: during chases the effects and timers (hit / particle effects of the others
 - **Double KO by one HP attack: not a bug here.** `HPM_ALSO_HP=<n>` (test aid) sets the second victim's HP: slotH's HP attack on slotC + extraP at 300 HP (`NOSURVIVE=1`, `d3`): two `[KOEVT] LETHAL HP hit` lines at 19.03 s (first / further victim), `[HPBOTH]`, extraP `BOOKED ... down` at 19.07 s, slotC `BOOKED slot 1` at 22.53 s after its fall (team mate extraE took the slot), `KO flow done` 22.63 s; with the retail survive effect left on, slotC stays at 1 HP (`d2`). Each fighter is booked by its own path; no fighter was left alive at HP <= 0.
 - **Always-on `[KOEVT]` lines** (device logs without the detail log): every lethal HP hit (victim, attacker, HP before / after, first or further victim of the attack), every booking (slot KO flow / extra down), and at each mid-battle finish the snapshot of all fighters' `+0x380 / +908 / decided byte / lock +0x126 / foe` and who carries the marks after the finish start.
 - **Not verified.** That bit 0x20000000 / the decided state is what blocks hits (the host matrix gave no HP loss on marked or unmarked extras with the sweep setup, so it is inferred from the live state + report); RP6 / Deck not run with this build; the 1 s HP<=0 net re-issues the fall for fallen extras that stand up before they are parked (seen in `k_17`: script 700/101 on a down extra) - harmless but logged.
+
+### Batch sixty-five (26 Nov, tree tthudsm, branch tt-hudsmooth): HUD marks smooth at 60 / 120 fps
+- **Cause.** The layer is drawn every frame, but a fighter's position in guest memory changes only on gameplay frames (30 Hz logic) while the view the
+  marks are projected with (`ge_draw_last_view_proj`) is the renderer's frame-interpolated one. Measured (120 fps, frame-count paced, `REC` frames,
+  `~/dissidia/tt/s2/hudsm/base120`, `track.py`): the x-step of the lock-on chevron and of an overhead eye was -4.2 -3.8 -4.2 +15.2 px, repeating (a crawl
+  back with the camera for 3 frames, a jump on the 4th). Retail's lock-on ring stepped every 3rd-4th frame: `ge_draw_set_hud_fixed_tex` holds 0xC33070 /
+  0xC7EA30, but the ring texture is at 0x81D0F0 now (1v1 and tag team alike; hash below), so psp_ge_draw.cpp's 2D follow (IP2D, which moves such a draw with
+  the blended fighter) never matched it. (Side effect of the stale address: the ring was not kept on the picture on tall windows or moved by the FOV follow
+  scale either.)
+- **Fix (view only, no battle state).** (1) `psp_ge_draw.cpp`: `ge_draw_last_view_proj_tag` = (gen, phase) of the display list the last view / projection came from.
+  (2) `tagteam_hud.cpp` `tagteam_hud_pos`: a followed actor's feet are recorded per gameplay frame (`dissidia_hud_gen`, framerate.cpp = the interpolation tag's gen of
+  the frame that just ran) and blended between the frame before that list's and the list's own by its phase, as the renderer does (>3 m = teleport, no blend;
+  `PSPRECOMP_INTERP=0` / `2` as the renderer). Used by the overhead bars, the lock-on eyes and chevron, the entrance FX (`tagteam_fx_frame`). (3) The
+  chevron's pulse / bob run on a clock that advances by wall time x the slow-motion rate (product of the channels of `*0x08A62280`, idle 2.0 each; 1.0 in
+  normal play), so assist / chase slow motion slows them; normal play is the same speed as before. (4) `framerate.cpp`: `ge_draw_set_hud_fixed_tex_hash` finds
+  the ring by content (FNV-1a of 256 bytes, 0xe5465917458e8746), so it moves with the blended fighter (IP2D) and is pinned / FOV-scaled as intended.
+  Damage numbers and the screen-edge pulse already ran on wall time; the numbers' camera now follows the same blended view.
+- **Flag.** `PSPRECOMP_TAGTEAM_HUDSMOOTH_OLD=1` = the old behaviour (raw positions, wall-clock pulse, ring not matched). `[HUDSMOOTH]` line every 240 frames with
+  `PSPRECOMP_TAGTEAM_LOG=1` (gen, slow-motion rate).
+- **Test.** `~/dissidia/tt/s2/hudsm/rec_run.py` (tag team, player walks, `REC 120` at 120 fps): before `base120` (chevron dx -4 -4 -4 +15), after `new120` / `new120b`
+  (chevron +0.5 .. +3 per frame, every frame; eye jitter 1-2 px from its pulse colour); IP2D lines per frame with `PSPRECOMP_INTERP_TRACE=3` after the ring match
+  (0 before). Regression `tagteam_test.py --baseline`: PASS (`~/dissidia/tt/s2/reg_hudsmooth`).
+- **Not verified.** On a device; the slow-motion rate in a real chase / assist (rate was 1.000 in play); retail's own rotation animation of the ring is still 30 Hz (only its
+  position is blended); the off-screen target pointer texture (0xC7EA30 in the old table) was not located, it stays unblended; vsync-bound frames where the layer and the picture land one frame apart.

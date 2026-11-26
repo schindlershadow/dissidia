@@ -10,6 +10,7 @@
 #include <algorithm>
 #include "menu_layer.h"
 #include "psp_ge_draw.h"
+#include "tagteam_hud.h"
 #include "../../../runtime/src/hle/psp_savedata_dialog.h"
 
 namespace {
@@ -127,6 +128,7 @@ void tagteam_fx_frame(const uint8_t* rdram, float age) {
     if (age >= g_ent.until) { g_ent.actor = 0; return; }
     if (age < g_ent.t0) return;
     std::memcpy(g_fx_pos, rdram + ((g_ent.actor + 0x80u) & 0x07FFFFFFu), 12);
+    { float q[3]; if (tagteam_hud_pos(g_ent.actor, q)) std::memcpy(g_fx_pos, q, 12); }   // the interpolated scene's place (tagteam_hud.cpp)
     g_fx_have = std::isfinite(g_fx_pos[0]) && std::fabs(g_fx_pos[0]) < 2000.f;
 }
 // tagteam_hud.cpp (tagteam_layer_frame): draws this frame's effects into its layer; true when something was drawn

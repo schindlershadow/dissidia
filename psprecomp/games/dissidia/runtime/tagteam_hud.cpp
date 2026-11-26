@@ -446,10 +446,60 @@ void tagteam_hud_lockind(const TagHudLockInd& li) {
 
 
 namespace {
+// ---- View smoothing (26 Nov, hudsmooth) ----
+// The HUD is drawn once per rendered frame, but the fighters' positions in guest memory change only on gameplay frames (30 Hz) while the 3D
+// view the points are projected with (ge_draw_last_view_proj) is the frame-interpolated one of the last list the renderer drew. A marker on
+// a fighter moved with the interpolated camera and stepped with the fighter: at 120 fps it crawled back 3 frames and jumped on the 4th.
+// A fighter's position is now blended the way the renderer blends the scene: between its positions at the gameplay frame before the list's
+// and the list's own, by the list's phase (ge_draw_last_view_proj_tag). Animation phases (pulse, bob) run on a clock that advances by
+// the elapsed frame time x the battle's slow-motion rate. View only. PSPRECOMP_TAGTEAM_HUDSMOOTH_OLD=1 = the old behaviour.
+struct PosRec { uint32_t gen; float p[3]; };
+std::map<uint32_t, std::vector<PosRec>> g_poshist;   // per actor: its position at the last few gameplay frames (oldest first)
+uint32_t g_view_gen = 0; bool g_view_on = false;     // the gameplay frame the frame being drawn belongs to (tagteam_hud_view)
+float g_anim_t = 0.f, g_anim_rate = 1.f; double g_anim_wall = -1.0;
+bool smooth_old() { static const bool o = std::getenv("PSPRECOMP_TAGTEAM_HUDSMOOTH_OLD") != nullptr; return o; }
+int smooth_mode() { static const int m = [] { const char* e = std::getenv("PSPRECOMP_INTERP"); return e && e[0] ? std::atoi(e) : 1; }(); return m; }   // the renderer's own switch: 0 off, 2 extrapolate
+bool raw_pos(uint32_t actor, float p[3]) {
+    if (!g_hud_ram || !actor) return false;
+    std::memcpy(p, g_hud_ram + ((actor + 0x80u) & 0x07FFFFFFu), 12);
+    return true;
+}
+void track_pos(uint32_t actor) {   // once per frame for every actor the HUD follows: records its position under this gameplay frame
+    if (!g_view_on || smooth_old()) return;
+    PosRec r; r.gen = g_view_gen; if (!raw_pos(actor, r.p)) return;
+    auto& h = g_poshist[actor];
+    if (!h.empty() && h.back().gen == r.gen) { std::memcpy(h.back().p, r.p, 12); return; }
+    if (!h.empty() && h.back().gen > r.gen) h.clear();   // a new battle: the numbering restarted
+    h.push_back(r); if (h.size() > 8) h.erase(h.begin());
+}
+}  // namespace
+bool tagteam_hud_pos(uint32_t actor, float p[3]) {
+    if (!raw_pos(actor, p)) return false;
+    if (!g_view_on || smooth_old() || smooth_mode() == 0) return true;
+    uint32_t rg = 0; float ph = -1.f;
+    if (!ge_draw_last_view_proj_tag(&rg, &ph) || !(ph > -1.0f)) return true;
+    track_pos(actor);
+    auto it = g_poshist.find(actor); if (it == g_poshist.end()) return true;
+    const std::vector<PosRec>& h = it->second;
+    const PosRec* cur = nullptr; const PosRec* prv = nullptr;
+    for (const PosRec& r : h) { if (r.gen == rg) cur = &r; else if (r.gen + 1 == rg) prv = &r; }
+    if (!cur) return true;                       // that list's gameplay frame is not recorded (too old / not followed then): the newest position
+    std::memcpy(p, cur->p, 12);
+    if (!prv) return true;
+    const float dx = cur->p[0] - prv->p[0], dy = cur->p[1] - prv->p[1], dz = cur->p[2] - prv->p[2];
+    if (dx * dx + dy * dy + dz * dz > 9.0f) return true;   // a teleport (the renderer does not blend over 3 m either)
+    const float t = smooth_mode() == 2 ? 1.0f + ph : ph;
+    for (int i = 0; i < 3; i++) p[i] = prv->p[i] + (cur->p[i] - prv->p[i]) * t;
+    return true;
+}
+void tagteam_hud_view(bool on, uint32_t gen, float slow_rate) {
+    g_view_on = on; g_view_gen = gen; g_anim_rate = std::clamp(slow_rate, 0.f, 1.f);
+}
+namespace {
 // One bar over a fighter's head (2.05 m above the feet): the retail HP bar's colours on a dark plate, the target's bravery above it.
 void overhead_bar(const TagHudOverhead& o) {
     if (!g_hud_ram || !o.actor) return;
-    float pos[3]; std::memcpy(pos, g_hud_ram + ((o.actor + 0x80u) & 0x07FFFFFFu), 12);
+    float pos[3]; if (!tagteam_hud_pos(o.actor, pos)) return;
     if (!std::isfinite(pos[0]) || !std::isfinite(pos[1]) || !std::isfinite(pos[2]) || std::fabs(pos[0]) > 1000.f || std::fabs(pos[2]) > 1000.f) return;   // (a fighter parked away from the stage)
     const float head[3] = {pos[0], pos[1] + top_of(o.actor), pos[2]};
     float x, y; if (!tagteam_fx_project(head, x, y)) return;
@@ -513,7 +563,7 @@ namespace {
 // ---- lock-on indicator: who has the player as their target ----
 bool world_pos(uint32_t actor, float p[3]) {
     if (!g_hud_ram || !actor) return false;
-    std::memcpy(p, g_hud_ram + ((actor + 0x80u) & 0x07FFFFFFu), 12);
+    if (!tagteam_hud_pos(actor, p)) return false;
     return std::isfinite(p[0]) && std::isfinite(p[1]) && std::isfinite(p[2]) && std::fabs(p[0]) < 1000.f && std::fabs(p[2]) < 1000.f;
 }
 // An eye (almond with an iris) in the game's red-orange: cx, cy = centre, w = width. a = opacity, pulse 0..1 brightens the iris, flash 0..1 a bloom behind.
@@ -541,7 +591,8 @@ float lock_age(uint32_t a, double tnow) { auto it = g_lock_new.find(a); return i
 void lockind_draw(double tnow) {
     const TagHudLockInd& li = g_lockind;
     if (li.by.empty() || !li.me) return;
-    const float pulse = 0.5f + 0.5f * static_cast<float>(std::sin(tnow * 6.0));
+    const double anim = smooth_old() ? tnow : static_cast<double>(g_anim_t);   // pulse and bob: the clock that follows the game's slow motion
+    const float pulse = 0.5f + 0.5f * static_cast<float>(std::sin(anim * 6.0));
     // -- on each enemy that is locked on: an eye over its head (above the overhead bar when there is one); off to the side of the screen: at the edge
     for (uint32_t a : li.by) {
         float pos[3]; if (!world_pos(a, pos)) continue;
@@ -565,7 +616,7 @@ void lockind_draw(double tnow) {
     const float head[3] = {me[0], me[1] + top_of(li.me) + 0.3f, me[2]};
     float hx, hy; const bool ok_head = tagteam_fx_project(head, hx, hy);
     if (ok_head && hx > -20.f && hx < 500.f && hy > -20.f && hy < 292.f) {
-        const float bob = 1.5f * static_cast<float>(std::sin(tnow * 5.0)), cx = hx, tipy = hy + bob, wd = 10.f, ht = 8.f, th = 4.8f;   // a V (pointing down at the player): its centre is the lowest
+        const float bob = 1.5f * static_cast<float>(std::sin(anim * 5.0)), cx = hx, tipy = hy + bob, wd = 10.f, ht = 8.f, th = 4.8f;   // a V (pointing down at the player): its centre is the lowest
         const float a = 0.95f;
         g_layer.band(cx - wd - 1.5f, tipy - ht - 1.5f, cx + wd + 1.5f, tipy + th + 1.5f, [&](float x, float y) {   // dark outline of the chevron
             const float yt = tipy - std::fabs(x - cx) * (ht / wd);
@@ -604,6 +655,9 @@ void tagteam_layer_frame(bool in_battle) {
     Lap L;
     if (!in_battle) { tagteam_hud_hide(); }
     const double tnow = now_s();
+    { const double dt = g_anim_wall < 0 ? 0.0 : std::min(0.1, std::max(0.0, tnow - g_anim_wall)); g_anim_wall = tnow; g_anim_t += static_cast<float>(dt * g_anim_rate); }
+    for (const TagHudOverhead& o : g_overhead) track_pos(o.actor);
+    if (g_lockind.me) { track_pos(g_lockind.me); for (uint32_t a : g_lockind.by) track_pos(a); }
     g_notices.erase(std::remove_if(g_notices.begin(), g_notices.end(), [&](const Notice& n) { return n.until <= tnow; }), g_notices.end());
     g_hits.erase(std::remove_if(g_hits.begin(), g_hits.end(), [&](const HitRec& r) { return tnow - r.t0 >= kFeedLife + 0.1; }), g_hits.end());
     int pm_sel = 0; const int pm = dissidia_ttnet_pause_menu(&pm_sel);

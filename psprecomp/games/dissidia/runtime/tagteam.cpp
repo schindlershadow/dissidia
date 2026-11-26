@@ -111,6 +111,7 @@ void dissidia_snd_heap_free(const uint8_t* rdram, uint32_t* total, uint32_t* fre
 bool dissidia_hheap_locked(const uint8_t* rdram, uint32_t heap, uint32_t id);   // hooks_models.cpp: is handle `id` of that handle heap locked (in use)   // hooks_models.cpp: [MEMSUM] line (model pool, effect pool, texture overflow heap)
 float dissidia_battle_age();   // framerate.cpp: ticks (1/60 s) since the battle started running
 float dissidia_logic_tick_len();   // framerate.cpp: 1/60 s per game logic frame (2 at 30 Hz)
+bool dissidia_hud_gen(uint32_t* gen);   // framerate.cpp: the gameplay frame (interpolation gen) the frame that just ran belongs to
 // The tag team's own battle clock (1/60 s): advanced by the slot-0 fighter's brain tick, so it moves with the battle simulation itself.
 // framerate.cpp's battle age moves at each frame end, which also runs while a lock-step battle waits for the other players; timers on
 // it (break cap, call-in delay, entrance, burst hold) would fire on different simulation frames on each machine.
@@ -12646,6 +12647,10 @@ void dissidia_tagteam_frame_end(uint8_t* rdram, recomp_context* ctx) {
                 std::fprintf(stderr, " [%s %.2f,%.2f,%.2f hp %d brv %d sc %d]", role_of(f[i]), rdf(f[i] + 0x80u), rdf(f[i] + 0x84u), rdf(f[i] + 0x88u), hp, brv, static_cast<int16_t>(rd(f[i] + 0x180u) & 0xFFFF)); }
             std::fprintf(stderr, " hash %08X\n", h); }
     }
+    if (g_ram) { tagteam_hud_set_ram(g_ram); uint32_t hg = 0; const bool hon = dissidia_hud_gen(&hg);   // (view smoothing: the gameplay frame this frame belongs to, the slow-motion rate)
+        float hr = 1.f; { const uint32_t mg = rd(0x08A62280u); if (hon && ok(mg, 0x40)) for (int ch = 0; ch < 10; ch++) { const float cv = rdf(mg + 4u + 4u * static_cast<uint32_t>(ch)); if (cv == cv && cv < 2.0f) hr *= cv * 0.5f; } }
+        tagteam_hud_view(hon, hg, hr);
+        if (g_log && g_bs) { static uint32_t n = 0; if (n++ % 240 == 0) std::fprintf(stderr, "[HUDSMOOTH] interpolated %d gameplay gen %u slow-motion rate %.3f\n", hon ? 1 : 0, hg, hr); } }
     if (g_ram) { { TtStep s_("fx_frame"); tagteam_fx_frame(g_ram, g_bs ? dissidia_battle_age() : -1.f); } tagteam_hud_set_ram(g_ram); { TtStep s_("layer_frame"); if (!dissidia_tagteam_result_active()) tagteam_layer_frame(g_bs != 0 && g_hud_on && g_win_team < 0); dissidia_tagteam_result_frame(g_ram, g_ctx); } }
     if (g_ram) { { TtStep s_("group_end_step"); group_end_step(); } { TtStep s_("tally_post_step"); tally_post_step(); } leftover_unload(); }
     if (g_ram && std::getenv("PSPRECOMP_TAGTEAM_GROUPLOG")) { static std::string last; char b[96]; const uint32_t i1 = 0x09AFDFB0u + 0x25u + 0x38u; std::snprintf(b, sizeof b, "idx %u cnt %u res %u %u %u | t0 idx %u res %u %u", g_ram[(i1 - 7u) & 0x07FFFFFFu], g_ram[(i1 - 6u) & 0x07FFFFFFu], g_ram[(i1 - 5u) & 0x07FFFFFFu], g_ram[(i1 - 4u) & 0x07FFFFFFu], g_ram[(i1 - 3u) & 0x07FFFFFFu], g_ram[(0x09AFDFB0u + 0x25u - 7u) & 0x07FFFFFFu], g_ram[(0x09AFDFB0u + 0x25u - 5u) & 0x07FFFFFFu], g_ram[(0x09AFDFB0u + 0x25u - 4u) & 0x07FFFFFFu]);
