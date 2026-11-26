@@ -2804,8 +2804,11 @@ bool finish_busy() {
     if (age - t0 > kFinMax) return false;
     return !seen ? age - t0 < 90.f : ch0 < 1.99f;   // started (waits up to 1.5 s for channel 0 to drop), then until it is released
 }
+float g_exbdbg_since = -2.f; int g_exbdbg_why = 0;
 bool exb_busy() {
-    if (exb_running() || finish_busy()) return true;
+    if (exb_running()) { g_exbdbg_why = 1; return true; }
+    if (finish_busy()) { g_exbdbg_why = 2; return true; }
+    g_exbdbg_why = 0;
     static const bool off = std::getenv("PSPRECOMP_TAGTEAM_NOEXBBUSY") != nullptr; if (off || !g_bs) return false;
     static uint32_t gen = ~0u; static float since = -1.f;
     const float age = dissidia_battle_age();
@@ -2819,8 +2822,14 @@ bool exb_busy() {
     };
     for (uint32_t k = 0; k < 2; k++) chk(srd(g_bs + 56u + 4u * k));
     for (int i = 0; i < g_nextra; i++) if (g_extra[i].started) chk(g_extra[i].actor);
+    // A mid-battle KO's finish (bs+72 == 4) with a burst chance flag (+0x5B2 bit 0x10) / EX Mode entry still up (a lethal HP hit in EX Mode sets the flag on the very frame the finish starts; the EX
+    // manager and the per-frame flag clear do not run in the finish phase, so it stays) is no chance any more: the victim is down. Holding the KO flow / call-in for it kept the human frozen (finish marks)
+    // for the whole 660-tick wait (RP6 26 Nov, FFA: ~23 s instead of ~9 s). PSPRECOMP_TAGTEAM_EXBKOCHANCE_OLD=1: old.
+    static const bool koold = std::getenv("PSPRECOMP_TAGTEAM_EXBKOCHANCE_OLD") != nullptr;
+    if (pre && !koold && g_bs && rd(g_bs + 72u) == 4u && !std::getenv("PSPRECOMP_TAGTEAM_EXBFAKE")) pre = false;
     if (!pre) { since = -1.f; return false; }
     if (since < 0.f) since = age;
+    g_exbdbg_since = since; g_exbdbg_why = 3;
     static const float kExbBusyMax = 660.f;   // ticks: longer than the CPU chance's own safety cut (600)
     return age - since < kExbBusyMax;
 }
@@ -4179,10 +4188,24 @@ void rebuild_lock(const RebuildJob& j) {
     if (g_log) std::fprintf(stderr, "[TAGTEAM] rebuild %08X: lock %s: block %08X mode %u +252 %08X +276 %u +356 %u +0x100 %u +0x120 %08X (ctrl %08X) +0x126 %u, target %08X foe %08X (was foe %08X; old block +252 %08X +276 %u +356 %u +0x120 %08X)\n",
         j.A, (old || !pad_driven(j.A)) ? "LOCK_SET (CPU)" : "player's (no override)", L, rd(L + 264u), rd(L + 252u), rd(L + 276u), rd(L + 356u), rd(L + 0x100u), rd(L + 0x120u), rd(j.A + 0x5A0u), g_ram[(L + 0x126u) & 0x07FFFFFFu], call(LOCK_GET, L), rd(j.A + 0x300u), j.foe, j.lbw[3], j.lbw[4], j.lbw[5], j.lbw[1]);
 }
+void frozen_fix();
 void rebuild_frame() {
     TtStep tt_step_("rebuild_frame");
     g_frame_ticks++;
     latediff_step();
+    frozen_fix();
+    if (g_log && g_bs && std::getenv("PSPRECOMP_TAGTEAM_EXBFORCE5")) {   // test aid "<slot 0|1>:<s>": from battle second s, while that slot fighter is in EX Mode (machine +0x784 state 3), its burst chance flag (+0x5B2 bit 0x10, set by an HP hit in EX Mode) is set every frame until the machine takes it (state 5)
+        int sl = 0; float at = 0; if (std::sscanf(std::getenv("PSPRECOMP_TAGTEAM_EXBFORCE5"), "%d:%f", &sl, &at) == 2) {
+            const uint32_t F = srd(g_bs + 56u + 4u * static_cast<uint32_t>(sl & 1)); const float age = dissidia_battle_age() / 60.0f; static bool said = false;
+            if (ok(F, 0x12D0) && age >= at && rd(F + 0x784u) == F && rd(F + 0x784u + 4u) == 3u) { g_ram[(F + 0x5B2u) & 0x07FFFFFFu] |= 0x10u; if (!said) { said = true; std::fprintf(stderr, "[EXBFORCE5] t=%.2fs %s %08X burst chance flag forced\n", age, role_of(F), F); } } }
+    }
+    if (g_log && g_bs && std::getenv("PSPRECOMP_TAGTEAM_FROZENLOG")) {   // debug: once a second the human's control state: phase bs+72, decided byte, lock block enable, exb_busy / finish_busy
+        static float last = -1e9f; const float age = dissidia_battle_age();
+        if (age - last >= 30.f || age < last) { last = age; const uint32_t H = ffa_human(), L = ok(H, 0x12D0) ? rd(H + 0x5ACu) : 0u;
+            std::fprintf(stderr, "[FROZEN] t=%.2fs human %08X script %d decided +126B %u lock block %08X +126 %u mode %u target %08X | phase %u exb_busy %d finish_busy %d exb_running %d chance %02X exs %u\n", age / 60.0f, H, ok(H, 0x12D0) ? static_cast<int>(rd(H + 0x180u) & 0xFFFFu) : -1,
+                ok(H, 0x12D0) ? g_ram[(H + 0x126Bu) & 0x07FFFFFFu] : 0u, L, ok(L, 0x200) ? g_ram[(L + 0x126u) & 0x07FFFFFFu] : 0u, ok(L, 0x200) ? rd(L + 264u) : 0u, ok(H, 0x12D0) ? rd(H + 0x2FCu) : 0u, rd(g_bs + 72u), exb_busy() ? 1 : 0, finish_busy() ? 1 : 0, exb_running() ? 1 : 0, ok(H, 0x12D0) ? g_ram[(H + 0x5B2u) & 0x07FFFFFFu] : 0u, ok(H, 0x12D0) ? rd(H + 0x784u + 4u) : 0u);
+            std::fprintf(stderr, "[FROZEN]   exb_busy why %d since %.2fs\n", g_exbdbg_why, g_exbdbg_since / 60.0f);
+            for (uint32_t k = 0; k < 2; k++) { const uint32_t F = srd(g_bs + 56u + 4u * k); if (ok(F, 0x12D0)) std::fprintf(stderr, "[FROZEN]   %s %08X machine owner %08X state %u timer %.1f +1C %u +20 %08X flags +5B2 %02X ctl+278 %u slow ch2 %.2f\n", role_of(F), F, rd(F + 0x784u), rd(F + 0x784u + 4u), static_cast<double>(rdf(F + 0x784u + 0xCu)), g_ram[(F + 0x784u + 0x1Cu) & 0x07FFFFFFu], rd(F + 0x784u + 0x20u), g_ram[(F + 0x5B2u) & 0x07FFFFFFu], rd(rd(0x08A405E0u) + 0x278u), ok(rd(0x08A62280u), 0x40) ? static_cast<double>(rdf(rd(0x08A62280u) + 4u + 8u)) : -1.0); } } }
     for (auto& w : g_rb_watch) if (w.second > 0) { if ((w.second % 60) == 0) objlist_check("watch", w.first); if ((w.second % 15) == 0 && g_log) std::fprintf(stderr, "[RBWATCH] %08X in world %d +904 %08X +908 %08X +380 %08X script %d pos %.2f,%.2f,%.2f\n", w.first, in_world(w.first), rd(w.first + 904u), rd(w.first + 908u), rd(w.first + 0x380u), static_cast<int16_t>(rd(w.first + 0x180u) & 0xFFFFu), rdf(w.first + 0x80u), rdf(w.first + 0x84u), rdf(w.first + 0x88u)); w.second--; }
     if (g_log && !g_rebuild.empty()) { static int n = 0; if (n++ < 6) world_state("frame", g_rebuild[0].A); }
     for (size_t i = 0; i < g_rebuild.size();) {
@@ -7166,6 +7189,25 @@ void oob_tick(float age) {
         place_at(a, q.x, q.y, q.z, "oob"); start_script(a, 1);
     }
 }
+void frozen_fix() {
+    {   // Safety net (26 Nov, RP6: the human stayed frozen / could not lock on after a KO + EX Burst chance + tag-in): in the normal fight phase (bs+72 == 3, no finish / burst / chase / rebuild / entrance running)
+        // a pad-driven slot fighter that keeps the finish's "decided" byte (+0x126B == 1) or whose lock block has the lock-on switched off (+0x126 == 0) for 3 s gets them back (what finsnap_restore does at "KO flow done").
+        // Battle state + battle ticks only (same on every machine). PSPRECOMP_TAGTEAM_NOFROZENFIX=1: off.
+        static const bool off = std::getenv("PSPRECOMP_TAGTEAM_NOFROZENFIX") != nullptr; static uint32_t gen = ~0u; static float since[2][2] = {{-1.f, -1.f}, {-1.f, -1.f}};
+        if (gen != g_battle_gen) { gen = g_battle_gen; for (auto& r : since) r[0] = r[1] = -1.f; }
+        if (!off && g_bs && g_nextra && rd(g_bs + 72u) == 3u && !g_decided && intro_done() && !exb_busy() && !entrance_busy() && g_rebuild.empty() && g_slot_callin.empty() && !g_chase_ctl_now && dissidia_battle_age() > 600.f) {
+            const float age = dissidia_battle_age();
+            for (uint32_t k = 0; k < 2; k++) {
+                const uint32_t S = srd(g_bs + 56u + 4u * k); if (!ok(S, 0x12D0) || !pad_driven(S) || !alive(S) || is_down(S)) { since[k][0] = since[k][1] = -1.f; continue; }
+                const uint32_t L = rd(S + 0x5ACu); const bool dec = g_ram[(S + 0x126Bu) & 0x07FFFFFFu] == 1u, nolock = ok(L, 0x200) && rd(L + 248u) == S && g_ram[(L + 0x126u) & 0x07FFFFFFu] == 0u;
+                const bool bad[2] = {dec, nolock};
+                for (int q = 0; q < 2; q++) { if (!bad[q]) { since[k][q] = -1.f; continue; } if (since[k][q] < 0.f) since[k][q] = age;
+                    if (age - since[k][q] >= 180.f) { since[k][q] = -1.f;
+                        if (q == 0) g_ram[(S + 0x126Bu) & 0x07FFFFFFu] = 0u; else g_ram[(L + 0x126u) & 0x07FFFFFFu] = 1u;
+                        if (g_log) std::fprintf(stderr, "[FROZENFIX] t=%.2fs %s %08X: %s stayed set for 3 s in the fight phase: put back\n", age / 60.0f, role_of(S), S, q == 0 ? "the finish's decided byte (+0x126B)" : "the lock block's lock-on off byte (+0x126)"); } } }
+        } else for (auto& r : since) r[0] = r[1] = -1.f;
+    }
+}
 void ko_oneround() {
     ledger_step();   // the KO ledger (tally, jobs) sees every fall before it is handled
     if (g_oneround && g_tagin && g_bs && g_nextra == 0 && !g_decided && !std::getenv("PSPRECOMP_TAGTEAM_NOEARLYFORFEIT") && !std::getenv("PSPRECOMP_TAGTEAM_NOFORFEITEND") && !psp_adhoc_in_session()) {
@@ -7642,6 +7684,10 @@ void finstart_hook(uint8_t* rdram, recomp_context* ctx) {
     if (mid) cam_snap("finish start"); else g_camsnap.have = false;
     if (mid) { g_sndenable_gen = g_battle_gen; g_sndenable_val = rd(0x089D6C98u) & 0xFFu; } else g_sndenable_gen = ~0u;
     if (mid) finsnap_take(); else g_finsnap.have = false;
+    if (mid && !std::getenv("PSPRECOMP_TAGTEAM_EXBKOCHANCE_OLD")) {   // the burst chance of a fight that just ended with a KO: flags off (see exb_busy)
+        uint32_t f[8]; const int nf = all_fighters(f);
+        for (int i = 0; i < nf; i++) { uint8_t& b = g_ram[(f[i] + 0x5B2u) & 0x07FFFFFFu]; if (b & 0x10u) { b = static_cast<uint8_t>(b & ~0x10u); if (g_log) std::fprintf(stderr, "[EXBKO] t=%.2fs %s %08X: burst chance flag cleared at the KO finish (victim down)\n", dissidia_battle_age() / 60.0f, role_of(f[i]), f[i]); } }
+    }
     if (g_log && std::getenv("PSPRECOMP_TAGTEAM_KOSHOT")) { const float a = dissidia_battle_age() / 60.0f; tagteam_breakshot_event(a, g_battle_gen, "kofin", 0, "a", nullptr); tagteam_breakshot_event(a + 2.f, g_battle_gen, "kofin", 0, "b", nullptr); }   // debug: shots at the finish start +0 / 0.5 / 1.5 and +2 / 2.5 / 3.5 s
     g_orig_finstart(rdram, ctx);
 }
