@@ -565,6 +565,7 @@ void pause_open_hook(uint8_t* rdram, recomp_context* ctx) {
     }
     g_orig_pauseopen(rdram, ctx);
 }
+void ledger_force_last_hit(uint32_t victim, int by_ch);
 bool is_slot_fighter(uint32_t a); int reserve_left(int team); int team_of(uint32_t side); int my_player_index();   // below
 std::map<uint32_t, uint32_t> g_extra_mod;   // extra actor -> its damage module copy (hitmsg_hook)
 uint32_t g_exb_slot_addr = 0, g_exb_slot_lb = 0;   // an extra burster's lock block put into a free camera-manager slot for the burst: table address / block
@@ -4537,15 +4538,15 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
     // Lock-step: only with KOLIST_NAT and side-based names (slot0 / slot1 / extra0 / extra1). HP 0 on a slot fighter without _NAT reaches the retail KO chain, whose finish step runs the
     // LOCAL fighter's win / lose script per machine (two machines KO'd 'their own' fighter at the same age in a lock-step run): a split caused by the aid, not a per-machine KO detection.
     if (g_bs && std::getenv("PSPRECOMP_TAGTEAM_KOLIST")) {   // debug: "<who>:<s>,<who>:<s>,...": HP 0 (status +0xC = 0) on that fighter at each battle age; who = human, cpu, enemy2, partner (again in each battle)
-        static std::vector<std::pair<std::string, float>> list; static size_t next = 0; static uint32_t bs_seen = 0; static float last_age = 1e9f;
+        static std::vector<std::pair<std::string, float>> list; static std::vector<int> list_by; static size_t next = 0; static uint32_t bs_seen = 0; static float last_age = 1e9f;
         const float age_now = dissidia_battle_age(); const bool restarted = age_now < last_age; last_age = age_now;
-        if (bs_seen != g_battle_gen || restarted) { bs_seen = g_battle_gen; next = 0; list.clear(); std::string e = std::getenv("PSPRECOMP_TAGTEAM_KOLIST"); size_t p0 = 0;
-            while (p0 < e.size()) { size_t c = e.find(',', p0); if (c == std::string::npos) c = e.size(); const std::string t = e.substr(p0, c - p0); const size_t k = t.find(':'); if (k != std::string::npos) list.push_back({t.substr(0, k), static_cast<float>(std::atof(t.c_str() + k + 1))}); p0 = c + 1; } }
+        if (bs_seen != g_battle_gen || restarted) { bs_seen = g_battle_gen; next = 0; list.clear(); list_by.clear(); std::string e = std::getenv("PSPRECOMP_TAGTEAM_KOLIST"); size_t p0 = 0;
+            while (p0 < e.size()) { size_t c = e.find(',', p0); if (c == std::string::npos) c = e.size(); const std::string t = e.substr(p0, c - p0); const size_t k = t.find(':'); if (k != std::string::npos) { list.push_back({t.substr(0, k), static_cast<float>(std::atof(t.c_str() + k + 1))}); const size_t k2 = t.find(':', k + 1); list_by.push_back(k2 != std::string::npos ? std::atoi(t.c_str() + k2 + 1) : 0); } p0 = c + 1; } }
         if (g_kodiff_kolate > 0.f && age_now >= g_kodiff_kolate) { g_kodiff_kolate = -1.f; kodiff_dump("kolate"); }
         if (g_kobrv0_until > 0.f && age_now < g_kobrv0_until) { static float lastp = -1e9f; if (age_now - lastp >= 30.f) { lastp = age_now; const uint32_t hk = g_kobrv0_h; if (ok(hk, 0x310) && age_now >= g_kobrv0_dump && g_kobrv0_dump > 0.f) { g_kobrv0_dump = -1.f; std::fprintf(stderr, "[KOBRV0W] t=%.1fs words:", age_now / 60.f); for (uint32_t o = 0; o < 0x300u; o += 4) std::fprintf(stderr, " %X=%X", o, rd(hk + o)); std::fprintf(stderr, "\n"); }
         const uint32_t h = g_kobrv0_h; if (ok(h, 0x310)) std::fprintf(stderr, "[KOBRV0] t=%.1fs handler %08X state %u timer %.3f b665 %u dt(089D5EAC) %.4f phase %u slow ch0 %.3f pair %08X list +24 %08X +28 %08X b+88 %u\n", age_now / 60.f, h, rd(h + 8u), static_cast<double>(rdf(h + 568u)), g_ram[(h + 665u) & 0x07FFFFFFu], static_cast<double>(rdf(0x089D5EACu)), g_bs ? rd(g_bs + 72u) : 99u, ok(rd(0x08A62280u), 0x40) ? static_cast<double>(rdf(rd(0x08A62280u) + 4u)) : -1.0, rd(0x089D69F8u), rd(rd(0x089D69F8u) + 24u), rd(rd(0x089D69F8u) + 28u), g_ram[(rd(0x089D69F8u) + 88u) & 0x07FFFFFFu]); } }
         if (next < list.size() && dissidia_battle_age() / 60.0f >= list[next].second) {
-            const std::string& who = list[next].first; next++;
+            const std::string who = list[next].first; const int by_ch = next < list_by.size() ? list_by[next] : 0; next++;   // ("who:seconds:killer char": the killer for the KO ledger, a test aid)
             const uint32_t hs = rd(g_bs + 84u), H = srd(g_bs + 56u + 4u * hs), C = srd(g_bs + 56u + 4u * (1u - hs)); uint32_t a = 0;
             // side-based names (the same fighter on every machine of a lock-step battle, unlike human / cpu): slot0 / slot1 = the fighter in that slot,
             // extra0 / extra1 = the living extra on that slot's side
@@ -4566,6 +4567,7 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
                     if (it != g_slot_hdl.end() && ok(it->second, 0x310)) { const uint32_t sp1 = static_cast<uint32_t>(g_ctx->r[29]); g_ctx->r[29] = static_cast<int32_t>(sp1 - 0x40u); call(0x08AE1270u, it->second, 1u); g_ctx->r[29] = static_cast<int32_t>(sp1); }
                     if (it != g_slot_hdl.end()) { g_kobrv0_h = it->second; g_kobrv0_until = dissidia_battle_age() + 900.f; g_kobrv0_dump = dissidia_battle_age() + (std::getenv("PSPRECOMP_TAGTEAM_KOBRV0W") ? 600.f : 30.f); }
                     std::fprintf(stderr, "[KOBRV0] human %08X BRV 0, handler %08X state -> %u\n", H, it != g_slot_hdl.end() ? it->second : 0u, it != g_slot_hdl.end() ? rd(it->second + 8u) : 99u); }
+                if (by_ch > 0) ledger_force_last_hit(a, by_ch);
                 std::fprintf(stderr, "[KOLIST] t=%.1fs %s -> %s %08X %s\n", dissidia_battle_age() / 60.0f, who.c_str(), role_of(a), a, mark ? "lethal damage + KO mark" : "HP 0");
             }
             else std::fprintf(stderr, "[KOLIST] t=%.1fs %s: no such fighter\n", dissidia_battle_age() / 60.0f, who.c_str());
@@ -5043,7 +5045,9 @@ void reset_ko_state();   // below
 // action 0x0A) and "Return to Battle Setup" (text 9, action 2). A tag match is ONE match (forfeit or not, group_decided has booked every member of the loser), so the
 // first row is not added: the menu is just "Return to Battle Setup".
 // 26 Nov (ffatally): per-fighter facts of a Free-for-all battle for the own result screen, keyed by the character the fighter STARTED with (a tag-in counts for his player, ffa_main_of)
-struct FfaStat { int tag = 0, kos = 0, falls = 0, dmg = 0, by = 0; float out_age = -1.f; bool alive = false; std::vector<int> victims; };
+struct FfaStat { int tag = 0, kos = 0, falls = 0, dmg = 0, by = 0, by_real = 0; float out_age = -1.f; bool alive = false, forfeit = false; std::vector<int> victims, victims_real; };   // (by_real / victims_real: the characters actually in play at the KO, for the faces)
+std::set<int> g_ffa_forfeit;   // stats keys of the fighters whose player forfeited (the result says Forfeited, not a KO)
+void ffa_forfeit_note(uint32_t a);
 std::map<int, FfaStat> g_ffa_stats; int g_ffa_main[4] = {0, 0, 0, 0}; bool g_ffa_list_up = false;   // (g_ffa_list_up: the retail end-of-battle list "Return to Battle Setup" was built after a decided Free-for-all)
 int ffa_main_of(int ch); bool g_ffa_owner_ok_early(); int ffa_slot_of(int ch);
 // 26 Nov (ffasame): the stats are keyed by the FIGHTER, never by his character (two humans on Lightning online were one row on every machine). ffa_fid_of(actor): a lock-step identity from the game side and the
@@ -5111,6 +5115,7 @@ uint32_t g_hp_last_victim = 0;   // the fighter the last HP step (hpstep_core) b
 // A tag battle is one match for what retail books as several Tournament rounds. Per battle: who fell (team 0 = the human's, character)
 // and who scored it (the last HP attacker of the fallen, within 10 s; else the slot fighter facing the fallen's side), and each member's
 // status words (level, the booking's +8 / +12 / +24) as last seen. Members of one party are unique, so (team, character) names a member.
+void ledger_force_last_hit(uint32_t victim, int by_ch);
 struct KoRec { int team = -1, ch = 0, by_team = -1, by_ch = 0; float age = 0.f; int vkey = 0, akey = 0; };   // (vkey / akey: the FFA stats keys of the fallen fighter and of his killer)
 struct MemberStat { uint8_t lv = 0; uint32_t s8 = 0, sC = 0; int16_t s18 = 0; bool fought = false, down = false; };
 std::vector<KoRec> g_kolog;
@@ -5125,6 +5130,13 @@ void job_notice(const KoRec& k);   // below (the tally code): the job powers thi
 bool g_pow_have = false;
 void ledger_reset_if_new() { if (g_ledger_gen != g_battle_gen) { g_ledger_gen = g_battle_gen; g_ledger_closed = false; g_pow_have = false; g_kolog.clear(); g_mstat.clear(); g_last_hp_hit.clear(); g_last_hp_akey.clear(); g_ffa_roster.clear(); g_ffa_lvl.clear(); g_ffa_fell.clear(); g_ffa_res_on = false; g_ffa_stats.clear(); g_ffa_list_up = false; } }
 void aohit_hp(uint32_t victim, uint32_t att);   // below (round 7 measurement)
+void ledger_force_last_hit(uint32_t victim, int by_ch) {   // test aid (KOLIST "who:s:killer char"): the killer of this KO in the ledger
+    ledger_reset_if_new(); const int vc = actor_char(victim); if (vc <= 0 || by_ch <= 0) return;
+    const int vt = team_of(side_of(victim)), ve = ffa_by_fighter() ? vc + 64 * (1 + ffa_fid_of(victim)) : vc;
+    uint32_t fl[8]; const int nf = all_fighters(fl); int ak = 0;
+    for (int i = 0; i < nf; i++) if (fl[i] != victim && actor_char(fl[i]) == by_ch) ak = ffa_now() ? ffa_key_of(fl[i]) : 0;
+    g_last_hp_hit[{vt, ve}] = {by_ch, dissidia_battle_age()}; g_last_hp_akey[{vt, ve}] = ak;
+}
 void ledger_hp_hit(uint32_t victim, uint32_t att) {
     aohit_hp(victim, att);
     if (!g_bs || !ok(victim, 0x12D0) || !ok(att, 0x12D0) || victim == att) return;
@@ -6481,6 +6493,12 @@ void ffa_result_tick() {
 // 26 Nov (ffatally): the snapshot of a decided Free-for-all for the own result screen (tagteam_result.cpp): the line-up it started with, who scored what (the KO ledger), the damage
 // dealt, who is still in, the placing order: those still in first (most KOs, then damage, then the HP left), the fallen after them by the time of their last fall (the later the better).
 FfaResult g_ffa_result;
+void ffa_forfeit_note(uint32_t a) {   // the player of this fighter forfeits / retires: his fall is booked as that (ffa_result_build)
+    if (!ffa_now() || !ok(a, 0x12D0)) return;
+    const bool byf = ffa_by_fighter() && !ffa_sp_tags(); const int ch = actor_char(a);
+    g_ffa_forfeit.insert(byf ? ffa_key_of(a) : ffa_main_of(ch));
+    if (g_log) std::fprintf(stderr, "[FFARES] %s (char %d) forfeits\n", role_of(a), ch);
+}
 void ffa_result_build() {
     if (g_ffa_result.valid && g_ffa_result.gen == g_battle_gen) return;
     FfaResult R; R.gen = g_battle_gen;
@@ -6500,10 +6518,15 @@ void ffa_result_build() {
     if (fl.size() < 2) return;
     if (byf) std::stable_sort(fl.begin(), fl.end(), [](const Fi& x, const Fi& y) { return x.key < y.key; });   // (the same order on every machine: the lineup lists this machine's side first)
     std::map<int, int> key_ch; for (const Fi& f : fl) key_ch[f.key] = f.ch;
-    for (const KoRec& k : g_kolog) {
+    std::map<int, size_t> last_fall;   // the last fall of each fighter (a forfeit is his last)
+    for (size_t i = 0; i < g_kolog.size(); i++) last_fall[byf ? g_kolog[i].vkey : ffa_main_of(g_kolog[i].ch)] = i;
+    for (size_t i = 0; i < g_kolog.size(); i++) {
+        const KoRec& k = g_kolog[i];
         const int v = byf ? k.vkey : ffa_main_of(k.ch), a = byf ? k.akey : (k.by_ch > 0 ? ffa_main_of(k.by_ch) : 0);
-        FfaStat& sv = g_ffa_stats[v]; sv.falls++; sv.by = a; sv.out_age = k.age;
-        if (a && a != v) { FfaStat& sa = g_ffa_stats[a]; sa.kos++; sa.victims.push_back(v); }
+        FfaStat& sv = g_ffa_stats[v]; sv.falls++; sv.out_age = k.age;
+        if (g_ffa_forfeit.count(v) && last_fall[v] == i) { sv.forfeit = true; sv.by = 0; sv.by_real = 0; continue; }   // he gave up: nobody scored it
+        sv.by = a; sv.by_real = k.by_ch;
+        if (a && a != v) { FfaStat& sa = g_ffa_stats[a]; sa.kos++; sa.victims.push_back(v); sa.victims_real.push_back(k.ch); }
     }
     std::map<int, float> hpf;
     { uint32_t acts[12]; int na = 0;
@@ -6516,8 +6539,8 @@ void ffa_result_build() {
     std::vector<FfaResRow> rows; int idx = 0;
     for (const Fi& f : fl) {
         FfaResRow r; const FfaStat& st = g_ffa_stats[f.key];
-        r.ch = f.ch; r.tag = st.tag; r.kos = st.kos; r.falls = st.falls; r.dmg = st.dmg; r.by = ch_of_key(st.by); r.alive = st.alive; r.cpu = f.cpu; r.who = f.who; r.you = f.who == "You"; r.key = f.key;
-        for (int v : st.victims) r.victims.push_back(ch_of_key(v));
+        r.ch = f.ch; r.tag = st.tag; r.kos = st.kos; r.falls = st.falls; r.dmg = st.dmg; r.by = st.by ? (st.by_real > 0 ? st.by_real : ch_of_key(st.by)) : 0; r.forfeit = st.forfeit; r.alive = st.alive; r.cpu = f.cpu; r.who = f.who; r.you = f.who == "You"; r.key = f.key;
+        if (st.victims_real.size() == st.victims.size()) r.victims = st.victims_real; else for (int v : st.victims) r.victims.push_back(ch_of_key(v));
         const auto il = g_ffa_lvl.find(f.ch); r.level = f.level > 1 ? f.level : (il != g_ffa_lvl.end() ? il->second : 0); if (r.level <= 1) r.level = std::max<int>(save_level_of(f.ch), 0);
         r.slot = byf && f.key >= 100 && f.key < 104 ? f.key - 100 : idx;   // (online: P1 / P2 = the slot fighters of game side 0 / 1, P3 / P4 their extras: the same on every machine)
         idx++;
@@ -7137,7 +7160,7 @@ void ko_oneround() {
         if (rd(g_bs + 72u) == 4u && early_gen != g_battle_gen) for (uint32_t k = 0; k < 2; k++) {
             const uint32_t S = srd(g_bs + 56u + 4u * k);
             if (!ok(S, 0x12D0) || !ko_state(S) || hp_eff(S) <= 0 || g_ko_mark.count(S)) continue;
-            early_gen = g_battle_gen; g_decided = true; g_slot_callin.clear();
+            early_gen = g_battle_gen; g_decided = true; g_slot_callin.clear(); ffa_forfeit_note(S);
             if (g_log) std::fprintf(stderr, "[TAGTEAM] t=%.1fs finish phase before any extra stands, slot %u %08X fallen at hp %d: forfeit, team %d loses the whole group battle\n", dissidia_battle_age() / 60.0f, k, S, hp_eff(S), team_of(side_of(S)));
             group_decided(team_of(side_of(S))); return;
         }
@@ -7238,7 +7261,7 @@ void ko_oneround() {
         // continuous match: the forfeit decides the whole group battle for the forfeiter's team (no swap, no call-in; group_decided books every member as
         // lost, the tally and the flow end the match). PSPRECOMP_TAGTEAM_NOFORFEITEND=1 turns it off.
         if (rd(g_bs + 72u) == 4u && hp_eff(S) > 0 && !g_ko_mark.count(S) && !std::getenv("PSPRECOMP_TAGTEAM_NOFORFEITEND") && !psp_adhoc_in_session()) {
-            g_decided = true; g_slot_callin.clear();
+            g_decided = true; g_slot_callin.clear(); ffa_forfeit_note(S);
             if (g_log) std::fprintf(stderr, "[TAGTEAM] t=%.1fs finish phase with slot %u %08X fallen at hp %d: forfeit, team %d loses the whole group battle\n", age / 60.0f, k, S, hp_eff(S), team_of(side_of(S)));
             group_decided(team_of(side_of(S))); return;
         }
@@ -13034,6 +13057,7 @@ void dissidia_tagteam_forfeit_apply(const uint8_t* mac, uint32_t frame) {
     for (int i = 0; i < g_nextra; i++) if (g_extra[i].started && dissidia_ttnet_driver_mac(2 + i, frame, false, m) && std::memcmp(m, mac, 6) == 0) add(g_extra[i].actor);
     for (uint32_t a : victims) {
         const uint32_t st = rd(a + 0x52Cu); if (!ok(st, 0x40)) continue;
+        ffa_forfeit_note(a);
         bool mark = false;
         if (is_slot_fighter(a)) {
             bool mate = false;
@@ -13770,9 +13794,19 @@ int dissidia_tagteam_bp_pick_list(uint8_t out[64]) {
 }
 std::string dissidia_tagteam_char_name(int id) { return char_label(id, true); }
 void dissidia_tagteam_result_tick() { if (g_ffa_res_on && std::getenv("PSPRECOMP_TAGTEAM_FFA_RESULT_OLD")) ffa_result_tick(); }
-bool dissidia_tagteam_ffa_result(FfaResult* out) { if (!g_ffa_result.valid || std::getenv("PSPRECOMP_TAGTEAM_FFA_RESULT_OLD")) return false; *out = g_ffa_result; return true; }
+// test aid PSPRECOMP_TAGTEAM_RESULT_DEMO="main:tag,main:tag,..." (up to 4): a made-up result, shown as soon as the menu is up (faces, layout)
+bool ffa_result_demo(FfaResult* out) {
+    const char* e = std::getenv("PSPRECOMP_TAGTEAM_RESULT_DEMO"); if (!e) return false;
+    FfaResult R; R.valid = true; R.gen = 1; std::string t = e; size_t p0 = 0;
+    while (p0 < t.size() && R.n < 4) { size_t c = t.find(',', p0); if (c == std::string::npos) c = t.size(); int m = 0, g = 0; std::sscanf(t.substr(p0, c - p0).c_str(), "%d:%d", &m, &g);
+        FfaResRow& r = R.rows[R.n]; r.place = R.n + 1; r.ch = m; r.tag = g; r.level = 100; r.slot = R.n; r.cpu = R.n != 1; r.you = R.n == 1; r.who = r.you ? "You" : "CPU"; r.kos = 3 - R.n; r.dmg = 12345 / (R.n + 1); r.alive = R.n == 0; r.look = R.n % 3 + 1; R.n++; p0 = c + 1; }
+    for (int i = 0; i < R.n; i++) { for (int k = 0; k < R.n; k++) if (k != i && R.rows[k].kos <= R.rows[i].kos) R.rows[i].victims.push_back(R.rows[k].ch); R.rows[i].by = R.rows[(i + R.n - 1) % R.n].ch; }
+    R.you_won = false; *out = R; return R.n >= 2;
+}
+bool dissidia_tagteam_ffa_result(FfaResult* out) { if (ffa_result_demo(out)) return true; if (!g_ffa_result.valid || std::getenv("PSPRECOMP_TAGTEAM_FFA_RESULT_OLD")) return false; *out = g_ffa_result; return true; }
 bool g_ffa_res_consumed = false; uint32_t g_ffa_res_consumed_gen = 0xFFFFFFFFu;
 int dissidia_tagteam_result_phase() {   // the own result screen: when to show it
+    if (std::getenv("PSPRECOMP_TAGTEAM_RESULT_DEMO")) { static bool shown = false; if (shown && g_ffa_res_consumed_gen == 1u) return 0; shown = true; return 1; }
     if (std::getenv("PSPRECOMP_TAGTEAM_FFA_RESULT_OLD") || !g_ffa_result.valid || g_ffa_res_consumed_gen == g_ffa_result.gen || !g_ram) return 0;
     const uint32_t ovl = rd(0x089DD4C0u);
     if (ovl == 2u && g_ffa_res_on) return 1;
