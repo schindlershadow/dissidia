@@ -219,6 +219,50 @@ def batch_is_hot(src, work, hot):
         return any(int(m.group(1), 16) in want for m in _FUNC_RE.finditer(f.read()))
 
 
+MB = 1024 * 1024
+
+
+def free_mb(path):
+    """Free MB on the volume of `path` (the nearest existing parent); None when unknown."""
+    p = os.path.abspath(path)
+    while p and not os.path.exists(p) and os.path.dirname(p) != p:
+        p = os.path.dirname(p)
+    try:
+        return shutil.disk_usage(p).free // MB
+    except OSError:
+        return None
+
+
+def pick_zig_cache(base, need_mb, say):
+    """Where zig keeps its cache while it compiles: the work folder's, unless that drive is nearly full and another folder the app
+    can write to has the room (PSPRECOMP_ZIG_CACHE, the app's folder on an SD card). The cache is emptied after the build."""
+    default = os.path.join(base, "zig-cache")
+    cands = [default]
+    if os.environ.get("PSPRECOMP_ZIG_CACHE"):
+        cands.insert(0, os.environ["PSPRECOMP_ZIG_CACHE"])
+    import glob
+    for d in sorted(glob.glob("/storage/*/Android/data/org.psprecomp.setup")):
+        cands.append(os.path.join(d, "zig-cache"))
+    free = {}
+    for c in cands:
+        parent = os.path.dirname(c)
+        try:
+            os.makedirs(parent, exist_ok=True)
+        except OSError:
+            continue
+        f = free_mb(parent)
+        if f is not None and os.access(parent, os.W_OK):
+            free[c] = f
+    if not free:
+        return default
+    best = max(free, key=lambda c: free[c])
+    if free.get(default, 0) >= need_mb or free[best] <= free.get(default, 0):
+        return default
+    say("The work folder's drive has only %d MB free (the compile needs about %d MB): zig's cache goes to %s (%d MB free)" % (
+        free.get(default, 0), need_mb, best, free[best]))
+    return best
+
+
 def device_build(adir, work, jobs, say, tag, die, jobs_fixed=False):
     """Compile + link the generated game ON the phone with the zig that ships in the setup app (zig is clang + lld in one static binary).
 
@@ -343,6 +387,18 @@ def device_build(adir, work, jobs, say, tag, die, jobs_fixed=False):
             reasons[r] = reasons.get(r, 0) + 1
     say("Compiling %d of %d files with zig; %d are unchanged since the last build%s" % (
         len(todo), len(srcs), len(srcs) - len(todo), " (why: %s)" % objcache.reasons_text(reasons) if reasons else ""))
+    # Space: measured 26 Nov, one object is ~0.85 MB and zig keeps a second copy while compiling (its cache, emptied after the build);
+    # the link and the APK need ~200 MB more. Checked BEFORE the first compile, so a full phone says so in words (not "CacheCheckFailed").
+    need_mb = int(len(todo) * 2 + 200)
+    if todo and not os.environ.get("PSPRECOMP_SKIP_SPACE_CHECK"):
+        env["ZIG_GLOBAL_CACHE_DIR"] = pick_zig_cache(base, need_mb, say)
+        shutil.rmtree(env["ZIG_GLOBAL_CACHE_DIR"], ignore_errors=True)
+        same_drive = os.stat(base).st_dev == os.stat(os.path.dirname(env["ZIG_GLOBAL_CACHE_DIR"])).st_dev
+        base_need = int(len(todo) * (2 if same_drive else 1) + 200)   # the objects and the link here, plus the cache when it is on this drive
+        free_work = free_mb(base)
+        say("Space: about %d MB needed here for the compile, %s MB free%s" % (base_need, free_work, "" if same_drive else " (zig's cache is on another drive)"))
+        if free_work is not None and free_work < base_need:
+            die("not enough free disk space in %s: the compile needs about %d MB (objects and the compiler's cache) and %d MB are free" % (base, base_need, free_work))
     done = [0]
     errors = []
     # How many files compile at once. Before: at most 3 (psp_build.py), whatever the phone. Now every core may be used, but a job is

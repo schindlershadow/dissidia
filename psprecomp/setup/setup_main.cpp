@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -111,6 +112,25 @@ struct Entry {
     std::string name, path, info;
     bool dir = false, up = false, use_here = false, type_path = false;
 };
+
+// A failure text ("<what>\n\nWhy: ...\n\nWhat to do: ...") as (label, body) rows; a plain text is one row.
+std::vector<std::pair<std::string, std::string>> paragraphs(const std::string& t) {
+    std::vector<std::pair<std::string, std::string>> v;
+    size_t a = 0;
+    while (a <= t.size()) {
+        size_t b = t.find("\n\n", a);
+        std::string p = t.substr(a, b == std::string::npos ? std::string::npos : b - a);
+        if (!p.empty()) {
+            if (p.compare(0, 5, "Why: ") == 0) v.push_back({"Why", p.substr(5)});
+            else if (p.compare(0, 12, "What to do: ") == 0) v.push_back({"What to do", p.substr(12)});
+            else v.push_back({v.empty() ? "What happened" : "More", p});
+        }
+        if (b == std::string::npos) break;
+        a = b + 2;
+    }
+    if (v.empty()) v.push_back({"What happened", t});
+    return v;
+}
 
 std::string upper(std::string s) {
     for (auto& c : s) c = (char)std::toupper((unsigned char)c);
@@ -509,7 +529,8 @@ struct App {
         case Screen::Message:
             p.title = msg_title;
             p.tab = "Info";
-            p.rows = {row("OK", msg_text)};
+            for (const auto& pa : paragraphs(msg_text)) if (paragraphs(msg_text).size() > 1) p.rows.push_back(row(pa.first, pa.second));
+            p.rows.push_back(row("OK", paragraphs(msg_text).size() > 1 ? std::string("Close this.") : msg_text));
             break;
         case Screen::Done:
             p.title = "ALL DONE";
@@ -542,8 +563,10 @@ struct App {
         case Screen::Failed:
             p.title = "NOT FINISHED";
             p.tab = "Stopped";
-            p.rows = {row("Try again", fail_msg + " Trying again continues where it stopped."),
-                      row("Report an issue", "Send the log and what failed to the developer. You see what is sent first.")};
+            for (const auto& pa : paragraphs(fail_msg)) p.rows.push_back(row(pa.first, pa.second, pa.first == "What happened" ? fail_title : ""));
+            p.rows.push_back(row("Try again", "Runs the steps again; what is already done is kept."));
+            p.rows.push_back(
+                      row("Report an issue", "Send the log and what failed to the developer. You see what is sent first."));
             if (can_open_log()) {
                 p.rows.push_back(row("Open setup.log", "The log of this install: every step's output and why it stopped. " + log_path));
                 p.rows.push_back(row("Show setup.log in its folder", "Opens the install folder with setup.log selected, e.g. to send the file. " + log_path));
@@ -706,18 +729,33 @@ struct App {
         logf = std::fopen(log_path.c_str(), "ab");
         if (logf) { std::fprintf(logf, "\n===== psprecomp_setup run =====\n"); std::fflush(logf); }
     }
+    std::deque<std::string> tail_lines;   // the last output lines (the failure reason looks at them)
     void log_line(const std::string& l) {
+        tail_lines.push_back(l);
+        if (tail_lines.size() > 40) tail_lines.pop_front();
         if (logf) { std::fprintf(logf, "%s\n", l.c_str()); std::fflush(logf); }
     }
 
-    void fail(const std::string& msg) {
+    void fail(const std::string& msg, int code = 0) {
         log_line("FAILED: " + msg);
         building = false;
         marker(false);
-        fail_msg = msg;
+        setup::FailureCtx fc;
+        fc.step = prog.step >= 0 && prog.step < (int)plan.size() ? plan[(size_t)prog.step].label : "";
+        fc.stage = prog.stage;
+        fc.error = prog.error.empty() ? msg : prog.error;
+        for (const std::string& t : tail_lines) fc.tail += t + "\n";
+        fc.workdir = cur_workdir();
+        fc.exit_code = code;
+        const setup::Failure f = setup::explain_failure(fc);
+        log_line("Reason (" + f.kind + "): " + f.why);
+        fail_msg = f.text();
+        fail_kind = f.kind;
+        fail_title = f.title();
         rep_failed_step = (prog.stage.empty() ? std::string() : prog.stage + ": ") + msg;
-        go(Screen::Failed);
+        go(Screen::Failed, paragraphs(fail_msg).size() > 1 ? 1 : 0);   // on the "Why" row
     }
+    std::string fail_kind, fail_title;
 
     void pump_build() {
         std::string line;
@@ -739,7 +777,7 @@ struct App {
                     log_line("optional step failed: " + step_note);
                     prog.error.clear();
                 } else {
-                    fail(prog.error.empty() ? "A step failed (exit code " + std::to_string(code) + "); see setup.log in the install folder." : prog.error + ".");
+                    fail(prog.error.empty() ? "A step failed (exit code " + std::to_string(code) + "); see setup.log in the install folder." : prog.error + ".", code);
                     return;
                 }
             } else if (opt_step) step_note = "The game was added to your Steam library.";
@@ -771,6 +809,7 @@ struct App {
                     if (setup::create_shortcut(workdir, layout.root, &where, &serr)) shortcut_note = "A menu entry was added: " + where;
                     else shortcut_note = "No menu entry (" + serr + ")";
                     if (!step_note.empty()) shortcut_note += ". " + step_note;
+                    if (!auto_disc_note.empty()) shortcut_note += ". " + auto_disc_note;
                 }
                 if (extras_run) {
                     extras_mode = false;
@@ -960,16 +999,41 @@ struct App {
         start_plan(false, false, false, true);
     }
 
-    void start_install_or_ask() {
-        if (extras_mode) {
-            auto need = setup::extras_needing_disc(layout, false, opt, &state.options);   // an extra turned on that is built from a second disc
-            if (!need.empty()) { pick_extra = need[0]; begin_pick(Pick::Disc, Screen::Options); return; }
-            start_extras();
-            return;
+    // The extras that need a second disc: use one found next to the first image the player picked (id / voices checked), else ask.
+    std::vector<std::string> discs_still_needed() {
+        const std::string ref = !iso.empty() ? iso : state.iso;
+        auto need = setup::extras_needing_disc(layout, false, opt, extras_mode ? &state.options : nullptr);
+        while (!need.empty()) {
+            const setup::Extra* e = setup::find_extra(need[0]);
+            const std::string f = e ? setup::find_extra_disc(e->key, ref) : "";
+            if (f.empty()) break;
+            opt.set(e->disc.key, f);
+            std::fprintf(stderr, "Using %s from the same folder as your game file for: %s\n", f.c_str(), e->title.c_str());
+            auto_disc_note += (auto_disc_note.empty() ? "" : "\n") + std::string("Used ") + fs::path(f).filename().string() + " (same folder) for " + e->title + ".";
+            need = setup::extras_needing_disc(layout, false, opt, extras_mode ? &state.options : nullptr);
         }
-        // extras built from a second disc image (undub, Dissidia 1) need it first
-        auto need = setup::extras_needing_disc(layout, false, opt, nullptr);
+        return need;
+    }
+    std::string auto_disc_note;   // which extra discs were found next to the game file (shown on the finished page)
+
+    // Free space before anything starts: the whole install (or the extras) must fit; else say how much is missing and why.
+    bool space_ok() {
+        const std::string dir = extras_mode ? cur_workdir() : workdir;
+        const std::string why = setup::space_problem(dir, setup::needed_bytes(false, dir, opt, extras_mode), false);
+        if (why.empty()) return true;
+        msg_title = "NOT ENOUGH SPACE";
+        msg_text = why;
+        msg_back = Screen::Options;
+        go(Screen::Message, 1);   // on the "Why" row
+        return false;
+    }
+
+    void start_install_or_ask() {
+        auto_disc_note.clear();
+        auto need = discs_still_needed();   // extras built from a second disc image (undub, Dissidia 1) need it first
         if (!need.empty()) { pick_extra = need[0]; begin_pick(Pick::Disc, Screen::Options); return; }
+        if (!space_ok()) return;
+        if (extras_mode) { start_extras(); return; }
         std::error_code ec;
         fs::create_directories(workdir, ec);
         if (ec) { fail("Cannot create " + workdir + ": " + ec.message()); return; }
@@ -1105,6 +1169,9 @@ struct App {
             else quit = true;
             break;
         case Screen::Failed: {
+            const int np = (int)paragraphs(fail_msg).size();   // the reason rows come first
+            if (sel < np) break;
+            sel -= np;
             const int extra = can_open_log() ? 2 : 0;   // rows 2 and 3: open setup.log / show it in its folder (row 1: Report an issue)
             if (sel == 0) { if (!plan.empty()) start_plan(rebuild_only && !updating && !android_inst, updating, android_inst); else go(Screen::Welcome); }
             else if (sel == 1) begin_report(Screen::Failed);
@@ -1495,20 +1562,33 @@ int run_headless(const setup::Layout& l, const std::string& iso, const std::stri
     for (const auto& kv : extras) o.set(kv.first, kv.second);
     auto plan = setup::plan_install(l, iso, dir, o);
     setup::Progress prog;
+    std::deque<std::string> tail;
+    auto why_failed = [&](size_t i, int code, const std::string& err) {   // the plain-words reason (the same as the window's failure page)
+        setup::FailureCtx fc;
+        fc.step = plan[i].label; fc.stage = prog.stage; fc.error = err; fc.workdir = dir; fc.exit_code = code;
+        for (const std::string& t : tail) fc.tail += t + "\n";
+        std::fprintf(stderr, "\n%s\n", setup::explain_failure(fc).text().c_str());
+    };
+    if (const std::string sp = setup::space_problem(dir, setup::needed_bytes(false, dir, o, false), false); !sp.empty()) {
+        std::fprintf(stderr, "error: %s\n", sp.c_str());
+        return 1;
+    }
     for (size_t i = 0; i < plan.size(); i++) {
         prog.step = (int)i;
         std::printf("== %s\n", plan[i].label.c_str());
         setup::Proc p;
-        if (!p.start(plan[i].argv, plan[i].env, "")) { std::fprintf(stderr, "error: %s\n", p.error().c_str()); return 1; }
+        if (!p.start(plan[i].argv, plan[i].env, "")) { std::fprintf(stderr, "error: %s\n", p.error().c_str()); why_failed(i, 0, "Could not start: " + p.error()); return 1; }
         while (p.busy()) {
             std::string line;
             while (p.read_line(line)) {
                 setup::feed_line(prog, plan, line, SDL_GetTicks64());
                 std::printf("%s\n", line.c_str());
+                tail.push_back(line);
+                if (tail.size() > 40) tail.pop_front();
             }
             SDL_Delay(20);
         }
-        if (p.exit_code() != 0 || !prog.error.empty()) { std::fprintf(stderr, "error: step '%s' failed (%d) %s\n", plan[i].label.c_str(), p.exit_code(), prog.error.c_str()); return 1; }
+        if (p.exit_code() != 0 || !prog.error.empty()) { std::fprintf(stderr, "error: step '%s' failed (%d) %s\n", plan[i].label.c_str(), p.exit_code(), prog.error.c_str()); why_failed(i, p.exit_code(), prog.error); return 1; }
         prog.fraction = std::max(prog.fraction, setup::step_done_fraction(plan, (int)i));
         std::printf("== %s done (%d%%)\n", plan[i].label.c_str(), (int)(prog.fraction * 100));
     }
@@ -1627,6 +1707,7 @@ static std::string unpack_payload_with_window(const std::filesystem::path& exe, 
 int main(int argc, char** argv) {
     attach_parent_console();
     std::string root, iso, dir, play_dir, shots, import_from, saves_from;
+    bool autostart = false;
     bool headless = false, play = false, launch = false;
     std::string unpack_to, report_text, report_step;
     std::vector<std::pair<std::string, std::string>> extras;
@@ -1640,6 +1721,7 @@ int main(int argc, char** argv) {
         else if (a == "--saves") next(saves_from);
         else if (a == "--unpack") next(unpack_to);   // single-file release: unpack the bundled release folder there and exit
         else if (a == "--headless") headless = true;
+        else if (a == "--autostart") autostart = true;   // test aid: with --iso and --dir, open the window straight on the install (as if Start installing was chosen)
         else if (a == "--extra" && i + 1 < argc) {
             const std::string kv = argv[++i];
             const size_t eq = kv.find('=');
@@ -1764,6 +1846,20 @@ int main(int argc, char** argv) {
         app.log_path = (std::filesystem::path(shots) / "setup.log").string();   // a log to offer (the rows need the file)
         { std::ofstream(app.log_path) << "example\n"; }
         app.go(Screen::Failed, 1); shot("7_failed");
+        {   // the reasons the installer gives (the same text a real failure shows)
+            setup::FailureCtx fc; fc.step = "Building the game"; fc.stage = "Compiling the game"; fc.workdir = app.workdir;
+            fc.error = "compiling failed:\n/work/output/generated/batch_0000.cpp:1:1: error: CacheCheckFailed";
+            { auto ff = setup::explain_failure(fc); app.fail_msg = ff.text(); app.fail_title = ff.title(); } app.go(Screen::Failed, 0); shot("7b_failed_space");
+            fc.step = "Reading your game file"; fc.stage = ""; fc.error = "not a 2048-byte-sector ISO 9660 image (no 'CD001' at sector 16)";
+            { auto ff = setup::explain_failure(fc); app.fail_msg = ff.text(); app.fail_title = ff.title(); } app.go(Screen::Failed, 0); shot("7c_failed_iso");
+            fc.step = "Building the game"; fc.stage = "Compiling the game"; fc.error = "compiling failed: generated/batch_0070.cpp:1234:5: error: boom"; fc.tail = "";
+            { auto ff = setup::explain_failure(fc); app.fail_msg = ff.text(); app.fail_title = ff.title(); } app.go(Screen::Failed, 0); shot("7d_failed_compile");
+            fc.error = "A step failed (exit code -1)."; fc.exit_code = -1;
+            { auto ff = setup::explain_failure(fc); app.fail_msg = ff.text(); app.fail_title = ff.title(); } app.go(Screen::Failed, 0); shot("7e_failed_memory");
+            app.msg_title = "NOT ENOUGH SPACE";
+            app.msg_text = setup::space_problem(app.workdir, 1LL << 60, false);
+            app.go(Screen::Message, 0); shot("7f_not_enough_space");
+        }
         { std::error_code ec; std::filesystem::remove(app.log_path, ec); }
         app.osk.begin(u"Folder path", u"/home/player", 200, true);
         app.go(Screen::TypePath); shot("8_type_path");
@@ -1797,6 +1893,7 @@ int main(int argc, char** argv) {
     for (int i = 0; i < SDL_NumJoysticks(); i++)
         if (SDL_IsGameController(i) && (app.pad = SDL_GameControllerOpen(i))) break;
     SDL_StartTextInput();
+    if (autostart && !iso.empty() && !dir.empty()) { app.iso = iso; app.workdir = dir; app.start_install_or_ask(); }
     if (app.installed() && app.layout_problem.empty()) {
         if (setup::update_check_enabled(app.state.workdir)) app.begin_check(false);
         else if (launch) app.play();

@@ -170,6 +170,35 @@ std::string default_install_dir();
 std::string home_dir();
 // Free bytes on the volume of `path` (nearest existing parent); -1 if unknown.
 long long free_space(const std::string& path);
-constexpr long long kNeededBytes = 6LL << 30;             // extracted disc (~1.6 GB) + generated sources + objects, with slack
+constexpr long long kNeededBytes = 6LL << 30;             // desktop: extracted disc (~1.7 GB) + generated sources + objects, with slack
+constexpr long long kNeededBytesAndroid = 11LL << 29;     // phone: 5.5 GB, see needed_bytes
+
+// How much free space an install needs: the game build (desktop kNeededBytes, phone kNeededBytesAndroid; what a retry already has in
+// `workdir` - the extracted disc, the compiled objects - is subtracted) plus every extra turned on in `o` (Extra::need_bytes).
+// `extras_only`: Change extras on an installed game (no build).
+long long needed_bytes(bool android, const std::string& workdir, const Options& o, bool extras_only);
+// "" when `workdir`'s drive has room for `need`, else the failure text (explain_failure's "space") to show BEFORE the install
+// starts. PSPRECOMP_SKIP_SPACE_CHECK=1 turns the check off. Unknown free space (-1) passes.
+std::string space_problem(const std::string& workdir, long long need, bool android);
+
+// What went wrong, in words for the player: which step, why, what to do. Used by both installers (the phone through JNI).
+struct FailureCtx {
+    std::string step;       // the plan step's label ("Reading your game file", "Building the game on this device", ...)
+    std::string stage;      // the progress stage when it stopped ("Compiling the game on this device", ...); may be empty
+    std::string error;      // the tool's own error line ("compiling failed: ...", "not enough free disk space ...")
+    std::string tail;       // the last lines of output (newline separated)
+    std::string workdir;
+    int exit_code = 0;      // -1 = the process was killed (not by us)
+    bool android = false;   // the phone's setup app (Fast build, close apps hints)
+    bool cancelled = false;
+};
+struct Failure {
+    std::string kind;       // space, memory, iso, damaged, version, download, compile, link, translate, pack, device, cancelled, other
+    std::string where, why, todo;
+    std::string title() const;  // a few words for the page ("Not enough space", "Out of memory", ...)
+    std::string text() const;   // "<where>\n\nWhy: <why>\n\nWhat to do: <todo>" (what the failure pages show)
+};
+Failure explain_failure(const FailureCtx& c);
+std::string human_gb(long long bytes);   // "1.3 GB" / "640 MB"
 
 }  // namespace setup
