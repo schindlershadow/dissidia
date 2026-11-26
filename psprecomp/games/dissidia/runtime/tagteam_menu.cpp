@@ -552,6 +552,11 @@ void gs_row(float x0, float x1, float y, float h, bool sel, const std::string& n
 // (team modes: Party Select, the lobby; Free-for-all: Party Select, the Free-for-all player setup, the lobby).
 int g_ffa_slot = 0, g_ffa_field = 0;   // the cursor: slot 0..3, field 0 TYPE, 1 MAIN, 2 TAG-IN, 3 STRENGTH
 int64_t g_ffa_walk_t0 = 0; bool g_ffa_walk_seen = false;   // 26 Nov: the FFA battle-start walk (list confirm > state 16 -> 28 > setup screen > Enter Battle > app 0x1D .. 0x30), logged as [FFAWALK]
+// 26 Nov (user: "I don't want there to be a menu walk"): the single player Free-for-all battle is started DIRECTLY. No setup-screen list tick, dialog, cursor or Cross is waited for or passed:
+// at the first app frame in state 29 (the setup screen object exists, its data is the vehicle the app hands to the battle) the lobby's stage / rules / judgement are written into it and the screen's own
+// Enter Battle step is called at once; after the battle the same first frame leaves the app for the players screen. [DIRECTSTART] / [DIRECTBACK] log. PSPRECOMP_TAGTEAM_MENUWALK_OLD=1: the old walk (autostart on the list's tick).
+bool menuwalk_old() { static const bool o = std::getenv("PSPRECOMP_TAGTEAM_MENUWALK_OLD") != nullptr; return o; }
+bool g_nw_start = false, g_nw_armed = false, g_nw_direct = false; int64_t g_nw_t0 = 0;   // g_nw_start: a direct start is waiting for the app's state 29; g_nw_armed: the battle has run (the app left), the next state 29 is the way back
 bool ffawalk_old() { static const bool o = std::getenv("PSPRECOMP_TAGTEAM_FFAWALK_OLD") != nullptr; return o; }
 void ffawalk_log(const char* step, int st) { std::fprintf(stderr, "[FFAWALK] %s (t=+%.1fs, app state %d)\n", step, g_ffa_walk_t0 ? (steady_ms() - g_ffa_walk_t0) / 1000.0 : 0.0, st); }
 bool g_rearm = std::getenv("PSPRECOMP_TAGTEAM_TEST_REARM") != nullptr;   // 25 Nov (user: back out past the lobby, then forward again skipped it): set when the flow was backed out of; once the setup screen has been gone for 0.5 s the lobby (FFA: the players screen) is pending again. PSPRECOMP_TAGTEAM_MENUBACK_OLD=1: old
@@ -1390,7 +1395,7 @@ void sp_draw(uint8_t* rdram, recomp_context* ctx, uint32_t screen, bool hide) {
     // it again (fighters, then the lobby, then the next battle); Circle there leaves the flow as before. The setup screen's tick does not run during the
     // battle, so a gap of more than 2 s after the start marks the way back. PSPRECOMP_TAGTEAM_FFA_NOREOPEN=1: old.
     {   static auto last = std::chrono::steady_clock::now(); const auto now = std::chrono::steady_clock::now();
-        if (g_ffa_after == 1 && now - last > std::chrono::seconds(2)) g_ffa_after = 2;
+        if (g_ffa_after == 1 && now - last > std::chrono::seconds(2) && !g_nw_direct) g_ffa_after = 2;   // (new: the app's state 29 hook, qb_frame_hook)
         last = now;
         if (g_ffa_after == 2 && list && !g_dlg_open && !g_ffa_autostart && !ps_old()) {   // 26 Nov: leave the app (as on Circle) for the players screen over the list
             sp_back_direct(rdram, ctx);   // (the screen's own teardown: state 0x1E of the app waits for it before 0x30)
@@ -1561,6 +1566,27 @@ void qb_frame_hook(uint8_t* rdram, recomp_context* ctx) {
     }
     if (g_qb_mode == QB_PICK && before == 16) { g_qb_mode = QB_NONE; std::fprintf(stderr, "[FFA] Player Select trip: the app took the Party route (state 16), dropped\n"); }
     if (g_qb_mode == QB_DETOUR && before == 5) { g_qb_mode = QB_PICK; std::fprintf(stderr, "[FFA] Player Select: back from the detour, picking again\n"); }
+    if (okp(P) && !menuwalk_old()) {   // the direct start / way back (see menuwalk_old)
+        const int st29 = static_cast<int>(r32(P + 0x910u));
+        const uint32_t screen = r32(P + 0x8044u), M = okp(screen) ? r32(screen + SCR_M) : 0u;
+        if (okp(screen) && st29 == 29) g_sp_screen_last = screen;
+        const bool ready = st29 == 29 && okp(M) && r32(M + 4u) == 2u;   // the screen is built and its list is up (the app ticked it in its own frames; nothing of it is shown)
+        if (g_nw_start && ready) {
+            g_nw_start = false; g_ffa_autostart = false; g_rearm = false; g_lobby_pending = false; g_dlg_open = false; g_dlg_mode = 0;
+            dissidia_tagteam_sp_write_round(screen);   // stage / rules / judgement / CPU strength of the lobby into the screen's round blocks
+            sp_enter_battle(rdram, ctx, screen);
+            if (!std::getenv("PSPRECOMP_TAGTEAM_FFA_NOREOPEN")) g_ffa_after = 1;
+            g_nw_t0 = steady_ms(); g_nw_armed = false; g_nw_direct = (g_ffa_after == 1);
+            std::fprintf(stderr, "[DIRECTSTART] Free-for-all: battle start request handed to the app (state 29, screen %08X not shown / not pressed): lobby stage / rules / judgement into the round blocks, Enter Battle; fighters from the players screen, CPU strength %d\n", screen, sp_enemy_strength(screen, 0));
+            ffawalk_log("DIRECTSTART: Enter Battle called", 29);
+        } else if (g_nw_direct && g_ffa_after == 1 && !g_nw_armed && st29 >= 0x30) g_nw_armed = true;   // the app left for the battle
+        else if (g_nw_direct && g_ffa_after == 1 && g_nw_armed && ready && !g_nw_start && !ps_old()) {   // the battle has run: the app is back in state 29
+            g_ffa_after = 0; g_nw_armed = false; g_nw_direct = false;
+            sp_back_direct(rdram, ctx);   // (the screen's own teardown: the app waits for it before 0x30)
+            g_leave_app = true; g_qb_mode = QB_RETURN; g_post_exit_t0 = 0; g_post_in_t0 = 0; g_ps_pick = 0; g_hop_slot = -1; g_hop_field = 1; g_ms_ffa = true; g_trip_post = true;
+            std::fprintf(stderr, "[DIRECTBACK] Free-for-all: back from the battle, the app leaves for the players screen without a retail screen shown\n");
+        }
+    }
     g_orig_qb_frame(rdram, ctx);
     if (g_ffa_walk_t0 && okp(P)) {   // [FFAWALK]: every app state change of the start, and a note every 5 s while it sits
         static int last_st = -1; static int64_t last_note = 0; const int st = static_cast<int>(r32(P + 0x910u)), sub = static_cast<int>(r32(P + 0x91Cu)); const int64_t nw = steady_ms();
@@ -1754,7 +1780,7 @@ void dissidia_tagteam_modesel_confirm(bool sp) {
     if (dissidia_tagteam_inject_old()) g_inject_late.store(9, std::memory_order_relaxed);
     else { g_trip_out = 2; g_trip_online = !sp; g_trip_t0 = steady_ms(); }   // 26 Nov: the Mode Select fades to white with the list (the list is never seen behind it)
     if (sp && g_ms_ffa && !ps_old() && !std::getenv("PSPRECOMP_TAGTEAM_FFA_KEEPPARTY") && !std::getenv("PSPRECOMP_TAGTEAM_FFA_PREOLD")) {
-        if (g_ms_hop) g_qb_mode = QB_PICK; else { g_qb_mode = QB_START; g_ffa_autostart = true; if (!ffawalk_old()) { g_rearm = false; g_lobby_pending = false; g_dlg_open = false; g_dlg_mode = 0; g_ffa_walk_t0 = steady_ms(); g_ffa_walk_seen = false; ffawalk_log("start", 0); } }
+        if (g_ms_hop) g_qb_mode = QB_PICK; else { g_qb_mode = QB_START; g_ffa_autostart = menuwalk_old(); g_nw_start = !menuwalk_old(); g_nw_armed = false; if (!ffawalk_old()) { g_rearm = false; g_lobby_pending = false; g_dlg_open = false; g_dlg_mode = 0; g_ffa_walk_t0 = steady_ms(); g_ffa_walk_seen = false; ffawalk_log("start", 0); } }
         if (g_qb_mode == QB_PICK) { g_trip_out = 1; g_trip_t0 = steady_ms(); } else { g_trip_out = 0; g_start_cover = true; g_start_exit_t0 = 0; }
         g_trip_in_t0 = 0;
         std::fprintf(stderr, "[FFA] list confirm: %s\n", g_qb_mode == QB_PICK ? "Quick Battle (1-on-1) for the Player Select pick" : "Quick Battle (Party) straight to the setup screen (no Party Select / CPU Select)");
