@@ -571,6 +571,7 @@ void pause_open_hook(uint8_t* rdram, recomp_context* ctx) {
     }
     g_orig_pauseopen(rdram, ctx);
 }
+void xkocam_start(uint32_t victim);
 void ledger_force_last_hit(uint32_t victim, int by_ch);
 bool is_slot_fighter(uint32_t a); int reserve_left(int team); int team_of(uint32_t side); int my_player_index();   // below
 std::map<uint32_t, uint32_t> g_extra_mod;   // extra actor -> its damage module copy (hitmsg_hook)
@@ -579,7 +580,7 @@ std::map<uint32_t, uint8_t> g_exb_shown;   // lock block -> its +0x125 "shown" b
 std::map<uint32_t, uint32_t> g_exb_fc;   // lock block -> its +0xFC word cleared for the running EX Burst (burst camera)
 struct ExbHit { uint32_t vic = 0; float age = -1e9f; };
 uint32_t ko_killer_subject(uint32_t victim);
-struct HpKiller { uint32_t att; float age; }; std::map<uint32_t, HpKiller> g_hp_killer;   // victim -> the fighter whose HP hit landed on it last (hit book; lock-stepped data): the kill camera frames it
+struct HpKiller { uint32_t att; float age; }; std::map<uint32_t, HpKiller> g_hp_killer; std::map<uint32_t, float> g_hp_lethal;   // (g_hp_lethal: age of the lethal hit; later hits on the fallen do not replace the killer)   // victim -> the fighter whose HP hit landed on it last (hit book; lock-stepped data): the kill camera frames it
 std::map<uint32_t, ExbHit> g_exb_lasthit;   // burster (the fighter itself; an assist's hit counts for its master) -> the last fighter its attack really hit (hit registration)
 bool g_exb_debug_call = false;   // the EXBAT test aid starts a burst without a hit
 float g_exb_struct_at = -1.f;    // PSPRECOMP_TAGTEAM_EXBSTRUCT debug dump time
@@ -4665,6 +4666,7 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
             if (ok(a, 0x12D0) && std::getenv("PSPRECOMP_TAGTEAM_KOLIST_HFOE")) for (int i = 0; i < g_nextra; i++) if (g_extra[i].started && g_extra[i].actor != a && side_of(g_extra[i].actor) == side_of(H) && alive(g_extra[i].actor)) {   // test aid (27 Nov doubleko): the human's foe is his side's living extra when the KO happens (retail's finish marks the human's foe)
                 call(SET_FOE, H, g_extra[i].actor); call(LOCK_SET, rd(H + 0x5ACu), g_extra[i].actor); std::fprintf(stderr, "[KOLIST] human's foe set to %s %08X\n", role_of(g_extra[i].actor), g_extra[i].actor); break; }
             if (ok(a, 0x12D0) && ok(rd(a + 0x52Cu), 0x40)) {
+                if (by_ch > 0) ledger_force_last_hit(a, by_ch);   // (before the HP is zeroed: the finish reads the killer)
                 const uint32_t st = rd(a + 0x52Cu); bool mark = false;
                 if (nat && is_slot_fighter(a)) { bool mate = false; for (int i = 0; i < g_nextra; i++) if (g_extra[i].started && g_extra[i].actor != a && side_of(g_extra[i].actor) == side_of(a) && alive(g_extra[i].actor)) mate = true; mark = ffa_now() ? ffa_keep(a) : (mate || reserve_left(team_of(side_of(a))) > 0); }
                 if (mark) { const uint32_t hp = rd(st + 0xCu), keep = hp > 1 ? hp - 1 : 0; wr(st + 0x8u, keep); wr(st + 0x20u, keep); wr(st + 0x0u, (rd(st + 0x0u) & 0xFFFFu) | (keep << 16)); g_ko_mark.insert(a); }
@@ -4676,7 +4678,7 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
                     if (it != g_slot_hdl.end() && ok(it->second, 0x310)) { const uint32_t sp1 = static_cast<uint32_t>(g_ctx->r[29]); g_ctx->r[29] = static_cast<int32_t>(sp1 - 0x40u); call(0x08AE1270u, it->second, 1u); g_ctx->r[29] = static_cast<int32_t>(sp1); }
                     if (it != g_slot_hdl.end()) { g_kobrv0_h = it->second; g_kobrv0_until = dissidia_battle_age() + 900.f; g_kobrv0_dump = dissidia_battle_age() + (std::getenv("PSPRECOMP_TAGTEAM_KOBRV0W") ? 600.f : 30.f); }
                     std::fprintf(stderr, "[KOBRV0] human %08X BRV 0, handler %08X state -> %u\n", H, it != g_slot_hdl.end() ? it->second : 0u, it != g_slot_hdl.end() ? rd(it->second + 8u) : 99u); }
-                if (by_ch > 0) ledger_force_last_hit(a, by_ch);
+                if (by_ch > 0 && extra_of(a) && std::getenv("PSPRECOMP_TAGTEAM_KOLIST_XCAM")) xkocam_start(a);   // test aid: a forced extra KO starts its kill camera like a lethal hit does
                 std::fprintf(stderr, "[KOLIST] t=%.1fs %s -> %s %08X %s\n", dissidia_battle_age() / 60.0f, who.c_str(), role_of(a), a, mark ? "lethal damage + KO mark" : "HP 0");
             }
             else std::fprintf(stderr, "[KOLIST] t=%.1fs %s: no such fighter\n", dissidia_battle_age() / 60.0f, who.c_str());
@@ -5209,7 +5211,7 @@ void dtor_hook(uint8_t* rdram, recomp_context* ctx) {
             g_sweep_due = false;   // (replaced by the per-actor sweep in dissidia_tagteam_after_free)
         }
         if (!std::getenv("PSPRECOMP_TAGTEAM_NOLEFTOVER")) for (const auto& kv : g_own_load) g_leftover_load[kv.first] = kv.second;
-        xas_reset(true); g_nextra = 0; g_bs = 0; voice_banks_release(); portrait_reset(true); g_extra_mod.clear(); g_extra_hdl.clear(); g_exb_frozen.clear(); g_exb_lasthit.clear(); g_hp_killer.clear(); g_exb_fc.clear(); g_exb_slot_lb = 0; g_exb_slot_addr = 0; g_exb_shown.clear(); g_xbroken.clear(); g_xbrv_last.clear(); g_sbrv_last.clear(); g_xbreak_t0.clear(); g_rebuild.clear(); g_rb_watch.clear(); g_down.clear(); reset_ko_state(); g_ko_mark.clear();
+        xas_reset(true); g_nextra = 0; g_bs = 0; voice_banks_release(); portrait_reset(true); g_extra_mod.clear(); g_extra_hdl.clear(); g_exb_frozen.clear(); g_exb_lasthit.clear(); g_hp_killer.clear(); g_hp_lethal.clear(); g_exb_fc.clear(); g_exb_slot_lb = 0; g_exb_slot_addr = 0; g_exb_shown.clear(); g_xbroken.clear(); g_xbrv_last.clear(); g_sbrv_last.clear(); g_xbreak_t0.clear(); g_rebuild.clear(); g_rb_watch.clear(); g_down.clear(); reset_ko_state(); g_ko_mark.clear();
         g_late_q.clear(); g_late_load.clear(); g_banter_q.clear(); g_entrant = 0; g_cycs.clear();
         g_banner_until = 0; g_banner_text.clear(); tagteam_hud_set_banner(""); tagteam_hud_clear(); g_dissidia_entr_actor = 0; g_dissidia_vic_actor = 0;   // nothing of this battle's announcements reaches the next one
         for (Extra& x : g_extra) x = Extra();
@@ -5250,7 +5252,7 @@ void ledger_force_last_hit(uint32_t victim, int by_ch) {   // test aid (KOLIST "
 void ledger_hp_hit(uint32_t victim, uint32_t att) {
     aohit_hp(victim, att);
     if (!g_bs || !ok(victim, 0x12D0) || !ok(att, 0x12D0) || victim == att) return;
-    g_hp_killer[victim] = {att, dissidia_battle_age()};
+    { const auto lt = g_hp_lethal.find(victim); const float now = dissidia_battle_age(); if (lt == g_hp_lethal.end() || now < lt->second || now - lt->second > 600.f) g_hp_killer[victim] = {att, now}; }
     ledger_reset_if_new();
     const int vc = actor_char(victim), ac = actor_char(att), vt = team_of(side_of(victim)), at = team_of(side_of(att));
     const int ve = ffa_by_fighter() ? vc + 64 * (1 + ffa_fid_of(victim)) : vc;   // (a Free-for-all: the ledger's member is the fighter, two on one character stay two)
@@ -5471,6 +5473,7 @@ static void hpstep_core(uint8_t* rdram, recomp_context* ctx, uint32_t forced) {
             g_ctx->r[29] = static_cast<int32_t>(sp1);
         }
     }
+    if (ok(a, 0x12D0) && ok(ratt, 0x12D0) && ratt != a && dmg_hp0 > 0 && hp_eff(a) <= 0) { g_hp_killer[a] = {ratt, dissidia_battle_age()}; g_hp_lethal[a] = dissidia_battle_age(); }   // the lethal hitter is booked BEFORE the kill camera reads it (it was the previous hitter)
     // KO of an extra (no retail finish phase for extras): the kill camera is driven here (slow motion + the finish camera program, see xkocam_start).
     if (g_oneround && g_tagin && g_nextra && g_kocam && ok(a, 0x12D0) && dmg_hp0 > 0 && hp_eff(a) <= 0 && extra_of(a) && a != srd(g_bs + 56u) && a != srd(g_bs + 60u) && !std::getenv("PSPRECOMP_TAGTEAM_NOXKOCAM") && !std::getenv("PSPRECOMP_TAGTEAM_KOHOLD")) xkocam_start(a);
     // Mid-battle KO of a slot fighter (its side goes on): retail's finish phase runs for the camera and slow motion only (see finish_side_effects_hooks): flag it.
@@ -7081,7 +7084,7 @@ void reset_battle_state() {
     xas_reset(false);
     g_match_cache.clear(); g_comms_cache.clear(); g_sp_cache.clear(); g_sp_char_str.clear(); g_rec_cpu_made = false;
     for (Extra& x : g_extra) x = Extra();
-    g_extra_mod.clear(); g_extra_hdl.clear(); g_exb_frozen.clear(); g_exb_lasthit.clear(); g_hp_killer.clear(); g_exb_fc.clear(); g_exb_slot_lb = 0; g_exb_slot_addr = 0; g_exb_shown.clear(); g_xbroken.clear(); g_xbrv_last.clear(); g_sbrv_last.clear(); g_xbreak_t0.clear(); g_rebuild.clear(); g_rb_watch.clear();
+    g_extra_mod.clear(); g_extra_hdl.clear(); g_exb_frozen.clear(); g_exb_lasthit.clear(); g_hp_killer.clear(); g_hp_lethal.clear(); g_exb_fc.clear(); g_exb_slot_lb = 0; g_exb_slot_addr = 0; g_exb_shown.clear(); g_xbroken.clear(); g_xbrv_last.clear(); g_sbrv_last.clear(); g_xbreak_t0.clear(); g_rebuild.clear(); g_rb_watch.clear();
     g_down.clear(); reset_ko_state(); g_ko_mark.clear(); g_entrant = 0; g_cycs.clear(); g_late_q.clear(); g_late_load.clear();
     g_own_load.clear(); g_gone_since.clear(); g_unref_since.clear();   // (the battle's end released every file object)
     portrait_reset(false);
@@ -7855,7 +7858,7 @@ void finstart_hook(uint8_t* rdram, recomp_context* ctx) {
     kodiff_dump("pre");
     uint32_t who = 0; const bool mid = mid_ko_now(&who);
     if (mid && who && !std::getenv("PSPRECOMP_TAGTEAM_NOEXBKCAIM") && (exb_running() || dissidia_battle_age() - g_exb_last_run < 120.f)) { g_kreaim.gen = g_battle_gen; g_kreaim.victim = who; g_kreaim.due = dissidia_battle_age() + 12.f; if (g_log) std::fprintf(stderr, "[KOCAM] t=%.2fs finish during / right after an EX Burst: camera re-aimed at %08X in 12 ticks\n", dissidia_battle_age() / 60.0f, who); }
-    if (mid && who) if (const uint32_t kl = ko_killer_subject(who)) { g_kreaim.gen = g_battle_gen; g_kreaim.victim = kl; g_kreaim.due = dissidia_battle_age() + 12.f; if (g_log) std::fprintf(stderr, "[KOCAM] t=%.2fs finish camera: killer %s %08X (victim %s %08X) is not the local player: camera re-aimed at the killer in 12 ticks\n", dissidia_battle_age() / 60.0f, role_of(kl), kl, role_of(who), who); }
+    if (mid && who) if (const uint32_t kl = ko_killer_subject(who)) { g_kreaim.gen = g_battle_gen; g_kreaim.victim = kl; g_kreaim.due = dissidia_battle_age() + 12.f; if (g_log) std::fprintf(stderr, "[KOCAM] t=%.2fs finish camera: killer %s %08X (victim %s %08X) framed: camera re-aimed at the killer in 12 ticks\n", dissidia_battle_age() / 60.0f, role_of(kl), kl, role_of(who), who); }
     g_midfin_gen = mid ? g_battle_gen : ~0u;
     ret_dump(mid ? "finish start (mid-battle KO): before" : "finish start (match end / forfeit): before");
     if (g_log) std::fprintf(stderr, "[KOCAM] t=%.2fs retail finish start (bs+72 %u): %s%s\n", dissidia_battle_age() / 60.0f, g_bs ? rd(g_bs + 72u) : 99u, mid ? "mid-battle KO of " : "match-ending / forfeit: full retail finish", mid ? role_of(who) : "");
@@ -11562,8 +11565,7 @@ uint32_t ko_killer_subject(uint32_t victim) {
     const auto it = g_hp_killer.find(victim); if (it == g_hp_killer.end()) return 0;
     const float d = dissidia_battle_age() - it->second.age; const uint32_t k = it->second.att;
     if (d < 0.f || d > 900.f || !ok(k, 0x12D0) || k == victim) return 0;
-    const uint32_t H = srd(g_bs + 56u + 4u * rd(g_bs + 84u));
-    return (k == H || victim == H) ? 0u : k;
+    return k;   // (every KO frames its killer, the human included)
 }
 struct XKo { uint32_t gen = ~0u; float t0 = -1.f; int stage = 0; uint32_t victim = 0; } g_xko;
 void xkocam_start(uint32_t victim) {
