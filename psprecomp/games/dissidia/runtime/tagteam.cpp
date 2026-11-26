@@ -7685,17 +7685,26 @@ void finsnap_restore() {
     // The finish update (FUN_0888C048 -> FUN_08886934(pair object *0x089D69F8)) zeroes the pair object's bytes +88 / +89: FUN_08886C88 (per frame: both slot fighters' damage handlers = BRV refill / break states,
     // lock-on parts) then does nothing for the rest of the match (RP6 25 Nov: after the kill the BRV never came back, no reticle / chase prompt). Put back to what the last phase-3 frame had.
     if (g_pair_have) { const uint32_t pm = rd(0x089D69F8u); if (ok(pm, 0x100)) { const uint8_t o8 = g_ram[(pm + 88u) & 0x07FFFFFFu], o9 = g_ram[(pm + 89u) & 0x07FFFFFFu]; g_ram[(pm + 88u) & 0x07FFFFFFu] = g_pair_on; g_ram[(pm + 89u) & 0x07FFFFFFu] = g_pair_on2; const uint32_t w0 = rd(pm + 180u); if (!std::getenv("PSPRECOMP_TAGTEAM_KEEPWINNER")) wr(pm + 180u, 0u); if (g_log) std::fprintf(stderr, "[KOCAM] t=%.2fs pair update switch put back (+88 %u -> %u, +89 %u -> %u), decided winner +180 %08X -> 0\n", dissidia_battle_age() / 60.0f, o8, g_pair_on, o9, g_pair_on2, w0); } }
-    for (uint32_t k = 0; k < 2; k++) { const uint32_t a = g_finsnap.actor[k]; if (!a || a != srd(g_bs + 56u + 4u * k) || !ok(a, 0x12D0)) continue;
+    for (uint32_t k = 0; k < 2; k++) { const uint32_t a = g_finsnap.actor[k];
+        if (a && a != srd(g_bs + 56u + 4u * k) && g_finsnap.lk126[k] && !std::getenv("PSPRECOMP_TAGTEAM_NOREPLRESTORE")) {   // the slot's fighter was replaced (KO swap / rebuild: the new lock block took the zeroed +0x126 of the old one): the slot's own value goes back (the target is not touched: the lock code picks it)
+            const uint32_t na = srd(g_bs + 56u + 4u * k), nL = ok(na, 0x12D0) ? rd(na + 0x5ACu) : 0u;
+            if (ok(nL, 0x200) && g_ram[(nL + 0x126u) & 0x07FFFFFFu] == 0) { g_ram[(nL + 0x126u) & 0x07FFFFFFu] = g_finsnap.lk126[k]; if (g_log) std::fprintf(stderr, "[KOCAM] t=%.2fs slot %u replaced fighter %08X: lock block %08X +0x126 0 -> %u\n", dissidia_battle_age() / 60.0f, k, na, nL, g_finsnap.lk126[k]); } }
+        if (!a || a != srd(g_bs + 56u + 4u * k) || !ok(a, 0x12D0)) continue;
         const uint8_t d0 = g_ram[(a + 0x126Bu) & 0x07FFFFFFu]; g_ram[(a + 0x126Bu) & 0x07FFFFFFu] = g_finsnap.dec[k];
         const uint32_t L = rd(a + 0x5ACu); uint8_t l0 = 0, l1 = 0; const bool same = L && L == g_finsnap.lock[k] && ok(L, 0x200);
         if (same) { l0 = g_ram[(L + 0x126u) & 0x07FFFFFFu]; g_ram[(L + 0x126u) & 0x07FFFFFFu] = g_finsnap.lk126[k]; l1 = g_finsnap.lk126[k]; }
         if (g_log) std::fprintf(stderr, "[KOCAM] t=%.2fs slot fighter %08X: finish marks put back (decided byte +0x126B %u -> %u; lock block %08X +0x126 %u -> %u%s)\n", dissidia_battle_age() / 60.0f, a, d0, g_finsnap.dec[k], L, l0, l1, same ? "" : ", lock block replaced: left"); }
     g_finsnap.have = false;
 }
+// A mid-battle KO whose finish starts while an EX Burst runs or has just ended (the retail finish waits for the burst's end): the finish camera was aimed at the victim's burst-scene
+// position / before the fighters were put back on the stage, so the enemy was out of frame (RP6 26 Nov). A few ticks after the finish start the camera is aimed at the victim again
+// (look-at on its stage position, camera program 0x898 as the extra kill camera does). PSPRECOMP_TAGTEAM_NOEXBKCAIM=1 = off.
+struct KReaim { uint32_t gen = ~0u, victim = 0; float due = -1.f; } g_kreaim; float g_exb_last_run = -1e9f;
 void finstart_hook(uint8_t* rdram, recomp_context* ctx) {
     g_ram = rdram; g_ctx = ctx;
     kodiff_dump("pre");
     uint32_t who = 0; const bool mid = mid_ko_now(&who);
+    if (mid && who && !std::getenv("PSPRECOMP_TAGTEAM_NOEXBKCAIM") && (exb_running() || dissidia_battle_age() - g_exb_last_run < 120.f)) { g_kreaim.gen = g_battle_gen; g_kreaim.victim = who; g_kreaim.due = dissidia_battle_age() + 12.f; if (g_log) std::fprintf(stderr, "[KOCAM] t=%.2fs finish during / right after an EX Burst: camera re-aimed at %08X in 12 ticks\n", dissidia_battle_age() / 60.0f, who); }
     g_midfin_gen = mid ? g_battle_gen : ~0u;
     if (g_log) std::fprintf(stderr, "[KOCAM] t=%.2fs retail finish start (bs+72 %u): %s%s\n", dissidia_battle_age() / 60.0f, g_bs ? rd(g_bs + 72u) : 99u, mid ? "mid-battle KO of " : "match-ending / forfeit: full retail finish", mid ? role_of(who) : "");
     if (mid) cam_snap("finish start"); else g_camsnap.have = false;
@@ -11045,6 +11054,22 @@ void xkocam_step() {
     TtStep tt_step_("xkocam_step");
     if (g_log && std::getenv("PSPRECOMP_TAGTEAM_SNDGATE")) { static float lg = -1e9f; const float a = dissidia_battle_age(); if (a - lg >= 60.f) { lg = a; const uint32_t pool = rd(0x09B50000u - 11616u); std::fprintf(stderr, "[SNDGATE] t=%.1fs enable byte %02X free pool count %d (pool %08X) bs72 %u\n", a / 60.0f, ok(0x089D6C98u, 4) ? (unsigned)(rd(0x089D6C98u) & 0xFFu) : 999u, ok(pool, 0x600) ? (int)rd(pool + 1536u) : -9, pool, g_bs ? rd(g_bs + 72u) : 99u); } }
     if (g_log && g_cam_post > 0.f && dissidia_battle_age() < g_cam_post) { static float last = -1e9f; const float a = dissidia_battle_age(); if (a - last >= 30.f) { last = a; const uint32_t c = cam_director(); if (c) std::fprintf(stderr, "[KOCAM] t=%.2fs camera director after: flags +188 %08X +176 %08X +180 %08X +184 %08X +64 %.1f %.1f %.1f\n", a / 60.f, rd(c + 188u), rd(c + 176u), rd(c + 180u), rd(c + 184u), rdf(c + 64u), rdf(c + 68u), rdf(c + 72u)); } }
+    if (exb_running()) g_exb_last_run = dissidia_battle_age();
+    if (g_kreaim.gen == g_battle_gen && g_kreaim.due >= 0.f && dissidia_battle_age() >= g_kreaim.due) {
+        g_kreaim.due = -1.f; const uint32_t v = g_kreaim.victim;
+        const uint32_t mach = rd(0x08B0CF20u), cam = cam_director();
+        if (mid_finish() && ok(v, 0x12D0) && ok(mach, 0x40) && cam) {
+            const uint32_t sp0 = static_cast<uint32_t>(g_ctx->r[29]); g_ctx->r[29] = static_cast<int32_t>(sp0 - 0x200u);
+            const uint32_t buf = static_cast<uint32_t>(g_ctx->r[29]) + 0x40u, vec = buf + 0x20u;
+            call(0x0883820Cu, v, buf);
+            call(0x08B082B4u, mach, cam, v, 0x898u, 0u);
+            wrf(vec, rdf(buf)); wrf(vec + 4u, rdf(buf + 4u)); wrf(vec + 8u, rdf(buf + 8u)); wrf(vec + 12u, 1.0f);
+            call(0x0880FE58u, cam, vec); call(0x0880FEA0u, cam, 2u, 1u); call(0x0880FEA0u, cam, 4u, 1u);
+            g_ctx->f[12] = 0.0f; call(0x0880FD34u, cam, 0x898u, 0u);
+            g_ctx->r[29] = static_cast<int32_t>(sp0);
+            if (g_log) std::fprintf(stderr, "[KOCAM] t=%.2fs finish camera re-aimed at %s %08X (%.1f %.1f %.1f)\n", dissidia_battle_age() / 60.0f, role_of(v), v, rdf(v + 0x80u), rdf(v + 0x84u), rdf(v + 0x88u));
+        }
+    }
     if (g_xko.t0 < 0.f) return;
     if (g_xko.gen != g_battle_gen) { g_xko = XKo(); return; }
     const float age = dissidia_battle_age() - g_xko.t0; const uint32_t sm = rd(0x08A62280u);
