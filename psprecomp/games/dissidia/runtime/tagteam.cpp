@@ -57,6 +57,7 @@ static inline void backtrace_symbols_fd(void* const*, int, int) {}
 #include <cctype>
 #include <string>
 #include <map>
+#include <unordered_set>
 #include <cmath>
 #include <array>
 #include <set>
@@ -7130,7 +7131,17 @@ float oob_floor(float x, float y, float z) { const float f = stage_floor_y(x, y 
 // out of the map: >= 3 of 8 compass sweeps open (no wall outward) AND every other fighter is walled off from it (a sweep towards it hits collision on the way)
 bool oob_outside(uint32_t a, const uint32_t* f, int n, float x, float y, float z, float r) {
     const float fl = oob_floor(x, y, z), gy = std::isfinite(fl) ? fl : y;
-    if (oob_misses(x, gy, z, r) < 3) return false;
+    {   // 26 Nov (RP6 fps 64 -> 38 in a 4-way FFA): the 8 compass sweeps per fighter every 10 ticks were the whole cost. A cell (1.5 m grid, battle-local) once found walled in
+        // (< 3 open directions) is not swept again; a point that was ever "outside" is never cached, so no new false positive. Battle state only (same on every machine).
+        // PSPRECOMP_TAGTEAM_OOB_CACHE_OLD=1: sweep every time.
+        static const bool old = std::getenv("PSPRECOMP_TAGTEAM_OOB_CACHE_OLD") != nullptr;
+        static std::unordered_set<uint64_t> inside; static uint32_t gen = ~0u;
+        if (gen != g_battle_gen) { gen = g_battle_gen; inside.clear(); }
+        const auto q = [](float v) { return static_cast<uint64_t>(static_cast<int64_t>(std::floor(v / 1.5f)) & 0x1FFFFF); };
+        const uint64_t key = (q(x) << 42) | (q(gy) << 21) | q(z);
+        if (!old && inside.count(key)) return false;
+        if (oob_misses(x, gy, z, r) < 3) { if (!old && inside.size() < 20000) inside.insert(key); return false; }
+    }
     int others = 0;
     for (int i = 0; i < n; i++) { const uint32_t o = f[i]; if (o == a) continue; const float ox = rdf(o + 0x80u), oy = rdf(o + 0x84u), oz = rdf(o + 0x88u);
         if (!std::isfinite(ox) || !std::isfinite(oy) || !std::isfinite(oz) || std::fabs(ox) >= 1000.f || std::fabs(oz) >= 1000.f) continue;   // (a parked one is no reference)
