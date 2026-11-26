@@ -83,7 +83,7 @@ void dissidia_heapcheck_frame(const uint8_t* rdram);   // hooks_models.cpp (PSPR
 bool dissidia_tagteam_pad_blocked(uint32_t actor);   // tagteam.cpp: fighters held out of an EX Burst (any player, also a human's pad)   // tagteam.cpp: takes the tag team overlay off the screen when the fight stops refreshing it
 
 float dissidia_tt_chase_actor_scale(uint32_t actor, float ticks);   // tagteam.cpp
-float dissidia_tt_chase_cam_scale(float ticks);
+float dissidia_tt_chase_cam_scale(uint32_t cam, float ticks);
 void dissidia_tt_chase_step_log(uint32_t actor, float before, float after);
 namespace {
 
@@ -1953,7 +1953,7 @@ void cam_dt_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t cam = static_cast<uint32_t>(ctx->r[4]);
     g_orig_cam_dt(rdram, ctx);
     if (g_ticks != 2.0f && ok(cam) && r32(cam + 0x100u) == 2u) ctx->f[0] *= g_ticks * 0.5f;
-    if (ok(cam)) ctx->f[0] *= dissidia_tt_chase_cam_scale(g_ticks);   // the view of a fighter outside a running chase (chasers-only slow motion)
+    if (ok(cam)) ctx->f[0] *= dissidia_tt_chase_cam_scale(cam, g_ticks);   // the camera of a fighter outside a running chase (chasers-only slow motion; by the camera's owner, the same on every machine)
 }
 
 

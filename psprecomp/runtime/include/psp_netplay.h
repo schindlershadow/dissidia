@@ -39,6 +39,9 @@ void psp_netplay_set_fields(const char* const* names, int count);
 /// previous one starts a new battle (the old one's summary is logged).
 void psp_netplay_submit_state(uint32_t frame, const uint32_t* values, int count);
 
+/// The first frame of the current battle whose values differed from another player's (0xFFFFFFFF = none yet).
+uint32_t psp_netplay_first_mismatch();
+
 /// Called by the ad-hoc layer for a desync-check message from another player.
 void psp_netplay_on_message(const uint8_t src_mac[6], const uint8_t* data, size_t n);
 
