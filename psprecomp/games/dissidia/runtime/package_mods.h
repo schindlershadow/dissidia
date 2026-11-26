@@ -30,6 +30,11 @@ namespace dissidia {
 constexpr uint32_t kIndexMagic = 0x20090218u;
 constexpr uint32_t kSectorSize = 2048u;
 constexpr uint32_t kSizeMask = 0x0FFFFFFFu;
+// The game keeps only 20 bits of an entry's sector (offset = sector * 2048, below 2 GiB): a file placed at a virtual offset
+// of 2 GiB or more is seeked to with bit 31 lost, i.e. the bytes of some retail file are read in its place (a frozen
+// Customization screen, rp6_bartz_custom_1123_1056: 4,282 texture-pack PNGs had been given virtual sectors first). Every
+// served byte has to lie below this limit.
+constexpr uint64_t kMaxPackageBytes = 0x80000000ull;
 // The game loads PACKAGE_INFO.BIN into a fixed BSS buffer at 0x09B26BC0 (0x20F8C bytes, from the call
 // arguments in FUN_08871938): the retail fallback. hooks_index.cpp moves the buffer to a host-heap block
 // of kIndexExtendedBytes (retail entries + kIndexMaxNewEntries) when the patched index no longer fits it.
