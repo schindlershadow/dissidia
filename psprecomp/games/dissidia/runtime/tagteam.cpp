@@ -137,6 +137,7 @@ extern float g_dissidia_last_eye[3], g_dissidia_last_tgt[3]; extern uint32_t g_d
 extern uint32_t g_dissidia_vic_actor;   // camera.cpp: the winner of a finished tag battle (the victory view is checked)
 extern bool g_dissidia_entr_tight, g_dissidia_entr_more; extern uint32_t g_dissidia_entr_actor; extern float g_dissidia_entr_scale, g_dissidia_entr_t0, g_dissidia_entr_pose_at, g_dissidia_entr_until;   // camera.cpp: the call-in close-up
 void psp_mem_watch_set(uint32_t addr);   // runtime/src/psp_dispatch.cpp
+void psp_nan_watch_add(uint32_t addr);   // runtime/src/psp_dispatch.cpp (NaN watch list, debug)
 void dissidia_ttnet_slot_rebuilt(int slot, int charId);   // tagteam_net.cpp: a slot fighter was rebuilt as another character
 bool psp_atrac_is_streamed(int id);   // psp_hle_atrac.cpp: a streamed ATRAC track (the battle music)
 bool dissidia_ttnet_running(); bool dissidia_ttnet_enabled(); uint32_t dissidia_ttnet_frame(); bool dissidia_ttnet_padtest();   // tagteam_net.cpp: the N-player lock-step
@@ -195,6 +196,10 @@ FuncPtr g_orig_vspage = nullptr;
 void vs_page_hook(uint8_t* rdram, recomp_context* ctx);   // below
 void plan_late(uint8_t* rdram, recomp_context* ctx);
 uint32_t tally_row(uint32_t base, int r, int i);
+FuncPtr g_orig_clip_len = nullptr;
+void clip_len_hook(uint8_t* rdram, recomp_context* ctx);
+FuncPtr g_orig_lt_h = nullptr, g_orig_lt_own = nullptr, g_orig_lt_btn = nullptr;
+void lt_hook(uint8_t* rdram, recomp_context* ctx); void lt_own_hook(uint8_t* rdram, recomp_context* ctx); void lt_btn_hook(uint8_t* rdram, recomp_context* ctx);
 FuncPtr g_orig_setup = nullptr, g_orig_flow = nullptr, g_orig_tick = nullptr, g_orig_lock_other = nullptr, g_orig_refresh = nullptr, g_orig_lock_mode = nullptr, g_orig_lock_other_pos = nullptr, g_orig_stock = nullptr, g_orig_rule = nullptr, g_orig_rel1 = nullptr, g_orig_rel2 = nullptr;
 bool g_in_ctor = false;   // inside the extra's constructor: the resource releases are skipped (see rel_hook)
 bool g_oneround = true;   // KO rules, one continuous round: a KO'd slot fighter is swapped with its living team mate at once, no stock hack / round restart (PSPRECOMP_TAGTEAM_ONEROUND=0: the old restart flow)
@@ -1464,6 +1469,8 @@ void setup_hook(uint8_t* rdram, recomp_context* ctx) {
     if (!g_orig_lock_other) {
         g_orig_lock_other = fn(LOCK_OTHER); g_orig_refresh = fn(TARGET_REFRESH); g_orig_lock_mode = fn(LOCK_MODE);
         if (g_orig_lock_other && g_orig_refresh && g_orig_lock_mode) { psp_dispatch_register(LOCK_OTHER, lock_other_hook); psp_dispatch_register(TARGET_REFRESH, refresh_hook); psp_dispatch_register(LOCK_MODE, lock_mode_hook); }
+        if (std::getenv("PSPRECOMP_TAGTEAM_LOCKTRACE")) { g_orig_lt_h = fn(0x08B3AFD4u); g_orig_lt_own = fn(0x088378D8u); g_orig_lt_btn = fn(0x08B40168u); if (g_orig_lt_h && g_orig_lt_own && g_orig_lt_btn) { psp_dispatch_register(0x08B3AFD4u, lt_hook); psp_dispatch_register(0x088378D8u, lt_own_hook); psp_dispatch_register(0x08B40168u, lt_btn_hook); } }
+        if (std::getenv("PSPRECOMP_TAGTEAM_CLIPDBG")) { g_orig_clip_len = fn(0x0886B344u); if (g_orig_clip_len) psp_dispatch_register(0x0886B344u, clip_len_hook); }
         if (!std::getenv("PSPRECOMP_TAGTEAM_NOOTHERCAM")) { g_orig_lock_other_pos = fn(LOCK_OTHER_POS); if (g_orig_lock_other_pos) psp_dispatch_register(LOCK_OTHER_POS, lock_other_pos_hook); }
         else std::fprintf(stderr, "[TAGTEAM] lock cycle hooks not installed\n");
     }
@@ -2909,6 +2916,41 @@ void refresh_hook(uint8_t* rdram, recomp_context* ctx) {
     }
 }
 
+// debug (PSPRECOMP_TAGTEAM_CLIPDBG=1, issue #136): FUN_0886B344(anim ctx, anim id) = the clip's playback rate, 60 / length * scale (table entry +24 / +20).
+// A table entry that is all zero gives 60 / 0 * 0 = NaN, which the motion player keeps as its end / length (root motion and position then turn NaN).
+void clip_len_hook(uint8_t* rdram, recomp_context* ctx) {
+    g_ram = rdram;
+    const uint32_t c = static_cast<uint32_t>(ctx->r[4]), id = static_cast<uint32_t>(ctx->r[5]), ra = static_cast<uint32_t>(ctx->r[31]);
+    g_orig_clip_len(rdram, ctx);
+    static int n = 0;
+    if (n < 10 && (ctx->fi[0] & 0x7F800000u) == 0x7F800000u) {
+        n++;
+        const uint32_t tab = ok(c, 0x100) && ok(rd(c + 132u), 0x10) ? rd(rd(c + 132u) + 8u) : 0u;
+        std::fprintf(stderr, "[CLIPNAN] t=%.2fs rate %08X anim ctx %08X id %u ra %08X table %08X count %u base %08X\n", dissidia_battle_age() / 60.f, static_cast<uint32_t>(ctx->fi[0]), c, id, ra, tab, ok(tab, 0x40) ? (rd(tab + 40u) & 0xFFFFu) : 0u, ok(tab, 0x40) ? rd(tab + 28u) : 0u);
+        for (auto& kv : g_owned) for (const Blk& b : kv.second) if (c >= b.addr && c < b.addr + b.size) std::fprintf(stderr, "[CLIPNAN]  anim ctx inside block %08X+%X owned by %s %08X (char %d)\n", b.addr, b.size, role_of(kv.first), kv.first, actor_char(kv.first));
+        { uint32_t f[8]; const int nf = all_fighters(f); for (int i = 0; i < nf; i++) if (ok(f[i], 0x12D0)) for (uint32_t o = 0; o < 0x12D0u; o += 4) { const uint32_t w = rd(f[i] + o); if (w == c) std::fprintf(stderr, "[CLIPNAN]  fighter %s %08X (char %d, script %d) +%X = the anim ctx\n", role_of(f[i]), f[i], actor_char(f[i]), static_cast<int>(rd(f[i] + 0x180u) & 0xFFFFu), o); else if (ok(w, 0x400) && w != f[i] && rd(w + 916u) == c) std::fprintf(stderr, "[CLIPNAN]  fighter %s %08X (char %d, script %d) +%X -> obj %08X whose +916 is the anim ctx\n", role_of(f[i]), f[i], actor_char(f[i]), static_cast<int>(rd(f[i] + 0x180u) & 0xFFFFu), o, w); } }
+        if (ok(tab, 0x40) && ok(rd(tab + 28u), 0x40)) { const uint32_t base = rd(tab + 28u); const uint32_t idx = id & 0xFFFFu; for (uint32_t k = idx > 1 ? idx - 1 : 0; k <= idx + 1; k++) { std::fprintf(stderr, "[CLIPNAN]  entry %u:", k); for (uint32_t o = 0; o < 48; o += 4) std::fprintf(stderr, " %08X", rd(base + 48u * k + o)); std::fprintf(stderr, "\n"); } }
+    }
+}
+
+// debug (PSPRECOMP_TAGTEAM_LOCKTRACE=1, issue #136 lock switching): the lock block's L handler FUN_08B3AFD4 and what it asks (FUN_088378D8 = owner test, FUN_08B40168 = button event),
+// for the human's lock block, from 5 s on, one line per change of the answers.
+uint32_t g_lt_own_res = 0, g_lt_btn_res = 0, g_lt_btn_calls = 0;
+void lt_own_hook(uint8_t* rdram, recomp_context* ctx) { g_orig_lt_own(rdram, ctx); g_lt_own_res = static_cast<uint32_t>(ctx->r[2]); }
+void lt_btn_hook(uint8_t* rdram, recomp_context* ctx) { g_orig_lt_btn(rdram, ctx); g_lt_btn_res = static_cast<uint32_t>(ctx->r[2]); g_lt_btn_calls++; }
+void lt_hook(uint8_t* rdram, recomp_context* ctx) {
+    g_ram = rdram;
+    const uint32_t L = static_cast<uint32_t>(ctx->r[4]); g_lt_btn_calls = 0; g_lt_own_res = 99; g_lt_btn_res = 99;
+    const uint32_t mode0 = ok(L, 0x200) ? rd(L + 264u) : 0u;
+    g_orig_lt_h(rdram, ctx);
+    if (!g_bs || !ok(L, 0x200)) return;
+    const uint32_t hum = srd(g_bs + 56u + 4u * rd(g_bs + 84u)), HL = ok(hum, 0x12D0) ? rd(hum + 0x5ACu) : 0u;
+    if (dissidia_battle_age() >= 1290.f && L != HL) { static int nm = 0; if (nm++ % 30 == 0 && nm < 400) std::fprintf(stderr, "[LOCKTRACE] t=%.2fs L handler of lock %08X (owner %08X, mode %u), the human's lock block is %08X (human %08X)\n", dissidia_battle_age() / 60.f, L, rd(L + 248u), rd(L + 264u), HL, hum); }
+    if (L != HL || dissidia_battle_age() < 300.f) return;
+    static uint32_t last = 0; const uint32_t key = (g_lt_own_res & 0xFF) | ((g_lt_btn_res & 0xFF) << 8) | (g_lt_btn_calls << 16) | (mode0 << 24);
+    static int nl = 0; if ((key != last || (dissidia_battle_age() >= 1290.f && (nl++ % 8) == 0)) && nl < 400) { last = key; std::fprintf(stderr, "[LOCKTRACE] t=%.2fs L handler: lock %08X owner %08X mode %u: owner-test result %u, button-event calls %u last result %u, mode after %u\n", dissidia_battle_age() / 60.f, L, rd(L + 248u), mode0, g_lt_own_res, g_lt_btn_calls, g_lt_btn_res, rd(L + 264u)); }
+}
+
 // FUN_08B3B3EC(block, mode, flag): L toggles the human's lock through it. Tag battle: with a second enemy alive, the press that would
 // release the lock first moves the lock to that enemy (the retail cycle selector, handler [1] +28 = 1); the next press releases it.
 void lock_mode_hook(uint8_t* rdram, recomp_context* ctx) {
@@ -3453,6 +3495,33 @@ bool content_swap_raw(uint32_t H, uint32_t P) {
     const uint32_t nextH = rd(H + 0x4A0u), nextP = rd(P + 0x4A0u);   // the actor list's link (FUN_088417f8 unlinks through it): belongs to the address; swapped it makes a cycle
     const uint32_t flH = rd(H + 0x1114u), flP = rd(P + 0x1114u);   // the fighter list's link (head world+20, the destructor unlinks through it): belongs to the address too (swapped, the destructor of the parked fighter walked off the list's end and hung at Retry)
     const uint8_t flagH = g_ram[(H + 0x5B0u) & 0x07FFFFFFu], flagP = g_ram[(P + 0x5B0u) & 0x07FFFFFFu];   // +0x5B0 bit 2: "this actor is the player" (the HUD's FUN_08842164 asks it): belongs to the address
+    static const bool clipdbg = std::getenv("PSPRECOMP_TAGTEAM_CLIPDBG") != nullptr;
+    auto clipsnap = [&](const char* when) {
+        if (!clipdbg) return;
+        for (uint32_t x : {H, P}) {
+            const uint32_t g = rd(x + 0x394u), c = rd(x + 916u), tab = ok(c, 0x100) && ok(rd(c + 132u), 0x10) ? rd(rd(c + 132u) + 8u) : 0u;
+            std::fprintf(stderr, "[CLIPSNAP] %s %s %08X char %d: +394 %08X +916 %08X anim set %08X table %08X count %u base %08X; entries 0,1,31:", when, x == H ? "H" : "P", x, actor_char(x), g, c, ok(c, 0x100) ? rd(c + 132u) : 0u, tab, ok(tab, 0x40) ? (rd(tab + 40u) & 0xFFFFu) : 0u, ok(tab, 0x40) ? rd(tab + 28u) : 0u);
+            if (ok(tab, 0x40) && ok(rd(tab + 28u), 0x40)) for (uint32_t k : {0u, 1u, 31u}) std::fprintf(stderr, " [%08X %08X %08X]", rd(rd(tab + 28u) + 48u * k), rd(rd(tab + 28u) + 48u * k + 20u), rd(rd(tab + 28u) + 48u * k + 24u));
+            std::fprintf(stderr, "\n");
+        }
+    };
+    clipsnap("before");
+    if (clipdbg) for (size_t k = 0; k < bh.size(); k++) if (bh[k].size >= 0x1000u) {   // how the big blocks of H and P differ (layout shift?)
+        uint32_t nd = 0, first = 0xFFFFFFFFu, last = 0; for (uint32_t o = 0; o < bh[k].size; o += 4) if (rd(bh[k].addr + o) != rd(bp[k].addr + o)) { nd++; if (first == 0xFFFFFFFFu) first = o; last = o; }
+        std::fprintf(stderr, "[CLIPSNAP] big pair %zu (%X bytes): %u differing words, first +%X last +%X; words at +0..+0x40 H:", k, bh[k].size, nd, first, last);
+        for (uint32_t o = 0; o < 0x40; o += 4) std::fprintf(stderr, " %08X", rd(bh[k].addr + o)); std::fprintf(stderr, "\n[CLIPSNAP]   P:");
+        for (uint32_t o = 0; o < 0x40; o += 4) std::fprintf(stderr, " %08X", rd(bp[k].addr + o)); std::fprintf(stderr, "\n");
+    }
+    if (clipdbg) {   // pairs: any block lying inside another block of the same fighter (its words would be exchanged twice, with different offsets)
+        for (size_t k = 0; k < bh.size(); k++) for (size_t m = 0; m < bh.size(); m++) if (k != m && bh[k].addr >= bh[m].addr && bh[k].addr + bh[k].size <= bh[m].addr + bh[m].size && bh[m].size > 0)
+            std::fprintf(stderr, "[CLIPSNAP] H pair %zu (%08X+%X) lies inside pair %zu (%08X+%X); P: %08X+%X inside %08X+%X (offsets H %u P %d)\n", k, bh[k].addr, bh[k].size, m, bh[m].addr, bh[m].size, bp[k].addr, bp[k].size, bp[m].addr, bp[m].size, bh[k].addr - bh[m].addr, static_cast<int>(bp[k].addr - bp[m].addr));
+        for (size_t k = 0; k < bh.size(); k++) std::fprintf(stderr, "[CLIPSNAP] pair %zu: H %08X+%X P %08X+%X\n", k, bh[k].addr, bh[k].size, bp[k].addr, bp[k].size);
+    }
+    if (clipdbg) for (uint32_t x : {H, P}) {
+        const uint32_t c = rd(x + 916u), tab = ok(c, 0x100) && ok(rd(c + 132u), 0x10) ? rd(rd(c + 132u) + 8u) : 0u, base = ok(tab, 0x40) ? rd(tab + 28u) : 0u;
+        for (size_t k = 0; k < bh.size(); k++) for (uint32_t q : {tab, base}) if (q && ((q >= bh[k].addr && q < bh[k].addr + bh[k].size) || (q >= bp[k].addr && q < bp[k].addr + bp[k].size)))
+            std::fprintf(stderr, "[CLIPSNAP] %s: %08X lies in pair %zu: H block %08X+%X, P block %08X+%X%s\n", x == H ? "H" : "P", q, k, bh[k].addr, bh[k].size, bp[k].addr, bp[k].size, (q >= bh[k].addr && q < bh[k].addr + bh[k].size) == (x == H) ? "" : " (the OTHER one's block)");
+    }
     g_pairs.clear();
     int kept = 0;
     for (size_t k = 0; k < bh.size(); k++) {
@@ -3485,6 +3554,26 @@ bool content_swap_raw(uint32_t H, uint32_t P) {
     g_ram[(H + 0x5B0u) & 0x07FFFFFFu] = static_cast<uint8_t>((g_ram[(H + 0x5B0u) & 0x07FFFFFFu] & ~4u) | (flagH & 4u));
     g_ram[(P + 0x5B0u) & 0x07FFFFFFu] = static_cast<uint8_t>((g_ram[(P + 0x5B0u) & 0x07FFFFFFu] & ~4u) | (flagP & 4u));
     if (g_log) std::fprintf(stderr, "[TAGTEAM] swap: content exchanged: %zu numeric, %zu translated pointer, %zu external-pointer words left with their address, %zu writes\n", nnum, ntrans, next, writes.size());
+    // Issue #136 (clone KO swap NaN): the fighter's graphics entry (+0x394, 0x13C bytes, in the shared graphics pool, so left with its address) holds pointers INTO the
+    // owned blocks (+12 = the animation table: 83 clips x 48 bytes inside the 0x9860-byte block). The two blocks of the clones differ in their internal layout (the table
+    // sits 16 bytes apart), so after the exchange the entry's old table pointer showed the wrong words (count 0 / 252, base 0, clip lengths 0 -> playback rate 60/0*0 = NaN
+    // -> the fighter's motion end, root motion and position NaN -> camera and sound). The entry's pointers into the blocks belong to the content: they are exchanged
+    // with it (translated like any pointer into a swapped block). PSPRECOMP_TAGTEAM_NOSWAPGFX=1: old.
+    if (static const bool nogfx = std::getenv("PSPRECOMP_TAGTEAM_NOSWAPGFX") != nullptr; !nogfx) {
+        const uint32_t gH = rd(H + 0x394u), gP = rd(P + 0x394u);
+        auto inblk = [&](uint32_t v) { for (const BlkPair& b : g_pairs) { if (b.h.size == 0x12D0u || b.keep) continue; if ((v >= b.h.addr && v < b.h.addr + b.h.size) || (v >= b.p.addr && v < b.p.addr + b.p.size)) return true; } return false; };
+        if (gH != gP && ok(gH, 0x13C) && ok(gP, 0x13C)) {
+            int n = 0;
+            for (uint32_t o = 0; o < 0x13Cu; o += 4) {
+                const uint32_t x = rd(gH + o), y = rd(gP + o);
+                if (x == y || !isptr(x) || !isptr(y) || !inblk(x) || !inblk(y)) continue;
+                wr(gH + o, trans(y)); wr(gP + o, trans(x)); n++;
+                if (g_log) std::fprintf(stderr, "[TAGTEAM] swap: graphics entry +%X: %08X / %08X -> %08X / %08X\n", o, x, y, trans(y), trans(x));
+            }
+            (void)n;
+        }
+    }
+    clipsnap("after");
     fix_assist();
     wr(H + 0x4A0u, nextH); wr(P + 0x4A0u, nextP);
     wr(H + 0x1114u, flH); wr(P + 0x1114u, flP);
@@ -4365,6 +4454,18 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
                 else if (sel >= 0 && sel <= 2) { g_cyc = sel; if (sel != 1) g_cyc_target = 0; else if (!g_cyc_target) g_cyc_target = other;   /* retail took the other enemy itself: remember which (the FFA cycle walks on from it) */
                     if (sel == 0) { const uint32_t foe = slot_enemy(owner); if (ok(foe, 0x12D0)) { wr(owner + 0x300u, foe); wr(owner + 0x2FCu, foe); } }   /* the core was taken while locked: back on the foe, not left on the other enemy */
                     if (g_log) std::fprintf(stderr, "[TAGTEAM] lock cycle: retail moved the selector to %d\n", sel); }
+            }
+        }
+    }
+    if (const char* tl = std::getenv("PSPRECOMP_TAGTEAM_TESTLOCKOTHER"); tl && g_bs && g_nextra && pad_driven(owner)) {   // test aid: at <s> seconds the human's lock is put on the other enemy (the cycle's pick)
+        static uint32_t gen = ~0u;
+        if (gen != g_battle_gen && dissidia_battle_age() >= std::atof(tl) * 60.f) {
+            const uint32_t L = rd(owner + 0x5ACu), h1 = ok(L, 0x200) ? rd(L + 304u) : 0u, oe = other_enemy(owner, slot_enemy(owner));
+            if (ok(h1, 0x40) && oe && g_ram[(owner + 0x542u) & 0x07FFFFFFu] == 0) {
+                gen = g_battle_gen;
+                if (rd(L + 264u) != 1) { const uint32_t sp0 = static_cast<uint32_t>(g_ctx->r[29]); g_ctx->r[29] = static_cast<int32_t>(sp0 - 0x100u); g_lock_bypass = true; call(LOCK_MODE, L, 1u, 0u); g_lock_bypass = false; g_ctx->r[29] = static_cast<int32_t>(sp0); }
+                CycState& cs = cyc_of(owner); cs.cyc = 1; cs.target = oe; wr(h1 + 28u, 1); wr(owner + 0x2FCu, oe); wr(owner + 0x300u, oe);
+                std::fprintf(stderr, "[TESTLOCK] t=%.2fs human %08X locked on the other enemy %08X (mode %u)\n", dissidia_battle_age() / 60.f, owner, oe, rd(L + 264u));
             }
         }
     }
@@ -7931,6 +8032,9 @@ void nan_repair_step() {
         sn.ok = true;
     };
     uint32_t f[8]; const int nf = all_fighters(f);
+    if (static const bool nw2 = std::getenv("PSPRECOMP_TAGTEAM_NANWATCH2") != nullptr; nw2) {   // debug: arm the fighters' position / motion words in the runtime's NaN watch ([NANWATCH2] logs the function ring of the first write)
+        for (int i = 0; i < nf; i++) if (ok(f[i], 0x12D0)) for (uint32_t o : {0x80u, 0x84u, 0x88u, 0x110u, 0x114u, 0x118u, 0xF4u, 0x104u, 0x134u, 0x144u, 0x1A0u, 0x1A8u, 0x1BCu}) psp_nan_watch_add(f[i] + o);
+    }
     for (int i = 0; i < nf; i++) {
         if (!ok(f[i], 0x12D0)) continue;
         fix(f[i], 48, role_of(f[i]));
@@ -7944,6 +8048,17 @@ void chase_debug_step() {
     if (!g_log || !g_bs) return;
     static uint32_t was = 0; static int n = 0;
     const uint32_t ctl = rd(0x08AB6738u), st = ok(ctl, 0x40) ? rd(ctl) : 0u;
+    if (std::getenv("PSPRECOMP_TAGTEAM_LOCKTRACE")) {   // debug (issue #136 lock switching): FUN_08B31DA4(human) = the lock input gate (nonzero: no L handling), and the words it reads
+        static uint32_t lastk = 0; const uint32_t hum = srd(g_bs + 56u + 4u * rd(g_bs + 84u));
+        if (ok(hum, 0x12D0)) {
+            const uint32_t sp0 = static_cast<uint32_t>(g_ctx->r[29]); g_ctx->r[29] = static_cast<int32_t>(sp0 - 0x100u);
+            const uint32_t gate = call(0x08B31DA4u, hum), a = call(0x088378E8u, hum), b = call(0x088378F8u, hum), c = call(0x08B34E38u, hum);
+            g_ctx->r[29] = static_cast<int32_t>(sp0);
+            const uint32_t t = rd(hum + 0x2FCu), f = rd(hum + 0x300u), st = rd(hum + 0x932u - 0x932u + 932u);
+            const uint32_t key = (gate & 1) | ((a & 1) << 1) | ((b & 1) << 2) | ((c & 1) << 3) | (t << 4 ^ f);
+            if (key != lastk) { lastk = key; std::fprintf(stderr, "[LOCKTRACE] t=%.2fs human %08X lock gate %u (088378E8 %u, 088378F8 %u, 08B34E38 %u) target %08X (+195 %02X) foe %08X flags obj %08X +4 %08X script %d\n", dissidia_battle_age() / 60.f, hum, gate, a, b, c, t, ok(t, 0x200) ? g_ram[(t + 0x195u) & 0x07FFFFFFu] : 0u, f, st, ok(st, 0x10) ? rd(st + 4u) : 0u, static_cast<int>(rd(hum + 0x180u) & 0xFFFFu)); }
+        }
+    }
     if (std::getenv("PSPRECOMP_TAGTEAM_NANWATCH")) {   // debug: the first frame any fighter / lock block / camera manager transform word is NaN: who, and arm a watch on it
         static bool done = false, armed = false; const uint32_t mgr = dissidia_camera_manager();
         if (const char* ar = std::getenv("PSPRECOMP_TAGTEAM_NANARM")) if (!armed && g_bs && dissidia_battle_age() >= std::atof(ar) * 60.f) {   // watch the player's lock block +0x40 from that second on

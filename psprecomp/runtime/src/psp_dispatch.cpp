@@ -278,6 +278,20 @@ void psp_mem_watch_set(uint32_t addr) {
     if (g_dbg_rdram) std::memcpy(&g_mem_watch_last, g_dbg_rdram + (addr & 0x07FFFFFFu), 4);
 }
 
+// NaN watch list (debug, issue #136): psp_nan_watch_add(addr) arms a word; at every function entry the armed words are read and the first time one holds a
+// NaN / inf (exponent 0xFF) the function entry ring is logged ([NANWATCH2]). Heap addresses move from run to run, so the game code arms them itself.
+static uint32_t g_nanw_addr[96];
+static uint8_t g_nanw_hit[96];
+static int g_nanw_n = 0;
+static int g_nanw_logged = 0;
+void psp_nan_watch_add(uint32_t addr) {
+    for (int i = 0; i < g_nanw_n; i++) if (g_nanw_addr[i] == addr) return;
+    if (g_nanw_n >= 96) return;
+    g_func_trace_on = true;
+    g_nanw_hit[g_nanw_n] = 0; g_nanw_addr[g_nanw_n++] = addr;
+}
+void psp_nan_watch_clear() { g_nanw_n = 0; g_nanw_logged = 0; }
+
 void psp_dump_func_ring(const char* tag) {
     std::fprintf(stderr, "[%s] ring:", tag);
     for (int k = 1; k <= 12; k++)
@@ -291,6 +305,18 @@ void psp_trace_checkpoint(uint32_t addr) {
         g_mem_watch_checked = true;
         if (const char* e = std::getenv("PSPRECOMP_MEM_WATCH"))
             g_mem_watch_addr = static_cast<uint32_t>(std::strtoul(e, nullptr, 16));
+    }
+    if (g_nanw_n && g_dbg_rdram && g_nanw_logged < 40) {
+        for (int i = 0; i < g_nanw_n; i++) {
+            uint32_t cur; std::memcpy(&cur, g_dbg_rdram + (g_nanw_addr[i] & 0x07FFFFFFu), 4);
+            const bool bad = (cur & 0x7F800000u) == 0x7F800000u;
+            if (bad && !g_nanw_hit[i]) {
+                g_nanw_hit[i] = 1; g_nanw_logged++;
+                std::fprintf(stderr, "[NANWATCH2] %08X = %08X, entering=0x%08X ring:", g_nanw_addr[i], cur, addr);
+                for (int k = 1; k <= 32; k++) std::fprintf(stderr, " %08X", g_func_ring[(g_func_ring_pos - k) & 31u]);
+                std::fprintf(stderr, "\n");
+            } else if (!bad) g_nanw_hit[i] = 0;
+        }
     }
     if (g_mem_watch_addr && g_dbg_rdram && g_mem_watch_n < 400) {
         uint32_t cur;
