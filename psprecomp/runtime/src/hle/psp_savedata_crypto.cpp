@@ -385,6 +385,15 @@ static int kirkSendFuseCmd(uint8_t* data, int length, bool encrypt) {
     return 0;
 }
 
+int kirk_aes_cmd(uint8_t* data, int length, int seed, bool encrypt) {
+    std::lock_guard<std::mutex> guard(g_lock);
+    return kirkSendCmd(data, length, seed, encrypt);
+}
+int kirk_fuse_cmd(uint8_t* data, int length, bool encrypt) {
+    std::lock_guard<std::mutex> guard(g_lock);
+    return kirkSendFuseCmd(data, length, encrypt);
+}
+
 static int sub_15B0(uint8_t* data, int alignedLen, uint8_t* buf, int val) {
     uint8_t sp0[16];
     memcpy(sp0, data + alignedLen + 4, 16);

@@ -3,6 +3,7 @@
 #include "hle/psp_hle.h"
 #include "hle/psp_hle_io.h"
 #include "hle/psp_hle_kernel.h"
+#include "psp_npdrm.h"
 #include "psp_memory.h"
 #include "psp_scheduler.h"
 #include "recomp.h"
@@ -10,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 #include <set>
 #include <unordered_map>
 #include <fcntl.h>
@@ -142,12 +144,16 @@ std::string psp_path_to_host(const char* psp_path) {
     if (p.substr(0, 6) == "umd0:/") return disc(p.substr(6));
 
     // ms0: -> host Memory Stick directory (writable)
-    if (p.substr(0, 5) == "ms0:/") {
-        return g_ms0_path + "/" + p.substr(5);
-    }
-    if (p.substr(0, 4) == "ms0:") {
-        return g_ms0_path + "/" + p.substr(4);
-    }
+    auto ms = [](const std::string& rel) {
+        std::string host = g_ms0_path + "/" + rel;
+        if (g_io_policy.remap_ms_path) {
+            std::string other = g_io_policy.remap_ms_path(host);
+            if (!other.empty()) return other;
+        }
+        return host;
+    };
+    if (p.substr(0, 5) == "ms0:/") return ms(p.substr(5));
+    if (p.substr(0, 4) == "ms0:") return ms(p.substr(4));
     // flash0: -> not mounted
     if (p.substr(0, 7) == "flash0:") {
         return "";
@@ -950,6 +956,7 @@ static void hle_sceIoOpenAsync(
         prereg_cbId, prereg_cbArg
     };
     tag_fd_for_overlay(psp_fd, psp_path);
+    g_fd_table[psp_fd].npdrm_open = (flags & 0x40000000) != 0;
 
     if (g_io_open_log_count < IO_LOG_LIMIT) {
         std::fprintf(stderr,
@@ -1289,6 +1296,16 @@ static void hle_sceIoSetAsyncCallback(
             // *(slot+12)=1, calls sceIoSetAsyncCallback here, the callback
             // (FUN_088629CC → FUN_08862760) runs synchronously and clears
             // *(slot+12)=0, then L_08863944 loops back to process the next state.
+            if (it->second.npdrm_open) {
+                // An EDAT (downloadable content) the game opened with the NPDRM flag: its code stores the fd that sceIoOpenAsync returned
+                // AFTER it called sceIoSetAsyncCallback (FUN_0886465c, the caller of the open), and its completion callback reads it
+                // back to set up the key. On the PSP the callback runs later, at a callback check, so it is only queued here
+                // (psp_kernel_notify_callback above); running it in place made it see fd -1, the EDAT was never keyed and read as noise.
+                std::fprintf(stderr, "[HLE] sceIoSetAsyncCallback(fd=%d): NPDRM file, callback left for the next callback check\n", fd);
+                ctx->r[2] = SCE_OK;
+                sched_yield_point();
+                return;
+            }
             uint32_t pre_state = 0;
             if (callbackArg != 0) {
                 pre_state = psp_mem_read<uint32_t>(
@@ -1505,9 +1522,97 @@ static void hle_sceIoChdir(
     sched_yield_point();
 }
 
+// ---- NPDRM EDAT (sceNpDrmEdataSetupKey): the game opens a downloadable-content file with the NPDRM flag and asks for the key.
+// An encrypted EDAT ("\0PSPEDAT" + a PGD container, psp_npdrm) is decrypted into an unnamed temporary file that replaces the fd's host
+// file, so every read / seek / size query after that sees the plain data. A file that is not an EDAT is plain data already (real
+// DLC that was decrypted, or made by a mod tool) and stays as it is. Without this the game read the encrypted bytes as data
+// (the import used to be an unimplemented stub that returned 0), parsed garbage as object rows and crashed at start.
+
+static int make_plain_fd(const std::vector<uint8_t>& data) {
+    int fd = -1;
+#ifdef _WIN32
+    char dir[MAX_PATH + 1], name[MAX_PATH + 1];
+    if (GetTempPathA(MAX_PATH, dir) && GetTempFileNameA(dir, "pnp", 0, name))
+        fd = ::open(name, O_RDWR | O_BINARY | _O_TEMPORARY | _O_SHORT_LIVED, 0600);
+#else
+    std::string tmpl = g_ms0_path + "/.npdrm_XXXXXX";
+    std::vector<char> nm(tmpl.begin(), tmpl.end());
+    nm.push_back('\0');
+    fd = ::mkstemp(nm.data());
+    if (fd >= 0) ::unlink(nm.data());   // lives as long as the fd
+#endif
+    if (fd < 0) return -1;
+    size_t at = 0;
+    while (at < data.size()) {
+        const ssize_t w = ::write(fd, data.data() + at, data.size() - at);
+        if (w <= 0) { ::close(fd); return -1; }
+        at += size_t(w);
+    }
+    ::lseek(fd, 0, SEEK_SET);
+    return fd;
+}
+
+constexpr int32_t kNpdrmErrInvalidFile = static_cast<int32_t>(0x80550901u);
+
+static void hle_sceNpDrmEdataSetupKey(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    const int fd = ctx->r[4];
+    auto it = g_fd_table.find(fd);
+    std::fprintf(stderr, "[NPDRM] sceNpDrmEdataSetupKey(fd=%d) %s\n", fd, it == g_fd_table.end() ? "not open" : "open");
+    if (it == g_fd_table.end() || it->second.is_dir || it->second.host_fd < 0 || it->second.is_slice) {
+        ctx->r[2] = SCE_ERROR_ERRNO_ENOENT;
+        return;
+    }
+    PspFileDesc& d = it->second;
+    struct stat st;
+    uint8_t magic[8] = {};
+    if (::fstat(d.host_fd, &st) != 0 || psp_plat::pread_(d.host_fd, magic, 8, 0) != 8 || !psp_npdrm::is_edat(magic, 8)) {
+        std::fprintf(stderr, "[NPDRM] fd=%d \"%s\": plain data, read as it is\n", fd, d.psp_path.c_str());
+        ctx->r[2] = 0;
+        return;
+    }
+    if (st.st_size > (256ll << 20)) { ctx->r[2] = kNpdrmErrInvalidFile; return; }
+    std::vector<uint8_t> raw(size_t(st.st_size)), plain;
+    size_t got = 0;
+    while (got < raw.size()) {
+        const ssize_t n = psp_plat::pread_(d.host_fd, raw.data() + got, raw.size() - got, int64_t(got));
+        if (n <= 0) break;
+        got += size_t(n);
+    }
+    const int rc = got == raw.size() ? psp_npdrm::decrypt_edat(raw.data(), raw.size(), plain) : -2;
+    if (rc != 0) {
+        std::fprintf(stderr, "[NPDRM] fd=%d \"%s\": EDAT not decrypted (%d) -> error\n", fd, d.psp_path.c_str(), rc);
+        ctx->r[2] = kNpdrmErrInvalidFile;
+        return;
+    }
+    const int nfd = make_plain_fd(plain);
+    if (nfd < 0) {
+        std::fprintf(stderr, "[NPDRM] fd=%d \"%s\": no temporary file for the decrypted data\n", fd, d.psp_path.c_str());
+        ctx->r[2] = kNpdrmErrInvalidFile;
+        return;
+    }
+    ::close(d.host_fd);
+    d.host_fd = nfd;
+    std::fprintf(stderr, "[NPDRM] fd=%d \"%s\": EDAT decrypted, %zu bytes\n", fd, d.psp_path.c_str(), plain.size());
+    ctx->r[2] = 0;
+}
+
+static void hle_sceNpDrmEdataGetDataSize(uint8_t* rdram, recomp_context* ctx) {
+    (void)rdram;
+    auto it = g_fd_table.find(int(ctx->r[4]));
+    struct stat st;
+    if (it == g_fd_table.end() || it->second.host_fd < 0 || ::fstat(it->second.host_fd, &st) != 0) {
+        ctx->r[2] = SCE_ERROR_ERRNO_ENOENT;
+        return;
+    }
+    ctx->r[2] = static_cast<int32_t>(it->second.is_slice ? it->second.slice_len : st.st_size);
+}
+
 // ---- Registration ----
 
 void psp_hle_register_io() {
+    psp_hle_register("sceNpDrmEdataSetupKey", hle_sceNpDrmEdataSetupKey);
+    psp_hle_register("sceNpDrmEdataGetDataSize", hle_sceNpDrmEdataGetDataSize);
     psp_hle_register("sceIoOpen", hle_sceIoOpen);
     psp_hle_register("sceIoClose", hle_sceIoClose);
     psp_hle_register("sceIoRead", hle_sceIoRead);
