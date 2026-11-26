@@ -3041,7 +3041,7 @@ void lock_mode_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t L = static_cast<uint32_t>(ctx->r[4]), mode = static_cast<uint32_t>(ctx->r[5]);
     if (std::getenv("PSPRECOMP_TAGTEAM_EXBCAM") && ok(L, 0x200) && ok(rd(L + 248u), 0x12D0)) std::fprintf(stderr, "[LOCKMODE] t=%.2fs block %08X owner %s mode %u -> %u flag %u ra %08X bypass %d\n", dissidia_battle_age() / 60.0f, L, role_of(rd(L + 248u)), rd(L + 264u), mode, static_cast<uint32_t>(ctx->r[6]), static_cast<uint32_t>(ctx->r[31]), g_lock_bypass ? 1 : 0);
     if (g_lock_bypass) { lock_why("our-lock-mode"); g_orig_lock_mode(rdram, ctx); return; }
-    lock_why("L-press"); g_lock_press_t = dissidia_battle_age();
+    { const uint32_t ra0 = static_cast<uint32_t>(ctx->r[31]); if (ra0 >= 0x08B3AFD4u && ra0 < 0x08B3B0B4u) { lock_why("L-press"); g_lock_press_t = dissidia_battle_age(); } else lock_why("retail-lock-mode"); }   // (only a call from the L handler FUN_08B3AFD4 is the player's press; retail's own release at a KO is not)
     if (g_nextra && ok(L, 0x200)) {
         const uint32_t owner = rd(L + 248u), h1 = rd(L + 304u);
         if (g_log && (owner == srd(g_bs + 56u + 4u * rd(g_bs + 84u)))) { static int n = 0; if (n++ < 200) std::fprintf(stderr, "[TAGTEAM] t=%.1fs lock mode call: block %08X mode %u -> %u flag %u (sel %d) cyc %d core %u target %s\n", dissidia_battle_age() / 60.0f, L, rd(L + 264u), mode, static_cast<uint32_t>(ctx->r[6]), ok(h1, 0x40) ? static_cast<int>(rd(h1 + 28u)) : -99, cyc_of(owner).cyc, ok(h1, 0x40) ? call(0x08B40A50u, h1, L) : 0u, ok(rd(owner + 0x2FCu), 0x12D0) ? role_of(rd(owner + 0x2FCu)) : "-"); }
@@ -10904,6 +10904,10 @@ void lock_govern() {
         if (!once && ca > 0x08800000u && ok(ca, 0x40) && g_ram[(ca + 0x542u) & 0x07FFFFFFu] == 6 && ok(HL, 0x200) && dissidia_battle_age() / 60.0f >= 30.f) { once = true; call(LOCK_SET, HL, ca); std::fprintf(stderr, "[TESTLOCKCORE] t=%.2fs human's lock block put on the EX core %08X (override %08X, lock answer %08X)\n", dissidia_battle_age() / 60.0f, ca, rd(HL + 252u), call(LOCK_GET, HL)); }
         if (ok(h1, 0x40) && rd(HL + 264u) == 1 && call(0x08B40A50u, h1, HL)) { if (rd(h1 + 28u) != 2) std::fprintf(stderr, "[TESTLOCKCORE] t=%.2fs selector -> 2 (EX core %08X)\n", dissidia_battle_age() / 60.0f, call(0x08B40A50u, h1, HL)); wr(h1 + 28u, 2); }
     }
+    if (const char* tr = std::getenv("PSPRECOMP_TAGTEAM_TESTRELEASE")) {   // test aid: retail's release of the human's lock (mode 0, not an L press) at <s> seconds, once
+        static bool done = false; const uint32_t H = lock_local_human(), HL = ok(H, 0x12D0) ? rd(H + 0x5ACu) : 0u;
+        if (!done && ok(HL, 0x200) && rd(HL + 264u) == 1 && dissidia_battle_age() / 60.0f >= static_cast<float>(std::atof(tr))) { done = true; const uint32_t sp0 = static_cast<uint32_t>(g_ctx->r[29]); g_ctx->r[29] = static_cast<int32_t>(sp0 - 0x100u); g_lock_bypass = true; call(LOCK_MODE, HL, 0u, 0u); g_lock_bypass = false; g_ctx->r[29] = static_cast<int32_t>(sp0); std::fprintf(stderr, "[TESTRELEASE] t=%.2fs human's lock released (mode now %u)\n", dissidia_battle_age() / 60.0f, rd(HL + 264u)); }
+    }
     for (int i = 0; i < n; i++) {
         const uint32_t P = f[i];
         if (!pad_driven(P) || is_rebuilding(P) || !alive(P) || g_ram[(P + 0x542u) & 0x07FFFFFFu] != 0) continue;
@@ -10912,19 +10916,43 @@ void lock_govern() {
         const uint32_t mem = g_lockmem.count(P) ? g_lockmem[P] : 0u;
         const uint32_t lt = call(LOCK_GET, L), t2 = rd(P + 0x2FCu), fo = rd(P + 0x300u), ov = rd(L + 252u);
         const char* bl = lock_word_bad(lt, P, mem); const char* b2 = lock_word_bad(t2, P, mem); const char* bf = lock_word_bad(fo, P, mem); const char* bo = lock_word_bad(ov, P, mem);
-        static std::map<uint32_t, uint32_t> given_up, tried;   // fighter -> the bad word it was fixed / given up on
-        if (!bl && !b2 && !bf && !bo) { given_up.erase(P); tried.erase(P); if (lt && !lock_word_bad(lt, P, mem)) g_lockmem[P] = lock_norm(lt); continue; }
+        static std::map<uint32_t, uint32_t> given_up, tried; static std::map<uint32_t, float> seen_locked, relock_t, ov_t;   // per fighter
+        const float age = dissidia_battle_age(); const uint32_t mode = rd(L + 264u);
+        if (mode == 1u) seen_locked[P] = age;
+        const bool word_bad = bl || b2 || bf;
+        if (!word_bad && bo) { const bool due = !ov_t.count(P) || age - ov_t[P] >= 20.f; if (due) { ov_t[P] = age; lock_why("governor"); wr(L + 252u, 0u); if (g_log) std::fprintf(stderr, "[LOCKFIX] t=%.2fs %s %08X: stale override %08X (%s) cleared\n", age / 60.0f, role_of(P), P, ov, bo); } }
+        if (!word_bad) {   // all words fine (or 0): nothing to correct; the retail release at a KO is undone once a valid enemy is there (lost crosshair, RP6 26 Nov)
+            given_up.erase(P); tried.erase(P);
+            if (lt && !bl) g_lockmem[P] = lock_norm(lt);
+            const bool released = mode == 0u && seen_locked.count(P) && g_lock_press_t <= seen_locked[P] && (!relock_t.count(P) || age - relock_t[P] >= 120.f);
+            if (released && !std::getenv("PSPRECOMP_TAGTEAM_RELOCK_OLD")) {
+                uint32_t nt = 0; float bd = 1e30f; const uint32_t cand = g_lockmem.count(P) ? ao8_stand_in(g_lockmem[P]) : 0u;
+                if (cand && !lock_word_bad(cand, P, mem)) nt = cand;
+                else for (int j = 0; j < n; j++) { const uint32_t e = f[j]; if (e == P || lock_word_bad(e, P, mem) || !ok(e, 0x12D0)) continue;
+                    const float dx = rdf(e + 0x80u) - rdf(P + 0x80u), dz = rdf(e + 0x88u) - rdf(P + 0x88u), d = dx * dx + dz * dz; if (d < bd) { bd = d; nt = e; } }
+                if (nt) {
+                    relock_t[P] = age; lock_why("relock-after-release");
+                    wr(P + 0x300u, nt); wr(P + 0x2FCu, nt); CycState& cs = cyc_of(P); cs.cyc = 0; cs.target = 0; const uint32_t h1 = rd(L + 304u); if (ok(h1, 0x40)) wr(h1 + 28u, 0);
+                    const uint32_t sp0 = static_cast<uint32_t>(g_ctx->r[29]); g_ctx->r[29] = static_cast<int32_t>(sp0 - 0x100u); g_lock_bypass = true; call(LOCK_MODE, L, 1u, 0u); g_lock_bypass = false; g_ctx->r[29] = static_cast<int32_t>(sp0);
+                    if (P == lock_local_human()) { const uint32_t mgr = dissidia_camera_manager(); if (mgr) wr(mgr + 0x8B4u, nt); }
+                    g_lockmem[P] = lock_norm(nt);
+                    std::fprintf(stderr, "[LOCKFIX] t=%.2fs %s %08X: the lock was released by retail (last locked %.1f s ago, no L press) and a valid enemy is there: locked on %s %08X again (mode %u)\n", age / 60.0f, role_of(P), P, (age - seen_locked[P]) / 60.0f, role_of(nt), nt, rd(L + 264u));
+                }
+            }
+            continue;
+        }
         const char* why = bl ? bl : b2 ? b2 : bf ? bf : bo;
-        const uint32_t badw = bl ? lt : b2 ? t2 : bf ? fo : ov;
-        if (given_up.count(P) && given_up[P] == badw) continue;
-        if (tried.count(P) && tried[P] == badw) { given_up[P] = badw; std::fprintf(stderr, "[LOCKFIX] t=%.2fs %s %08X: the correction did not stick (bad %s %08X again): the governor stops for this target\n", dissidia_battle_age() / 60.0f, role_of(P), P, why, badw); continue; }
-        tried[P] = badw;
+        const uint32_t badw = bl ? lt : b2 ? t2 : fo;
         uint32_t nt = 0;
         for (const uint32_t c : {lt, t2, fo, ao8_stand_in(mem), mem}) if (c && !lock_word_bad(c, P, mem)) { nt = c; break; }
         if (!nt) { float bd = 1e30f;
             for (int j = 0; j < n; j++) { const uint32_t e = f[j]; if (e == P || lock_word_bad(e, P, mem) || ok(e, 0x12D0) == false) continue;
                 const float dx = rdf(e + 0x80u) - rdf(P + 0x80u), dz = rdf(e + 0x88u) - rdf(P + 0x88u), d = dx * dx + dz * dz; if (d < bd || (d == bd && e < nt)) { bd = d; nt = e; } } }
-        if (!nt) continue;   // nobody to lock on to (the battle ends / the next tag-in comes)
+        if (!nt) continue;   // nobody valid right now (all down / in the KO flow): wait; the next valid enemy (tag-in, call-in) is locked on as soon as it is there
+        { const uint32_t key = badw * 31u + nt;   // "did not stick" = the same bad word AND the same replacement again; a newly arrived valid enemy is a new key
+          if (given_up.count(P) && given_up[P] == key) continue;
+          if (tried.count(P) && tried[P] == key) { given_up[P] = key; std::fprintf(stderr, "[LOCKFIX] t=%.2fs %s %08X: the correction did not stick (bad %s %08X again, replacement %08X): the governor stops for this exact word\n", age / 60.0f, role_of(P), P, why, badw, nt); continue; }
+          tried[P] = key; }
         lock_why("governor");
         if (ov && bo) wr(L + 252u, 0u);
         wr(P + 0x300u, nt); wr(P + 0x2FCu, nt);
