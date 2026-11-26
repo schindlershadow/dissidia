@@ -594,6 +594,19 @@ void xbreak_guard(uint32_t a) {
     if (cur < last) { const int v = std::min(base > 0 ? base : last, last + (last - cur)); xbrv_set(a, static_cast<uint32_t>(v)); it->second = v;
         if (g_log) std::fprintf(stderr, "[TAGTEAM] t=%.2fs %s is broken: a hit took %d BRV, given back and added to the refill (%d -> %d)\n", dissidia_battle_age() / 60.0f, role_of(a), last - cur, last, v); }
 }
+// Free-for-all: a SLOT fighter hit by a fighter of its OWN game side (two independent fighters share a side) was not protected by its break. Retail checks "is the
+// victim broken" in the attacker's opponent handler, i.e. the other side's slot fighter, so a same-side attacker's BRV hit on a broken slot fighter took BRV off him during
+// states 3 / 4 and broke him again (26 Nov RP6: "broken every BRV hit, no cooldown"). Same rule as the extras (xbreak_guard): while the slot fighter's own handler is in
+// the break (state 3 / 4) a BRV loss is given back and added to the refill; no new break. PSPRECOMP_TAGTEAM_FFA_BREAKGUARD_OLD=1: old.
+std::map<uint32_t, int> g_sbrv_last;   // slot fighter -> its BRV at the end of the last frame
+bool sbreak_active(uint32_t a, uint32_t h) { return ok(h, 0x310) && rd(h + 16u) == a && (rd(h + 8u) == 3u || rd(h + 8u) == 4u); }
+bool sbreak_same_side_hit(uint32_t a);   // (below hit_last)
+void sbreak_guard(uint32_t a, uint32_t h) {
+    auto it = g_sbrv_last.find(a); if (it == g_sbrv_last.end() || !sbreak_active(a, h) || rd(h + 8u) != 4u) return;   // (state 3 is retail's own zeroing at the break)
+    const int last = it->second, cur = static_cast<int>(xbrv(a)), base = static_cast<int>(xbase(a));
+    if (cur < last && sbreak_same_side_hit(a)) { const int v = std::min(base > 0 ? base : last, last + (last - cur)); xbrv_set(a, static_cast<uint32_t>(v)); it->second = v;
+        if (g_log) std::fprintf(stderr, "[BREAKGUARD] t=%.2fs %s is broken (state %u): a hit took %d BRV, given back and added to the refill (%d -> %d)\n", dissidia_battle_age() / 60.0f, role_of(a), rd(h + 8u), last - cur, last, v); }
+}
 FuncPtr g_orig_hpstep = nullptr; void hpstep_hook(uint8_t* rdram, recomp_context* ctx);
 FuncPtr g_orig_corepick = nullptr; void corepick_hook(uint8_t* rdram, recomp_context* ctx);
 // The battle controller FUN_08886C88(C), once per frame: per side k (0/1) it runs the module C+4k and these handlers of that side's slot fighter:
@@ -4798,7 +4811,7 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
                 if (std::getenv("PSPRECOMP_TAGTEAM_HPM_WRONGFOE")) { uint32_t other = 0; for (int q = 0; q < 4; q++) if (F[q] != a && F[q] != v && side_of(F[q]) != side_of(a)) other = F[q]; if (!other) for (int q = 0; q < 4; q++) if (F[q] != a && F[q] != v) other = F[q]; if (other) call(SET_FOE, a, other); }   // the foe is somebody else than the victim: damage must still go to the victim
                 { const uint32_t st = rd(a + 0x52Cu); wr(st + 0x14u, (3000u << 16) | 3000u); }
                 if (const char* ah2 = std::getenv("PSPRECOMP_TAGTEAM_HPM_AHP")) { const uint32_t st = rd(a + 0x52Cu); wr(st + 0xCu, static_cast<uint32_t>(std::atoi(ah2))); wr(st + 0x8u, 0u); }   // attacker's HP (a weak attacker stays up while the victim's AI fights back)
-                if (const char* vb = std::getenv("PSPRECOMP_TAGTEAM_HPM_VBRV")) { const uint32_t sv = rd(v + 0x52Cu); wr(sv + 0x14u, (rd(sv + 0x14u) & 0xFFFF0000u) | (static_cast<uint32_t>(std::atoi(vb)) & 0xFFFFu)); }   // victim's bravery n (a small n: the BRV attack breaks it)
+                if (const char* vb = std::getenv("PSPRECOMP_TAGTEAM_HPM_VBRV"); vb && (step == 0 || !std::getenv("PSPRECOMP_TAGTEAM_HPM_VBRV_FIRST"))) { const uint32_t sv = rd(v + 0x52Cu); wr(sv + 0x14u, (rd(sv + 0x14u) & 0xFFFF0000u) | (static_cast<uint32_t>(std::atoi(vb)) & 0xFFFFu)); }   // victim's bravery n (a small n: the BRV attack breaks it)
                 if (std::getenv("PSPRECOMP_TAGTEAM_HPM_VBRV0")) { const uint32_t sv = rd(v + 0x52Cu); wr(sv + 0x14u, rd(sv + 0x14u) & 0xFFFF0000u); }   // victim's bravery 0: an HP attack does HP damage
                 g_ctx->f[12] = 0.0f; g_ctx->f[13] = 0.0f;
                 if (!std::getenv("PSPRECOMP_TAGTEAM_HPM_PAD") && (a == F[0] || !std::getenv("PSPRECOMP_TAGTEAM_HPM_AI"))) call(START_ACTION, a + 304u, static_cast<uint32_t>(act), 0);
@@ -5082,7 +5095,7 @@ void dtor_hook(uint8_t* rdram, recomp_context* ctx) {
             g_sweep_due = false;   // (replaced by the per-actor sweep in dissidia_tagteam_after_free)
         }
         if (!std::getenv("PSPRECOMP_TAGTEAM_NOLEFTOVER")) for (const auto& kv : g_own_load) g_leftover_load[kv.first] = kv.second;
-        xas_reset(true); g_nextra = 0; g_bs = 0; voice_banks_release(); portrait_reset(true); g_extra_mod.clear(); g_extra_hdl.clear(); g_exb_frozen.clear(); g_exb_lasthit.clear(); g_exb_fc.clear(); g_exb_slot_lb = 0; g_exb_slot_addr = 0; g_exb_shown.clear(); g_xbroken.clear(); g_xbrv_last.clear(); g_xbreak_t0.clear(); g_rebuild.clear(); g_rb_watch.clear(); g_down.clear(); reset_ko_state(); g_ko_mark.clear();
+        xas_reset(true); g_nextra = 0; g_bs = 0; voice_banks_release(); portrait_reset(true); g_extra_mod.clear(); g_extra_hdl.clear(); g_exb_frozen.clear(); g_exb_lasthit.clear(); g_exb_fc.clear(); g_exb_slot_lb = 0; g_exb_slot_addr = 0; g_exb_shown.clear(); g_xbroken.clear(); g_xbrv_last.clear(); g_sbrv_last.clear(); g_xbreak_t0.clear(); g_rebuild.clear(); g_rb_watch.clear(); g_down.clear(); reset_ko_state(); g_ko_mark.clear();
         g_late_q.clear(); g_late_load.clear(); g_banter_q.clear(); g_entrant = 0; g_cycs.clear();
         g_banner_until = 0; g_banner_text.clear(); tagteam_hud_set_banner(""); tagteam_hud_clear(); g_dissidia_entr_actor = 0; g_dissidia_vic_actor = 0;   // nothing of this battle's announcements reaches the next one
         for (Extra& x : g_extra) x = Extra();
@@ -6921,7 +6934,7 @@ void reset_battle_state() {
     xas_reset(false);
     g_match_cache.clear(); g_comms_cache.clear(); g_sp_cache.clear(); g_sp_char_str.clear(); g_rec_cpu_made = false;
     for (Extra& x : g_extra) x = Extra();
-    g_extra_mod.clear(); g_extra_hdl.clear(); g_exb_frozen.clear(); g_exb_lasthit.clear(); g_exb_fc.clear(); g_exb_slot_lb = 0; g_exb_slot_addr = 0; g_exb_shown.clear(); g_xbroken.clear(); g_xbrv_last.clear(); g_xbreak_t0.clear(); g_rebuild.clear(); g_rb_watch.clear();
+    g_extra_mod.clear(); g_extra_hdl.clear(); g_exb_frozen.clear(); g_exb_lasthit.clear(); g_exb_fc.clear(); g_exb_slot_lb = 0; g_exb_slot_addr = 0; g_exb_shown.clear(); g_xbroken.clear(); g_xbrv_last.clear(); g_sbrv_last.clear(); g_xbreak_t0.clear(); g_rebuild.clear(); g_rb_watch.clear();
     g_down.clear(); reset_ko_state(); g_ko_mark.clear(); g_entrant = 0; g_cycs.clear(); g_late_q.clear(); g_late_load.clear();
     g_own_load.clear(); g_gone_since.clear(); g_unref_since.clear();   // (the battle's end released every file object)
     portrait_reset(false);
@@ -9773,6 +9786,12 @@ uint32_t booked_extra_victim(uint32_t vowner) {
 }
 // The slot fighters' own damage handlers (vtable 0x08AE7B50, owner +16 = the slot fighter), found in their combat modules (afd424_hook) and in the reactions.
 std::map<uint32_t, uint32_t> g_slot_hdl;
+// A hit of a fighter of the victim's own game side landed on `a` within the last 8 frames: only those are outside retail's break check (cross-side hits are retail's own).
+bool sbreak_same_side_hit(uint32_t a) {
+    uint32_t f[8]; const int nf = all_fighters(f);
+    for (int i = 0; i < nf; i++) { if (f[i] == a || side_of(f[i]) != side_of(a)) continue; uint32_t vv = 0; int ag = -1; hit_last(f[i], vv, ag); if (vv == a && ag >= 0 && ag <= 8) return true; }
+    return false;
+}
 // Friendly fire on a SLOT fighter (19 Nov desktop: Terra, the human's partner, hit the human): the reaction went to the attacker's module's opponent handler,
 // i.e. the ENEMY slot fighter's: the break animation / "Bravery Break" played on the enemy (who was not broken). The slot fighter that was hit gets it in
 // his own handler. Returns that handler (0 = none). PSPRECOMP_TAGTEAM_NOFRIENDLYSLOT=1: old.
@@ -9822,7 +9841,15 @@ void hitreact2_hook(uint8_t* rdram, recomp_context* ctx) {
     if (g_log && std::getenv("PSPRECOMP_TAGTEAM_HITREACTLOG") && ok(h, 0x310)) { static int c = 0; if (c++ < 300) { std::fprintf(stderr, "[HITREACTLOG] t=%.2fs handler %08X owner %s %08X step %08X->%08X hits:", dissidia_battle_age() / 60.0f, h, role_of(rd(h + 16u)), rd(h + 16u), g_xstep_att, g_xstep_vic); uint32_t f[8]; const int nf = all_fighters(f); for (int i = 0; i < nf; i++) if (hit_victim_of(f[i])) std::fprintf(stderr, " %s->%s", role_of(f[i]), role_of(hit_victim_of(f[i]))); std::fprintf(stderr, "\n"); } }
     if (ok(h, 0x310) && g_bs && rd(h + 4u) == 0x08AE7B50u) { const uint32_t o = rd(h + 16u); if (o && (o == srd(g_bs + 56u) || o == srd(g_bs + 60u))) g_slot_hdl[o] = h; }
     if (!off && ok(h, 0x310)) {
-        if (const uint32_t sh = booked_friendly_slot_handler(rd(h + 16u))) { react_with_opponent(rdram, ctx, sh, g_react_att); return; }
+        if (const uint32_t sh = booked_friendly_slot_handler(rd(h + 16u))) {
+            static const bool bg_old = std::getenv("PSPRECOMP_TAGTEAM_FFA_BREAKGUARD_OLD") != nullptr;
+            const uint32_t sv = rd(sh + 16u);
+            if (!bg_old && ffa_now() && sbreak_active(sv, sh)) {   // already broken: no new break, the BRV loss goes back
+                sbreak_guard(sv, sh);
+                if (g_log) std::fprintf(stderr, "[HITREACT] t=%.2fs hit on %s during its break: no new break\n", dissidia_battle_age() / 60.0f, role_of(sv));
+                ctx->r[2] = 0; return;
+            }
+            react_with_opponent(rdram, ctx, sh, g_react_att); return; }
         const uint32_t vowner = rd(h + 16u), x = booked_extra_victim(vowner);
         if (x) {
             if (g_xbroken.count(x) && !std::getenv("PSPRECOMP_TAGTEAM_NOXBREAK")) {   // already broken: no new break, the BRV loss goes back (xbreak_guard)
@@ -12075,6 +12102,13 @@ void dissidia_tagteam_frame_end(uint8_t* rdram, recomp_context* ctx) {
     if (g_ram && std::getenv("PSPRECOMP_TAGTEAM_GROUPLOG")) { static std::string last; char b[96]; const uint32_t i1 = 0x09AFDFB0u + 0x25u + 0x38u; std::snprintf(b, sizeof b, "idx %u cnt %u res %u %u %u | t0 idx %u res %u %u", g_ram[(i1 - 7u) & 0x07FFFFFFu], g_ram[(i1 - 6u) & 0x07FFFFFFu], g_ram[(i1 - 5u) & 0x07FFFFFFu], g_ram[(i1 - 4u) & 0x07FFFFFFu], g_ram[(i1 - 3u) & 0x07FFFFFFu], g_ram[(0x09AFDFB0u + 0x25u - 7u) & 0x07FFFFFFu], g_ram[(0x09AFDFB0u + 0x25u - 5u) & 0x07FFFFFFu], g_ram[(0x09AFDFB0u + 0x25u - 4u) & 0x07FFFFFFu]);
         if (last != b) { last = b; std::fprintf(stderr, "[GROUPLOG] frame %u: %s\n", g_fe_ctr, b); std::fprintf(stderr, "[GROUPLOG]   08B82480:"); for (uint32_t a = 0x08B82480u; a < 0x08B82510u; a++) std::fprintf(stderr, "%s%02X", (a & 15u) ? "" : " | ", g_ram[a & 0x07FFFFFFu]); std::fprintf(stderr, "\n"); } }
     if (g_ram) { TtStep s_("breakshot_poll"); breakshot_poll(); }
+    if (g_ram && g_bs && g_nextra && ffa_now() && !std::getenv("PSPRECOMP_TAGTEAM_FFA_BREAKGUARD_OLD")) {   // slot fighters' breaks in a free-for-all (sbreak_guard)
+        for (uint32_t k = 0; k < 2; k++) { const uint32_t S = srd(g_bs + 56u + 4u * k); if (!ok(S, 0x12D0)) continue;
+            uint32_t h = 0; for (const auto& p : g_hstate_pairs) if (p.first == S) h = p.second;
+            if (!h) if (auto it = g_slot_hdl.find(S); it != g_slot_hdl.end()) h = it->second;
+            if (h) sbreak_guard(S, h);
+            g_sbrv_last[S] = static_cast<int>(xbrv(S)); }
+    }
     if (g_ram && g_bs && g_nextra && !std::getenv("PSPRECOMP_TAGTEAM_NOXBREAK")) {   // extras' breaks: losses undone, the end of the break, the BRV of this frame
         for (const auto& kv : g_extra_hdl) { const uint32_t a = kv.first; if (!ok(a, 0x12D0)) continue;
             if (g_log && ok(kv.second, 0x310)) { static std::map<uint32_t, uint32_t> hs; const uint32_t st = rd(kv.second + 8u); auto f = hs.find(a); if (f == hs.end() || f->second != st) { static int n = 0; if (n++ < 200) std::fprintf(stderr, "[XBRKST] t=%.2fs %s handler %08X state %u -> %u (BRV %u%s) {%s}\n", dissidia_battle_age() / 60.0f, role_of(a), kv.second, f == hs.end() ? 99u : f->second, st, xbrv(a), g_xbroken.count(a) ? ", marked broken" : "", brv_line()); hs[a] = st; } }
