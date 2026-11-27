@@ -925,6 +925,37 @@ void send_beacons() {
     for (auto& a : targets) send_raw(a, T_BEACON, b);
 }
 
+// ---- what the player is told about the network (27 Nov, tree ttnetmsg; PSPRECOMP_ADHOC_MSG_OLD=1: the short old texts) ----
+// Carrier-grade NAT: a mobile / carrier network gives many customers one public address and its NAT never lets an unknown
+// sender in, so the hole punch cannot work (T-Mobile: 172.56.0.0/13; shared address space: 100.64.0.0/10).
+bool msg_old() { static const bool o = std::getenv("PSPRECOMP_ADHOC_MSG_OLD") != nullptr; return o; }
+bool ip_cgnat(uint32_t h) { return (h >> 22) == (0x64400000u >> 22) || (h >> 19) == (0xAC380000u >> 19); }   // 100.64.0.0/10, 172.56.0.0/13
+bool ip_private(uint32_t h) { return (h >> 24) == 10 || (h >> 20) == (0xAC100000u >> 20) || (h >> 16) == 0xC0A8; }   // 10/8, 172.16/12, 192.168/16
+// Test aid PSPRECOMP_ADHOC_FAKE_NAT=a.b.c.d: that address stands in for every introduced player's public address in the messages.
+uint32_t fake_nat_ip() {
+    static uint32_t ip = [] { const char* e = std::getenv("PSPRECOMP_ADHOC_FAKE_NAT"); in_addr a{}; return e && inet_pton(AF_INET, e, &a) == 1 ? ntohl(a.s_addr) : 0u; }();
+    return ip;
+}
+// "Ender's network (mobile / carrier-grade NAT) blocks a direct connection" for a failed punch; empty = no known cause.
+std::string nat_cause(const Direct& dp, const char* who) {
+    const uint32_t pub = fake_nat_ip() ? fake_nat_ip() : ntohl(dp.pub.sin_addr.s_addr), lan = ntohl(dp.lan.sin_addr.s_addr);
+    const uint32_t mine = ntohl(g_lan_ip);
+    if (mine && ip_cgnat(mine)) return "Your network (mobile / carrier-grade NAT) blocks a direct connection";
+    if (pub && ip_cgnat(pub)) return std::string(who) + "'s network (mobile / carrier-grade NAT) blocks a direct connection";
+    if (pub && ip_private(pub)) return std::string(who) + "'s network (behind a carrier NAT) blocks a direct connection";
+    if (pub && !ip_private(pub) && (lan >> 24) == 10 && lan != pub) return std::string(who) + "'s network (probably mobile / carrier-grade NAT: a 10.x address behind a public one) blocks a direct connection";
+    return "";
+}
+// The Network Delay tip for a slow path (ping over 120 ms): what the setting is and what this ping needs.
+std::string delay_tip(int ping, int jitter) {
+    const int need = psp_netplay_delay_for(ping, std::max(0, jitter));
+    char b[200];
+    const int set = psp_netplay_delay_setting();
+    if (set == PSP_NETPLAY_AUTO_DELAY) std::snprintf(b, sizeof b, "Network Delay is Auto (%d frames now, set at each battle start). If it stalls, raise it in Settings > Network.", psp_netplay_input_delay());
+    else std::snprintf(b, sizeof b, "Network Delay is %d frame(s); this ping needs about %d. Raise it in Settings > Network (before the next session).", set, need);
+    return b;
+}
+
 // What the player is told about each other player of the group's connection: direct (LAN, or an Internet path that was punched) or through the relay and why;
 // again when it switches. Called once a second from net_check (g_mu held).
 void conn_toasts(int64_t t) {
@@ -956,7 +987,18 @@ void conn_toasts(int64_t t) {
         else if (g_relay_ok && g_relay_version < 2) why = "server too old for direct connections";
         else if (dp && !dp->reason.empty()) why = dp->reason;
         else if (ct.mode == 0 && t - ct.since > 25000000) why = "no introduction from the server (peer in LAN mode / old version?)";
-        if (!why.empty() && ct.mode != 2 && t - ct.since > 1000000) { ct.mode = 2; psp_net_notice(("conn:" + id).c_str(), 1, "Playing via relay with %s: %s", who, why.c_str()); }
+        if (!why.empty() && ct.mode != 2 && t - ct.since > 1000000) {
+            if (msg_old()) { ct.mode = 2; psp_net_notice(("conn:" + id).c_str(), 1, "Playing via relay with %s: %s", who, why.c_str()); continue; }
+            if (ping < 0 && t - ct.since < 4000000) continue;   // a second more for the ping through the relay
+            ct.mode = 2;
+            std::string cause = dp && dp->state == 0 && dp->started ? nat_cause(*dp, who) : "";
+            if (cause.empty()) cause = std::string("No direct connection to ") + who + ": " + why + ".";
+            else cause += ",\nso the game goes through the relay.";
+            const int jit = pit != g_ping.end() ? (int)(pit->second.var_ms + 0.5) : 0;
+            std::string m = std::string("Playing through the relay with ") + who + (ping >= 0 ? std::string(" (ping ") + std::to_string((int)ping) + " ms)" : "") + "\n" + cause + "\nThe relay is a detour: higher ping than a direct link.";
+            if (ping > 120) m += "\n" + delay_tip((int)ping, jit);
+            psp_net_notice(("conn:" + id).c_str(), 60, "%s", m.c_str());
+        }
     }
     for (auto it = g_conn_told.begin(); it != g_conn_told.end();)
         if (!g_peers.count(it->first) || !same_group(it->first)) it = g_conn_told.erase(it); else ++it;
@@ -1019,8 +1061,18 @@ void net_check(int64_t t) {
         st.outstanding[st.seq] = t; if (st.ever) st.asked++;   // (counted once the player has answered a first time)
         send_to_mac(mac, T_PDP, b);
         if (!st.ever) continue;
-        st.high = st.srtt_ms > 150 ? st.high + 1 : 0;
-        if (st.high >= 3) psp_net_notice(("lat:" + id).c_str(), 30, "Network: high latency to %s: %d ms", who, (int)st.srtt_ms);
+        if (msg_old()) st.high = st.srtt_ms > 150 ? st.high + 1 : 0;
+        if (msg_old()) { if (st.high >= 3) psp_net_notice(("lat:" + id).c_str(), 30, "Network: high latency to %s: %d ms", who, (int)st.srtt_ms); }
+        else {   // over 120 ms for 3 s: the ping, which path it takes, and the Network Delay tip
+            st.high = st.srtt_ms > 120 ? st.high + 1 : 0;
+            if (st.high >= 3) {
+                auto dit = g_direct.find(mac);
+                const bool direct = !g_relay_mode || (dit != g_direct.end() && dit->second.state == 2);
+                const std::string tip = delay_tip((int)st.srtt_ms, (int)(st.var_ms + 0.5));
+                psp_net_notice(("lat:" + id).c_str(), 45, "Ping to %s is %d ms (%s). Fights may lag or wait for input.\n%s",
+                               who, (int)st.srtt_ms, direct ? "direct" : g_relay_mode ? "through the relay" : "LAN", tip.c_str());
+            }
+        }
         if (st.window.size() >= 10) {
             int lost = 0;
             for (bool ok : st.window) lost += !ok;
@@ -2251,11 +2303,24 @@ static std::atomic<int64_t> g_notice_at{-100000000};
 void psp_net_notice(const char* key, int min_interval_s, const char* fmt, ...) {
     static std::mutex mu;
     static std::map<std::string, int64_t> last;
-    char msg[256];
+    char buf[600];
     va_list ap;
     va_start(ap, fmt);
-    std::vsnprintf(msg, sizeof msg, fmt, ap);
+    std::vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
+    std::string msg = buf;
+    if (!std::getenv("PSPRECOMP_ADHOC_MSG_OLD")) {   // the toast box does not wrap: break lines of more than 78 characters at a space
+        std::string out; size_t col = 0;
+        for (size_t i = 0; i < msg.size();) {
+            size_t e = msg.find_first_of(" \n", i); if (e == std::string::npos) e = msg.size();
+            const size_t w = e - i;
+            if (col && col + 1 + w > 78) { out += '\n'; col = 0; } else if (col) { out += ' '; col++; }
+            out.append(msg, i, w); col += w;
+            if (e < msg.size() && msg[e] == '\n') { out += '\n'; col = 0; }
+            i = e + 1;
+        }
+        msg = out;
+    }
     const int64_t t = now_us();
     {
         std::lock_guard<std::mutex> lk(mu);
@@ -2263,8 +2328,8 @@ void psp_net_notice(const char* key, int min_interval_s, const char* fmt, ...) {
         if (it != last.end() && t - it->second < (int64_t)min_interval_s * 1000000) return;
         last[key ? key : ""] = t;
     }
-    std::fprintf(stderr, "[NET] %s\n", msg);
-    ge_draw_toast(msg, 6000);
+    std::fprintf(stderr, "[NET] %s\n", msg.c_str());
+    ge_draw_toast(msg.c_str(), msg.find('\n') == std::string::npos ? 6000 : 9000);
     g_notice_at.store(t, std::memory_order_relaxed);
 }
 bool psp_net_notice_showing() { return now_us() - g_notice_at.load(std::memory_order_relaxed) < 6000000; }

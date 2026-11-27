@@ -169,6 +169,36 @@ float g_appear = 0.f;
 
 uint32_t r32(uint32_t a) { uint32_t v; std::memcpy(&v, g_ram + (a & 0x07FFFFFFu), 4); return v; }
 void w32(uint32_t a, uint32_t v) { std::memcpy(g_ram + (a & 0x07FFFFFFu), &v, 4); }
+// ---- The online Group Battle's "Please select a battle format" dialog (27 Nov) ----
+// ovl_menu FUN_08A7AE08(list, ctx) is the dialog list's input handler (3 rows: Tournament, Round-Robin (3 Rounds), Round-Robin (5 Rounds)). Its Cross branch posts the
+// choice to the screen's listener: FUN_08A6FC24(owner, 0x0A, rec, 6), rec = {format, rounds, enabled, 7, 0, state}, sets the list's state (+184) to 2 and runs
+// FUN_08A77614(list, 1) (the close). The hook runs that branch for row 0 at the first call (no pad bit, no cursor move), once per list object.
+constexpr uint32_t FMT_DLG = 0x08A7AE08u, FMT_POST = 0x08A6FC24u, FMT_CLOSE = 0x08A77614u, FMT_OWNER_PTR = 0x08A6D7E0u;
+FuncPtr g_orig_fmt = nullptr;
+uint32_t g_fmt_done_obj = 0;
+void fmt_dlg_hook(uint8_t* rdram, recomp_context* ctx) {
+    if (r32(OVL_BASE) != 2) { if (FuncPtr f = ovl_battle_lookup(FMT_DLG)) f(rdram, ctx); return; }
+    const uint32_t obj = static_cast<uint32_t>(ctx->r[4]), param = static_cast<uint32_t>(ctx->r[5]);
+    static const bool log = std::getenv("PSPRECOMP_TAGTEAM_LOG") != nullptr;
+    if (!dissidia_tagteam_group_on() || obj == g_fmt_done_obj) {
+        if (obj != g_fmt_done_obj) { static uint32_t seen = 0; if (log && seen != obj) { seen = obj; std::fprintf(stderr, "[TTFMT] dialog handler on %08X, tag group off: left to the player\n", obj); } }
+        g_orig_fmt(rdram, ctx); return;
+    }
+    const uint32_t owner = r32(r32(FMT_OWNER_PTR));
+    FuncPtr post = ovl_menu_lookup(FMT_POST), close = ovl_menu_lookup(FMT_CLOSE);
+    if (!owner || !post || !close) { g_orig_fmt(rdram, ctx); return; }
+    g_fmt_done_obj = obj;
+    const recomp_context save = *ctx;
+    const uint32_t rec = static_cast<uint32_t>(save.r[29]) - 2048u;   // free stack below the handler (the callees' frames are small)
+    const int32_t state = static_cast<int32_t>(r32(param + 604u));
+    const uint8_t b[6] = {0, 0, static_cast<uint8_t>(state >= 0 ? 1 : 0), 7, 0, static_cast<uint8_t>(state)};   // row 0: Tournament (format 0, no rounds)
+    for (int i = 0; i < 6; i++) g_ram[(rec + i) & 0x07FFFFFFu] = b[i];
+    ctx->r[4] = static_cast<int32_t>(owner); ctx->r[5] = 0x0A; ctx->r[6] = static_cast<int32_t>(rec); ctx->r[7] = 6; post(rdram, ctx); *ctx = save;
+    w32(obj + 184u, 2u);
+    ctx->r[4] = static_cast<int32_t>(obj); ctx->r[5] = 1; close(rdram, ctx); *ctx = save;
+    std::fprintf(stderr, "[TTFMT] battle format dialog answered with Tournament (list %08X, owner %08X)\n", obj, owner);
+}
+
 bool okp(uint32_t a) { return a >= 0x08800000u && a < 0x0A000000u; }
 
 void play_se(uint8_t* rdram, recomp_context* ctx, int id) {
@@ -1853,6 +1883,9 @@ void dissidia_tagteam_menu_install(uint8_t* rdram) {
     }
     if (!g_orig_tick) { std::fprintf(stderr, "[TTCPU] setup screen hook not installed\n"); return; }
     psp_dispatch_register(SETUP_TICK, setup_tick_hook);
+    // 27 Nov (user: the retail "Please select a battle format" dialog of the online Group Battle should not show in the tag modes): the host's dialog (Tournament /
+    // Round-Robin 3 / 5 Rounds) is answered by its own confirm at its first frame, with Tournament (the only format the tag tally supports). PSPRECOMP_TAGTEAM_FMTDLG_OLD=1: the dialog stays.
+    if (!std::getenv("PSPRECOMP_TAGTEAM_FMTDLG_OLD") && (g_orig_fmt = ovl_menu_lookup(FMT_DLG))) psp_dispatch_register(FMT_DLG, fmt_dlg_hook);
     // Proper PvE (docs/tag-team.md): Party Select accepts an empty CPU party; Enter Battle's table step builds the CPU party's blocks on its owner's machine
     g_orig_ready = ovl_menu_lookup(READY_TEST); g_orig_enter = ovl_menu_lookup(ENTER_STEP);
     if (g_orig_ready) psp_dispatch_register(READY_TEST, ready_hook);
