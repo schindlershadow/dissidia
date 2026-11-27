@@ -194,6 +194,10 @@ def main(argv):
     ap.add_argument('--rs-a', default='1')
     ap.add_argument('--rs-b', default='2')
     ap.add_argument('--stale', action='store_true', help="copy B plays as a machine that already played a battle (PSPRECOMP_TAGTEAM_STALEREC: the overlay's team records hold the previous battle's parties); with PSPRECOMP_TAGTEAM_VSRECORDS_OLD=1 in --env this must FAIL (the old VS line-up bug)")
+    ap.add_argument('--pack', action='store_true', help="the Bartz Dissidia 1 moves pack (net_packs.json): A has the mod installed (--pack-mods), B has an empty mods folder and gets the pack online "
+                    "(netpack side channel) for the session; a Bartz CPU fighter is forced into the match (FILLCHAR) so a record / data difference between a native install and a received pack desyncs it")
+    ap.add_argument('--pack-mods', default=os.environ.get('PSPRECOMP_TEST_PACK_MODS', '~/dissidia/tt/s2/packmods_bartz'), help='a mods folder with bartz-dff installed (default: ~/dissidia/tt/s2/packmods_bartz, a copy of a built mods folder without textures)')
+    ap.add_argument('--pack-disc', default=os.environ.get('PSPRECOMP_TEST_PACK_DISC', '~/dissidia/work_tagslot/disc0'), help='the 012 disc folder netpack.py deltas reads the retail files from')
     ap.add_argument('--kolist', default=None, help="override the KO list ('none' = no KOs, the battle just runs --secs and no result is required)")
     ap.add_argument('--min-frames', type=int, default=600)
     ap.add_argument('--env', default='')
@@ -237,6 +241,23 @@ def main(argv):
     else:
         envA['PSPRECOMP_ADHOC_SERVER'] = envB['PSPRECOMP_ADHOC_SERVER'] = '127.0.0.1:%d' % relay_port
         envA['PSPRECOMP_ADHOC_ROOM'] = envB['PSPRECOMP_ADHOC_ROOM'] = room
+    if a.pack:   # A: the mod installed (+ the deltas it sends), B: an empty mods folder that receives the pack
+        src = os.path.abspath(os.path.expanduser(a.pack_mods))
+        if not os.path.isfile(os.path.join(src, 'retail_moves.txt')):
+            print('mp_diverge: SKIP/ERROR: %s has no bartz-dff install (retail_moves.txt); set --pack-mods / PSPRECOMP_TEST_PACK_MODS' % src)
+            return 2
+        ma, mb = os.path.join(out, 'mods_A'), os.path.join(out, 'mods_B')
+        for d in (ma, mb):
+            shutil.rmtree(d, ignore_errors=True)
+        shutil.copytree(src, ma, ignore=shutil.ignore_patterns('textures', '.net_cache', 'cloud*'))
+        os.makedirs(mb)
+        r = subprocess.run([sys.executable, '-I', os.path.join(HERE, 'netpack.py'), 'deltas', ma, '--disc', os.path.abspath(os.path.expanduser(a.pack_disc))], capture_output=True, text=True)
+        if 'shareable online' not in r.stdout:
+            print('mp_diverge: SKIP/ERROR: the pack cannot be made shareable from %s: %s' % (src, (r.stdout + r.stderr)[-300:]))
+            return 2
+        envA['PSPRECOMP_MODS'], envB['PSPRECOMP_MODS'] = ma, mb
+        envA.setdefault('PSPRECOMP_TAGTEAM_FILLCHAR', '0,9')   # side 1's first CPU fill is Bartz (charId 9)
+        envB.setdefault('PSPRECOMP_TAGTEAM_FILLCHAR', '0,9')
     if a.stale:
         envB['PSPRECOMP_TAGTEAM_STALEREC'] = '24,11,4,31,28;31,30,26,21,5'
     if a.slow != 'none':
@@ -268,6 +289,11 @@ def main(argv):
         bad = compare(ea, eb, a.min_frames, nores)
         if 'Google Drive sync on' in A.text() + B.text():
             bad.append('CLOUD: a copy synced to Google Drive (the test dirs must carry no cloud.ini)')
+        if a.pack:
+            if 'applied for this session' not in B.text():
+                bad.append('PACK: copy B never applied the online pack (the test did not exercise it)')
+            if not re.search(r'extra\w* \w+ c9 ', A.text()) and not re.search(r'\(char 9\)', A.text()):
+                bad.append('PACK: Bartz (charId 9) was not in the fight (FILLCHAR not honoured): the test does not exercise the pack records')
         verdict = 'FAIL' if bad else 'PASS'
     except RuntimeError as e:
         bad.append('walk failed: %s' % e)

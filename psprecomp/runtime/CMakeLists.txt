@@ -342,7 +342,19 @@ set_source_files_properties(src/psp_ge_draw.cpp PROPERTIES COMPILE_DEFINITIONS "
 execute_process(COMMAND git rev-parse --short=12 HEAD WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                 OUTPUT_VARIABLE PSP_GIT_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET RESULT_VARIABLE PSP_GIT_COMMIT_RC)
 if(NOT PSP_GIT_COMMIT_RC EQUAL 0 OR NOT PSP_GIT_COMMIT)
-    set(PSP_GIT_COMMIT "unknown")
+    # no git (a tree rsynced without .git, e.g. the desktop test build): the commit comes from $PSPRECOMP_GIT_COMMIT or the one-line file
+    # psprecomp/GIT_COMMIT (written by the sync script). Without it the other players see this build as "unknown" and warn about a mismatch.
+    set(PSP_GIT_COMMIT "")
+    if(DEFINED ENV{PSPRECOMP_GIT_COMMIT})
+        set(PSP_GIT_COMMIT "$ENV{PSPRECOMP_GIT_COMMIT}")
+    elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../GIT_COMMIT")
+        file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/../GIT_COMMIT" PSP_GIT_COMMIT LIMIT_COUNT 1)
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../GIT_COMMIT")
+    endif()
+    string(SUBSTRING "${PSP_GIT_COMMIT}" 0 12 PSP_GIT_COMMIT)
+    if(NOT PSP_GIT_COMMIT)
+        set(PSP_GIT_COMMIT "unknown")
+    endif()
 endif()
 # re-run cmake (so the commit above is current) whenever HEAD moves: the commit is also the online build id (net_packs.cpp)
 execute_process(COMMAND git rev-parse --git-path HEAD WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}

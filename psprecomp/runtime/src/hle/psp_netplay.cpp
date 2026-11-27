@@ -75,6 +75,15 @@ void compare(const Mac& peer, uint32_t frame, const Values& mine, const Values& 
         for (size_t i = 0; i < n; i++) if (mine[i] != theirs[i]) { names += ' '; names += field_name((int)i); }
         std::fprintf(stderr, "[NETSYNC] frame %u: %d fields differ:%s\n", frame, differ, names.c_str());
     }
+    // A fight that stays out of sync is not the same fight on every machine (the player may not be able to move on one of them, see
+    // docs/multiplayer.md "Persistent desync"): the first toast lasts 6 s only, so say it again every ~5 s of mismatching with what to do.
+    // PSPRECOMP_DESYNC_TOAST_OLD=1: only the first three reports, as before.
+    static const bool old_toast = std::getenv("PSPRECOMP_DESYNC_TOAST_OLD") != nullptr;
+    if (!old_toast && g_mismatched >= 150 && (g_mismatched % 150) == 0) {
+        std::fprintf(stderr, "[NETSYNC] still out of sync with %s after %llu mismatched frames: the fight differs on the machines (other build, other mods, other save data): leave the match from the pause menu\n",
+                     mac_str(peer).c_str(), (unsigned long long)g_mismatched);
+        ge_draw_toast("Out of sync with another player: this fight differs on your machines (other build or mods?). Leave from the pause menu.", 5000, 40);
+    }
     if (frame < g_first_bad.load(std::memory_order_relaxed)) g_first_bad.store(frame, std::memory_order_relaxed);
     if (g_reports >= 3) return;
     g_reports++;
