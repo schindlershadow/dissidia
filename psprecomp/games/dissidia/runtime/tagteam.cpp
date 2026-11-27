@@ -5669,9 +5669,19 @@ void hpstep_hook(uint8_t* rdram, recomp_context* ctx) {
     for (int q = 0; q < ns; q++) {
         const uint32_t v = sec[q];
         if (!prim || v == prim || v == ratt || !ok(v, 0x12D0) || hp_eff(v) <= 0 || !foes(v, ratt)) continue;
+        // [HPREACH] (27 Nov, ffastuck; user: "I don't think I actually hit the player"): when the aimed victim shares the attacker's game side (FFA: the human's own-side extra, whose damage we route to the extra while retail's
+        // own victim is the OTHER side's fighter) the further victim must be about as close as the aimed one: a contact much farther away than the aimed target (> 1 m beyond it, and > 2.5 m) is not a hit of this attack.
+        // Same rule for every further victim of such an attack; cross-side attacks keep HPBOTH as it was. PSPRECOMP_TAGTEAM_HPREACH_OLD=1: off.
+        { static const bool ro = std::getenv("PSPRECOMP_TAGTEAM_HPREACH_OLD") != nullptr;
+          if (!ro && ok(prim, 0x12D0)) {
+              const float dv = std::hypot(rdf(v + 0x80u) - rdf(ratt + 0x80u), rdf(v + 0x88u) - rdf(ratt + 0x88u)), dp = std::hypot(rdf(prim + 0x80u) - rdf(ratt + 0x80u), rdf(prim + 0x88u) - rdf(ratt + 0x88u));
+              const bool own = side_of(prim) == side_of(ratt);   // (any attack: a registered victim more than 4 m beyond the aimed one and farther than 6 m, seen at 61 m in the matrix rig, is no contact either)
+              if (own ? (dv > dp + 1.0f && dv > 2.5f) : (dv > dp + 4.0f && dv > 6.0f)) {
+                  if (g_log) std::fprintf(stderr, "[HPREACH] t=%.2fs %s %08X's HP attack on %s %08X (%s side): %s %08X is %.1f m away (aimed victim %.1f m): not a contact of this attack, no HP damage to it\n", dissidia_battle_age() / 60.0f, role_of(ratt), ratt, role_of(prim), prim, own ? "own" : "other", role_of(v), v, static_cast<double>(dv), static_cast<double>(dp));
+                  continue; } } }
         *ctx = sv;
         if (abrv0 >= 0) wrh(ast + 0x14u, static_cast<uint16_t>(abrv0));
-        if (g_log) { static int c = 0; if (c++ < 100) std::fprintf(stderr, "[HPBOTH] t=%.2fs %s %08X (char %d) HP attack also hit %s %08X (char %d): second HP step with the attacker's BRV %d (first victim %s %08X)\n", dissidia_battle_age() / 60.0f, role_of(ratt), ratt, actor_char(ratt), role_of(v), v, actor_char(v), abrv0, ok(prim, 0x12D0) ? role_of(prim) : "?", prim); }
+        if (g_log) { static int c = 0; if (c++ < 100) std::fprintf(stderr, "[HPBOTH] t=%.2fs %s %08X (char %d) HP attack also hit %s %08X (char %d): second HP step with the attacker's BRV %d (first victim %s %08X) | contact source: retail hit registration (FUN_08838734) of the same frame; horizontal distance from the attacker: further victim %.1f m, first victim %.1f m\n", dissidia_battle_age() / 60.0f, role_of(ratt), ratt, actor_char(ratt), role_of(v), v, actor_char(v), abrv0, ok(prim, 0x12D0) ? role_of(prim) : "?", prim, static_cast<double>(std::hypot(rdf(v + 0x80u) - rdf(ratt + 0x80u), rdf(v + 0x88u) - rdf(ratt + 0x88u))), ok(prim, 0x12D0) ? static_cast<double>(std::hypot(rdf(prim + 0x80u) - rdf(ratt + 0x80u), rdf(prim + 0x88u) - rdf(ratt + 0x88u))) : -1.0); }
         g_xstep_vic = v;
         hpstep_core(rdram, ctx, v);
     }
@@ -7445,7 +7455,36 @@ void oob_tick(float age) {
         place_at(a, q.x, q.y, q.z, "oob"); start_script(a, 1);
     }
 }
+float g_finscrub_until = -1.f;   // [FINSCRUB]: battle age until which the finish's marks are taken off every standing fighter each tick (set when the KO flow released a finish that was cut short)
+void finish_scrub_step(uint32_t a, const char* why) {   // takes the finish's winner / decided state off a standing fighter (what the "KO flow done" release does once)
+    const uint32_t f0 = rd(a + 0x380u), w0 = rd(a + 908u); const bool dec = g_ram[(a + 0x126Bu) & 0x07FFFFFFu] == 1u;
+    const bool is_slot = a == srd(g_bs + 56u) || a == srd(g_bs + 60u);
+    if (!((f0 & 0x20000000u) || (w0 & 2u) || dec || (is_slot && (f0 & 2u)))) return;
+    wr(a + 0x380u, f0 & ~(0x20000000u | (is_slot ? 0x02000002u : (f0 & 0x20000000u) ? 2u : 0u)));   // (a slot fighter standing in the fight phase has neither bit 2 nor the 0x02000000 gate bit: normal play is +380 0000xxxx) wr(a + 908u, w0 & ~2u); g_ram[(a + 0x126Bu) & 0x07FFFFFFu] = 0u;
+    if (is_slot) { const uint32_t L = rd(a + 0x5ACu); if (ok(L, 0x200) && rd(L + 248u) == a) g_ram[(L + 0x126u) & 0x07FFFFFFu] = 1u; }
+    if (g_log) std::fprintf(stderr, "[FINSCRUB] t=%.2fs %s %08X: finish marks taken off (%s): +380 %08X -> %08X, +908 %08X -> %08X%s\n", dissidia_battle_age() / 60.0f, role_of(a), a, why, f0, rd(a + 0x380u), w0, rd(a + 908u), dec ? ", decided byte cleared" : "");
+}
 void frozen_fix() {
+    {   // [FINSCRUB] (27 Nov, ffastuck; desktop FFA: the human could not move after one HP attack killed an extra and the CPU slot fighter, "the next enemy spawned in and I still cannot move"): with a slot tag-in
+        // pending the KO flow releases the finish after ~3.5 s of its 5.6 s while retail's finish machine is still running; its later steps put the winner (the human) and its foe back into the victory state
+        // (+380 bit 2, +908 bit 2, decided byte) and nothing took them off again. (1) for 8 s after such a release every standing fighter is scrubbed each tick; (2) net: a standing, pad-driven slot fighter that keeps
+        // +380 bit 2 in the fight phase for 2 s (no burst / entrance / rebuild) gets the state taken off. Battle state + battle ticks only. PSPRECOMP_TAGTEAM_FINSCRUB_OLD=1: off.
+        static const bool off = std::getenv("PSPRECOMP_TAGTEAM_FINSCRUB_OLD") != nullptr; static uint32_t gen = ~0u; static float since[2] = {-1.f, -1.f};
+        if (gen != g_battle_gen) { gen = g_battle_gen; since[0] = since[1] = -1.f; g_finscrub_until = -1.f; }
+        if (!off && g_bs && !g_decided) {
+            const float age = dissidia_battle_age();
+            if (g_finscrub_until > 0.f && age < g_finscrub_until && !exb_busy()) {
+                for (uint32_t k = 0; k < 2; k++) { const uint32_t S = srd(g_bs + 56u + 4u * k); if (ok(S, 0x12D0) && !ko_state(S) && hp_eff(S) > 0 && !is_rebuilding(S)) finish_scrub_step(S, "after a cut-short finish"); }
+                for (int i = 0; i < g_nextra; i++) { const uint32_t X = g_extra[i].actor; if (g_extra[i].started && ok(X, 0x12D0) && alive(X) && !is_down(X) && !is_rebuilding(X)) finish_scrub_step(X, "after a cut-short finish"); }
+            }
+            if (rd(g_bs + 72u) == 3u && intro_done() && !exb_busy() && !entrance_busy() && age > 600.f) for (uint32_t k = 0; k < 2; k++) {
+                const uint32_t S = srd(g_bs + 56u + 4u * k);
+                if (!ok(S, 0x12D0) || !pad_driven(S) || !alive(S) || is_down(S) || is_rebuilding(S) || !(rd(S + 0x380u) & 2u)) { since[k] = -1.f; continue; }
+                if (since[k] < 0.f) since[k] = age;
+                if (age - since[k] >= 120.f) { since[k] = -1.f; finish_scrub_step(S, "stuck 2 s in the victory state"); }
+            }
+        }
+    }
     {   // Safety net (26 Nov, RP6: the human stayed frozen / could not lock on after a KO + EX Burst chance + tag-in): in the normal fight phase (bs+72 == 3, no finish / burst / chase / rebuild / entrance running)
         // a pad-driven slot fighter that keeps the finish's "decided" byte (+0x126B == 1) or whose lock block has the lock-on switched off (+0x126 == 0) for 3 s gets them back (what finsnap_restore does at "KO flow done").
         // Battle state + battle ticks only (same on every machine). PSPRECOMP_TAGTEAM_NOFROZENFIX=1: off.
@@ -7683,6 +7722,7 @@ void ko_oneround() {
             // (kill camera "stuck forever", the extras / other players still moved). Back to normal for every slot fighter that is standing. PSPRECOMP_TAGTEAM_NOWINCLEAR=1 = old.
             if (!std::getenv("PSPRECOMP_TAGTEAM_NOWINCLEAR")) for (uint32_t k = 0; k < 2; k++) { const uint32_t a2 = srd(g_bs + 56u + 4u * k); if (ok(a2, 0x12D0) && !ko_state(a2) && hp_eff(a2) > 0 && ((rd(a2 + 0x380u) & 2u) || (rd(a2 + 908u) & 2u))) { const uint32_t f0 = rd(a2 + 0x380u), w0 = rd(a2 + 908u); wr(a2 + 0x380u, f0 & ~2u); wr(a2 + 908u, w0 & ~2u); if (g_log) std::fprintf(stderr, "[KOCAM] t=%.2fs slot fighter %08X: victory state cleared (+0x380 %08X -> %08X, world flags +908 %08X -> %08X)\n", age / 60.0f, a2, f0, rd(a2 + 0x380u), w0, rd(a2 + 908u)); } }
             fin_since = 0.f; if (g_log) std::fprintf(stderr, "[TAGTEAM] t=%.2fs KO flow done: battle phase 4 (finish) put back to 3\n", age / 60.0f);
+            if (kof_early && !std::getenv("PSPRECOMP_TAGTEAM_FINSCRUB_OLD")) g_finscrub_until = age + 480.f;   // (the finish machine is still running: its later steps mark the winner again)
             { static const float kd = std::getenv("PSPRECOMP_TAGTEAM_KOFREEZE_DELAY") ? static_cast<float>(std::atof(std::getenv("PSPRECOMP_TAGTEAM_KOFREEZE_DELAY"))) * 60.f : 60.f; if (kof_early && !std::getenv("PSPRECOMP_TAGTEAM_SLOTCALLIN_DELAY")) for (SlotCallin& c : g_slot_callin) if (!g_ffa_slot_tag.count(c.S) && c.due > age + kd) c.due = age + kd; }   // (the fall played inside the finish: the tag-in comes as soon as it is loaded, not 3.2 s after the kill cam)
             if (kof_early) std::fprintf(stderr, "[KOFREEZE] t=%.2fs finish over %.2f s after its start: everybody released, the tag-in is still pending (slot call-ins %zu, rebuilds %zu)\n", age / 60.0f, (age - g_kof_t0) / 60.0f, g_slot_callin.size(), g_rebuild.size());
             else std::fprintf(stderr, "[KOFREEZE] t=%.2fs finish over %.2f s after its start (nothing pending)\n", age / 60.0f, (age - g_kof_t0) / 60.0f);
@@ -10556,6 +10596,15 @@ void hitreact2_hook(uint8_t* rdram, recomp_context* ctx) {
         const uint32_t vowner = rd(h + 16u); uint32_t x = booked_extra_victim(vowner);
         { static const bool nobook = std::getenv("PSPRECOMP_TAGTEAM_TEST_NOBOOK") != nullptr; if (nobook && x) x = 0; }   // test aid: the booking misses the hit (what the RP6 log showed: the reaction arrives before the hit registers), so the reaction falls to the slot handler
         if (!x && !breakrule_old() && rd(h + 4u) == 0x08AE7B50u && g_bs && (vowner == srd(g_bs + 56u) || vowner == srd(g_bs + 60u))) x = brk_samesideX(vowner);
+        // [BRKXSTEP] (27 Nov, ffastuck; desktop FFA new match: "I get the break animation when someone else is hit", every ~1.3 s, no attacker on record, the human's BRV unchanged): an extra's (or its assist's) own
+        // damage step with NO hit on record for it (the flag was set, the hit book had no victim) books the damage on the extra's foe / the step's victim, but the break reaction retail queues for it
+        // arrived in the handler of the attacker's opponent = the slot fighter of the victim's side (the human, whose side the victim extra shares in FFA). In an extra's step the reaction belongs to the
+        // fighter the step damages (an extra of the handler owner's side with its own handler). PSPRECOMP_TAGTEAM_XSTEPREACT_OLD=1: old.
+        if (!x && !breakrule_old() && g_xstep_att && !std::getenv("PSPRECOMP_TAGTEAM_XSTEPREACT_OLD") && rd(h + 4u) == 0x08AE7B50u && g_bs && (vowner == srd(g_bs + 56u) || vowner == srd(g_bs + 60u))) {
+            const uint32_t cand = g_xstep_vic ? g_xstep_vic : rd(g_xstep_att + 0x300u);
+            if (cand && cand != vowner && ok(cand, 0x12D0) && g_extra_hdl.count(cand) && side_of(cand) == side_of(vowner) && side_of(cand) != side_of(g_xstep_att)) {
+                x = cand; g_react_att = g_xstep_att;
+                if (brk_log_on() && brk_room()) std::fprintf(stderr, "[BRKXSTEP] t=%.2fs reaction in %s's handler routed to %s (the damage step of %s %08X%s)\n", dissidia_battle_age() / 60.0f, brk_who(vowner).c_str(), brk_who(cand).c_str(), role_of(g_xstep_att), g_xstep_att, g_xstep_vic ? "" : ", no victim on record, its foe"); } }
         if (!x && !breakrule_old() && rd(h + 4u) == 0x08AE7B50u && g_bs && (vowner == srd(g_bs + 56u) || vowner == srd(g_bs + 60u))) x = brk_exbX(vowner);
         if (x) {
             if (g_xbroken.count(x) && !std::getenv("PSPRECOMP_TAGTEAM_NOXBREAK")) {   // already broken: no new break, the BRV loss goes back (xbreak_guard)
@@ -10967,7 +11016,8 @@ void afd424_hook(uint8_t* rdram, recomp_context* ctx) {
                 if (dd++ == 0) { const uint32_t o14 = rd(h_of[i] + 0x14u); std::fprintf(stderr, "[DMGDUMP] handler clone %08X words:", h_of[i]); for (uint32_t o = 0; o < 0x40; o += 4) std::fprintf(stderr, " %X:%08X", o, rd(h_of[i] + o)); std::fprintf(stderr, "\n[DMGDUMP] +0x14 object %08X words:", o14); for (uint32_t o = 0; o < 0x80 && ok(o14, 0x80); o += 4) std::fprintf(stderr, " %X:%08X", o, rd(o14 + o)); std::fprintf(stderr, "\n[DMGDUMP] slot actor %08X\n", slot); }
             }
             uint32_t fl = rd(e.actor + 0x380u);
-            const uint32_t hv0 = hit_victim_of(e.actor);
+            static const bool test_nohv = std::getenv("PSPRECOMP_TAGTEAM_TEST_NOHV") != nullptr;   // test aid: the hit book has lost the extra's hit (the RP6 / desktop FFA log: a hit with no victim on record)
+            const uint32_t hv0 = test_nohv ? 0u : hit_victim_of(e.actor);
             if (hv0 && !(fl & 0x200u)) { wr(e.actor + 0x380u, fl | 0x200u); fl |= 0x200u; }   // a hit was registered for this extra but its flag is gone already: set it so the module step books the hit
             if (fl & 0x200u) {
                 const uint32_t keep = rd(e.actor + 0x1108u); wr(e.actor + 0x1108u, 0);
