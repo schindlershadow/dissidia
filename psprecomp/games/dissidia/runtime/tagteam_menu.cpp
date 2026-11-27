@@ -180,8 +180,13 @@ void fmt_dlg_hook(uint8_t* rdram, recomp_context* ctx) {
     if (r32(OVL_BASE) != 2) { if (FuncPtr f = ovl_battle_lookup(FMT_DLG)) f(rdram, ctx); return; }
     const uint32_t obj = static_cast<uint32_t>(ctx->r[4]), param = static_cast<uint32_t>(ctx->r[5]);
     static const bool log = std::getenv("PSPRECOMP_TAGTEAM_LOG") != nullptr;
-    if (!dissidia_tagteam_group_on() || obj == g_fmt_done_obj) {
-        if (obj != g_fmt_done_obj) { static uint32_t seen = 0; if (log && seen != obj) { seen = obj; std::fprintf(stderr, "[TTFMT] dialog handler on %08X, tag group off: left to the player\n", obj); } }
+    if (log) { static uint32_t lo = 0, ls = 0xFFFFFFFFu; const uint32_t st = r32(obj + 184u); if (lo != obj || ls != st) { lo = obj; ls = st; std::fprintf(stderr, "[TTFMT] handler list %08X state184=%u param %08X group=%d done=%08X\n", obj, st, param, dissidia_tagteam_group_on() ? 1 : 0, g_fmt_done_obj); } }
+    // 27 Nov (fmtdlg2): the dialog list object sits at the same address in every match of a session (the overlay's pool), so the old "once per object"
+    // marker answered only the first match's dialog and left the second one to the player. The init FUN_08A7ADD8 sets state +184 = 1 for every opening and the
+    // answer sets 2, so the state itself says whether this call belongs to a live dialog (PSPRECOMP_TAGTEAM_FMTDLG_ONCE=1: the old once-per-object marker).
+    static const bool once = std::getenv("PSPRECOMP_TAGTEAM_FMTDLG_ONCE") != nullptr;
+    if (!dissidia_tagteam_group_on() || (once ? obj == g_fmt_done_obj : r32(obj + 184u) != 1u)) {
+        if (obj != g_fmt_done_obj) { static uint32_t seen = 0; if (log && seen != obj) { seen = obj; std::fprintf(stderr, "[TTFMT] dialog handler on %08X, tag group off or not live: left to the player\n", obj); } }
         g_orig_fmt(rdram, ctx); return;
     }
     const uint32_t owner = r32(r32(FMT_OWNER_PTR));
