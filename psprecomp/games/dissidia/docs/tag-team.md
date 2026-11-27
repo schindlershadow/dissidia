@@ -188,7 +188,7 @@ comes in when a fighter is KO'd, the existing lock-on cycling switches between t
 
 **Opt-out flags** (in the setup app's environment / for the python tools): `PSPRECOMP_DISC_HOME_OLD=1` (old layout: disc0 in the work folder, copied at the end), `PSPRECOMP_KEEP_BUILD=1` (no clean-up).
 
-**Tests:** `setup/tests` (`disc_files_present`, new `kNeededBytesAndroid`), `tools/test_discdir.py` (adopt, move, clean, opt-outs, missing disc), a real run of setup_from_iso + psp_build + clean + psp_build again with `PSPRECOMP_DISC_HOME` on the desktop (sizes in the report), a full desktop install + game start. Phone/AVD checks: see the report of this batch.
+**Tests:** `setup/tests` (`disc_files_present`, new `kNeededBytesAndroid`), `tools/test_discdir.py` (adopt, move, clean, opt-outs, missing disc), a real run of setup_from_iso + psp_build + clean + psp_build again with `PSPRECOMP_DISC_HOME` on the desktop (sizes in the report), a full desktop install + game start. Phone/AVD checks: PASS (`~/dissidia/tt/s2/reg_exbmash`).
 
 ## Batch: out-of-bounds teleport (26 Nov, branch tt-oobfix)
 
@@ -6410,3 +6410,18 @@ User: during chases the effects and timers (hit / particle effects of the others
 - **What.** `tools/adhoc_relay`: the relay writes a JSON-lines event log (`~/.local/state/adhoc_relay/relay-YYYY-MM-DD.jsonl`, UTC days, 90 days kept, dir 0700): joins / leaves with raw IP:port and a network class (CGNAT 100.64/10 and 172.56/13), nickname, build id (read from the netdesync2 manifest `V` trailer and the tag roster `TV` message), match start / end (a group of 2+ connected players), battle start / end (relayed battle traffic), direct-path result per pair (relayed unicast stopping = direct) with reasons, relayed bytes / packets per player and match, peak and average rate, an RTT the relay measures itself (an unsolicited CHALLENGE right after a keep-alive; the client answers with a HELLO; no client change), and aggregated errors per IP. `adhoc_relay_stats` (Python) prints analytics, `--json`, and `--abuse` (per-IP rates, malformed packets, room hopping, joins per minute). Log writes are queued to a writer thread; the packet path only formats a line. Format and CLI: `tools/adhoc_relay/README.md`.
 - **No game code changed**, so no client build is needed; old clients show up as `client_v` 1 / no build id. `--no-log` is the opt-out.
 - **Test.** `python3 test_relay.py --spawn ./adhoc_relay` (own relay, temp log dir, two simulated players for 40 s, garbage packets, then the log lines and the stats text / `--json` / `--abuse` output are checked): PASSED. CPU for 300 000 relayed packets: 1.3 s old vs 1.3-1.5 s new.
+
+### Batch seventy-seven (26 Nov, tree ttexbmash, branch tt-exbmash): EX Burst defence bar - not reproduced, diagnostics added
+
+**Report:** RP6, single-player 2v2, Kefka (slotC) burst on the human (Kain, slotH), "no matter how fast I hit A the defence bar won't go up"; Gabranth's burst was fine. The raw pad reaches the game (`[CHORD] raw 2000 -> game 2000` every ~150 ms, 136 edges in the burst).
+
+**What the headless runs show (host, `~/dissidia/tt/s2/ttexbmash/`, burst by `EXBAT=s1:25:s0`, enemy char swapped to Kefka with `TEST_CHAR_SWAP=31=12`, human Squall or Kain `15=24`):**
+- The DEF bar (left, vertical, prompt glyph "A" = PSP Circle with `BUTTON_PROMPTS=nintendo`) rises with Circle presses only (Cross does not): screenshots every 0.4 s (`shot` script command) show the marker going grey -> green -> yellow -> red in about 3.5 s. Same at 30 fps and 120 fps (`PSPRECOMP_L30_PACE=clock` too), with Kain as victim, with the victim at BRV 1 -> BREAK at the burst's first hit (`SETBRV=slotH:23:1 SETBRV_HOLD=1`), and with presses injected on the debug socket in wall-clock time with +-30 ms jitter (new `PSPRECOMP_TEST_PADFREE=1`: the test script's events run but it no longer owns the pad; `ttexbmash/wallmash.py`).
+- The burst flow is identical to the device log (`[EXBCTL]`: sub-stage -1 -> 1, phases 1-4, slotH script 700 / 560 / 700, positions).
+- The victim's presses are NOT read through the 37 virtual-button tests or `FUN_08AB399C` on the brain pad (never true for the human's pad in any run, also not outside the burst); the human reads through its controller object (see the EX state-machine notes above), so the headless `[EXBG]` counters (`used` / `edges`) stay 0 for the victim and say nothing about the bar. The CPU victim's mash is brain bit 16 pressed on its pad.
+- Not found as the cause (checked in code): the pad block of held fighters (`g_exb_frozen` holds only the outsiders, slotC / slotH are never in it; `PSPRECOMP_TAGTEAM_NOEXBPAD=1` changes nothing), the swap-button mask (0 unless env), the chord window (off in a burst), the press latch (not used with 30 Hz logic), lock-step pause neutralisation (comms battles only).
+
+**Left to test on the device** (cannot be reproduced here): a long session (the log is battle age 228 s, several rounds), the lobby path (Battle Mode > Tag Team Battle) instead of the debug walk, the real controller object of the human.
+
+**Diagnostics added (no behaviour change):** `PSPRECOMP_EXB_LOG=3`: every `FUN_08AB399C` call (pad, bit) counted calls / true, printed every 2 s (`[EXBP3]`); `=4`: the burst controller's 0x300 bytes plus both burst actors' virtual pad words every 60 ms (`[EXBW]`); `[EXBG] pair test ... actor` list at the end of a burst; `PSPRECOMP_TEST_PADFREE=1`.
+**Test:** the runs above; regression `tagteam_test.py --baseline`: PASS (`~/dissidia/tt/s2/reg_exbmash`).
