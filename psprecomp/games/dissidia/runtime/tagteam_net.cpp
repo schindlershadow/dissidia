@@ -28,6 +28,7 @@
 //   PSPRECOMP_TTLOCK_BOUND=0        a slow machine's lead also grows for late reports (the old rule; default: not when it is the bottleneck itself)
 //   PSPRECOMP_TTLOCK_PROBE=0        the lead is shortened only while every player holds 3+ of our words (default: also after 10 s with no late report: probe down)
 //   PSPRECOMP_TTLOCK_SHORTEN=0      no shortening of the lead (default: on, see g_shrink_cur)
+//   PSPRECOMP_TTLOCK_CAP_OLD=1      the lead may grow to 5 frames (default: at most 1 above the start delay Auto picked from the ping)
 //   PSPRECOMP_TTLOCK_ADAPT=0        the input lead grows with every wait and never gets shorter (the old behaviour);
 //   PSPRECOMP_TTLOCK_SHRINK_MIN=<n> words of ours every other player must hold ahead for 3 s before the lead is shortened by one (default 3)
 //   PSPRECOMP_TTLOCK_TIMEOUT=<s>    seconds without a needed peer's input before this machine leaves the battle (default 10, 0 = wait forever)
@@ -478,6 +479,11 @@ void dispatch_hook(uint8_t* rdram, recomp_context* ctx) {
     // The lead and the other players' reports (see g_slack above).
     bool shorten = false, keep = false, lengthen = false;
     const uint32_t cap = g_F + static_cast<uint32_t>(std::max(std::max(g_start, g_floor) + 3, 2 + MAX_LEAD));   // the longest lead: 5 frames as before (delay 2 + 3), or 2 above where the battle started
+    // (user 27 Nov: "delay is still bad" at a 12 ms ping: late reports from the peer's frame hitches walked the lead 1 -> 5 and it never came back.)
+    // The lead now grows at most ONE frame above the start delay (which Auto picks from the measured ping): a hitch stalls the match for its own length,
+    // as on the PSP, instead of adding input delay for the rest of it. PSPRECOMP_TTLOCK_CAP_OLD=1: the old cap (up to 5 frames).
+    static const bool cap_old = std::getenv("PSPRECOMP_TTLOCK_CAP_OLD") != nullptr;
+    const uint32_t grow_cap = cap_old ? cap : std::min(cap, g_F + static_cast<uint32_t>(std::max(g_start, g_floor) + 2));
     const bool after_wait = g_wait_since != 0;                       // the last call delivered no frame
     const bool enough = g_seq > g_F + static_cast<uint32_t>(delay);  // the lead the next frame needs is there without a new sample
     if (g_adapt && g_delivered > 0 && !g_slack.empty()) {
@@ -497,7 +503,7 @@ void dispatch_hook(uint8_t* rdram, recomp_context* ctx) {
                 if (it != g_slack.end() && !it->second.empty() && now_ms() - it->second.back().ms < 500 && it->second.back().late >= g_late_min) lengthen = true;
             }
             if (bound) lengthen = false;
-            lengthen = lengthen && since >= std::chrono::milliseconds(2500) && now_ms() - g_grow_ms >= 5500 && g_seq + 1 < cap;
+            lengthen = lengthen && since >= std::chrono::milliseconds(2500) && now_ms() - g_grow_ms >= 5500 && g_seq + 1 < grow_cap;
             if (lengthen) shorten = keep = false;
             if (shorten || lengthen) {
                 const int lead = static_cast<int>(g_seq - g_F);
