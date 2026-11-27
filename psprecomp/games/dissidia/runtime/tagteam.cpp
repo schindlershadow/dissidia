@@ -1504,6 +1504,18 @@ void setup_hook(uint8_t* rdram, recomp_context* ctx) {
     }
     if (!ok(bs, 0x2800)) return;
     const uint32_t a0 = rd(bs + 56), a1 = rd(bs + 60), mode = rd(bs + 76), human = rd(bs + 84);
+    if (const char* sr = std::getenv("PSPRECOMP_TAGTEAM_STALEREC")) {   // test aid: the overlay's team records hold the previous battle's parties ("24,11,4;31,30,26,21,5": team 0 ; team 1), as on a machine that has played before
+        const char* q = sr;
+        for (int sd = 0; sd < 2 && *q; sd++) {
+            uint8_t ids[8] = {}; int n = 0;
+            while (*q && *q != ';' && n < 8) { ids[n++] = static_cast<uint8_t>(std::strtoul(q, const_cast<char**>(&q), 10)); if (*q == ',') q++; }
+            if (*q == ';') q++;
+            const uint32_t at = bs + 0x13C21u + 0x38u * static_cast<uint32_t>(sd);
+            g_ram[(at - 6u) & 0x07FFFFFFu] = static_cast<uint8_t>(n);
+            for (int i = 0; i < 8; i++) g_ram[(at + static_cast<uint32_t>(i)) & 0x07FFFFFFu] = i < n ? ids[i] : 0xFF;
+        }
+        std::fprintf(stderr, "[TAGTEAM] test aid: stale team records written (%s)\n", sr);
+    }
     if (g_log) std::fprintf(stderr, "[TAGTEAM] setup bs=%08X mode=%u slots %08X %08X human slot %u (chars %d %d; records %u/%u, matchup block %u/%u)\n", bs, mode, a0, a1, human, ok(a0, 0x12D0) ? actor_char(a0) : -1, ok(a1, 0x12D0) ? actor_char(a1) : -1,
         g_ram[(bs + 0x13C21u - 6u) & 0x07FFFFFFu], g_ram[(bs + 0x13C21u + 0x38u - 6u) & 0x07FFFFFFu], g_ram[(0x09AFDFB0u + 0x25u - 6u) & 0x07FFFFFFu], g_ram[(0x09AFDFB0u + 0x25u + 0x38u - 6u) & 0x07FFFFFFu]);
     if (std::getenv("PSPRECOMP_TAGTEAM_ROUNDDIFF")) {   // debug: small counters in user RAM that went up by one since the previous battle setup
@@ -2034,6 +2046,19 @@ PartyList read_party(int side) {
     uint32_t ids = g_bs + PARTY_IDS_FROM_BS + PARTY_STRIDE * static_cast<uint32_t>(side);
     if (!ok(ids - 6u, 0x10)) return p;
     int n = g_ram[(ids - 6u) & 0x07FFFFFFu];
+    // 26 Nov (netdesync2): before the battle starts (bs+72 == 0, the VS page) the overlay's team records still hold the PREVIOUS battle's parties (the
+    // overlay is reused; only the session's first battle had a count of 0): a machine that had played before planned the wrong partners / line-up while
+    // the other machine (first battle, or a fresh one) planned the right ones -> different VS line-ups, different banters, different fighters at frame 0.
+    // The menu's own copy (what the VS page reads) is the current one. PSPRECOMP_TAGTEAM_VSRECORDS_OLD=1 = the old fallback only.
+    static const bool vs_old = std::getenv("PSPRECOMP_TAGTEAM_VSRECORDS_OLD") != nullptr;
+    const bool pre_battle = g_vs_early || (!vs_old && rd(g_bs + 72) == 0);
+    if (pre_battle && !vs_old) {
+        const uint32_t mids = 0x09AFDFD5u + PARTY_STRIDE * static_cast<uint32_t>(side);
+        const int mn = g_ram[(mids - 6u) & 0x07FFFFFFu];
+        const uint8_t first = g_ram[mids & 0x07FFFFFFu];
+        const bool good = mn >= 1 && mn <= 8 && first >= 1 && first <= 34;
+        if (good) { ids = mids; n = mn; }
+    }
     if ((n < 1 || n > 8) && g_vs_early) {   // the VS page is up and the battle overlay has not filled its team records yet: the menu's own copy (same layout; the page reads it too)
         ids = 0x09AFDFD5u + PARTY_STRIDE * static_cast<uint32_t>(side);
         n = g_ram[(ids - 6u) & 0x07FFFFFFu];

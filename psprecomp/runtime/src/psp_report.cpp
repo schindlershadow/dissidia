@@ -43,6 +43,8 @@ std::string psp_release_version();   // psp_ge_draw.cpp
 
 namespace fs = std::filesystem;
 
+std::string psp_git_commit() { return PSPRECOMP_GIT_COMMIT; }   // the commit this build was made from (net build id, games/dissidia/runtime/net_packs.cpp)
+
 namespace psp_report {
 namespace {
 
