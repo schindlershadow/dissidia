@@ -110,6 +110,10 @@ uint32_t dissidia_model_pool_free(const uint8_t* rdram);
 void dissidia_snd_heap_free(const uint8_t* rdram, uint32_t* total, uint32_t* free_b, uint32_t* largest);   // hooks_models.cpp: the sound heap (same allocator)
 bool dissidia_hheap_locked(const uint8_t* rdram, uint32_t heap, uint32_t id);   // hooks_models.cpp: is handle `id` of that handle heap locked (in use)   // hooks_models.cpp: [MEMSUM] line (model pool, effect pool, texture overflow heap)
 float dissidia_battle_age();   // framerate.cpp: ticks (1/60 s) since the battle started running
+uint32_t dissidia_netplay_ls_frame();   // netplay.cpp: the last delivered lock-step frame
+// KOLIST clock (test aid): the battle age in seconds, or with PSPRECOMP_TAGTEAM_KOLIST_LSFRAME=1 the lock-step frame / 30 in an online battle: the KO then lands on the SAME
+// frame on every copy (the age counts from when the battle started running on THAT machine, a frame or two apart on a loaded host: a 1-frame split that is no game bug)
+static float kolist_now() { static const bool ls = std::getenv("PSPRECOMP_TAGTEAM_KOLIST_LSFRAME") != nullptr; if (ls) { const uint32_t f = dissidia_netplay_ls_frame(); if (f) return static_cast<float>(f) / 30.0f; } return dissidia_battle_age() / 60.0f; }
 float dissidia_logic_tick_len();   // framerate.cpp: 1/60 s per game logic frame (2 at 30 Hz)
 uint32_t dissidia_player_actor();   // framerate.cpp
 bool dissidia_hud_gen(uint32_t* gen);   // framerate.cpp: the gameplay frame (interpolation gen) the frame that just ran belongs to
@@ -4665,7 +4669,7 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
         if (g_kodiff_kolate > 0.f && age_now >= g_kodiff_kolate) { g_kodiff_kolate = -1.f; kodiff_dump("kolate"); }
         if (g_kobrv0_until > 0.f && age_now < g_kobrv0_until) { static float lastp = -1e9f; if (age_now - lastp >= 30.f) { lastp = age_now; const uint32_t hk = g_kobrv0_h; if (ok(hk, 0x310) && age_now >= g_kobrv0_dump && g_kobrv0_dump > 0.f) { g_kobrv0_dump = -1.f; std::fprintf(stderr, "[KOBRV0W] t=%.1fs words:", age_now / 60.f); for (uint32_t o = 0; o < 0x300u; o += 4) std::fprintf(stderr, " %X=%X", o, rd(hk + o)); std::fprintf(stderr, "\n"); }
         const uint32_t h = g_kobrv0_h; if (ok(h, 0x310)) std::fprintf(stderr, "[KOBRV0] t=%.1fs handler %08X state %u timer %.3f b665 %u dt(089D5EAC) %.4f phase %u slow ch0 %.3f pair %08X list +24 %08X +28 %08X b+88 %u\n", age_now / 60.f, h, rd(h + 8u), static_cast<double>(rdf(h + 568u)), g_ram[(h + 665u) & 0x07FFFFFFu], static_cast<double>(rdf(0x089D5EACu)), g_bs ? rd(g_bs + 72u) : 99u, ok(rd(0x08A62280u), 0x40) ? static_cast<double>(rdf(rd(0x08A62280u) + 4u)) : -1.0, rd(0x089D69F8u), rd(rd(0x089D69F8u) + 24u), rd(rd(0x089D69F8u) + 28u), g_ram[(rd(0x089D69F8u) + 88u) & 0x07FFFFFFu]); } }
-        if (next < list.size() && dissidia_battle_age() / 60.0f >= list[next].second) {
+        if (next < list.size() && kolist_now() >= list[next].second) {
             const std::string who = list[next].first; const int by_ch = next < list_by.size() ? list_by[next] : 0; next++;   // ("who:seconds:killer char": the killer for the KO ledger, a test aid)
             const uint32_t hs = rd(g_bs + 84u), H = srd(g_bs + 56u + 4u * hs), C = srd(g_bs + 56u + 4u * (1u - hs)); uint32_t a = 0;
             // side-based names (the same fighter on every machine of a lock-step battle, unlike human / cpu): slot0 / slot1 = the fighter in that slot,

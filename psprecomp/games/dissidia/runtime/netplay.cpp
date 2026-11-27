@@ -314,7 +314,10 @@ void dump_snap(uint32_t bad, uint32_t frame) {
 }  // namespace
 
 // tagteam_net.cpp (the tag battle's own lock-step, which replaces FUN_0890D664 there): a frame was delivered (state = the start of it).
+static uint32_t g_ls_frame = 0;
+uint32_t dissidia_netplay_ls_frame() { return g_ls_frame; }   // the last delivered lock-step frame (0 = none yet); tagteam.cpp's KOLIST test aid keys on it with PSPRECOMP_TAGTEAM_KOLIST_LSFRAME=1
 void dissidia_netplay_frame_delivered(uint32_t frame) {
+    g_ls_frame = frame;
     if (!g_ram) return;
     if (psp_netplay_sync_check()) { uint32_t vals[NVALUES]; const int n = collect(vals); psp_netplay_submit_state(frame, vals, n); dump_start(frame); }
     if (g_dump_blocks) dump_blocks(frame);
