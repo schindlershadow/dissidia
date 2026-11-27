@@ -75,6 +75,39 @@ def claim_slot(want):
     raise SystemExit('no free slot')
 
 
+_CORE_LOCKS = []
+
+
+def pick_core(slot):
+    """The core the slow copy is pinned to: the idlest one right now (a 0.6 s /proc/stat sample), not a fixed number: on a shared host another session's rig can sit on
+    the fixed core and the pinned copy then runs at a few frames a second. Claimed with a flock (/tmp/mp_diverge_core_N.lock) so two parallel checks never share one."""
+    def sample():
+        d = {}
+        for l in open('/proc/stat'):
+            if l.startswith('cpu') and l[3].isdigit():
+                f = l.split()
+                v = list(map(int, f[1:9]))
+                d[int(f[0][3:])] = (v[3] + v[4], sum(v))
+        return d
+    try:
+        a = sample()
+        time.sleep(0.6)
+        b = sample()
+        busy = {c: 1.0 - (b[c][0] - a[c][0]) / max(1, b[c][1] - a[c][1]) for c in b}
+    except (OSError, KeyError, ValueError):
+        return str(2 + (slot * 3) % max(1, (os.cpu_count() or 18) - 2))
+    for c in sorted((c for c in busy if c >= 2), key=lambda c: (round(busy[c], 1), c)):
+        f = open('/tmp/mp_diverge_core_%d.lock' % c, 'w')
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            f.close()
+            continue
+        _CORE_LOCKS.append(f)
+        return str(c)
+    return str(2 + (slot * 3) % max(1, (os.cpu_count() or 18) - 2))
+
+
 def build_relay():
     """tools/adhoc_relay built once into a cache dir (own copy: another session's rebuild cannot change it under us)."""
     src = os.path.join(HERE, '..', '..', '..', 'tools', 'adhoc_relay', 'adhoc_relay.cpp')
@@ -228,7 +261,7 @@ def main(argv):
             'PSPRECOMP_ADHOC_SPAN': '4', 'MP_NETMODE': a.net, **kv(a.env)}
     if nores:
         base.pop('PSPRECOMP_TAGTEAM_KOLIST'); base.pop('PSPRECOMP_TAGTEAM_KOLIST_NAT'); base.pop('PSPRECOMP_TAGTEAM_KOLIST_LSFRAME')
-    cpus = a.slow_cpus or str(2 + (slot * 3) % 16)
+    cpus = a.slow_cpus or (pick_core(slot) if a.slow != 'none' else '2')
     envA = {**base, 'MP_FILL': '1', 'MP_FPS': str(a.fps_a), 'MP_RS': a.rs_a, 'PSPRECOMP_ADHOC_PORT': str(udp), **kv(a.env_a)}
     envB = {**base, 'MP_SAVE': save_b, 'MP_FPS': str(a.fps_b), 'MP_RS': a.rs_b, 'PSPRECOMP_ADHOC_PORT': str(udp + 8), **kv(a.env_b)}
     if a.net == 'lan':   # LAN: each copy knows the other's span (no broadcast to the real LAN reaches another job)
@@ -258,10 +291,28 @@ def main(argv):
         t0 = time.time()
         m.walk(A, B, 4.0 if a.slow != 'none' else 0.0, a.mode, out if a.shots else None)
         log('in battle after %.0f s' % (time.time() - t0))
-        end = time.time() + a.secs
-        while time.time() < end:   # fight until both logged a result (the KO list decides the match) or the time is up
+        # the fight budget is wall time, but a loaded host runs fewer frames in it: the budget scales with the host load, and goes on past it while the
+        # battle still progresses (compared frames rising) up to 3x. A real mismatch / DESYNC ends the fight at once (never waited out).
+        sc = m.load_scale()
+        end = time.time() + a.secs * sc
+        hard = time.time() + a.secs * max(sc, 1.0) * 3
+        if sc > 1.0:
+            log('host load %.1f on %d cores: fight budget %.0f s (x%.1f), up to %.0f s while progressing' % (os.getloadavg()[0], os.cpu_count() or 0, a.secs * sc, sc, hard - time.time()))
+        last_frames, last_prog = None, time.time()
+        while True:
             m.exercise(A, B, 5)
-            if not nores and all(any(RESULT_RE.match(l) for l in c.text().splitlines()) for c in (A, B)) and all('[NETSYNC] so far' in c.text() for c in (A, B)):
+            texts = [c.text() for c in (A, B)]
+            if not nores and all(any(RESULT_RE.match(l) for l in t.splitlines()) for t in texts) and all('[NETSYNC] so far' in t for t in texts):
+                break
+            ex = [extract(t, 'X') for t in texts]
+            if any(e['mismatch_lines'] or (e['netsync'] or (0, 0))[1] for e in ex):
+                log('mismatch seen: ending the fight now')
+                break
+            now = time.time()
+            frames = tuple((e['netsync'] or (0, 0))[0] for e in ex)   # (a pinned slow copy on a loaded host may run at a few frames a second: it still counts as progress)
+            if frames != last_frames:
+                last_frames, last_prog = frames, now
+            if now >= hard or (now >= end and (nores or now - last_prog > 60)):   # (past the nominal budget only while the frames keep coming)
                 break
         time.sleep(6)   # the last NETSYNC summary
         ea, eb = extract(A.text(), 'A'), extract(B.text(), 'B')

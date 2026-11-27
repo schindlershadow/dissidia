@@ -103,8 +103,28 @@ class Copy:
             time.sleep(gap)
 
 
+def load_scale():
+    """How much slower than an idle host this one is running the games, as a factor for open-loop waits (menu sleeps, timeouts) and fight budgets:
+    1.0 up to half the cores' worth of load, then 1 per extra half-core-load, at most 3. TT_LOAD_SCALE=x forces it."""
+    v = os.environ.get('TT_LOAD_SCALE')
+    if v:
+        return max(0.5, float(v))
+    try:
+        load = os.getloadavg()[0]
+    except OSError:
+        return 1.0
+    return max(1.0, min(3.0, load / ((os.cpu_count() or 4) * 0.5)))
+
+
+SCALE = 1.0   # set by walk()
+
+
+def nap(secs):
+    time.sleep(secs * SCALE)
+
+
 def wait(pred, timeout, what):
-    end = time.time() + timeout
+    end = time.time() + timeout * SCALE
     while time.time() < end:
         if pred():
             return
@@ -129,11 +149,15 @@ def shot(c, out, name):   # a screenshot with the game layer (the debug socket's
 
 
 def walk(a, b, slack=0.0, menu_mode=None, shots=None):   # slack: extra seconds at the lobby steps that go through the network (--slack, for runs with PSPRECOMP_NET_LAG_MS)
+    global SCALE
+    SCALE = load_scale()
+    if SCALE > 1.0:
+        print('[mp_test] host load %.1f: menu waits x%.1f' % (os.getloadavg()[0], SCALE), file=sys.stderr)
     both = (a, b)
     for c in both:
         wait(lambda: 'Debug socket listening' in c.text(), 90, 'debug socket ' + c.side)
     for c in both:   # title: CROSS until the save list opens, CROSS loads the save
-        end = time.time() + 150
+        end = time.time() + 150 * SCALE
         while not ('list dialog opened' in c.text() or 'complete: mode=4' in c.text()):
             if time.time() > end:
                 raise RuntimeError('the save list never opened (%s)' % c.side)
@@ -142,14 +166,14 @@ def walk(a, b, slack=0.0, menu_mode=None, shots=None):   # slack: extra seconds 
         c.press('cross')
     for c in both:
         wait(lambda: 'complete: mode=4 result=0x00000000' in c.text(), 60, 'save load ' + c.side)
-    time.sleep(15)
+    nap(15)
     for c in both:
         c.press('down', 'down', 'cross', gap=1.2)          # Communications Mode
-    time.sleep(2)
+    nap(2)
     if menu_mode:   # the MENU route: Communications > Tag Team Battle (the last row: Up from the first), Mode Select, then the game's Group Battle
         for c in both:
             c.press('up', 'cross', gap=1.2)
-        time.sleep(2)
+        nap(2)
         shot(a, shots, 'modeselect')
         for c in both:   # (the joiner's choice does not matter: the host's lobby decides)
             c.press(*MENU_MODE_KEYS[menu_mode], gap=0.5)
@@ -159,18 +183,18 @@ def walk(a, b, slack=0.0, menu_mode=None, shots=None):   # slack: extra seconds 
     else:
         for c in both:
             c.press('down', 'cross', gap=1.2)              # Group Battle
-    time.sleep(4)
-    a.press('cross'); time.sleep(4)                        # A: Create Room (Custom)
-    b.press('down', 'down', 'cross'); time.sleep(6)        # B: Search for a Room
-    b.press('cross'); time.sleep(5)                        # B: request entry
-    a.press('up', 'cross'); time.sleep(2)                  # A: Start Group Battle -> YES
-    a.press('cross'); time.sleep(8 + slack)
+    nap(4)
+    a.press('cross'); nap(4)                        # A: Create Room (Custom)
+    b.press('down', 'down', 'cross'); nap(6)        # B: Search for a Room
+    b.press('cross'); nap(5)                        # B: request entry
+    a.press('up', 'cross'); nap(2)                  # A: Start Group Battle -> YES
+    a.press('cross'); nap(8 + slack)
     a.press('cross'); time.sleep(slack); b.press('right', 'cross')   # Party A / Party B
-    time.sleep(12 + slack)
+    nap(12 + slack)
     shot(a, shots, 'partyselect'); shot(b, shots, 'partyselect')
     if '[TTFMT] battle format dialog answered' not in a.text():   # (the tag modes answer the dialog themselves: PSPRECOMP_TAGTEAM_FMTDLG_OLD=1 shows it)
         a.press('cross')                                   # A: Tournament
-    time.sleep(5)
+    nap(5)
     shot(a, shots, 'setup'); shot(b, shots, 'setup')
     for c in both:
         c.press('cross', gap=2.0)                          # the 1st slot -> Player Select
@@ -185,12 +209,12 @@ def walk(a, b, slack=0.0, menu_mode=None, shots=None):   # slack: extra seconds 
     shot(a, shots, 'before_enter'); shot(b, shots, 'before_enter')
     for c in both:
         c.press('cross', gap=0.2)                          # Enter Battle
-    end = time.time() + 90
+    end = time.time() + 90 * SCALE
     while time.time() < end:                               # "Next" on the opponent pages until the lock-step runs
         busy = [c for c in both if not any(m in c.text() for m in IN_BATTLE)]
         if not busy:
             return
-        time.sleep(3)
+        nap(3)
         for c in busy:
             c.press('cross', gap=0.1)
     raise RuntimeError('the battle never started')
