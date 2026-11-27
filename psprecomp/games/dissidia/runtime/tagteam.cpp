@@ -161,6 +161,8 @@ extern "C" __attribute__((noinline)) void tagteam_hpm_marker(uint32_t att, uint3
 #include "psp_ge_draw.h"
 void tagteam_breakshot_event(float age_s, unsigned battle_no, const char* role, int chr, const char* kind, const char* brv);   // tagteam_breakshot.cpp
 void tagteam_breakshot_frame(float age_s);
+void dissidia_ttnet_roster_pump();   // tagteam_net.cpp (the roster / gear exchange)
+bool dissidia_tagteam_roster_host();
 namespace {
 bool hudlock_on() { static const bool on = std::getenv("PSPRECOMP_TAGTEAM_NOHUDLOCK") == nullptr; return on; }   // the big panels follow the human's lock-on (NOHUDLOCK=1: always the slot fighters)
 uint32_t hud_panel_fighter(uint32_t side);
@@ -1031,6 +1033,47 @@ void orec_begin_battle(); void orec_test_level();
 bool g_rec_cpu_made = false;   // the last record_for result was made from a matchup node
 std::map<int, std::vector<uint8_t>> g_match_cache;   // charId -> the record made for his matchup in this battle (retail rolls it once per round: a member who comes in twice keeps it)
 uint32_t g_match_dbg = 0;
+// ---- the host's gear snapshot for the CPU record builder (27 Nov, docs "Batch eighty-three") ----
+// The builder (FUN_088FA2AC) reads the owned / learned inventory tables of the LOCAL save (batch eighty-two blanked the whole range online: every machine saw an empty
+// save, so online CPUs had the empty-save loadout). Now the host sends the bytes the builder reads (the ranges below, RLE-packed in 'TG' chunks, tagteam_net.cpp),
+// and every machine - the host too - builds with the range zeroed and THAT snapshot put in, then puts its own save back. The snapshot is never written to the save file.
+// The host decides the mode (1 = gear, 2 = zeroed as batch eighty-two) and announces it in the roster: gear when every member has acknowledged the data in time (2 s),
+// else zeroed for everybody. PSPRECOMP_TAGTEAM_CPUGEAR_OLD=1: zeroed always. PSPRECOMP_TAGTEAM_CPUGEAR_VERIFY=1 (test aid): also builds with this machine's real save and logs if the record is the same
+// (only meaningful on the host, whose save IS the snapshot).
+struct GearRange { uint32_t lo, hi; };
+constexpr GearRange kGearRanges[] = { {0x08BBE400u, 0x08BBF800u}, {0x08BBF890u, 0x08BBF9C0u}, {0x08BBFA00u, 0x08BBFA80u}, {0x08BCCC00u, 0x08BCCEA0u} };
+uint32_t gear_raw_size() { uint32_t n = 0; for (const GearRange& r : kGearRanges) n += r.hi - r.lo; return n; }
+int g_gear_mode = 0;                 // 0 = not decided (zeroed if a record is built), 1 = gear, 2 = zeroed
+bool g_gear_pending = false;         // the host: the snapshot is offered and the mode is not decided yet (the plan waits)
+bool g_gear_off = false;             // verify aid: build with the real save
+std::vector<uint8_t> g_gear_raw;     // the snapshot in use (mode 1)
+uint32_t g_gear_hash = 0;            // of g_gear_raw
+std::vector<uint8_t> g_gear_blob;    // the host: the packed snapshot to send
+std::chrono::steady_clock::time_point g_gear_t0;
+std::map<int, std::vector<uint8_t>> g_gear_rx_parts; uint32_t g_gear_rx_hash = 0; int g_gear_rx_count = 0; bool g_gear_rx_ok = false; std::vector<uint8_t> g_gear_rx;   // a member: what has arrived
+uint32_t g_gear_use_gen = ~0u;
+uint32_t fnv_bytes(const uint8_t* d, size_t n) { uint32_t h = 2166136261u; for (size_t i = 0; i < n; i++) h = (h ^ d[i]) * 16777619u; return h; }
+std::vector<uint8_t> gear_read_local() { std::vector<uint8_t> v; for (const GearRange& r : kGearRanges) v.insert(v.end(), g_ram + (r.lo & 0x07FFFFFFu), g_ram + (r.hi & 0x07FFFFFFu)); return v; }
+std::vector<uint8_t> gear_pack(const std::vector<uint8_t>& raw) {   // zero runs: 0x00, count (1..255)
+    std::vector<uint8_t> o; for (size_t i = 0; i < raw.size();) { if (raw[i] == 0) { size_t j = i; while (j < raw.size() && raw[j] == 0 && j - i < 255) j++; o.push_back(0); o.push_back(static_cast<uint8_t>(j - i)); i = j; } else o.push_back(raw[i++]); } return o; }
+bool gear_unpack(const std::vector<uint8_t>& in, std::vector<uint8_t>& out) {
+    out.clear(); for (size_t i = 0; i < in.size(); i++) { if (in[i] == 0) { if (i + 1 >= in.size() || in[i + 1] == 0) return false; out.insert(out.end(), in[i + 1], 0); i++; } else out.push_back(in[i]); }
+    return out.size() == gear_raw_size(); }
+constexpr int kGearChunk = 480;
+void gear_reset() { g_gear_mode = 0; g_gear_pending = false; g_gear_raw.clear(); g_gear_hash = 0; g_gear_blob.clear(); g_gear_rx.clear(); g_gear_rx_parts.clear(); g_gear_rx_hash = 0; g_gear_rx_count = 0; g_gear_rx_ok = false; }
+void gear_begin_host() {   // the host, at the battle setup (the save is in memory)
+    static const bool old = std::getenv("PSPRECOMP_TAGTEAM_CPUGEAR_OLD") != nullptr;
+    if (old) { g_gear_mode = 2; std::fprintf(stderr, "[CPUGEAR] host: PSPRECOMP_TAGTEAM_CPUGEAR_OLD: CPU records built with the blanked save range\n"); return; }
+    g_gear_raw = gear_read_local(); g_gear_hash = fnv_bytes(g_gear_raw.data(), g_gear_raw.size()); g_gear_blob = gear_pack(g_gear_raw);
+    g_gear_pending = true; g_gear_t0 = std::chrono::steady_clock::now();
+    std::fprintf(stderr, "[CPUGEAR] host: snapshot of this machine's save for the CPU builder: %u bytes (%zu packed, %d chunk(s)), hash %08X\n", gear_raw_size(), g_gear_blob.size(), static_cast<int>((g_gear_blob.size() + kGearChunk - 1) / kGearChunk), g_gear_hash);
+}
+void gear_decide(bool all_acked) {   // the host
+    if (!g_gear_pending) return;
+    g_gear_pending = false; g_gear_mode = all_acked ? 1 : 2;
+    if (!all_acked) g_gear_raw.clear();
+    std::fprintf(stderr, "[CPUGEAR] host decides: %s\n", all_acked ? "every member has the snapshot: the CPU records are built with the host's gear" : "not every member acknowledged the snapshot in time: ZEROED fallback for every machine");
+}
 // Runs retail's CPU record builder FUN_088FA2AC(side, char, tier, level, type, base level, a6, a7, [sp] = items ptr, [sp+4] = b1) and puts the record it made
 // in the scratch record; the side's own record in REC_BASE stays as it was. fix_time != 0: the builder's time seed (it calls sceKernelGetSystemTimeLow) is that value.
 uint32_t g_fix_time = 0; FuncPtr g_orig_systime = nullptr;
@@ -1040,6 +1083,7 @@ bool run_cpu_record(uint32_t G, uint32_t ch, uint32_t tier, uint32_t lvl, uint32
     std::vector<uint8_t> keep(g_ram + (rec & 0x07FFFFFFu), g_ram + (rec & 0x07FFFFFFu) + 0x1060u);
     const uint32_t sp = static_cast<uint32_t>(g_ctx->r[29]);
     const uint32_t s0 = rd(sp), s1 = rd(sp + 4u);
+    const uint32_t i0 = ok(itemsp, 8) ? rd(itemsp) : 0u, i1 = ok(itemsp, 8) ? rd(itemsp + 4u) : 0u;
     wr(sp, itemsp); wr(sp + 4u, b1);
     FuncPtr f = fn(0x088FA2ACu);
     if (!f) return false;
@@ -1063,15 +1107,31 @@ bool run_cpu_record(uint32_t G, uint32_t ch, uint32_t tier, uint32_t lvl, uint32
     static const bool save_old = std::getenv("PSPRECOMP_TAGTEAM_CPUSAVE_OLD") != nullptr;
     constexpr uint32_t SV_LO = 0x08BAFC90u, SV_HI = 0x08C00000u;
     std::vector<uint8_t> save_keep;
-    if (pin && !save_old) { save_keep.assign(g_ram + (SV_LO & 0x07FFFFFFu), g_ram + (SV_HI & 0x07FFFFFFu)); std::memset(g_ram + (SV_LO & 0x07FFFFFFu), 0, SV_HI - SV_LO); }
+    static const bool gear_verify = std::getenv("PSPRECOMP_TAGTEAM_CPUGEAR_VERIFY") != nullptr;
+    const bool use_gear = pin && !save_old && g_gear_mode == 1 && g_gear_raw.size() == gear_raw_size() && !g_gear_off;
+    if (pin && !save_old && !g_gear_off) {
+        save_keep.assign(g_ram + (SV_LO & 0x07FFFFFFu), g_ram + (SV_HI & 0x07FFFFFFu)); std::memset(g_ram + (SV_LO & 0x07FFFFFFu), 0, SV_HI - SV_LO);
+        if (use_gear) { size_t o = 0; for (const GearRange& r : kGearRanges) { std::memcpy(g_ram + (r.lo & 0x07FFFFFFu), g_gear_raw.data() + o, r.hi - r.lo); o += r.hi - r.lo; } }
+        if (g_gear_use_gen != g_battle_gen) { g_gear_use_gen = g_battle_gen;
+            if (use_gear) std::fprintf(stderr, "[CPUGEAR] this machine builds the CPU records with the host's gear snapshot: hash %08X (%u bytes), its own save is put back after each build\n", g_gear_hash, gear_raw_size());
+            else std::fprintf(stderr, "[CPUGEAR] this machine builds the CPU records with the ZEROED save range (mode %d): snapshot hash 00000000\n", g_gear_mode); }
+    }
     f(g_ram, g_ctx);
-    if (!save_keep.empty()) { std::memcpy(g_ram + (SV_LO & 0x07FFFFFFu), save_keep.data(), SV_HI - SV_LO); static int sl = 0; if (sl++ < 6) std::fprintf(stderr, "[CPUSAVE] CPU record of char %u built with the local save range %08X..%08X blanked (the same on every machine)\n", ch, SV_LO, SV_HI); }
+    if (!save_keep.empty()) { std::memcpy(g_ram + (SV_LO & 0x07FFFFFFu), save_keep.data(), SV_HI - SV_LO); static int sl = 0; if (sl++ < 6) std::fprintf(stderr, "[CPUSAVE] CPU record of char %u built with the local save range %08X..%08X %s (the same on every machine)\n", ch, SV_LO, SV_HI, use_gear ? "replaced by the host's gear snapshot" : "blanked"); }
     if (pin) wr(GAME_LCG, lcg);
     g_fix_time = 0;
     *g_ctx = sv;
     wr(sp, s0); wr(sp + 4u, s1);
     std::memcpy(g_ram + (g_rec_scratch & 0x07FFFFFFu), g_ram + (rec & 0x07FFFFFFu), 0x1060u);
     std::memcpy(g_ram + (rec & 0x07FFFFFFu), keep.data(), 0x1060u);   // the first enemy's record stays as retail made it
+    if (gear_verify && use_gear) {   // test aid: the same record built from this machine's real save (equal on the host)
+        const std::vector<uint8_t> a(g_ram + (g_rec_scratch & 0x07FFFFFFu), g_ram + (g_rec_scratch & 0x07FFFFFFu) + 0x1060u);
+        wr(itemsp, i0); wr(itemsp + 4u, i1);
+        g_gear_off = true; const bool okv = run_cpu_record(G, ch, tier, lvl, type, L0, a6, a7, itemsp, b1, fix_time); g_gear_off = false;
+        const bool same = okv && std::memcmp(g_ram + (g_rec_scratch & 0x07FFFFFFu), a.data(), 0x1060u) == 0;
+        std::fprintf(stderr, "[CPUGEAR] verify: char %u record from the snapshot %s the record from this machine's real save (stone %d, hash %08X)\n", ch, same ? "EQUALS" : "DIFFERS from", static_cast<int8_t>(a[0x10 + 0xC6u * (a[0x773] > 4 ? 0u : a[0x773]) + 0xBAu]), fnv_bytes(a.data(), a.size()));
+        std::memcpy(g_ram + (g_rec_scratch & 0x07FFFFFFu), a.data(), 0x1060u);
+    }
     return true;
 }
 int party_order(int party, TagEntry* out, int max);
@@ -1551,7 +1611,7 @@ void setup_hook(uint8_t* rdram, recomp_context* ctx) {
     sp_mode_refresh();   // single player: the battle lobby's mode (or a Debug / env override) into the switches this battle reads
     xas_reset(false); g_nextra = 0; g_bs = 0; g_tt_age = 0.f; g_label_char.clear(); g_swaps.clear(); g_late_q.clear(); g_late_load.clear(); g_banter_q.clear(); g_late_ready = false; g_pre_hold = false; g_pre_used = false; g_hide_new.clear(); g_hold_total = 0.f; dissidia_hold_flow(false); g_real_partner[0] = g_real_partner[1] = 0; g_partner_chars[0].clear(); g_partner_chars[1].clear();
     reset_battle_state();   // (a forfeited / left battle may not have run the teardown: nothing of it may reach this one)
-    g_snap_valid = false; g_roster_ok = true; g_shared_valid = false;
+    g_snap_valid = false; g_roster_ok = true; g_shared_valid = false; gear_reset();
     if (!tag_on()) return;
     if (psp_adhoc_in_session()) {   // Communications Mode: the group's tag data as it is now decides this battle's partners (docs: CPU picks)
         g_snap = group_players(); g_snap_valid = true;
@@ -1572,6 +1632,7 @@ void setup_hook(uint8_t* rdram, recomp_context* ctx) {
             }
             if (g_me.host) std::fprintf(stderr, "[CPUFILL] host: CPU fill %s\n", g_shared_fill ? ("on, strength " + std::to_string(g_shared_fill)).c_str() : "off");
             if (g_me.host) g_shared_flags = local_rule_flags();
+            if (g_me.host) gear_begin_host();   // the CPU builder's gear: the host's snapshot goes out before the roster
             std::fprintf(stderr, "[TTCPU] roster: %s\n", g_me.host ? "this machine is the host, its list is sent to the others" : "waiting for the host's list");
         }
         orec_begin_battle();
@@ -13380,6 +13441,7 @@ void dissidia_tagteam_frame_end(uint8_t* rdram, recomp_context* ctx) {
 namespace { void plan_late(uint8_t* rdram, recomp_context* ctx) {
     g_ram = rdram; g_ctx = ctx;
     if (g_planned_gen == g_battle_gen || !g_roster_ok) return;
+    if (g_gear_pending && comms_battle()) { dissidia_ttnet_roster_pump(); if (g_gear_pending) return; }   // the host: the CPU gear snapshot must be acknowledged (or given up) before any CPU record is built
     {
             g_planned_gen = g_battle_gen; g_vs_early = rd(g_bs + 72) == 0; g_vs_plan.clear(); g_vs_plan_gen = g_battle_gen;
             const uint32_t hs = rd(g_bs + 84u) & 1u, hum = srd(g_bs + 56u + 4u * hs), cpu = srd(g_bs + 56u + 4u * (1u - hs));
@@ -14194,8 +14256,9 @@ bool dissidia_tagteam_roster_ready() { return g_roster_ok || !comms_battle(); }
 int dissidia_tagteam_roster_pack(uint8_t* out, int max) {   // 'T' 'R' 1 flags count, then the players
     if (!g_snap_valid) return 0;
     const int cnt = std::min<int>(static_cast<int>(g_snap.size()), 16);
-    if (max < 5 + kRosterRec * cnt) return 0;
+    if (max < 5 + kRosterRec * cnt + 5) return 0;
     out[0] = 'T'; out[1] = 'R'; out[2] = static_cast<uint8_t>(1u | (g_shared_fill << 4)); out[3] = g_shared_flags;  /* byte 2: version 1, CPU fill strength << 4 */ out[4] = static_cast<uint8_t>(cnt);
+    if (g_gear_pending) return 0;   // the CPU gear mode is not decided: the roster waits
     uint8_t* q = out + 5;
     for (int i = 0; i < cnt; i++, q += kRosterRec) {
         const NetPlayer& p = g_snap[static_cast<size_t>(i)];
@@ -14205,7 +14268,8 @@ int dissidia_tagteam_roster_pack(uint8_t* out, int max) {   // 'T' 'R' 1 flags c
         q[33] = static_cast<uint8_t>(p.bp_n); std::memcpy(q + 34, p.bp_regs, 5);
         for (int r = 0; r < 5; r++) for (int k = 0; k < 3; k++) q[39 + 3 * r + k] = p.bp_cfg[r][k];
     }
-    return 5 + kRosterRec * cnt;
+    q[0] = g_gear_mode == 1 ? 1 : 0; std::memcpy(q + 1, &g_gear_hash, 4);   // the CPU gear mode (1 = the host's snapshot with this hash, 0 = zeroed); older builds ignore the tail
+    return 5 + kRosterRec * cnt + 5;
 }
 std::string roster_str(const std::vector<NetPlayer>& v) {   // (players by MAC, so two machines' lists compare as text)
     std::vector<const NetPlayer*> o; for (const NetPlayer& p : v) o.push_back(&p);
@@ -14218,6 +14282,8 @@ std::string roster_str(const std::vector<NetPlayer>& v) {   // (players by MAC, 
 bool dissidia_tagteam_roster_adopt(const uint8_t* d, int n) {   // a member: the host's list replaces this machine's own snapshot
     if (g_roster_ok || !comms_battle() || n < 5 || d[0] != 'T' || d[1] != 'R' || (d[2] & 15) != 1) return false;
     const int cnt = d[4]; if (cnt <= 0 || cnt > 16 || n < 5 + kRosterRec * cnt) return false;
+    const bool has_gear = n >= 5 + kRosterRec * cnt + 5; const int gmode = has_gear ? d[5 + kRosterRec * cnt] : 0; uint32_t ghash = 0; if (has_gear) std::memcpy(&ghash, d + 5 + kRosterRec * cnt + 1, 4);
+    if (gmode == 1 && !(g_gear_rx_ok && g_gear_rx_hash == ghash)) { static uint32_t lg = 0; if (lg != g_battle_gen) { lg = g_battle_gen; std::fprintf(stderr, "[CPUGEAR] the host's roster says gear (hash %08X) but the snapshot is not complete here yet: waiting\n", ghash); } return false; }
     uint8_t me[6]; psp_adhoc_local_mac(me);
     std::vector<NetPlayer> v; bool found_me = false;
     const uint8_t* q = d + 5;
@@ -14233,6 +14299,8 @@ bool dissidia_tagteam_roster_adopt(const uint8_t* d, int n) {   // a member: the
     const std::string mine = roster_str(g_snap), host = roster_str(v);
     std::fprintf(stderr, "[TTCPU] roster from the host (%d player(s)%s): %s%s\n", cnt, found_me ? "" : ", this machine is NOT in it", mine == host ? "the same as this machine's" : "DIFFERS from this machine's, the host's is used:", mine == host ? "" : host.c_str());
     if (mine != host) std::fprintf(stderr, "[TTCPU]   this machine had:%s\n", mine.c_str());
+    if (gmode == 1) { g_gear_raw = g_gear_rx; g_gear_hash = ghash; g_gear_mode = 1; } else { g_gear_mode = 2; g_gear_raw.clear(); g_gear_hash = 0; }
+    std::fprintf(stderr, "[CPUGEAR] host's CPU record gear: %s (snapshot hash %08X)\n", gmode == 1 ? "the host's snapshot" : "zeroed save range (fallback / old host)", ghash);
     g_snap = v; g_roster_ok = true; g_shared_flags = d[3]; g_shared_fill = static_cast<uint8_t>(d[2] >> 4); g_shared_valid = true;
     std::fprintf(stderr, "[CPUFILL] host's CPU fill: %s\n", g_shared_fill ? ("on, strength " + std::to_string(g_shared_fill)).c_str() : "off");
     std::fprintf(stderr, "[TTCPU] host's rules: assists %s, EX Burst rule %s, free-for-all %s, 3 v 3 %s\n", (d[3] & 1) ? "on" : "off", (d[3] & 2) ? "fight" : "freeze", (d[3] & 4) ? ((d[3] & 0x10) ? "3" : "4") : "off", (d[3] & 8) ? "on" : "off");
@@ -14240,6 +14308,36 @@ bool dissidia_tagteam_roster_adopt(const uint8_t* d, int n) {   // a member: the
     if (d[3] & 0x40) std::fprintf(stderr, "[TTCPU] host's rules: Tag Duel, SELECT swaps with a bench member\n");
     return true;
 }
+// ---- the gear snapshot on the wire ('TG' chunks from the host, 'TK' = a member has it all), used by tagteam_net.cpp ----
+bool dissidia_tagteam_gear_pending() { return g_gear_pending; }
+int dissidia_tagteam_gear_chunk(int idx, uint8_t* out, int max) {   // 'T' 'G' idx count hash(4) payload; 0 = no such chunk
+    const int cnt = static_cast<int>((g_gear_blob.size() + kGearChunk - 1) / kGearChunk);
+    if (!g_gear_pending || idx < 0 || idx >= cnt) return 0;
+    const int off = idx * kGearChunk, len = std::min<int>(kGearChunk, static_cast<int>(g_gear_blob.size()) - off);
+    if (max < 8 + len) return 0;
+    out[0] = 'T'; out[1] = 'G'; out[2] = static_cast<uint8_t>(idx); out[3] = static_cast<uint8_t>(cnt); std::memcpy(out + 4, &g_gear_hash, 4); std::memcpy(out + 8, g_gear_blob.data() + off, len);
+    return 8 + len;
+}
+int dissidia_tagteam_gear_chunks() { return g_gear_pending ? static_cast<int>((g_gear_blob.size() + kGearChunk - 1) / kGearChunk) : 0; }
+uint32_t dissidia_tagteam_gear_hash() { return g_gear_hash; }
+bool dissidia_tagteam_gear_rx(const uint8_t* d, int n, uint32_t* hash) {   // a member: one chunk; true = the snapshot is complete (and valid) here
+    if (n < 9 || d[0] != 'T' || d[1] != 'G' || !comms_battle() || dissidia_tagteam_roster_host()) return false;
+    static const bool drop = std::getenv("PSPRECOMP_TAGTEAM_CPUGEAR_TESTDROP") != nullptr; if (drop) return false;   // test aid: this member never has the snapshot (the host must fall back to zeroed for everybody)
+    const int idx = d[2], cnt = d[3]; uint32_t h; std::memcpy(&h, d + 4, 4);
+    if (cnt <= 0 || idx >= cnt) return false;
+    if (g_gear_rx_ok && g_gear_rx_hash == h) { *hash = h; return true; }
+    if (g_gear_rx_hash != h || g_gear_rx_count != cnt) { g_gear_rx_parts.clear(); g_gear_rx_hash = h; g_gear_rx_count = cnt; g_gear_rx_ok = false; }
+    g_gear_rx_parts[idx].assign(d + 8, d + n);
+    if (static_cast<int>(g_gear_rx_parts.size()) < cnt) return false;
+    std::vector<uint8_t> blob, raw; for (int i = 0; i < cnt; i++) { auto it = g_gear_rx_parts.find(i); if (it == g_gear_rx_parts.end()) return false; blob.insert(blob.end(), it->second.begin(), it->second.end()); }
+    if (!gear_unpack(blob, raw) || fnv_bytes(raw.data(), raw.size()) != h) { std::fprintf(stderr, "[CPUGEAR] the host's snapshot (hash %08X) does not unpack / verify here: ignored\n", h); g_gear_rx_parts.clear(); g_gear_rx_hash = 0; return false; }
+    g_gear_rx = raw; g_gear_rx_ok = true; *hash = h;
+    std::fprintf(stderr, "[CPUGEAR] the host's snapshot is complete here: %zu bytes, hash %08X\n", raw.size(), h);
+    return true;
+}
+bool dissidia_tagteam_gear_ack_ok(const uint8_t* d, int n) { uint32_t h; return n >= 6 && g_gear_pending && (std::memcpy(&h, d + 2, 4), h == g_gear_hash); }   // the host: 'TK' with this snapshot's hash
+void dissidia_tagteam_gear_decide(bool all_acked) { gear_decide(all_acked); }
+bool dissidia_tagteam_gear_timed_out() { return std::chrono::duration<double>(std::chrono::steady_clock::now() - g_gear_t0).count() > 2.0; }
 bool dissidia_tagteam_decided() { return g_decided; }
 // A player forfeits an online tag battle (pause menu > Forfeit, docs "Batch twenty-nine"). Called by the lock-step on EVERY other machine at the same lock-step frame,
 // before that frame's input words are delivered (tagteam_net.cpp). Lock-step state only: the forfeiter's rows are used up (nobody comes in for him: comms_next_entry,
