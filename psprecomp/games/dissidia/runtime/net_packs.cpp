@@ -39,6 +39,7 @@ void dissidia_comm_on_side(const uint8_t mac[6], const uint8_t* data, size_t len
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include "dmath.h"
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -123,7 +124,7 @@ const char* fake_build() { static const char* e = std::getenv("PSPRECOMP_NETBUIL
 // of inputs (volatile: computed at run time, not folded by the compiler). The simulation itself does not call libm (the VFPU is table code, the generated code
 // is plain float operations), so every build gives the same value today; if a platform's math (msvcrt / ucrt / glibc / bionic) or float codegen ever differs,
 // the id below differs and both players are warned like for a build mismatch. PSPRECOMP_LIBM_FP_OFF=1: not part of the build id.
-uint32_t libm_fingerprint() {
+uint32_t libm_fingerprint() {   // log only: the platform's libm
     static const uint32_t fp = [] {
         volatile float in[] = {0.0f, 0.1f, 0.5f, 0.7853982f, 1.0f, 1.5707964f, 2.0f, 3.1415927f, 4.7f, 6.2831855f, 10.0f, 100.0f, 1e-3f, 1234.5678f, -0.3f, -2.5f, -17.25f, 0.999f};
         uint32_t h = 2166136261u;
@@ -138,10 +139,26 @@ uint32_t libm_fingerprint() {
     }();
     return fp;
 }
+// The "+m" part of the build id: the deterministic maths the simulation really uses (dmath.h) and the exact float operations (sqrt, floor, trunc) over a fixed
+// grid: equal on every correct build, different only if our own maths differs. (The platform libm hash above is only logged: the simulation does not use it.)
+uint32_t sim_math_fingerprint() {
+    static const uint32_t fp = [] {
+        volatile float in[] = {0.0f, 0.1f, 0.5f, 0.7853982f, 1.0f, 1.5707964f, 2.0f, 3.1415927f, 4.7f, 6.2831855f, 10.0f, 100.0f, 1e-3f, 1234.5678f, -0.3f, -2.5f, -17.25f, 0.999f};
+        uint32_t h = 2166136261u;
+        auto mix = [&](float v) { uint32_t u; std::memcpy(&u, &v, 4); for (int k = 0; k < 4; k++) { h ^= (u >> (8 * k)) & 0xFFu; h *= 16777619u; } };
+        for (volatile float x : in) {
+            const float a = x;
+            mix(dm::sinf_(a)); mix(dm::cosf_(a)); mix(sqrtf(a < 0 ? -a : a)); mix(floorf(a)); mix(truncf(a * 7.7f));
+            for (volatile float y : in) { const float b = y; mix(dm::atan2f_(a, b)); mix(dm::hypotf_(a, b)); }
+        }
+        return h;
+    }();
+    return fp;
+}
 std::string local_commit() {
     static const std::string c = [] {
         std::string s = fake_build() ? std::string(fake_build(), std::strcspn(fake_build(), ":")) : psp_git_commit();
-        if (!std::getenv("PSPRECOMP_LIBM_FP_OFF") && !fake_build()) { char b[16]; std::snprintf(b, sizeof b, "+m%06X", libm_fingerprint() & 0xFFFFFFu); s += b; }
+        if (!std::getenv("PSPRECOMP_LIBM_FP_OFF") && !fake_build()) { char b[16]; std::snprintf(b, sizeof b, "+m%06X", sim_math_fingerprint() & 0xFFFFFFu); s += b; }
         return s;
     }();
     return c;
@@ -654,7 +671,8 @@ void dissidia_net_packs_install() {
 }
 
 // ---- build id for tagteam_net.cpp (the tag roster exchange) ----
-uint32_t dissidia_libm_fingerprint() { return libm_fingerprint(); }   // for netplay.cpp's "[NETSYNC] this build" line
+uint32_t dissidia_libm_fingerprint() { return libm_fingerprint(); }
+uint32_t dissidia_simmath_fingerprint() { return sim_math_fingerprint(); }   // for netplay.cpp's "[NETSYNC] this build" line
 void dissidia_netbuild_local(char* out, size_t n, int* proto) {
     std::snprintf(out, n, "%s", local_commit().c_str());
     if (proto) *proto = kNetProtocol;

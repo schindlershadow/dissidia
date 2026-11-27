@@ -31,7 +31,8 @@ uint32_t dissidia_tagteam_fighter_sig();   // tagteam.cpp
 int dissidia_tagteam_extra_actors(uint32_t out[4], uint32_t flags[4]);   // tagteam.cpp
 uint32_t dissidia_camera_manager();   // camera.cpp
 void psp_mem_watch_set(uint32_t addr);   // runtime psp_dispatch.cpp (diagnostic watch)
-uint32_t dissidia_libm_fingerprint();   // net_packs.cpp
+uint32_t dissidia_libm_fingerprint();
+uint32_t dissidia_simmath_fingerprint();   // net_packs.cpp
 namespace {
 
 constexpr uint32_t BATTLE_PTR = 0x089D6A10u;          // battle object: +56 + 4 x side = fighter, +96 the battle clock (float)
@@ -228,7 +229,7 @@ void dump_start(uint32_t frame) {
 #else
         const char* arch = "other";
 #endif
-        std::fprintf(stderr, "[NETSYNC] this build: %s, fused multiply-add %s, libm fingerprint %08X, %s\n", arch, fma_contracted() ? "ON (differs from a PC build)" : "off", dissidia_libm_fingerprint(),
+        std::fprintf(stderr, "[NETSYNC] this build: %s, fused multiply-add %s, libm (log only) %08X, sim maths %08X, %s\n", arch, fma_contracted() ? "ON (differs from a PC build)" : "off", dissidia_libm_fingerprint(), dissidia_simmath_fingerprint(),
 #ifdef __clang__
                      "clang " __clang_version__
 #else
