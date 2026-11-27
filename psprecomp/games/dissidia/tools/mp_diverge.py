@@ -9,7 +9,7 @@ Battle > Mode Select > Group Battle room > Tournament), fights, then compares wh
 What differs between the copies (unlike mp_test.py, where both run the same save, settings and speed):
   * the save: A uses the work folder's save, B the Deck's (--save-b, default $PSPRECOMP_TEST_SAVE_B or ~/dissidia/tt/s2/saves/deck/ms0; a
     missing second save fails the test unless --allow-same-save),
-  * settings: A 30 fps, render scale 1; B 120 fps, render scale 2 (--fps-a/--fps-b/--rs-a/--rs-b),
+  * settings: A 30 fps, render scale 1; B 120 fps, render scale 2 (--fps-a/--fps-b/--rs-a/--rs-b), voice: B Japanese (PSPRECOMP_VOICE=jp), A default,
   * speed: the --slow copy (default A, the host; --slow b = the joiner) is pinned to one CPU core (taskset, --slow-cpus) like a phone,
   * the lobby: random CPU fill on (the host's saved lobby), tag-ins on (KOs by KOLIST_NAT swap the mate in), random fill characters,
   * Internet mode goes through a local adhoc_relay (own port, own room), LAN mode through the loopback span of own UDP ports.
@@ -267,7 +267,7 @@ def main(argv):
         base.pop('PSPRECOMP_TAGTEAM_KOLIST'); base.pop('PSPRECOMP_TAGTEAM_KOLIST_NAT'); base.pop('PSPRECOMP_TAGTEAM_KOLIST_LSFRAME')
     cpus = a.slow_cpus or (pick_core(slot) if a.slow != 'none' else '2')
     envA = {**base, 'MP_FILL': '1', 'MP_FPS': str(a.fps_a), 'MP_RS': a.rs_a, 'PSPRECOMP_ADHOC_PORT': str(udp), **kv(a.env_a)}
-    envB = {**base, 'MP_SAVE': save_b, 'MP_FPS': str(a.fps_b), 'MP_RS': a.rs_b, 'PSPRECOMP_ADHOC_PORT': str(udp + 8), **kv(a.env_b)}
+    envB = {**base, 'MP_SAVE': save_b, 'MP_FPS': str(a.fps_b), 'MP_INI': 'voice=jp', 'MP_RS': a.rs_b, 'PSPRECOMP_ADHOC_PORT': str(udp + 8), **kv(a.env_b)}
     if a.net == 'lan':   # LAN: each copy knows the other's span (no broadcast to the real LAN reaches another job)
         envA['PSPRECOMP_ADHOC_PEERS'] = '127.0.0.1:%d' % (udp + 8)
         envB['PSPRECOMP_ADHOC_PEERS'] = '127.0.0.1:%d' % udp
