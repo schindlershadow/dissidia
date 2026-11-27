@@ -16,6 +16,8 @@
 #include <string>
 #include <vector>
 
+std::string psp_adhoc_peer_nick(const uint8_t* mac);   // psp_hle_adhoc.cpp
+
 namespace {
 std::atomic<uint64_t> g_frame{0};
 std::atomic<bool> g_battle{false};
@@ -82,7 +84,10 @@ void compare(const Mac& peer, uint32_t frame, const Values& mine, const Values& 
     if (!old_toast && g_mismatched >= 150 && (g_mismatched % 150) == 0) {
         std::fprintf(stderr, "[NETSYNC] still out of sync with %s after %llu mismatched frames: the fight differs on the machines (other build, other mods, other save data): leave the match from the pause menu\n",
                      mac_str(peer).c_str(), (unsigned long long)g_mismatched);
-        ge_draw_toast("Out of sync with another player: this fight differs on your machines (other build or mods?). Leave from the pause menu.", 5000, 40);
+        // 27 Nov (user): name the player this machine differs from when known.
+        const std::string who = std::getenv("PSPRECOMP_DESYNC_NAME_OLD") ? std::string() : psp_adhoc_peer_nick(peer.data());
+        const std::string txt = "Out of sync with " + (who.empty() ? std::string("another player") : who) + ": this fight differs on your machines (other build or mods?). Leave from the pause menu.";
+        ge_draw_toast(txt.c_str(), 5000, 40);
     }
     if (frame < g_first_bad.load(std::memory_order_relaxed)) g_first_bad.store(frame, std::memory_order_relaxed);
     if (g_reports >= 3) return;
@@ -93,7 +98,9 @@ void compare(const Mac& peer, uint32_t frame, const Values& mine, const Values& 
                      mac_str(peer).c_str(), differ, n, field_name(first), mine[first], theirs[first]);
         for (size_t i = 0; i < n; i++)
             if (mine[i] != theirs[i]) std::fprintf(stderr, "[NETSYNC]   %-24s local %08X remote %08X\n", field_name((int)i), mine[i], theirs[i]);
-        std::snprintf(msg, sizeof msg, "Desync at frame %u (%s)", frame, field_name(first));
+        { const std::string who = std::getenv("PSPRECOMP_DESYNC_NAME_OLD") ? std::string() : psp_adhoc_peer_nick(peer.data());
+          if (who.empty()) std::snprintf(msg, sizeof msg, "Desync at frame %u (%s)", frame, field_name(first));
+          else std::snprintf(msg, sizeof msg, "Desync with %s at frame %u (%s)", who.c_str(), frame, field_name(first)); }
     } else {
         std::fprintf(stderr, "[NETSYNC] DESYNC at frame %u with %s: %zu values here, %zu there (different builds?)\n", frame,
                      mac_str(peer).c_str(), mine.size(), theirs.size());
