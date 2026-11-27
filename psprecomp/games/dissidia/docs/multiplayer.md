@@ -166,7 +166,8 @@ Network trouble is shown on screen for six seconds (and logged as `[NET]`), each
 | lost the connection to the party server | nothing from the server for 6 s (it answers every second) |
 | nothing from *player* for N s (unstable connection) | a player in your group silent for 2.5 s |
 | lost *player* (nothing received for 4 s) | the player is dropped |
-| high latency to *player*: N ms | the round trip over 150 ms for 3 s |
+| Ping to *player* is N ms (direct / through the relay / LAN) + a Network Delay tip | the round trip over 120 ms for 3 s (each 45 s; was 150 ms "high latency"). The tip says what Network Delay is (Auto: frames now; or a fixed value and what this ping needs) and to raise it in Settings > Network (it cannot change during a session). `PSPRECOMP_ADHOC_MSG_OLD=1` = the old text at 150 ms |
+| Playing through the relay with *player* (ping N ms) + the cause | no direct path after the hole punch. The cause names a carrier-grade NAT when the introduced address is 100.64.0.0/10 or T-Mobile's 172.56.0.0/13 (or your own address is in 100.64/10, or a 10.x LAN address sits behind a public one that never answers: "probably"), else the firewall / router wording. Test aid `PSPRECOMP_ADHOC_FAKE_NAT=a.b.c.d` stands in for the player's public address in the message |
 | packet loss to *player*: N % | 15 % or more of the last pings unanswered |
 | waiting for the other player's input | the fight had to wait more than 5 frames within 2 s (battle link) |
 | the other player's game is an older version | the battle link fell back to the game's exchange |
@@ -473,6 +474,8 @@ silence as a lost server. `party.schindlershadow.com` runs it as a user service 
 forwarded; run your own with the README's two lines and point Server at it.
 
 ## Not implemented
+
+- **TODO (large, not started; user 26 Nov): rollback netcode for high-ping play.** Players on mobile / carrier-grade NAT links play through the relay at 150-250 ms, where input delay (Network Delay) alone stalls or feels sluggish. See "Rollback: what it would need" below; the tag team lock-step (`tagteam_net.cpp`) would need the same snapshot / predict / re-simulate layer.
 
 - `sceNetAdhocDiscover*` and game mode (`sceNetAdhocctlCreateEnterGameMode` and friends): the game imports Discover but
   nothing in Communications mode was seen to need it.

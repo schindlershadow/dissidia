@@ -43,7 +43,7 @@ void ge_draw_set_hud_zones(int top_rows, int bottom_rows, int bottom_visible);
 int ge_draw_hud_bottom_rows();   // the room kept for the HUD under the touch controls, PSP rows (0 = none)
 // Textures (tex_addr & 0xFFFFFF) whose 2D draws are never pinned: markers that follow a fighter (the lock-on ring) stay on the picture.
 void ge_draw_set_hud_fixed_tex(const uint32_t* addrs, int n);
-// The world position (feet) of the target the lock-on ring is on, for gameplay frame `gen` (the interpolation tag's gen): newest `cur` and the frame before `prev` (null: unknown). Game thread, every frame.
+// The world position (feet) of the target the lock-on ring is on, for gameplay frame `gen` (the interpolation tag's gen): newest `cur` and the frame before `prev` (null: unknown); cur null = the target has no usable position: the ring gets no offset. Game thread, every frame.
 void ge_draw_set_follow_world(uint32_t gen, const float* prev, const float cur[3]);
 void ge_draw_set_hud_fixed_tex_hash(const uint64_t* hashes, int n, const uint8_t* rdram);   // the same by content (FNV-1a of the first 256 bytes of the texture's memory): the address moves between builds
 void ge_draw_set_hud_follow_scale(float k);   // 2D follow marks: move their centre about the screen centre by k (FOV change on the game side); 1 = off

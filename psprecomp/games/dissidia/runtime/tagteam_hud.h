@@ -85,4 +85,4 @@ void tagteam_hud_view(bool on, uint32_t gen, float slow_rate);
 // A fighter's feet (actor + 0x80) as the renderer's interpolated scene has them (the position to project with ge_draw_last_view_proj); false = no actor / memory.
 bool tagteam_hud_pos(uint32_t actor, float p[3]);
 // The actor the retail lock-on ring is on (0 = none): its position goes to the renderer so the ring is moved with the interpolated scene (call after tagteam_hud_view).
-void tagteam_hud_follow_target(uint32_t actor);
+void tagteam_hud_follow_target(uint32_t actor, bool has_target = true);   // actor 0 with has_target: a target whose position cannot be used (an EX core still at the origin): the ring is left where the game puts it (no offset)

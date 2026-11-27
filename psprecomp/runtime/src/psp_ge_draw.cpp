@@ -2855,7 +2855,7 @@ struct IpAnchor { float live[2], drawn[2]; };
 struct IpCam { uint32_t seq = ~0u; float v0[12], p0[16], v1[12], p1[16]; };   // the camera of this list: newest gameplay frame (0) and as drawn, blended (1)
 IpCam g_ip_cam;
 // The world position of the mark's target (the game module: ge_draw_set_follow_world), per gameplay frame: newest and the one before.
-struct IpFollowW { uint32_t gen = 0; bool used = false, has_prev = false; float prev[3], cur[3]; };
+struct IpFollowW { uint32_t gen = 0; bool used = false, has_prev = false, none = false; float prev[3], cur[3]; };   // none: the target has no usable position: no offset (never the nearest-bone guess)
 IpFollowW g_ip_fw[8]; std::mutex g_ip_fw_mu;
 std::vector<IpAnchor> g_ip_anchors;
 uint32_t g_ip_anchor_seq = ~0u;
@@ -2969,7 +2969,7 @@ static bool ip_apply(int prim_type, int count, IpMats* saved) {
 void ge_draw_set_follow_world(uint32_t gen, const float* prev, const float cur[3]) {
     std::lock_guard<std::mutex> lk(g_ip_fw_mu);
     IpFollowW* w = &g_ip_fw[gen & 7u];
-    w->gen = gen; w->used = true; w->has_prev = prev != nullptr; std::memcpy(w->cur, cur, 12); if (prev) std::memcpy(w->prev, prev, 12);
+    w->gen = gen; w->used = true; w->none = cur == nullptr; w->has_prev = prev != nullptr; if (cur) std::memcpy(w->cur, cur, 12); if (prev) std::memcpy(w->prev, prev, 12);
 }
 static bool ip_world_screen(const float* X, const float* v, const float* p, float* out) {   // a world point -> PSP screen pixels
     float vp[3], c[4];
@@ -2991,6 +2991,7 @@ bool ge_draw_through_ip(float cx, float cy, float* dx, float* dy) {
     static const bool s_old = std::getenv("PSPRECOMP_HUD_FOLLOW_NEAREST") != nullptr;
     if (!s_old && g_ip_cam.seq == g_ip_seq) {
         IpFollowW w; { std::lock_guard<std::mutex> lk(g_ip_fw_mu); w = g_ip_fw[g_ip_gen & 7u]; }
+        if (w.used && w.gen == g_ip_gen && w.none) return false;
         if (w.used && w.gen == g_ip_gen) {
             float Xc[3] = {w.cur[0], w.cur[1] + 0.9f, w.cur[2]}, Xb[3] = {Xc[0], Xc[1], Xc[2]};
             if (w.has_prev) {
