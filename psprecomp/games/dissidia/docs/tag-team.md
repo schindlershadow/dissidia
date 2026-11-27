@@ -1,6 +1,7 @@
 # Tag team battles (2 v 2): research notes and plan
 
 ## TODO (kept up to date; newest first)
+- ~~Crosshair still wild when locked on to the EX Core (user, RP6 26 Nov)~~ FIXED 26 Nov (tree tthudsm3, branch tt-hudsmooth3, "Batch sixty-seven"): the ring target was only taken from fighters (`ok(t, 0x12D0)`, `+0x2FC`), so the core fell back to the old nearest-bone anchors. Not on a device.
 - ~~Crosshair gone after an extra's kill camera (RP6 26 Nov, `desk_logs/rp6_reticle5_1126_1816.log`)~~ FIXED 26 Nov (branch tt-cursor7): the lockfix6 restore put back a +0x878 snapshot taken after the enable was already cleared ("extra kill camera over: 0101 -> 0001"). The restore now only ever sets the lock cursor enable (bit 0x0100) when the fight resumes, never clears it.
 
 - ~~"I still cannot break Emperor" (user, RP6 FFA 26 Nov, `desk_logs/rp6_emperor_nobreak_1126_1930.log`): the break happened (`[BRKEVT] BREAK victim extraP ... SAME-SIDE`, bonus) but the big panel showed no BREAK~~ FIXED on the host 26 Nov (tree ttpanel2, branch tt-panelbreak2, "Batch seventy-seven"): the own-side extra on the opposing panel had its BREAK word / burst / steady BREAK looked up on its own side's panel and kept off; now they follow the panel that shows it. Opt-out `PSPRECOMP_TAGTEAM_PANELBREAK_SHOWN_OLD=1`. Not checked on a device.
@@ -6369,3 +6370,16 @@ User: during chases the effects and timers (hit / particle effects of the others
 - RP6: "the kill cam is still zooming into me, not Chaos" (`rp6_killcam_loop_1126_1938.log` t=380.59: killer extraP picked and "re-aimed", the human shown). Cause (headless, `PSPRECOMP_TAGTEAM_KCAMLOG=1` logs the camera director's floats + fighter positions): the re-aim works (director look-at `+0x30/+0x34/+0x38` = killer) but is a one-shot; the retail finish camera swings to the winner slot fighter's closeup state about 150 ticks (2.5 s) into the finish and overwrites the look-at (finish machine +0x20 = winner).
 - Fix (`tagteam.cpp`, `KReaim.hold`): after the killer re-aim, each tick the look-at is compared with what was set; if it left (> 0.5), the same re-aim is done again on the killer's current position (`[KOCAM] ... look-at left the killer ... re-aimed again`). Game state only, flow / phases / timers untouched. `PSPRECOMP_TAGTEAM_NOKCAMHOLD=1` = old.
 - Test: `KOLIST=slot1:30:11` (extra kills enemy slot), `~/dissidia/tt/kc8c` (before: look-at back on slotH at 32.63 s) / `kc8d` (after: look-at on the killer 30.2 - 36 s). FFA not run (walk did not reach the battle). Not on a device.
+
+### Batch sixty-seven (26 Nov, tree tthudsm3, branch tt-hudsmooth3): lock-on ring on an EX core
+- **Cause.** Batch sixty-six took the ring's target from the human's `+0x2FC` and required a fighter-sized object (`ok(t, 0x12D0)`). An EX core (kind `+0x542` = 6, a smaller object) is
+  never `+0x2FC` (retail puts the lock selector on it: block `+304` -> selector `+28` = 2, nearest core `FUN_08B40A50`), so no target reached the renderer and the ring fell back to the
+  nearest-root-bone choice, the cause of the wild ring.
+- **Fix.** The target is what the human's lock block answers (`LOCK_GET`), replaced by the nearest core (`FUN_08B40A50`) while the selector is 2; any kind is accepted when its position is
+  finite and not (0,0,0) (idle cores sit at the origin). A target without a usable position publishes "none" (`ge_draw_set_follow_world(gen, null, null)`): the ring is then left exactly where the
+  game puts it, never the nearest-bone guess (that fallback now only applies without the tag team hook or with `PSPRECOMP_HUD_FOLLOW_NEAREST=1`). A new target (fighter -> core -> fighter) starts its
+  position history afresh (`tagteam_hud_follow_target`): no blend across the switch (the blend needs the previous gameplay frame's position of the same actor). `[HUDSMOOTH] ring target <actor> kind <k> pos ... followed` with `PSPRECOMP_TAGTEAM_LOG=1`.
+- **Test.** `PSPRECOMP_TAGTEAM_TESTLOCKCORE=09D40E90`, 120 fps, `PSPRECOMP_INTERP_TRACE=3` (`~/dissidia/tt/s2/hudsm/c6`, `rec_run5.py` waits for the `selector -> 2` line, 240 REC frames): the log shows ring target `09D41D90` /
+  `09D42FC0` kind 6 at (-28.0, 0.5, -24.0) `followed`; per-frame offset while on the core +21.5 +16.0 +10.6 +5.2 | +15.1 +11.2 +7.4 +3.7 (blended - newest, decays over the 4 frames of a tick, never past 0),
+  24 jump frames (second difference > 5 px) of 4271, all from the game's own ring steps. Regression `tagteam_test.py --baseline` PASS (`~/dissidia/tt/s2/reg_hudsmooth3`).
+- **Not verified.** On the device; an EX core while it is out and moving (the host test core stands at one point); other non-fighter lock targets (the summon's own object) take the same path.
