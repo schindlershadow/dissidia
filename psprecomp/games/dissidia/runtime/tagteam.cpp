@@ -236,6 +236,8 @@ uint32_t rd(uint32_t a);   // below
 void kodiff_dump(const char* tag);
 void finsnap_restore(bool keep_pair = false);
 void pair_restore(const char* why);
+float g_kofskip_age = -1e9f;   // KOLOOP: battle age of the last skipped finish request
+bool ffa_held_ko_only();
 bool g_pair_defer = false; float g_pair_defer_t0 = 0.f;   // KOFREEZE: the pair update switch (+88 / +89) stays off while a KO'd slot fighter waits for its tag-in (retail would start the finish again)
 float g_kolist_late = -1.f;   // test aid KOLIST_LATE: the KO flow waits 30 ticks (the finish is up by then)
 uint8_t g_pair_on = 0, g_pair_on2 = 0; bool g_pair_have = false;
@@ -4274,7 +4276,7 @@ void rebuild_frame() {
     }
     if (g_bs && std::getenv("PSPRECOMP_TAGTEAM_CTLLOG")) {   // debug: every 15 ticks the phase and, per fighter, position / script / how far it moved since the last sample
         static float last = -1e9f; static std::map<uint32_t, std::array<float, 3>> prev; const float age = dissidia_battle_age();
-        if (age - last >= 15.f || age < last) { last = age; char b[1400]; int n = std::snprintf(b, sizeof b, "[CTL] t=%.2f phase %u fb %d eb %d en %d |", age / 60.0f, rd(g_bs + 72u), finish_busy() ? 1 : 0, exb_busy() ? 1 : 0, entrance_busy() ? 1 : 0);
+        if (age - last >= 15.f || age < last) { last = age; char b[1400]; int n = std::snprintf(b, sizeof b, "[CTL] t=%.2f phase %u+%u fb %d eb %d en %d |", age / 60.0f, rd(g_bs + 72u), rd(g_bs + 80u), finish_busy() ? 1 : 0, exb_busy() ? 1 : 0, entrance_busy() ? 1 : 0);
             for (const uint32_t f : all_fighters_any()) { if (n > 1200) break; const float x = rdf(f + 0x80u), z = rdf(f + 0x88u); auto& pv = prev[f]; const float d = std::fabs(x - 5000.f) < 1.f ? -1.f : std::hypot(x - pv[0], z - pv[1]); pv = {x, z, 0.f};
                 n += std::snprintf(b + n, sizeof b - static_cast<size_t>(n), " %s:%d hp%d d%.2f f%X>%s", role_of(f), static_cast<int>(static_cast<int16_t>(rd(f + 0x180u) & 0xFFFFu)), hp_eff(f), static_cast<double>(d), rd(f + 0x380u), role_of(rd(f + 0x300u))); }
             std::fprintf(stderr, "%s\n", b); } }
@@ -7505,6 +7507,7 @@ void ko_oneround() {
     // [KOFREEZE] (27 Nov, kofreeze): the fighters were frozen from the finish until the KO'd slot's call-in / rebuild was DONE (kill cam + 3.2 s + the model load: ~9 s on the RP6, "after the kill cam the game freezes for a moment, no one
     // can move until a new player spawns"). Now the finish's phase ends with its presentation (slow motion released, nothing in an EX Burst, no mate swap pending): every KO'd slot fighter is parked (call-in pending or its rebuild
     // running), so the phase goes back to 3 at once and everybody else fights on; the tag-in comes in later like a call-in in the middle of a fight. Battle state only. PSPRECOMP_TAGTEAM_KOFREEZE_OLD=1: old (held until the tag-in is done).
+    if (rd(g_bs + 72u) == 4u && dissidia_battle_age() - g_kofskip_age < 4.f && ffa_held_ko_only()) { wr(g_bs + 72u, 3u); g_kofskip_age = -1e9f; }   // (a skipped finish request: the caller wrote phase 4 after the hooks)
     bool kof_early = false;
     { static const bool kofold = std::getenv("PSPRECOMP_TAGTEAM_KOFREEZE_OLD") != nullptr;
       if (!kofold && !g_decided && rd(g_bs + 72u) == 4u && (!g_slot_callin.empty() || !g_rebuild.empty()) && g_ko_swap_at.empty() && !exb_busy() && !std::getenv("PSPRECOMP_TAGTEAM_KOHOLD")) {
@@ -7527,7 +7530,7 @@ void ko_oneround() {
         if (!ko_any) { if (fin_since == 0.f) fin_since = age; if (age - fin_since >= 5.f) {
             { const uint32_t mg = rd(0x08A62280u); if (ok(mg, 0x40) && rdf(mg + 4u) < 1.99f) { const uint32_t sp1 = static_cast<uint32_t>(g_ctx->r[29]); g_ctx->r[29] = static_cast<int32_t>(sp1 - 0x40u); call(0x08A620B0u, mg, 0u); g_ctx->r[29] = static_cast<int32_t>(sp1); if (g_log) std::fprintf(stderr, "[TAGTEAM] t=%.2fs finish slow motion (channel 0) released by hand\n", age / 60.0f); } }
             if (g_sndenable_gen == g_battle_gen && !std::getenv("PSPRECOMP_TAGTEAM_NOSNDENABLE")) { const uint32_t cur = rd(0x089D6C98u); if ((cur & 0xFFu) != g_sndenable_val) { wr(0x089D6C98u, (cur & ~0xFFu) | g_sndenable_val); if (g_log) std::fprintf(stderr, "[KOCAM] t=%.2fs sound requests enabled again (byte 089D6C98 %02X -> %02X)\n", age / 60.0f, cur & 0xFFu, g_sndenable_val); } } g_sndenable_gen = ~0u;
-            g_kodiff_late = age + 300.f; kodiff_dump("post"); cam_restore("finish over"); g_midfin_gen = ~0u; finsnap_restore(kof_early && !std::getenv("PSPRECOMP_TAGTEAM_KOFREEZE_NOPAIRDEFER")); wr(g_bs + 72u, 3u); for (uint32_t k = 0; k < 2; k++) { const uint32_t a2 = srd(g_bs + 56u + 4u * k); if (ok(a2, 0x12D0)) wr(a2 + 0x380u, rd(a2 + 0x380u) & ~0x20000000u); }
+            g_kodiff_late = age + 300.f; kodiff_dump("post"); cam_restore("finish over"); g_midfin_gen = ~0u; finsnap_restore(kof_early && std::getenv("PSPRECOMP_TAGTEAM_KOFREEZE_PAIROFF")); wr(g_bs + 72u, 3u); for (uint32_t k = 0; k < 2; k++) { const uint32_t a2 = srd(g_bs + 56u + 4u * k); if (ok(a2, 0x12D0)) wr(a2 + 0x380u, rd(a2 + 0x380u) & ~0x20000000u); }
             // The finish also puts the WINNER's slot fighter into its victory state (+0x380 bit 2 and world flags +908 bit 2: win script, no pad, not moved by the world step): with the match going on that fighter stayed frozen for good
             // (kill camera "stuck forever", the extras / other players still moved). Back to normal for every slot fighter that is standing. PSPRECOMP_TAGTEAM_NOWINCLEAR=1 = old.
             if (!std::getenv("PSPRECOMP_TAGTEAM_NOWINCLEAR")) for (uint32_t k = 0; k < 2; k++) { const uint32_t a2 = srd(g_bs + 56u + 4u * k); if (ok(a2, 0x12D0) && !ko_state(a2) && hp_eff(a2) > 0 && ((rd(a2 + 0x380u) & 2u) || (rd(a2 + 908u) & 2u))) { const uint32_t f0 = rd(a2 + 0x380u), w0 = rd(a2 + 908u); wr(a2 + 0x380u, f0 & ~2u); wr(a2 + 908u, w0 & ~2u); if (g_log) std::fprintf(stderr, "[KOCAM] t=%.2fs slot fighter %08X: victory state cleared (+0x380 %08X -> %08X, world flags +908 %08X -> %08X)\n", age / 60.0f, a2, f0, rd(a2 + 0x380u), w0, rd(a2 + 908u)); } }
@@ -7892,10 +7895,13 @@ struct KReaim { uint32_t gen = ~0u, victim = 0; float due = -1.f; } g_kreaim; fl
 // those held-out bodies (and the match is not decided) both functions do nothing and the decided-winner word goes, so the phase stays 3. PSPRECOMP_TAGTEAM_KOLOOP_OLD=1: old.
 bool ffa_held_ko_only() {
     static const bool old = std::getenv("PSPRECOMP_TAGTEAM_KOLOOP_OLD") != nullptr;
-    if (old || !g_bs || g_decided || !ffa_now() || g_ffa_down.empty() || rd(g_bs + 72u) != 3u) return false;
+    static const bool pairold = std::getenv("PSPRECOMP_TAGTEAM_KOFREEZE_PAIROFF") != nullptr;   // old KOFREEZE: the pair switch off instead of this guard
+    if (old || !g_bs || g_decided || (rd(g_bs + 72u) != 3u && rd(g_bs + 72u) != 4u)) return false;
+    if (!(ffa_now() && !g_ffa_down.empty()) && (pairold || (g_slot_callin.empty() && g_rebuild.empty()))) return false;
     bool any = false;
     for (uint32_t k = 0; k < 2; k++) { const uint32_t a = srd(g_bs + 56u + 4u * k); if (!ok(a, 0x12D0) || !(hp_eff(a) <= 0 || ko_state(a))) continue;
-        if (std::find(g_ffa_down.begin(), g_ffa_down.end(), a) == g_ffa_down.end()) return false; any = true; }
+        bool parked = std::find(g_ffa_down.begin(), g_ffa_down.end(), a) != g_ffa_down.end() || (!pairold && is_rebuilding(a)); if (!pairold) for (const SlotCallin& c : g_slot_callin) if (c.S == a) parked = true;
+        if (!parked) return false; any = true; }
     return any;
 }
 FuncPtr g_orig_phasechg = nullptr;
@@ -7903,12 +7909,12 @@ void phasechg_hook(uint8_t* rdram, recomp_context* ctx) {
     g_ram = rdram; g_ctx = ctx;
     if (ffa_held_ko_only()) { const uint32_t pm = rd(0x089D69F8u); if (ok(pm, 0x100)) wr(pm + 180u, 0u);
         static int n = 0; if (n++ < 6) std::fprintf(stderr, "[KOLOOP] t=%.2fs finish request for a held-out slot fighter skipped (phase stays 3)\n", dissidia_battle_age() / 60.0f);
-        ctx->r[2] = 0; return; }
+        g_kofskip_age = dissidia_battle_age(); ctx->r[2] = 0; return; }   // (the caller writes phase 4 after the finish start: put back by the tick)
     g_orig_phasechg(rdram, ctx);
 }
 void finstart_hook(uint8_t* rdram, recomp_context* ctx) {
     g_ram = rdram; g_ctx = ctx;
-    if (ffa_held_ko_only()) { ctx->r[2] = 0; return; }
+    if (ffa_held_ko_only()) { g_kofskip_age = dissidia_battle_age(); ctx->r[2] = 0; return; }
     kodiff_dump("pre");
     uint32_t who = 0; const bool mid = mid_ko_now(&who);
     if (mid && who && !std::getenv("PSPRECOMP_TAGTEAM_NOEXBKCAIM") && (exb_running() || dissidia_battle_age() - g_exb_last_run < 120.f)) { g_kreaim.gen = g_battle_gen; g_kreaim.victim = who; g_kreaim.due = dissidia_battle_age() + 12.f; if (g_log) std::fprintf(stderr, "[KOCAM] t=%.2fs finish during / right after an EX Burst: camera re-aimed at %08X in 12 ticks\n", dissidia_battle_age() / 60.0f, who); }
