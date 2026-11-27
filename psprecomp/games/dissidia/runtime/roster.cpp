@@ -5939,7 +5939,11 @@ void dissidia_ablt_dump(uint8_t* rdram, const char* tag, const uint16_t* ids, si
     const uint32_t n = rd32(rdram, blk + 8u);
     uint32_t h = 2166136261u;
     for (uint32_t i = 0; i < n * kAbltRecBytes && n < 0x1000u; i++) h = (h ^ rdram[(recs + i) & 0x07FFFFFFu]) * 16777619u;
-    std::fprintf(stderr, "[ABLT] %s: %u records, hash %08X\n", tag, n, h);
+    // the gameplay hash leaves out the two display text ids (+2 name, +4 help): a native install's records point at the mod's own appended text records, a
+    // received pack's at the copied retail ability's (the texts are not in the pack): everything the fight reads is equal when this one is
+    uint32_t g = 2166136261u;
+    for (uint32_t i = 0; i < n * kAbltRecBytes && n < 0x1000u; i++) { const uint32_t o = i % kAbltRecBytes; g = (g ^ ((o >= 2 && o < 6) ? 0u : rdram[(recs + i) & 0x07FFFFFFu])) * 16777619u; }
+    std::fprintf(stderr, "[ABLT] %s: %u records, hash %08X, without the text ids %08X\n", tag, n, h, g);
     for (size_t k = 0; k < nids; k++) {
         const uint8_t* a = ablt_record(rdram, ids[k]);
         char hex[kAbltRecBytes * 2 + 1] = {};

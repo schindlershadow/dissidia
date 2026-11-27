@@ -38,6 +38,7 @@ void dissidia_comm_on_side(const uint8_t mac[6], const uint8_t* data, size_t len
 #include <iterator>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -118,8 +119,31 @@ bool unhex(const char* h, uint8_t out[32]) {
 constexpr uint16_t kNetProtocolReal = 1;
 // PSPRECOMP_NETBUILD_FAKE=<id>[:<protocol>]: test aid, announces another build id (and netcode version) than this build's
 const char* fake_build() { static const char* e = std::getenv("PSPRECOMP_NETBUILD_FAKE"); return e && *e ? e : nullptr; }
+// A fingerprint of this machine's C math library: a hash of what sinf / cosf / tanf / atan2f / powf / expf / logf / fmodf / sqrtf / floorf give for a fixed set
+// of inputs (volatile: computed at run time, not folded by the compiler). The simulation itself does not call libm (the VFPU is table code, the generated code
+// is plain float operations), so every build gives the same value today; if a platform's math (msvcrt / ucrt / glibc / bionic) or float codegen ever differs,
+// the id below differs and both players are warned like for a build mismatch. PSPRECOMP_LIBM_FP_OFF=1: not part of the build id.
+uint32_t libm_fingerprint() {
+    static const uint32_t fp = [] {
+        volatile float in[] = {0.0f, 0.1f, 0.5f, 0.7853982f, 1.0f, 1.5707964f, 2.0f, 3.1415927f, 4.7f, 6.2831855f, 10.0f, 100.0f, 1e-3f, 1234.5678f, -0.3f, -2.5f, -17.25f, 0.999f};
+        uint32_t h = 2166136261u;
+        auto mix = [&](float v) { uint32_t u; std::memcpy(&u, &v, 4); for (int k = 0; k < 4; k++) { h ^= (u >> (8 * k)) & 0xFFu; h *= 16777619u; } };
+        for (volatile float x : in) {
+            const float a = x;
+            mix(sinf(a)); mix(cosf(a)); mix(tanf(a)); mix(atanf(a)); mix(expf(a * 0.1f)); mix(sqrtf(a < 0 ? -a : a)); mix(floorf(a)); mix(truncf(a * 7.7f));
+            if (a > 0) { mix(logf(a)); mix(log2f(a)); mix(exp2f(a * 0.05f)); }
+            for (volatile float y : in) { const float b = y; mix(atan2f(a, b)); mix(fmodf(a, b == 0 ? 1.0f : b)); if (a > 0) mix(powf(a, b > 8 ? 8.0f : b)); }
+        }
+        return h;
+    }();
+    return fp;
+}
 std::string local_commit() {
-    static const std::string c = [] { if (const char* f = fake_build()) return std::string(f, std::strcspn(f, ":")); return psp_git_commit(); }();
+    static const std::string c = [] {
+        std::string s = fake_build() ? std::string(fake_build(), std::strcspn(fake_build(), ":")) : psp_git_commit();
+        if (!std::getenv("PSPRECOMP_LIBM_FP_OFF") && !fake_build()) { char b[16]; std::snprintf(b, sizeof b, "+m%06X", libm_fingerprint() & 0xFFFFFFu); s += b; }
+        return s;
+    }();
     return c;
 }
 uint16_t local_proto() {
@@ -304,6 +328,16 @@ std::string refusal(const Mac& m) {   // g_mu held
         if (!g_use[idx] && !(g_pack_state[idx] == 1 && g_active[idx]))
             return std::string("that player's ") + packs()[idx].name + (state == 1 ? " is not received yet" : " cannot be sent (and this game does not have it)");
     }
+    // A pack applied from an earlier lobby of this session stays in the game's tables and files (it cannot be taken out again): a player who does not use it
+    // any more (turned the mod off, or never had it) fights with other tables, so the two would desync at the first Bartz move. Say so instead of starting.
+    static const bool stale_old = std::getenv("PSPRECOMP_NETPACK_STALE_OLD") != nullptr;
+    if (!stale_old)
+        for (size_t i = 0; i < g_active.size(); i++) {
+            if (!g_active[i] || g_use[i]) continue;
+            bool theirs = false;
+            for (auto [idx, state] : p.uses) theirs = theirs || idx == (int)i;
+            if (!theirs) return std::string("this game still has ") + packs()[i].name + " from an earlier lobby (restart the game: that player does not use it)";
+        }
     for (size_t i = 0; i < g_use.size(); i++)
         if (g_use[i] && !p.ready.count((int)i))
             return std::string("that player does not have ") + packs()[i].name + (g_use[i] == 1 ? " yet" : " (and this game cannot send it)");
@@ -620,6 +654,7 @@ void dissidia_net_packs_install() {
 }
 
 // ---- build id for tagteam_net.cpp (the tag roster exchange) ----
+uint32_t dissidia_libm_fingerprint() { return libm_fingerprint(); }   // for netplay.cpp's "[NETSYNC] this build" line
 void dissidia_netbuild_local(char* out, size_t n, int* proto) {
     std::snprintf(out, n, "%s", local_commit().c_str());
     if (proto) *proto = kNetProtocol;

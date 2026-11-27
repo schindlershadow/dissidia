@@ -6,6 +6,7 @@
 //   PSPRECOMP_TAGTEAM_EXTRAS=n 1 = the enemy's second fighter, 2 = the human's partner, 3 = both (default)
 //   PSPRECOMP_TAGTEAM_LOG=1    log what the hook does
 #include <utility>
+#include "dmath.h"
 #include "psp_render_queue.h"
 #include "psp_memory.h"
 #include "psp_game_module.h"
@@ -727,6 +728,16 @@ void alloc_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t size = static_cast<uint32_t>(ctx->r[5]), heap = static_cast<uint32_t>(ctx->r[4]), ra = static_cast<uint32_t>(ctx->r[31]);
     g_orig_alloc(rdram, ctx);
     if (g_in_load && std::getenv("PSPRECOMP_TAGTEAM_LOADHEAPLOG")) std::fprintf(stderr, "[LOADHEAP] heap %08X size %u -> %08X (ra %08X)\n", heap, size, static_cast<uint32_t>(ctx->r[2]), ra);
+    {   // A fighter's actor block (0x12D0 bytes) starts zeroed on every machine: the constructor leaves unused words / padding alone, so a machine whose heap held
+        // other data there (a pack's files loaded online, an earlier battle) compared different from one with a fresh heap, from NETSYNC frame 0 (Deck vs desktop /
+        // phones, 28 Nov: 32 fields, all inside the fighter struct, fighter0.script F100FFFF vs 0000FFFF = stale motion data in a padding halfword).
+        // PSPRECOMP_FIGHTER_ZERO_OLD=1: as before.
+        static const bool zero_old = std::getenv("PSPRECOMP_FIGHTER_ZERO_OLD") != nullptr;
+        const uint32_t p0 = static_cast<uint32_t>(ctx->r[2]);
+        static const bool poison = std::getenv("PSPRECOMP_FIGHTER_POISON") != nullptr;   // test aid: stale data in every fighter block (a machine with a used heap)
+        if (poison && size == 0x12D0u && p0 && ok(p0, size)) std::memset(rdram + (p0 & 0x07FFFFFFu), 0xA7, size);
+        if (!zero_old && size == 0x12D0u && p0 && ok(p0, size)) std::memset(rdram + (p0 & 0x07FFFFFFu), 0, size);
+    }
     if (g_own_ctx) {
         const uint32_t p = static_cast<uint32_t>(ctx->r[2]);
         if (p) {
@@ -1955,7 +1966,7 @@ void spawn_table_find(float px, float py, float pz) {
             const uint32_t idx = (q - b) / 0x3Cu, pr = (idx & 1u) ? q - 0x3Cu : q + 0x3Cu;
             std::vector<SpawnPt> two{SpawnPt{rdf(q + 8u), rdf(q + 12u), rdf(q + 16u), rdf(q + 24u)}};
             if (rd(pr) == 0xCC000000u && rd(pr + 4u) == 1u) { const SpawnPt o{rdf(pr + 8u), rdf(pr + 12u), rdf(pr + 16u), rdf(pr + 24u)};
-                if (std::isfinite(o.x) && std::isfinite(o.y) && std::isfinite(o.z) && std::fabs(o.y - two[0].y) < 1.0f && std::hypot(o.x - two[0].x, o.z - two[0].z) > 4.0f) two.push_back(o); }
+                if (std::isfinite(o.x) && std::isfinite(o.y) && std::isfinite(o.z) && std::fabs(o.y - two[0].y) < 1.0f && dm::hypotf_(o.x - two[0].x, o.z - two[0].z) > 4.0f) two.push_back(o); }
             g_spawn = two;
         }
         if (g_log) { std::fprintf(stderr, "[SPAWNTAB] table at %08X, %zu points:", b, g_spawn.size()); for (const auto& sp : g_spawn) std::fprintf(stderr, " (%.1f,%.1f,%.1f)", sp.x, sp.y, sp.z); std::fprintf(stderr, "\n"); }
@@ -1983,7 +1994,7 @@ static const float kGroundMaxFromStart = 60.f;   // m from the first grounded po
 bool sample_ok(const std::pair<int, int>& c, const GPos& g, bool strict) {
     if (!strict) return true;
     const auto m = g_gmeta.find(c); if (m == g_gmeta.end() || m->second.second < 6) return false;
-    if (g_gstart_set && std::hypot(g.x - g_gstart_x, g.z - g_gstart_z) > kGroundMaxFromStart) return false;
+    if (g_gstart_set && dm::hypotf_(g.x - g_gstart_x, g.z - g_gstart_z) > kGroundMaxFromStart) return false;
     return true;
 }
 bool ground_near(float x, float z, GPos* o, bool strict = true) {
@@ -2034,7 +2045,7 @@ void ffa_spread_spot(const Extra& e, float sp[3]) {
     if (!ok(s0, 0x12D0) || !ok(s1, 0x12D0) || k >= 4) return;
     const float x0 = rdf(s0 + 0x80u), z0 = rdf(s0 + 0x88u), x1 = rdf(s1 + 0x80u), z1 = rdf(s1 + 0x88u), y = 0.5f * (rdf(s0 + 0x84u) + rdf(s1 + 0x84u));
     const float mx = 0.5f * (x0 + x1), mz = 0.5f * (z0 + z1), hx = 0.5f * (x1 - x0), hz = 0.5f * (z1 - z0);
-    if (std::hypot(hx, hz) < 2.f || !std::isfinite(y)) return;
+    if (dm::hypotf_(hx, hz) < 2.f || !std::isfinite(y)) return;
     if (g_log && k == 0) std::fprintf(stderr, "[TAGTEAM] free-for-all: floor query check under slot fighter 0 (%.1f,%.1f,%.1f): %.2f\n", x0, rdf(s0 + 0x84u), z0, stage_floor_y(x0, rdf(s0 + 0x84u) + 3.f, z0));
     const float sg = (k % 2 == 0) ? 1.f : -1.f, top = k < 2 ? 1.f : 0.6f;   // (a 3rd / 4th extra: nearer the middle)
     for (float sc : {1.0f, 0.75f, 0.5f, 0.3f}) {
@@ -2054,10 +2065,10 @@ void safe_spot(uint32_t ref, float dx, float dz, float out[3], bool callin) {
         // a call-in appears at the normal stage spawn point of its side (where retail put that side's fighter at the start), not at the fallen fighter's body: the spot is a place a fighter
         // really stood (floor); when a living fighter stands there (< 3 m) the nearest free grounded spot on a ring around it (3 / 5 / 7 m) is used.
         const GPos st = g_side_start[side_of(ref) & 1u]; std::vector<uint32_t> fs; if (g_bs) for (int k = 0; k < 2; k++) fs.push_back(srd(g_bs + 56u + 4u * k)); for (int i = 0; i < g_nextra; i++) if (g_extra[i].started) fs.push_back(g_extra[i].actor);
-        auto taken = [&](float x, float z) { for (uint32_t f : fs) if (f != ref && ok(f, 0x12D0) && alive(f) && std::hypot(rdf(f + 0x80u) - x, rdf(f + 0x88u) - z) < 3.0f) return true; return false; };
+        auto taken = [&](float x, float z) { for (uint32_t f : fs) if (f != ref && ok(f, 0x12D0) && alive(f) && dm::hypotf_(rdf(f + 0x80u) - x, rdf(f + 0x88u) - z) < 3.0f) return true; return false; };
         out[0] = st.x; out[1] = st.y; out[2] = st.z; const char* how = "the side's start spot";
         if (taken(st.x, st.z)) { bool done = false;
-            for (float r : {3.0f, 5.0f, 7.0f}) { for (int a = 0; a < 8 && !done; a++) { const float ang = 0.785398f * static_cast<float>(a), cx = st.x + r * std::cos(ang), cz = st.z + r * std::sin(ang); GPos g;
+            for (float r : {3.0f, 5.0f, 7.0f}) { for (int a = 0; a < 8 && !done; a++) { const float ang = 0.785398f * static_cast<float>(a), cx = st.x + r * dm::cosf_(ang), cz = st.z + r * dm::sinf_(ang); GPos g;
                 if (!taken(cx, cz) && ground_near(cx, cz, &g) && std::fabs(g.y - st.y) <= 1.0f) { out[0] = cx; out[1] = g.y; out[2] = cz; done = true; how = "beside the start spot (a fighter stands on it)"; } } if (done) break; }
             if (!done) how = "the start spot (taken, no free ground beside it)"; }
         if (g_log) std::fprintf(stderr, "[SAFESPOT] ref %08X (%.1f,%.1f,%.1f) call-in -> %s (%.1f,%.1f,%.1f)\n", ref, b.x, b.y, b.z, how, out[0], out[1], out[2]);
@@ -2068,9 +2079,9 @@ void safe_spot(uint32_t ref, float dx, float dz, float out[3], bool callin) {
             std::vector<uint32_t> fs; if (g_bs) for (int k = 0; k < 2; k++) fs.push_back(srd(g_bs + 56u + 4u * k)); for (int i = 0; i < g_nextra; i++) if (g_extra[i].started) fs.push_back(g_extra[i].actor);
             std::vector<int> cand;
             for (size_t i = 0; i < g_spawn.size(); i++) { const SpawnPt& sp = g_spawn[i]; GPos g; bool floor_ok = false;
-                for (const auto& kv : g_gsamp) { if (std::fabs(kv.second.y - sp.y) <= 1.0f && std::hypot(kv.second.x - sp.x, kv.second.z - sp.z) <= kSpawnFloorR && sample_ok(kv.first, kv.second, true)) { floor_ok = true; break; } }
+                for (const auto& kv : g_gsamp) { if (std::fabs(kv.second.y - sp.y) <= 1.0f && dm::hypotf_(kv.second.x - sp.x, kv.second.z - sp.z) <= kSpawnFloorR && sample_ok(kv.first, kv.second, true)) { floor_ok = true; break; } }
                 (void)g; if (!floor_ok) continue;
-                bool clear = true; for (uint32_t f : fs) if (f != ref && ok(f, 0x12D0) && alive(f) && std::hypot(rdf(f + 0x80u) - sp.x, rdf(f + 0x88u) - sp.z) < 5.0f) clear = false;
+                bool clear = true; for (uint32_t f : fs) if (f != ref && ok(f, 0x12D0) && alive(f) && dm::hypotf_(rdf(f + 0x80u) - sp.x, rdf(f + 0x88u) - sp.z) < 5.0f) clear = false;
                 if (clear) cand.push_back(static_cast<int>(i)); }
             if (!cand.empty()) {
                 uint32_t h = static_cast<uint32_t>(dissidia_battle_age()) * 2654435761u ^ (g_battle_gen * 40503u) ^ (++g_spawn_pick_n * 2246822519u); h ^= h >> 15; h *= 2246822519u; h ^= h >> 13;
@@ -2081,7 +2092,7 @@ void safe_spot(uint32_t ref, float dx, float dz, float out[3], bool callin) {
             if (!std::getenv("PSPRECOMP_TAGTEAM_SPAWNALL")) {   // start spots only: both taken by a fighter -> the one farthest from the living fighters (never the ground samples / the middle)
                 std::vector<uint32_t> fs; if (g_bs) for (int k = 0; k < 2; k++) fs.push_back(srd(g_bs + 56u + 4u * k)); for (int i = 0; i < g_nextra; i++) if (g_extra[i].started) fs.push_back(g_extra[i].actor);
                 int bi = -1; float bd = -1.f;
-                for (size_t i = 0; i < g_spawn.size(); i++) { float md = 1e30f; for (uint32_t f : fs) if (f != ref && ok(f, 0x12D0) && alive(f)) md = std::min(md, std::hypot(rdf(f + 0x80u) - g_spawn[i].x, rdf(f + 0x88u) - g_spawn[i].z)); if (md > bd) { bd = md; bi = static_cast<int>(i); } }
+                for (size_t i = 0; i < g_spawn.size(); i++) { float md = 1e30f; for (uint32_t f : fs) if (f != ref && ok(f, 0x12D0) && alive(f)) md = std::min(md, dm::hypotf_(rdf(f + 0x80u) - g_spawn[i].x, rdf(f + 0x88u) - g_spawn[i].z)); if (md > bd) { bd = md; bi = static_cast<int>(i); } }
                 if (bi >= 0) { const SpawnPt& sp = g_spawn[bi]; out[0] = sp.x; out[1] = sp.y; out[2] = sp.z;
                     if (g_log) std::fprintf(stderr, "[SAFESPOT] ref %08X (%.1f,%.1f,%.1f) -> start spot (%.1f,%.1f,%.1f), none clear: the farthest from the fighters (%.1f m)\n", ref, b.x, b.y, b.z, sp.x, sp.y, sp.z, bd);
                     return; }
@@ -2093,11 +2104,11 @@ void safe_spot(uint32_t ref, float dx, float dz, float out[3], bool callin) {
         if (gr) b = cur;
         else {
             const auto tt = g_lastg_t.find(ref); GPos n; bool done = false;
-            if (it != g_lastg.end() && tt != g_lastg_t.end() && now - tt->second <= 360.f && std::hypot(it->second.x - rx, it->second.z - rz) <= 10.f) { b = it->second; why = "anchor's recent grounded spot"; done = true; }
+            if (it != g_lastg.end() && tt != g_lastg_t.end() && now - tt->second <= 360.f && dm::hypotf_(it->second.x - rx, it->second.z - rz) <= 10.f) { b = it->second; why = "anchor's recent grounded spot"; done = true; }
             if (!done) { const float d = nearest_sample(rx, rz, &n); if (d >= 0.f && d <= 10.f) { b = n; why = "sample nearest to the anchor"; done = true; } }
             if (!done) { float bd = 1e30f; GPos fb{}; bool ff = false;   // a living grounded fighter: the anchor's side first
                 std::vector<uint32_t> fs; if (g_bs) for (int k = 0; k < 2; k++) fs.push_back(srd(g_bs + 56u + 4u * k)); for (int i = 0; i < g_nextra; i++) if (g_extra[i].started) fs.push_back(g_extra[i].actor);
-                for (uint32_t f : fs) { GPos q; if (f == ref || !ok(f, 0x12D0) || !alive(f) || !grounded_now(f, &q)) continue; const float d = std::hypot(q.x - rx, q.z - rz) + (side_of(f) == side_of(ref) ? 0.f : 15.f); if (d < bd) { bd = d; fb = q; ff = true; } }
+                for (uint32_t f : fs) { GPos q; if (f == ref || !ok(f, 0x12D0) || !alive(f) || !grounded_now(f, &q)) continue; const float d = dm::hypotf_(q.x - rx, q.z - rz) + (side_of(f) == side_of(ref) ? 0.f : 15.f); if (d < bd) { bd = d; fb = q; ff = true; } }
                 if (ff) { b = fb; why = "a grounded fighter"; done = true; } }
             if (!done) { float cx = 0, cz = 0; int cn = 0; if (g_bs) for (int k = 0; k < 2; k++) { const uint32_t f = srd(g_bs + 56u + 4u * k); if (f != ref && ok(f, 0x12D0) && alive(f)) { cx += rdf(f + 0x80u); cz += rdf(f + 0x88u); cn++; } }
                 if (!cn) { cx = g_gstart_x; cz = g_gstart_z; } else { cx /= cn; cz /= cn; }
@@ -2106,7 +2117,7 @@ void safe_spot(uint32_t ref, float dx, float dz, float out[3], bool callin) {
         }
         static const float sc[5] = {1.f, 0.75f, 0.5f, 0.25f, 0.f};
         for (float s : sc) { const float cx = b.x + dx * s, cz = b.z + dz * s; GPos g;
-            if (ground_near(cx, cz, &g)) { out[0] = cx; out[1] = g.y; out[2] = cz; if (g_log) std::fprintf(stderr, "[SAFESPOT] ref %08X (%.1f,%.1f,%.1f) want +(%.1f,%.1f) -> (%.1f,%.1f,%.1f) scale %.2f base: %s, %.1f m from the anchor\n", ref, rdf(ref + 0x80u), rdf(ref + 0x84u), rdf(ref + 0x88u), dx, dz, out[0], out[1], out[2], s, why, std::hypot(out[0] - rx, out[2] - rz)); return; } }
+            if (ground_near(cx, cz, &g)) { out[0] = cx; out[1] = g.y; out[2] = cz; if (g_log) std::fprintf(stderr, "[SAFESPOT] ref %08X (%.1f,%.1f,%.1f) want +(%.1f,%.1f) -> (%.1f,%.1f,%.1f) scale %.2f base: %s, %.1f m from the anchor\n", ref, rdf(ref + 0x80u), rdf(ref + 0x84u), rdf(ref + 0x88u), dx, dz, out[0], out[1], out[2], s, why, dm::hypotf_(out[0] - rx, out[2] - rz)); return; } }
         out[0] = b.x; out[1] = b.y; out[2] = b.z; if (g_log) std::fprintf(stderr, "[SAFESPOT] ref %08X fallback to (%.1f,%.1f,%.1f) base: %s\n", ref, b.x, b.y, b.z, why); return;
     }
     out[0] = b.x + dx; out[1] = b.y; out[2] = b.z + dz;
@@ -4483,7 +4494,7 @@ void rebuild_frame() {
     if (g_bs && std::getenv("PSPRECOMP_TAGTEAM_CTLLOG")) {   // debug: every 15 ticks the phase and, per fighter, position / script / how far it moved since the last sample
         static float last = -1e9f; static std::map<uint32_t, std::array<float, 3>> prev; const float age = dissidia_battle_age();
         if (age - last >= 15.f || age < last) { last = age; char b[1400]; int n = std::snprintf(b, sizeof b, "[CTL] t=%.2f phase %u+%u fb %d eb %d en %d |", age / 60.0f, rd(g_bs + 72u), rd(g_bs + 80u), finish_busy() ? 1 : 0, exb_busy() ? 1 : 0, entrance_busy() ? 1 : 0);
-            for (const uint32_t f : all_fighters_any()) { if (n > 1200) break; const float x = rdf(f + 0x80u), z = rdf(f + 0x88u); auto& pv = prev[f]; const float d = std::fabs(x - 5000.f) < 1.f ? -1.f : std::hypot(x - pv[0], z - pv[1]); pv = {x, z, 0.f};
+            for (const uint32_t f : all_fighters_any()) { if (n > 1200) break; const float x = rdf(f + 0x80u), z = rdf(f + 0x88u); auto& pv = prev[f]; const float d = std::fabs(x - 5000.f) < 1.f ? -1.f : dm::hypotf_(x - pv[0], z - pv[1]); pv = {x, z, 0.f};
                 n += std::snprintf(b + n, sizeof b - static_cast<size_t>(n), " %s:%d hp%d d%.2f f%X>%s", role_of(f), static_cast<int>(static_cast<int16_t>(rd(f + 0x180u) & 0xFFFFu)), hp_eff(f), static_cast<double>(d), rd(f + 0x380u), role_of(rd(f + 0x300u))); }
             std::fprintf(stderr, "%s\n", b); } }
     if (g_log && g_bs && std::getenv("PSPRECOMP_TAGTEAM_FROZENLOG")) {   // debug: once a second the human's control state: phase bs+72, decided byte, lock block enable, exb_busy / finish_busy
@@ -5204,7 +5215,7 @@ void tick_hook(uint8_t* rdram, recomp_context* ctx) {
         auto hi = hs.find(owner);
         if ((hi == hs.end() || hi->second != sc) && sc >= 100 && !(sc >= 1000 && sc < 2000) && age - ht[owner] >= 60.f) {
             ht[owner] = age; const uint32_t foe = rd(owner + 0x300u), tgt = rd(owner + 0x2FCu), L = rd(owner + 0x5ACu), lt = ok(L, 0x200) ? call(LOCK_GET, L) : 0u;
-            const bool fo = ok(foe, 0x12D0); const float d = fo ? std::hypot(rdf(foe + 0x80u) - rdf(owner + 0x80u), rdf(foe + 0x88u) - rdf(owner + 0x88u)) : -1.f;
+            const bool fo = ok(foe, 0x12D0); const float d = fo ? dm::hypotf_(rdf(foe + 0x80u) - rdf(owner + 0x80u), rdf(foe + 0x88u) - rdf(owner + 0x88u)) : -1.f;
             std::fprintf(stderr, "[HOMING] t=%.2fs %08X (char %d) attack script %d: foe %08X tgt %08X lockT %08X dist %.1f foe alive %d on stage %d%s\n", age / 60.0f, owner, actor_char(owner), sc, foe, tgt, lt, d, fo && alive(foe), fo && std::fabs(rdf(foe + 0x80u)) < 1000.f && std::fabs(rdf(foe + 0x88u)) < 1000.f, (tgt && tgt != foe) ? " (tgt != foe)" : "");
         }
         hs[owner] = sc;
@@ -5788,14 +5799,14 @@ void hpstep_hook(uint8_t* rdram, recomp_context* ctx) {
         // Same rule for every further victim of such an attack; cross-side attacks keep HPBOTH as it was. PSPRECOMP_TAGTEAM_HPREACH_OLD=1: off.
         { static const bool ro = std::getenv("PSPRECOMP_TAGTEAM_HPREACH_OLD") != nullptr;
           if (!ro && ok(prim, 0x12D0)) {
-              const float dv = std::hypot(rdf(v + 0x80u) - rdf(ratt + 0x80u), rdf(v + 0x88u) - rdf(ratt + 0x88u)), dp = std::hypot(rdf(prim + 0x80u) - rdf(ratt + 0x80u), rdf(prim + 0x88u) - rdf(ratt + 0x88u));
+              const float dv = dm::hypotf_(rdf(v + 0x80u) - rdf(ratt + 0x80u), rdf(v + 0x88u) - rdf(ratt + 0x88u)), dp = dm::hypotf_(rdf(prim + 0x80u) - rdf(ratt + 0x80u), rdf(prim + 0x88u) - rdf(ratt + 0x88u));
               const bool own = side_of(prim) == side_of(ratt);   // (any attack: a registered victim more than 4 m beyond the aimed one and farther than 6 m, seen at 61 m in the matrix rig, is no contact either)
               if (own ? (dv > dp + 1.0f && dv > 2.5f) : (dv > dp + 4.0f && dv > 6.0f)) {
                   if (g_log) std::fprintf(stderr, "[HPREACH] t=%.2fs %s %08X's HP attack on %s %08X (%s side): %s %08X is %.1f m away (aimed victim %.1f m): not a contact of this attack, no HP damage to it\n", dissidia_battle_age() / 60.0f, role_of(ratt), ratt, role_of(prim), prim, own ? "own" : "other", role_of(v), v, static_cast<double>(dv), static_cast<double>(dp));
                   continue; } } }
         *ctx = sv;
         if (abrv0 >= 0) wrh(ast + 0x14u, static_cast<uint16_t>(abrv0));
-        if (g_log) { static int c = 0; if (c++ < 100) std::fprintf(stderr, "[HPBOTH] t=%.2fs %s %08X (char %d) HP attack also hit %s %08X (char %d): second HP step with the attacker's BRV %d (first victim %s %08X) | contact source: retail hit registration (FUN_08838734) of the same frame; horizontal distance from the attacker: further victim %.1f m, first victim %.1f m\n", dissidia_battle_age() / 60.0f, role_of(ratt), ratt, actor_char(ratt), role_of(v), v, actor_char(v), abrv0, ok(prim, 0x12D0) ? role_of(prim) : "?", prim, static_cast<double>(std::hypot(rdf(v + 0x80u) - rdf(ratt + 0x80u), rdf(v + 0x88u) - rdf(ratt + 0x88u))), ok(prim, 0x12D0) ? static_cast<double>(std::hypot(rdf(prim + 0x80u) - rdf(ratt + 0x80u), rdf(prim + 0x88u) - rdf(ratt + 0x88u))) : -1.0); }
+        if (g_log) { static int c = 0; if (c++ < 100) std::fprintf(stderr, "[HPBOTH] t=%.2fs %s %08X (char %d) HP attack also hit %s %08X (char %d): second HP step with the attacker's BRV %d (first victim %s %08X) | contact source: retail hit registration (FUN_08838734) of the same frame; horizontal distance from the attacker: further victim %.1f m, first victim %.1f m\n", dissidia_battle_age() / 60.0f, role_of(ratt), ratt, actor_char(ratt), role_of(v), v, actor_char(v), abrv0, ok(prim, 0x12D0) ? role_of(prim) : "?", prim, static_cast<double>(dm::hypotf_(rdf(v + 0x80u) - rdf(ratt + 0x80u), rdf(v + 0x88u) - rdf(ratt + 0x88u))), ok(prim, 0x12D0) ? static_cast<double>(dm::hypotf_(rdf(prim + 0x80u) - rdf(ratt + 0x80u), rdf(prim + 0x88u) - rdf(ratt + 0x88u))) : -1.0); }
         g_xstep_vic = v;
         hpstep_core(rdram, ctx, v);
     }
@@ -6726,7 +6737,7 @@ void face_foe(uint32_t A) {
     uint32_t foe = rd(A + 0x300u); if (!ok(foe, 0x12D0)) foe = slot_enemy(A); if (!ok(foe, 0x12D0)) return;
     const float dx = rdf(foe + 0x80u) - rdf(A + 0x80u), dz = rdf(foe + 0x88u) - rdf(A + 0x88u);
     if (dx * dx + dz * dz < 1e-4f) return;
-    const float yaw = std::atan2(dx, dz); wrf(A + 0x9Cu, yaw); wrf(A + 0x320u, yaw);
+    const float yaw = dm::atan2f_(dx, dz); wrf(A + 0x9Cu, yaw); wrf(A + 0x320u, yaw);
     model_face_yaw(A);
 }
 // The model is drawn with the actor's world matrix (+0x00, copied to +0x330; rows: x, y, forward, position). The game rebuilds it every tick from the
@@ -6739,7 +6750,7 @@ void model_face_yaw(uint32_t A) {
     static const bool off = std::getenv("PSPRECOMP_TAGTEAM_NOMODELTURN") != nullptr;
     if (off || !ok(A, 0x12D0)) return;
     const float yaw = rdf(A + 0x9Cu); if (!std::isfinite(yaw)) return;
-    const float c = std::cos(yaw), sn = std::sin(yaw);
+    const float c = dm::cosf_(yaw), sn = dm::sinf_(yaw);
     wrf(A + 0x90u, sn); wrf(A + 0x94u, 0.f); wrf(A + 0x98u, c);   // the forward vector the game builds the matrix from (FUN_0883D074)
     const float R[12] = {c, 0.f, -sn, 0.f, 0.f, 1.f, 0.f, 0.f, sn, 0.f, c, 0.f};
     for (const uint32_t m : {A, A + 0x330u}) for (int i = 0; i < 12; i++) wrf(m + 4u * static_cast<uint32_t>(i), R[i]);
@@ -7495,7 +7506,7 @@ void oob_probe(float age) {
     std::fprintf(stderr, "[OOBPROBE] stage id %u centre (%.1f,%.1f,%.1f) radius %g n %d\n", rd(0x08B98854u), cx, cy, cz, r, n);
     for (int k = 0; k < 24; k++) { const float a = k * 6.2831853f / 24.f, dx = std::cos(a) * 200.f, dz = std::sin(a) * 200.f; float h[3] = {0, 0, 0}; uint32_t inf[16];
         const bool hit = stage_sweep(cx, cy + 1.2f, cz, r, dx, 0.f, dz, h, inf);
-        std::fprintf(stderr, "[OOBPROBE] dir %2d hit %d at (%.1f,%.1f,%.1f) dist %.1f info", k, hit, h[0], h[1], h[2], std::hypot(h[0] - cx, h[2] - cz)); for (int i = 0; i < 12; i++) std::fprintf(stderr, " %08X", inf[i]); std::fprintf(stderr, "\n"); }
+        std::fprintf(stderr, "[OOBPROBE] dir %2d hit %d at (%.1f,%.1f,%.1f) dist %.1f info", k, hit, h[0], h[1], h[2], dm::hypotf_(h[0] - cx, h[2] - cz)); for (int i = 0; i < 12; i++) std::fprintf(stderr, " %08X", inf[i]); std::fprintf(stderr, "\n"); }
 }
 // How walled-in a point is: the number of the 8 compass directions (150 m, at the floor's height + 1.2 m, the fighter's own sweep sphere) that hit no collision at all.
 // The stage's invisible walls and real walls are collision geometry (the sweep stops every fighter at them), so a point inside the arena has them all around it
@@ -7524,7 +7535,7 @@ bool oob_outside(uint32_t a, const uint32_t* f, int n, float x, float y, float z
     for (int i = 0; i < n; i++) { const uint32_t o = f[i]; if (o == a) continue; const float ox = rdf(o + 0x80u), oy = rdf(o + 0x84u), oz = rdf(o + 0x88u);
         if (!std::isfinite(ox) || !std::isfinite(oy) || !std::isfinite(oz) || std::fabs(ox) >= 1000.f || std::fabs(oz) >= 1000.f) continue;   // (a parked one is no reference)
         others++; const float dx = ox - x, dz = oz - z, dy = (oy - y); float h[3]; const bool hit = stage_sweep(x, gy + 1.2f, z, r, dx, dy, dz, h, nullptr);
-        const float want = std::sqrt(dx * dx + dz * dz); if (!(hit && std::hypot(h[0] - x, h[2] - z) < want - 2.f)) return false; }   // a clear line to somebody: inside
+        const float want = std::sqrt(dx * dx + dz * dz); if (!(hit && dm::hypotf_(h[0] - x, h[2] - z) < want - 2.f)) return false; }   // a clear line to somebody: inside
     return others > 0;
 }
 void oob_tick(float age) {
@@ -7567,7 +7578,7 @@ void oob_tick(float age) {
         since.erase(a);
         // the spot: the nearest known standing spot that is walled in (<= 1 open direction), tried nearest first; else a team mate / the side's start
         GPos q{}; bool found = false;
-        { std::vector<std::pair<float, GPos>> cand; for (const auto& kv : g_gsamp) if (sample_ok(kv.first, kv.second, true)) cand.push_back({fin ? std::hypot(kv.second.x - x, kv.second.z - z) : 0.f, kv.second});
+        { std::vector<std::pair<float, GPos>> cand; for (const auto& kv : g_gsamp) if (sample_ok(kv.first, kv.second, true)) cand.push_back({fin ? dm::hypotf_(kv.second.x - x, kv.second.z - z) : 0.f, kv.second});
           std::sort(cand.begin(), cand.end(), [](const std::pair<float, GPos>& u, const std::pair<float, GPos>& v) { return u.first < v.first; });
           const float rad2 = 0.9f; for (size_t c = 0; c < cand.size() && c < 400 && !found; c += (c < 20 ? 1 : 20)) if (oob_misses(cand[c].second.x, cand[c].second.y, cand[c].second.z, rad2) <= 1) { q = cand[c].second; found = true; } }
         if (!found) for (int j = 1; j < n && !found; j++) { const uint32_t o = f[(i + j) % n]; const float ox = rdf(o + 0x80u), oz = rdf(o + 0x88u); GPos g{};
