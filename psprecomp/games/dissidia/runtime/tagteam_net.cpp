@@ -448,7 +448,16 @@ void dispatch_hook(uint8_t* rdram, recomp_context* ctx) {
         if (ok(bs, 0x100) && rd(bs + 72u) == 3u) {
             g_leave_forced = true;
             std::fprintf(stderr, "[TTPAUSE] frame %u: retail did not leave %u frames after the quit flag (battle phase %u): the leave is forced (phase 8)\n", g_F, g_leave_calls, rd(bs + 72u));
-            wr(obj + OFF_FLAGS, rd(obj + OFF_FLAGS) | 4u); wr(bs + 72u, 8u);
+            wr(obj + OFF_FLAGS, rd(obj + OFF_FLAGS) | 4u);
+            if (!std::getenv("PSPRECOMP_TTPAUSE_FFHANG_OLD")) {
+                // Retail's own leave (watch on bs+72 in a normal forfeit) is FUN_0888A7E0: net-state bit, bs+72 = 7, the three phase-change notifications (retail then goes 7 -> 8 itself),
+                // and FUN_08908DC4(net object) closes the battle's PDP socket and leaves the group. Writing phase 8 alone skipped all that: the machine started the next battle and its
+                // peers waited for it (forfeit hang, user logs 27 Nov).
+                std::fprintf(stderr, "[TTPAUSE] the forced leave runs retail's leave step FUN_0888A7E0 and closes the net link (PSPRECOMP_TTPAUSE_FFHANG_OLD=1: phase 8 only)\n");
+                if (FuncPtr f = psp_dispatch_probe_lookup(0x08908DC4u)) guest_call(ctx, f, obj);
+                if (FuncPtr f = psp_dispatch_probe_lookup(0x0888A7E0u)) guest_call(ctx, f, 0u);
+            }
+            else wr(bs + 72u, 8u);
         }
     }
     if (!g_enabled || !ok(obj, 0x400) || !(rd(obj + OFF_FLAGS) & 1u) || (rd(obj + OFF_FLAGS) & 4u) || !dissidia_tagteam_comms_battle()) { g_running = false; g_orig_dispatch(rdram, ctx); return; }
