@@ -7858,7 +7858,12 @@ void ko_oneround() {
     // [KOFREEZE] (27 Nov, kofreeze): the fighters were frozen from the finish until the KO'd slot's call-in / rebuild was DONE (kill cam + 3.2 s + the model load: ~9 s on the RP6, "after the kill cam the game freezes for a moment, no one
     // can move until a new player spawns"). Now the finish's phase ends with its presentation (slow motion released, nothing in an EX Burst, no mate swap pending): every KO'd slot fighter is parked (call-in pending or its rebuild
     // running), so the phase goes back to 3 at once and everybody else fights on; the tag-in comes in later like a call-in in the middle of a fight. Battle state only. PSPRECOMP_TAGTEAM_KOFREEZE_OLD=1: old (held until the tag-in is done).
-    if (rd(g_bs + 72u) == 4u && dissidia_battle_age() - g_kofskip_age < 4.f && ffa_held_ko_only()) { wr(g_bs + 72u, 3u); g_kofskip_age = -1e9f; }   // (a skipped finish request: the caller wrote phase 4 after the hooks)
+    if (rd(g_bs + 72u) == 4u && dissidia_battle_age() - g_kofskip_age < 4.f && ffa_held_ko_only()) { wr(g_bs + 72u, 3u); g_kofskip_age = -1e9f;
+        // (user 27 Nov, FFA: BRV stuck at 0 again) the skipped request still zeroed the pair update switch; retail repeats it about once a second for a held-out
+        // KO'd slot fighter, so the 1 s KOSTUCK put-back left the damage / regen handlers off nearly all the time: put the switch back right here.
+        // PSPRECOMP_TAGTEAM_KOSTUCK2_OLD=1: old (only the 1 s put-back).
+        static const bool k2old = std::getenv("PSPRECOMP_TAGTEAM_KOSTUCK2_OLD") != nullptr; const uint32_t pm = rd(0x089D69F8u);
+        if (!k2old && g_pair_have && !g_pair_defer && ok(pm, 0x100) && g_ram[(pm + 88u) & 0x07FFFFFFu] == 0 && g_ram[(pm + 89u) & 0x07FFFFFFu] == 0) pair_restore("koloop"); }   // (a skipped finish request: the caller wrote phase 4 after the hooks)
     bool kof_early = false;
     { static const bool kofold = std::getenv("PSPRECOMP_TAGTEAM_KOFREEZE_OLD") != nullptr;
       if (!kofold && !g_decided && rd(g_bs + 72u) == 4u && (!g_slot_callin.empty() || !g_rebuild.empty()) && g_ko_swap_at.empty() && !exb_busy() && !std::getenv("PSPRECOMP_TAGTEAM_KOHOLD")) {
