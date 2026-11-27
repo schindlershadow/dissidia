@@ -51,7 +51,8 @@ class Remote:
         if not m:
             return False, 'probe gave no answer: ' + r.stdout[:100]
         self.cores = int(m[1])
-        if m[3].strip():
+        # user 27 Nov: the desktop may be used while the user plays there (the test games are muted, take no pads and run at low priority); TT_REMOTE_EXCLUSIVE=1: old rule.
+        if m[3].strip() and os.environ.get('TT_REMOTE_EXCLUSIVE'):
             return False, 'the user\'s game or another runtime is running there (%s)' % m[3].strip()
         if float(m[2]) > self.cores * max_load_frac:
             return False, 'load %s on %d cores' % (m[2], self.cores)
@@ -67,7 +68,7 @@ class Remote:
         m = re.search(r'busy=\[(.*)\]', r.stdout)
         if r.returncode or not m:
             return 'ssh failed (rc %d)' % r.returncode
-        return m[1].strip()
+        return m[1].strip() if os.environ.get('TT_REMOTE_EXCLUSIVE') else ''
 
     def prepare(self, work, tools_dir, save_b):
         """Sync the tools / runtime / saves. work = the local built work folder (its build/psprecomp_runtime is the binary, its ms0 copy A's save)."""
@@ -105,7 +106,7 @@ rm -rf cloud cloud.ini ms0/cloud.ini; test ! -e cloud.ini && test ! -e cloud && 
     def command(self, name, args):
         """The remote shell command running one check (a child of the parallel run: result in the exit status, report on stdout)."""
         # nice: the desktop is the user's; SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT: the test games must not open the user's real pad (its input would steer them)
-        env = 'nice -n 10 env -u DISPLAY SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT=0x0001/0x0001 BT_GPU=1 BT_EGL_VENDOR=/usr/share/glvnd/egl_vendor.d/50_mesa.json SDL_AUDIODRIVER=dummy PSPRECOMP_CLOUD=0 TT_CHILD=1'
+        env = 'nice -n 10 env -u DISPLAY PSPRECOMP_NO_PADS=1 SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT=0x0001/0x0001 BT_GPU=1 BT_EGL_VENDOR=/usr/share/glvnd/egl_vendor.d/50_mesa.json SDL_AUDIODRIVER=dummy PSPRECOMP_CLOUD=0 TT_CHILD=1'
         out = '$HOME/%s/out/%s' % (BASE, self.run_id)   # (absolute: every command line of the run carries it, kill() finds them by it)
         return 'cd ~/%s && mkdir -p %s && %s python3 psprecomp/games/dissidia/tools/tagteam_test.py --work work --out %s --only %s %s --save-b saves/deck/ms0' % (
             BASE, out, env, out, name, ' '.join(shlex.quote(x) for x in args))

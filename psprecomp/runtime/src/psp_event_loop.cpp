@@ -834,7 +834,9 @@ int psp_runtime_init_sdl() {
             SDL_SetHint(SDL_HINT_VIDEODRIVER, "wayland,x11");
     }
 #endif
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {
+    // PSPRECOMP_NO_PADS=1: no game controllers at all (test copies on a machine where the user plays: they must never open or read the user's pad).
+    static const bool no_pads = [] { const char* e = std::getenv("PSPRECOMP_NO_PADS"); return e && *e && *e != '0'; }();
+    if (SDL_Init(no_pads ? SDL_INIT_VIDEO : (SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER)) != 0) {
         std::fprintf(stderr,
             "[RT] SDL_Init failed: %s\n", SDL_GetError());
         return 1;
