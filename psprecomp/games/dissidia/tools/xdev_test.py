@@ -385,7 +385,7 @@ def main(argv):
     ap.add_argument('--mode', choices=sorted(d.KOLIST), default='team2')
     ap.add_argument('--out', default=None)
     ap.add_argument('--secs', type=float, default=110)
-    ap.add_argument('--min-frames', type=int, default=600)
+    ap.add_argument('--min-frames', type=int, default=300)
     ap.add_argument('--save-b', default=d.DECK_SAVE)
     ap.add_argument('--env', default='')
     ap.add_argument('--env-a', default='')
