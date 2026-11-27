@@ -3951,6 +3951,8 @@ void apply_drive(uint32_t A, int drive) {
         if (!std::getenv("PSPRECOMP_TTLOCK_KEEPGATE")) { const uint32_t f = rd(A + 0x380u); if (f & 2u) { wr(A + 0x380u, f & ~2u); std::fprintf(stderr, "[TTLOCK] %08X: AI gate bit (+0x380 bit 2) cleared for the pad (was %08X)\n", A, f); } }
         if (ok(brain, 0x60)) wr(brain + 0x54u, 1u);
         if (ok(ctrl, 0x50)) { wr(ctrl + 0x48u, 0u); wr(ctrl + 0x30u, 0u); }
+        { static const bool t304_old = std::getenv("PSPRECOMP_TAGTEAM_TGT304_OLD") != nullptr; const uint32_t fo = rd(A + 0x300u);
+          if (!t304_old && rd(A + 0x304u) == 0u && ok(fo, 0x12D0) && fo != A) { std::fprintf(stderr, "[TGT304] t=%.2fs %08X (c%d) pad handover: +0x304 0 -> foe %08X\n", dissidia_battle_age() / 60.0f, A, actor_char(A), fo); wr(A + 0x304u, fo); } }
         // a pad now drives it: no override look target left in its lock block (LOCK_SET from the AI / call-in set-up; while +252 != 0 the L toggle
         // FUN_08B3AFD4 does nothing - see rebuild_lock). Not while a chase pair holds it (chase_pair_step puts the block back at the chase end).
         if (ok(lb, 0x200) && rd(lb + 252u) && !chase_pair_holds(A) && !std::getenv("PSPRECOMP_TAGTEAM_REBUILD_LOCKSET")) { std::fprintf(stderr, "[TTLOCK] %08X: lock block %08X override target %08X cleared (pad-driven now)\n", A, lb, rd(lb + 252u)); wr(lb + 252u, 0u); }
@@ -4446,6 +4448,10 @@ void rebuild_lock(const RebuildJob& j) {
         const uint32_t tmgr = (!ts_old && j.A == tgt_local_human()) ? dissidia_camera_manager() : 0u;
         if (g_log) std::fprintf(stderr, "[TGTSYNC] t=%.2fs %08X (c%d) before: 2FC %08X 300 %08X answer %08X override %08X sel %u camfoe %08X -> new foe %08X\n", dissidia_battle_age() / 60.0f, j.A, actor_char(j.A), rd(j.A + 0x2FCu), rd(j.A + 0x300u), call(LOCK_GET, L), rd(L + 252u), rd(L + 304u) && ok(rd(L + 304u), 0x40) ? rd(rd(L + 304u) + 28u) : 0u, tmgr ? rd(tmgr + 0x8B4u) : 0u, f);
         if (ok(f, 0x12D0)) { call(SET_FOE, j.A, f); wr(j.A + 0x2FCu, f); if (tmgr && ok(tmgr, 0x900)) wr(tmgr + 0x8B4u, f); }
+        // 27 Nov (user, RP6 2v2, still after fwdback2): a live diff before / after the user's manual target switch on the stuck newcomer showed one target word
+        // that only the switch set: actor +0x304 (0 on the rebuilt body; the foe on every other fighter). Set it with the foe. PSPRECOMP_TAGTEAM_TGT304_OLD=1: old.
+        static const bool t304_old = std::getenv("PSPRECOMP_TAGTEAM_TGT304_OLD") != nullptr;
+        if (!t304_old && ok(f, 0x12D0) && rd(j.A + 0x304u) != f) { if (g_log) std::fprintf(stderr, "[TGT304] t=%.2fs %08X (c%d): +0x304 %08X -> %08X\n", dissidia_battle_age() / 60.0f, j.A, actor_char(j.A), rd(j.A + 0x304u), f); wr(j.A + 0x304u, f); }
         wr(L + 252u, 0u);
         if (j.lockmode == 1 && rd(L + 264u) != 1) { g_lock_bypass = true; call(LOCK_MODE, L, 1, 0); g_lock_bypass = false; }
         const uint32_t h1 = rd(L + 304u); if (ok(h1, 0x40) && rd(L + 264u) == 1) wr(h1 + 28u, 0u);
