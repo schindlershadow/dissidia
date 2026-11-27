@@ -228,6 +228,8 @@ long long dir_mtime_ns(const fs::path& p) {
     if (::stat(p.string().c_str(), &st) != 0) return -1;
 #ifdef __APPLE__
     return (long long)st.st_mtimespec.tv_sec * 1000000000LL + st.st_mtimespec.tv_nsec;
+#elif defined(_WIN32)
+    return (long long)st.st_mtime * 1000000000LL;  // Windows stat has whole seconds only
 #else
     return (long long)st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec;
 #endif
