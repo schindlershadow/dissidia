@@ -63,6 +63,9 @@ void dissidia_netplay_frame_delivered(uint32_t frame);   // netplay.cpp: desync 
 void dissidia_netplay_note_delay(int delay);
 void dissidia_tagteam_forfeit_apply(const uint8_t* mac, uint32_t frame);   // tagteam.cpp: a player forfeits at this lock-step frame (same on every machine)
 uint32_t dissidia_camera_manager();                      // camera.cpp
+void dissidia_netbuild_local(char* out, size_t n, int* proto);                               // net_packs.cpp: this build's id (git commit) and netcode version
+void dissidia_netbuild_note(const uint8_t mac[6], int proto, const char* commit);            // a member's build id (from the roster exchange)
+std::string dissidia_netbuild_text(const uint8_t mac[6]);                                    // "" = the same build, else the notice text naming both
 
 namespace {
 constexpr uint32_t NET_DISPATCH = 0x0890C5BCu;   // EBOOT: per-frame lock-step update (a0 = net object; +64: 0 = FUN_0890D664, 1 = FUN_0890DF58)
@@ -279,7 +282,23 @@ void receive() {
 void roster_step() {
     uint8_t src[6], rb[1024]; int n;
     const bool host = dissidia_tagteam_roster_host();
+    static uint32_t tv_calls = 0;
+    if ((tv_calls++ % 30) == 0) {   // every member tells every other member its build id ('TV' u16 netcode version u8 len commit; older builds ignore it)
+        char c[40]; int pr = 0; dissidia_netbuild_local(c, sizeof c, &pr);
+        uint8_t tv[4 + 32]; const size_t cl = std::min<size_t>(std::strlen(c), 32);
+        tv[0] = 'T'; tv[1] = 'V'; tv[2] = static_cast<uint8_t>(pr & 0xFF); tv[3] = static_cast<uint8_t>(cl); std::memcpy(tv + 4, c, cl);
+        uint8_t macs[16][6]; const int k = psp_adhoc_group_macs(macs, nullptr, 16);
+        for (int i = 0; i < k && i < 16; i++) psp_adhoc_side_send(macs[i], CH_ROSTER, tv, static_cast<int>(4 + cl));
+    }
     while ((n = psp_adhoc_side_recv(CH_ROSTER, src, rb, sizeof rb)) >= 0) {
+        if (n >= 4 && rb[0] == 'T' && rb[1] == 'V' && n >= 4 + rb[3]) {   // a member's build id: log it, say so on screen when it is not this build
+            char c[40]; std::memcpy(c, rb + 4, rb[3]); c[rb[3]] = 0;
+            dissidia_netbuild_note(src, rb[2], c);
+            static std::map<Mac, std::string> told; Mac m; std::memcpy(m.data(), src, 6);
+            const std::string t = dissidia_netbuild_text(src);
+            if (told[m] != t) { told[m] = t; if (!t.empty()) { std::fprintf(stderr, "[BUILD] tag battle with %s: %s\n", mac_str(m).c_str(), t.c_str()); psp_net_notice("ttbuild", 20, "%s", t.c_str()); } }
+            continue;
+        }
         if (n >= 2 && rb[0] == 'T' && rb[1] == 'A') { Mac m; std::memcpy(m.data(), src, 6); if (host && std::find(g_roster_acked.begin(), g_roster_acked.end(), m) == g_roster_acked.end()) { g_roster_acked.push_back(m); std::fprintf(stderr, "[TTLOCK] frame %u: %s has the roster\n", g_F, mac_str(m).c_str()); } continue; }
         if (n >= 5 && rb[0] == 'T' && rb[1] == 'R' && !host) {
             if (dissidia_tagteam_roster_adopt(rb, n)) std::fprintf(stderr, "[TTLOCK] frame %u: the host's roster is here\n", g_F);

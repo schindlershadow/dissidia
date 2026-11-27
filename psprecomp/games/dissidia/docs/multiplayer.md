@@ -462,6 +462,10 @@ Adding a pack: build the mod, `netpack.py record <mods dir> <folder> --version N
 the game. The recorded hashes must be what `d1_moves.py` / the mod build makes on every machine (they are deterministic
 for the same discs: rebuilding from scratch gave identical files).
 
+## Build id (26 Nov)
+
+Both players should run the same build: a different one can desync (plans, line-ups, banters, lock-step state). Every build sends its git commit and a netcode protocol version to the other players: at the end of the pack manifest (once a second while in a lobby; `'V'` u16 protocol, u8 length, commit string - older builds stop reading before it and show up as "an older build") and, in a tag battle, as a `'TV'` message on the roster channel. The log has `[BUILD]` lines. A different commit with the same protocol only warns on screen ("Online: another player runs build X (netcode 1), this game build Y (netcode 1). Fights may desync."). A different protocol version refuses the match on both sides, like a mod pack mismatch ("no match with a player in the lobby: ..."). Bump `kNetProtocolReal` (`runtime/net_packs.cpp`) when a change makes lock-step play incompatible. `PSPRECOMP_NETBUILD_FAKE=<id>[:<protocol>]` announces another build (tests).
+
 ## The party server
 
 `tools/adhoc_relay/` ([README](../../../../tools/adhoc_relay/README.md)) is a small C++ UDP relay. A client registers into a
