@@ -493,8 +493,11 @@ bool tagteam_hud_pos(uint32_t actor, float p[3]) {
     for (int i = 0; i < 3; i++) p[i] = prv->p[i] + (cur->p[i] - prv->p[i]) * t;
     return true;
 }
-void tagteam_hud_follow_target(uint32_t actor) {   // the lock-on ring's target: its feet for this gameplay frame and the one before go to the renderer (psp_ge_draw.cpp)
-    if (!actor || !g_view_on || smooth_old()) return;
+void tagteam_hud_follow_target(uint32_t actor, bool has_target) {   // the lock-on ring's target: its position for this gameplay frame and the one before go to the renderer (psp_ge_draw.cpp)
+    static uint32_t s_last = 0;
+    if (!g_view_on || smooth_old()) { s_last = 0; return; }
+    if (!actor) { s_last = 0; if (has_target) ge_draw_set_follow_world(g_view_gen, nullptr, nullptr); return; }
+    if (actor != s_last) { g_poshist.erase(actor); s_last = actor; }   // a new target (fighter -> core -> fighter): no earlier position is blended with, the history starts here
     track_pos(actor);
     auto it = g_poshist.find(actor); if (it == g_poshist.end() || it->second.empty() || it->second.back().gen != g_view_gen) return;
     const std::vector<PosRec>& h = it->second; const PosRec& c = h.back();

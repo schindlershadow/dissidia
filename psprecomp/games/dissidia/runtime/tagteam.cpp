@@ -13010,8 +13010,16 @@ void dissidia_tagteam_frame_end(uint8_t* rdram, recomp_context* ctx) {
     if (g_ram) { tagteam_hud_set_ram(g_ram); uint32_t hg = 0; const bool hon = dissidia_hud_gen(&hg);   // (view smoothing: the gameplay frame this frame belongs to, the slow-motion rate)
         float hr = 1.f; { const uint32_t mg = rd(0x08A62280u); if (hon && ok(mg, 0x40)) for (int ch = 0; ch < 10; ch++) { const float cv = rdf(mg + 4u + 4u * static_cast<uint32_t>(ch)); if (cv == cv && cv < 2.0f) hr *= cv * 0.5f; } }
         tagteam_hud_view(hon, hg, hr);
-        { const uint32_t me = g_bs ? hud_panel_fighter(rd(g_bs + 84u) & 1u) : dissidia_player_actor(); uint32_t tg = ok(me, 0x12D0) ? rd(me + 0x2FCu) : 0u; if (const uint32_t b = ao8_body_of(tg)) tg = b;
-          tagteam_hud_follow_target(ok(tg, 0x12D0) ? tg : 0u); }   // (the ring's target: the human's lock target)
+        { const uint32_t me = g_bs ? hud_panel_fighter(rd(g_bs + 84u) & 1u) : dissidia_player_actor();   // the ring's target: what the human's lock block answers (a fighter, or a non-fighter such as an EX core, kind 0x542 = 6: the block, not +0x2FC, is where retail's selector 2 puts it)
+          const uint32_t lb = ok(me, 0x12D0) ? rd(me + 0x5ACu) : 0u; uint32_t tg = ok(lb, 0x200) ? call(0x08B3B280u, lb) : 0u; if (!tg && ok(me, 0x12D0)) tg = rd(me + 0x2FCu);
+          { const uint32_t h1 = ok(lb, 0x200) ? rd(lb + 304u) : 0u;   // the selector is on the EX core (2): retail's ring is on the nearest core of its list, not on the lock answer
+            if (ok(h1, 0x40) && rd(h1 + 28u) == 2u) { const uint32_t cc = call(0x08B40A50u, h1, lb); if (cc && ok(cc, 0x600)) tg = cc; } }
+          if (const uint32_t b = ao8_body_of(tg)) tg = b;
+          bool good = false;
+          if (tg && ok(tg, 0x600)) { const uint32_t kind = g_ram[(tg + 0x542u) & 0x07FFFFFFu]; const float px = rdf(tg + 0x80u), py = rdf(tg + 0x84u), pz = rdf(tg + 0x88u);
+              good = (kind == 0u ? ok(tg, 0x12D0) : true) && std::isfinite(px) && std::isfinite(py) && std::isfinite(pz) && std::fabs(px) < 1000.f && std::fabs(pz) < 1000.f && !(px == 0.f && py == 0.f && pz == 0.f); }   // (not an object still parked at the origin)
+          if (g_log && g_bs) { static uint32_t n = 0, lt = 0; if (tg != lt || n++ % 240 == 0) { lt = tg; std::fprintf(stderr, "[HUDSMOOTH] ring target %08X kind %u pos (%.1f,%.1f,%.1f) %s\n", tg, tg && ok(tg, 0x600) ? g_ram[(tg + 0x542u) & 0x07FFFFFFu] : 99u, tg ? rdf(tg + 0x80u) : 0.f, tg ? rdf(tg + 0x84u) : 0.f, tg ? rdf(tg + 0x88u) : 0.f, good ? "followed" : "NOT followed"); } }
+          tagteam_hud_follow_target(good ? tg : 0u, tg != 0u); }
         if (g_log && g_bs) { static uint32_t n = 0; if (n++ % 240 == 0) std::fprintf(stderr, "[HUDSMOOTH] interpolated %d gameplay gen %u slow-motion rate %.3f\n", hon ? 1 : 0, hg, hr); } }
     if (g_ram) { { TtStep s_("fx_frame"); tagteam_fx_frame(g_ram, g_bs ? dissidia_battle_age() : -1.f); } tagteam_hud_set_ram(g_ram); { TtStep s_("layer_frame"); if (!dissidia_tagteam_result_active()) tagteam_layer_frame(g_bs != 0 && g_hud_on && g_win_team < 0); dissidia_tagteam_result_frame(g_ram, g_ctx); } }
     if (g_ram) { { TtStep s_("group_end_step"); group_end_step(); } { TtStep s_("tally_post_step"); tally_post_step(); } leftover_unload(); }

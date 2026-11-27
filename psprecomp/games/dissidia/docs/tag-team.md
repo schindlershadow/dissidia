@@ -1,6 +1,7 @@
 # Tag team battles (2 v 2): research notes and plan
 
 ## TODO (kept up to date; newest first)
+- ~~Crosshair still wild when locked on to the EX Core (user, RP6 26 Nov)~~ FIXED 26 Nov (tree tthudsm3, branch tt-hudsmooth3, "Batch sixty-seven"): the ring target was only taken from fighters (`ok(t, 0x12D0)`, `+0x2FC`), so the core fell back to the old nearest-bone anchors. Not on a device.
 - ~~Crosshair gone after an extra's kill camera (RP6 26 Nov, `desk_logs/rp6_reticle5_1126_1816.log`)~~ FIXED 26 Nov (branch tt-cursor7): the lockfix6 restore put back a +0x878 snapshot taken after the enable was already cleared ("extra kill camera over: 0101 -> 0001"). The restore now only ever sets the lock cursor enable (bit 0x0100) when the fight resumes, never clears it.
 
 - ~~FFA: "Chaos did HP damage to me, but it also said Laguna did"; EX Burst on the extra on the human's side broke the human; hits on a broken extra / bogus slot breaks (user, RP6 26 Nov)~~ FIXED on the host 26 Nov (tree tthpsame, branch tt-hpsame, "Batch seventy-five"): phantom plain HP step skipped, burst reaction routed to the burst's victim, unhit-reaction guard ON, assist hits registered for the caller. Not verified on a device.
@@ -6357,3 +6358,15 @@ User: during chases the effects and timers (hit / particle effects of the others
 - **Test.** `~/dissidia/tt/s2/ttcecil/` (`run.sh`, `mont.py`; runs g / h / i / j, sheet `all_sheet.png`): Cecil as P3 and as P4 (7 / 4, 4 / 7), Onion Knight-Golbez-type pairs (10 / 22) and 26 / 9: all faces on the big panel at every lock (Lightning's own, Emperor, Cecil, Tifa, ...), pixels `0D.. -> 0BAA0000 / 0BAA4400`, no WARNING, no cloud lines. Regression `tagteam_test.py --baseline`: PASS (`~/dissidia/tt/s2/ttcecil/reg`).
 - **Not verified:** the RP6 (the cause there is not proven; the move to region 2 is the only thing that differs from the two failing logs).
 
+### Batch sixty-seven (26 Nov, tree tthudsm3, branch tt-hudsmooth3): lock-on ring on an EX core
+- **Cause.** Batch sixty-six took the ring's target from the human's `+0x2FC` and required a fighter-sized object (`ok(t, 0x12D0)`). An EX core (kind `+0x542` = 6, a smaller object) is
+  never `+0x2FC` (retail puts the lock selector on it: block `+304` -> selector `+28` = 2, nearest core `FUN_08B40A50`), so no target reached the renderer and the ring fell back to the
+  nearest-root-bone choice, the cause of the wild ring.
+- **Fix.** The target is what the human's lock block answers (`LOCK_GET`), replaced by the nearest core (`FUN_08B40A50`) while the selector is 2; any kind is accepted when its position is
+  finite and not (0,0,0) (idle cores sit at the origin). A target without a usable position publishes "none" (`ge_draw_set_follow_world(gen, null, null)`): the ring is then left exactly where the
+  game puts it, never the nearest-bone guess (that fallback now only applies without the tag team hook or with `PSPRECOMP_HUD_FOLLOW_NEAREST=1`). A new target (fighter -> core -> fighter) starts its
+  position history afresh (`tagteam_hud_follow_target`): no blend across the switch (the blend needs the previous gameplay frame's position of the same actor). `[HUDSMOOTH] ring target <actor> kind <k> pos ... followed` with `PSPRECOMP_TAGTEAM_LOG=1`.
+- **Test.** `PSPRECOMP_TAGTEAM_TESTLOCKCORE=09D40E90`, 120 fps, `PSPRECOMP_INTERP_TRACE=3` (`~/dissidia/tt/s2/hudsm/c6`, `rec_run5.py` waits for the `selector -> 2` line, 240 REC frames): the log shows ring target `09D41D90` /
+  `09D42FC0` kind 6 at (-28.0, 0.5, -24.0) `followed`; per-frame offset while on the core +21.5 +16.0 +10.6 +5.2 | +15.1 +11.2 +7.4 +3.7 (blended - newest, decays over the 4 frames of a tick, never past 0),
+  24 jump frames (second difference > 5 px) of 4271, all from the game's own ring steps. Regression `tagteam_test.py --baseline` PASS (`~/dissidia/tt/s2/reg_hudsmooth3`).
+- **Not verified.** On the device; an EX core while it is out and moving (the host test core stands at one point); other non-fighter lock targets (the summon's own object) take the same path.
