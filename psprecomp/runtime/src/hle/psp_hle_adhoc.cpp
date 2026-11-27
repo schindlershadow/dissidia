@@ -774,6 +774,9 @@ void on_packet_now(const uint8_t* d, size_t n, const sockaddr_in& from) {
                 if (blen < 6 || std::memcmp(body, g_mac.data(), 6) != 0) return;
                 if (dp.state != 2) ANOTE("direct: path to %s is up (%s:%u)", mac_str(src).c_str(), inet_ntoa(from.sin_addr), ntohs(from.sin_port));
                 if (dp.state != 2) dp.up_at = now_us();
+                // The ping so far went through the relay (the lobby toast showed 825 / 477 ms for a 7 ms LAN peer): start the smoothing over on the direct path.
+                // PSPRECOMP_PING_KEEP=1: keep the relay's numbers (the old behaviour).
+                if (dp.state != 2) { static const bool keep = std::getenv("PSPRECOMP_PING_KEEP") != nullptr; auto pg = g_ping.find(src); if (!keep && pg != g_ping.end()) { PingStat& st = pg->second; st.srtt_ms = -1; st.var_ms = 0; st.ever = false; st.outstanding.clear(); st.window.clear(); st.high = 0; } }
                 dp.active = from; dp.state = 2; dp.last_rx = now_us(); dp.reason.clear();
                 return;
             }
