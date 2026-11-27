@@ -5933,6 +5933,7 @@ float g_kof_t0 = 0.f;   // battle age of the last mid-battle finish start (KOFRE
 std::vector<SlotCallin> g_slot_callin;   // a slot whose whole stage team is down: the next reserve member is rebuilt into it after the fall
 constexpr float kSlotCallinDelay = 3.2f;   // a slot fighter with no partner: the fall plays this long before the next member is rebuilt into the slot
 float slot_fall_delay() { static const float d = std::getenv("PSPRECOMP_TAGTEAM_SLOTCALLIN_DELAY") ? static_cast<float>(std::atof(std::getenv("PSPRECOMP_TAGTEAM_SLOTCALLIN_DELAY"))) : kSlotCallinDelay; return d; }
+std::set<uint32_t> g_kd_held;   // KODESPAWN: slot fighters whose KO booking waits for the kill cam
 bool killcam_running();   // a kill camera (retail finish of a mid-battle KO / the extra kill camera) is on: a KO'd fighter stays on stage until it is over
 std::vector<std::pair<uint32_t, float>> g_park;   // fallen extras to move off the stage once their fall has played
 std::map<uint32_t, float> g_ko_swap_at;   // slot fighter -> battle age at which the team mate takes over (the fall plays until then)
@@ -7688,10 +7689,16 @@ void ko_oneround() {
     for (uint32_t k = 0; k < 2; k++) {
         const uint32_t S = srd(g_bs + 56u + 4u * k);
         if (!ok(S, 0x12D0)) continue;
-        if (!ko_state(S)) { handled[k] = false; lastStock[k] = g_ram[(S + 0x10CEu) & 0x07FFFFFFu]; continue; }
+        if (!ko_state(S)) { g_kd_held.erase(S); handled[k] = false; lastStock[k] = g_ram[(S + 0x10CEu) & 0x07FFFFFFu]; continue; }
         if (handled[k]) continue;
         bool mate_in = false; for (int i = 0; i < g_nextra; i++) if (g_extra[i].started && side_of(g_extra[i].actor) == side_of(S) && exb_in(g_extra[i].actor)) mate_in = true;   // (the mate that would take over is in the burst)
         if (exb_in(S) || mate_in) { static uint32_t lg = 0; if (lg != S && g_log) { lg = S; std::fprintf(stderr, "[TAGTEAM] t=%.1fs KO flow of slot %u %08X deferred: it or its team mate is in the running EX Burst\n", age / 60.0f, k, S); } continue; }
+        // KODESPAWN (27 Nov): the KO booking (swap with the mate / call-in / rebuild: the victim's body goes) waits for the end of the kill cam; the fall itself and the swap delay run as before. The held
+        // fighter does not count as a pending KO for the finish-over test below (else the finish would wait for the booking, the booking for the finish), and retail's finish request is kept off for it
+        // (ffa_held_ko_only). Battle state only. PSPRECOMP_TAGTEAM_KODESPAWN_OLD=1: old.
+        auto kd_hold = [&]() -> bool { static const bool kdold = std::getenv("PSPRECOMP_TAGTEAM_KODESPAWN_OLD") != nullptr;
+            if (!kdold && killcam_running()) { if (g_kd_held.insert(S).second && g_log) std::fprintf(stderr, "[KODESPAWN] t=%.2fs KO booking of slot %u %08X held until the kill cam is over\n", age / 60.0f, k, S); return true; }
+            if (g_kd_held.erase(S) && g_log) std::fprintf(stderr, "[KODESPAWN] t=%.2fs kill cam over: KO booking of slot %u %08X goes on\n", age / 60.0f, k, S); return false; };
         {   // a team mate is there: the fallen fighter plays its fall and KO line first (the mate takes over kKoSwapDelay s after the blow), it was replaced on the spot before
             bool mate = false; for (int i = 0; i < g_nextra; i++) if (g_extra[i].started && g_extra[i].actor != S && side_of(g_extra[i].actor) == side_of(S) && alive(g_extra[i].actor)) mate = true;
             if (ffa_now() && !comms_battle() && S == ffa_human()) mate = false;   // FFA: nobody takes the human's place   // single player: his own next member comes into the slot, the CPU partner stays where it is
@@ -7707,9 +7714,10 @@ void ko_oneround() {
                     continue;
                 }
                 if (exb_busy()) continue;   // a tag-in waits for any EX Burst (the fall keeps playing, the AI gated)
+                if (kd_hold()) continue;
                 g_ko_swap_at.erase(it);
             }
-            else if (exb_busy() || dissidia_battle_age() < g_kolist_late) continue;   // (test aid KOLIST_LATE: books after the finish has started, like a natural lethal hit)
+            else if (exb_busy() || dissidia_battle_age() < g_kolist_late || kd_hold()) continue;   // (test aid KOLIST_LATE: books after the finish has started, like a natural lethal hit)
         }
         handled[k] = true;
         // Forfeit (pause > Forfeit > YES): retail runs the fall script (1210) on the human's slot fighter and the finish phase (bs+72 = 4) with the HP untouched
@@ -7811,7 +7819,7 @@ void ko_oneround() {
         // FFA: a fallen slot fighter held out for good (no tag-in left, "slot N is out; the others fight on", g_ffa_down) is handled, his body stays at HP 0 / in the fall for the rest of the match: it
         // must not keep the finish phase on (RP6 26 Nov, host d1: second KO of P2 -> phase 4 for ever, the human frozen, no pause). PSPRECOMP_TAGTEAM_NOFFADOWNFIX=1: old.
         static const bool noffadown = std::getenv("PSPRECOMP_TAGTEAM_NOFFADOWNFIX") != nullptr;
-        bool ko_any = false; for (uint32_t k = 0; k < 2; k++) { const uint32_t a2 = srd(g_bs + 56u + 4u * k); if (!noffadown && std::find(g_ffa_down.begin(), g_ffa_down.end(), a2) != g_ffa_down.end()) continue; if (ok(a2, 0x12D0) && (ko_state(a2) || hp_eff(a2) <= 0 || g_ko_swap_at.count(a2))) ko_any = true; }
+        bool ko_any = false; for (uint32_t k = 0; k < 2; k++) { const uint32_t a2 = srd(g_bs + 56u + 4u * k); if (!noffadown && std::find(g_ffa_down.begin(), g_ffa_down.end(), a2) != g_ffa_down.end()) continue; if (g_kd_held.count(a2)) continue; if (ok(a2, 0x12D0) && (ko_state(a2) || hp_eff(a2) <= 0 || g_ko_swap_at.count(a2))) ko_any = true; }
         if (kof_early) ko_any = false;
         // Watchdog: the finish phase on for more than 900 ticks (15 s) with no call-in / rebuild pending and no burst running ends here whatever still looks like a KO (the human is frozen and cannot pause in phase 4).
         // Battle ticks and game state only. PSPRECOMP_TAGTEAM_NOP4WATCHDOG=1: off.
@@ -7852,6 +7860,9 @@ void ko_oneround() {
             if ((sc < 1200 || sc >= 1300) && age < c.fall + 45.f && !std::getenv("PSPRECOMP_TAGTEAM_NODEFEAT")) { wr(c.S + 0x380u, rd(c.S + 0x380u) | 2u); const uint32_t sp0 = static_cast<uint32_t>(g_ctx->r[29]); g_ctx->r[29] = static_cast<int32_t>(sp0 - 0x40u); g_ctx->f[12] = 0.0f; g_ctx->f[13] = 0.0f; call(START_ACTION, c.S + 304u, 1210u, 0); g_ctx->r[29] = static_cast<int32_t>(sp0); }
             i++; continue; }
         if (exb_busy() || exb_in(c.S)) { i++; continue; }   // an EX Burst is running (or its chance / start is on): the call-in waits for its end
+        if (killcam_running() && !std::getenv("PSPRECOMP_TAGTEAM_KODESPAWN_OLD")) {   // KODESPAWN: the fallen fighter stays until the kill cam is over (no rebuild / unload / tag-in before)
+            static uint32_t lg = ~0u; static uint32_t lgS = 0; if (g_log && (lg != g_battle_gen || lgS != c.S)) { lg = g_battle_gen; lgS = c.S; std::fprintf(stderr, "[KODESPAWN] t=%.2fs slot call-in of %08X held: the kill cam is still running\n", age / 60.0f, c.S); }
+            i++; continue; }
         if (entrance_busy()) { c.due = age + 30.f; i++; continue; }   // another entrance is running: this one waits for it
         g_defeat_hold.erase(c.S);
         side_entry_mark(side_of(c.S), age);
@@ -8189,10 +8200,10 @@ bool ffa_held_ko_only() {
     static const bool old = std::getenv("PSPRECOMP_TAGTEAM_KOLOOP_OLD") != nullptr;
     static const bool pairold = std::getenv("PSPRECOMP_TAGTEAM_KOFREEZE_PAIROFF") != nullptr;   // old KOFREEZE: the pair switch off instead of this guard
     if (old || !g_bs || g_decided || (rd(g_bs + 72u) != 3u && rd(g_bs + 72u) != 4u)) return false;
-    if (!(ffa_now() && !g_ffa_down.empty()) && (pairold || (g_slot_callin.empty() && g_rebuild.empty()))) return false;
+    if (!(ffa_now() && !g_ffa_down.empty()) && (pairold || (g_slot_callin.empty() && g_rebuild.empty() && g_kd_held.empty()))) return false;
     bool any = false;
     for (uint32_t k = 0; k < 2; k++) { const uint32_t a = srd(g_bs + 56u + 4u * k); if (!ok(a, 0x12D0) || !(hp_eff(a) <= 0 || ko_state(a))) continue;
-        bool parked = std::find(g_ffa_down.begin(), g_ffa_down.end(), a) != g_ffa_down.end() || (!pairold && is_rebuilding(a)); if (!pairold) for (const SlotCallin& c : g_slot_callin) if (c.S == a) parked = true;
+        bool parked = std::find(g_ffa_down.begin(), g_ffa_down.end(), a) != g_ffa_down.end() || (!pairold && is_rebuilding(a)); if (g_kd_held.count(a)) parked = true;   // KODESPAWN: booking waits for the kill cam if (!pairold) for (const SlotCallin& c : g_slot_callin) if (c.S == a) parked = true;
         if (!parked) return false; any = true; }
     return any;
 }
@@ -12110,7 +12121,20 @@ void xkocam_start(uint32_t victim) {
     if (g_log) std::fprintf(stderr, "[KOCAM] t=%.2fs extra %s %08X KO: kill camera started (slow motion 0.02, camera program 0x898 on it)\n", dissidia_battle_age() / 60.0f, role_of(victim), victim);
 }
 float g_cam_post = -1.f;   // debug: log the camera director's words for 4 s after a kill camera
-bool killcam_running() { return mid_finish() || (g_xko_pend && g_xko_pend_gen == g_battle_gen) || (g_xko.t0 >= 0.f && g_xko.gen == g_battle_gen); }
+// KODESPAWN (27 Nov, kodespawn): a KO'd fighter must never vanish before the kill cam is over. The kill cam of a slot victim runs from its lethal hit (g_midfin_gen, set there) to the "finish over"
+// block; the old test (mid_finish) also needed bs+72 == 4, so a call-in / rebuild due in the last ticks (kofreeze's timing) could take the victim away just before it ended. The extra kill cam is stage 1-2
+// (3 = over). Battle state only (lock-step safe). A 12 s cap per kill cam so a flag that is never cleared cannot hold a rebuild for ever. PSPRECOMP_TAGTEAM_KODESPAWN_OLD=1: the old test.
+bool killcam_running() {
+    static const bool old = std::getenv("PSPRECOMP_TAGTEAM_KODESPAWN_OLD") != nullptr;
+    if (old) return mid_finish() || (g_xko_pend && g_xko_pend_gen == g_battle_gen) || (g_xko.t0 >= 0.f && g_xko.gen == g_battle_gen);
+    const bool run = (g_midfin_gen == g_battle_gen) || (g_xko.gen == g_battle_gen && g_xko.stage >= 1 && g_xko.stage <= 2) || (g_xko_pend && g_xko_pend_gen == g_battle_gen) || (g_xko.t0 >= 0.f && g_xko.gen == g_battle_gen);
+    static uint32_t cg = ~0u; static float since = -1.f; const float age = dissidia_battle_age();
+    if (cg != g_battle_gen) { cg = g_battle_gen; since = -1.f; }
+    if (!run) { since = -1.f; return false; }
+    if (since < 0.f) since = age;
+    if (age - since > 720.f) return false;
+    return true;
+}
 void xkocam_step() {
     TtStep tt_step_("xkocam_step");
     if (g_log && std::getenv("PSPRECOMP_TAGTEAM_SNDGATE")) { static float lg = -1e9f; const float a = dissidia_battle_age(); if (a - lg >= 60.f) { lg = a; const uint32_t pool = rd(0x09B50000u - 11616u); std::fprintf(stderr, "[SNDGATE] t=%.1fs enable byte %02X free pool count %d (pool %08X) bs72 %u\n", a / 60.0f, ok(0x089D6C98u, 4) ? (unsigned)(rd(0x089D6C98u) & 0xFFu) : 999u, ok(pool, 0x600) ? (int)rd(pool + 1536u) : -9, pool, g_bs ? rd(g_bs + 72u) : 99u); } }
