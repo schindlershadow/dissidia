@@ -2878,6 +2878,16 @@ void hud_update() {
                 if (!std::getenv("PSPRECOMP_TAGTEAM_SMALLFLASH_OLD")) f.break_flash = flash_of(S);   // the extra's break shows on the big panel (retail), only the slot fighter's own break belongs to this small panel (user, 20 Nov: "Yuna broke but it showed BREAK on Bartz")
             }
         }
+        {   // break status held on the small panel until the BRV is back at base (user 27 Nov: "BREAK" only flashed for a few seconds). PSPRECOMP_TAGTEAM_BRKHOLD_OLD=1: flash only
+            static const bool old = std::getenv("PSPRECOMP_TAGTEAM_BRKHOLD_OLD") != nullptr;
+            const auto bs3 = g_xbreak_show.find(f.id);
+            static std::map<uint32_t, float> back_at;   // battle age at which this fighter's BRV was last at base (a later break re-opens it)
+            const uint32_t base = xbase(f.id);
+            if (base && static_cast<uint32_t>(std::max(0, f.brv)) >= base) back_at[f.id] = dissidia_battle_age();
+            const auto ba = back_at.find(f.id);
+            const bool since_break = bs3 != g_xbreak_show.end() && (ba == back_at.end() || ba->second < bs3->second);
+            if (!old && f.brv >= 0) f.broken = g_xbroken.count(f.id) || (since_break && static_cast<uint32_t>(f.brv) < base);
+        }
         fs.push_back(f);
     }
     // sides in the HUD: the human's team on the left (side value of the human's slot), the other on the right

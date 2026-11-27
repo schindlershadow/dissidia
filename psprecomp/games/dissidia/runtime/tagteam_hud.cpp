@@ -269,7 +269,12 @@ void panel(const TagHudFighter& f, float x, float y, double tnow) {
             }
             g_layer.serif_caps(b, 7.6f, 1.f, 0.2f, bx, y + 16.f, LayerColor{180.f + 30.f * ph, 145.f + 60.f * ph, 255.f, 1.f});
         } else
-        g_layer.serif_caps(b, 7.6f, 1.f, 0.2f, bx, y + 16.f, f.brv == 0 ? LayerColor{255, 120, 110, 1.f} : LayerColor{255, 236, 190, 1.f});
+        g_layer.serif_caps(b, 7.6f, 1.f, 0.2f, bx, y + 16.f, (f.brv == 0 || f.broken) ? LayerColor{255, 120, 110, 1.f} : LayerColor{255, 236, 190, 1.f});
+        if (f.broken && !(f.break_flash >= 0.f && f.break_flash < 1.f)) {   // in break status: a steady "BREAK" beside the number until the BRV is back at base
+            const float pw = text_w("BREAK", true, 6.0f), px = right ? bx - 3.f - pw : bx + bw + 3.f;
+            const float pulse = 0.8f + 0.2f * static_cast<float>(std::sin(tnow * 5.0));
+            shadow_text("BREAK", true, 6.0f, px, y + 16.f, LayerColor{255, 96, 76, pulse});
+        }
     }
     // HP bar over the whole panel width, filling from the outer edge (as the retail slot panels). With the gauges the HP number sits on the row under it beside the
     // half-length assist chevrons (native layout: our side: assist at the left, HP number at the right of the box; the enemy's panel mirrored); without them it ends the bar row.

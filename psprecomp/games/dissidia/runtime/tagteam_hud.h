@@ -12,6 +12,7 @@ struct TagHudFighter {
     int brv = -1;           // bravery (-1: not shown)
     bool active = false;    // the one the pad drives (later: the tag swap), marked with an arrow
     std::string code;       // file code of the character ("gst120"): its face strip
+    bool broken = false;        // in break status (from the break until the BRV is back at base): "BREAK" stays beside the BRV number
     float break_flash = -1.f;   // 0..1: a BREAK flash at this panel's BRV number (its fighter was just broken); < 0: none
     float ex = -1.f;            // EX gauge 0..1 (status +0x18 / 10000); < 0: not shown
     float assist = -1.f;        // assist gauge 0..1 (status +0x1C / 10000, two levels of 0.5); < 0: not shown
