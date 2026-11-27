@@ -6122,6 +6122,10 @@ void intro_play_now() {
         g_line_end = len > 0.f ? now + len : 0.f;
         if (g_log) std::fprintf(stderr, "[TAGTEAM] intro line length %.2f s (%s)\n", len / 60.f, lw ? "banters wait for it" : "ignored");
         if (!lw) g_line_end = 0.f;
+        {   // netplay: the voice line is picked per machine (the two sides play different lines of different length), so waiting for its end made the banters last differently = desync at the end of the intro: fixed banter length
+            static const bool lnOld = std::getenv("PSPRECOMP_TAGTEAM_LINEWAIT_NET_OLD") != nullptr;
+            if (!lnOld && comms_battle() && g_line_end > 0.f) { g_line_end = 0.f; if (g_log) std::fprintf(stderr, "[TAGTEAM] netplay: the line's length is not waited for (fixed banter)\n"); }
+        }
     }
     if (g_log) pool_dump("after play call");
     g_intro_free_at = dissidia_battle_age() + 8.f * 60.f + (std::getenv("PSPRECOMP_TAGTEAM_INTRO_HOLD") ? 100000.f : 0.f);   // (_HOLD: test aid, the line is never freed in the battle)

@@ -1,6 +1,7 @@
 # Tag team battles (2 v 2): research notes and plan
 
 ## TODO (kept up to date; newest first)
+- FIXED 27 Nov (tree ttdpds, branch tt-dpdesync, "Batch eighty-four"): desktop vs phone desync at lock-step frame 335 (end of the start banters, `desk_logs/dp_1455`). Cause: the banters waited for the voice line's length (`[TAGTEAM] intro line length`), measured from the line's ATRAC file; the same line `va_battle_103` was 19660 bytes (2.34 s) on the desktop and 15628 bytes (1.85 s) on the phone (the machines' voice data / pick differs), so the banters ended 0.5 s apart = both fighters one animation step apart. Now in a lock-step (comms) battle the length is not waited for (fixed 2.5 s banter). `PSPRECOMP_TAGTEAM_LINEWAIT_NET_OLD=1` = old. Not reproducible with `mp_diverge.py` (both copies read the same disc data; old and new PASS), unverified on the devices. "Super laggy": not a stall of the exchange: the desktop's Auto delay was 4 frames (jitter 29 ms) and the phone's input lead crept 1 -> 5 frames ("input kept arriving late") because the phone's logic ran 24-30 frames/s, i.e. at or under the 30 Hz lock-step rate; the phone is the bottleneck (render cost), not the net (7 ms ping).
 - ~~Cross-device online test (user 27 Nov: same scripted tag battle on real machines)~~ DONE 27 Nov (tree ttxdev, branch tt-xdev, "Batch eighty-eight"): `tools/xdev_test.py`, run by `tagteam_test.py --baseline` (skip: `--no-xdev`). OPEN: a 3-4 machine match (the walk is two copies); the Deck leg needs no running game there.
 - KO death animation (user 27 Nov, later): a KO'd fighter's death animation must not start until the kill cam has finished; only after the death animation may the fighter disappear.
 - Outfits (user 27 Nov, later): the own-member look (OWNLOOK, Batch eighty-seven) is keyed by charId, so an enemy of the same character also gets the player's outfit: fix it. Every fighter's outfit should be decided before the battle starts (per fighter, not per character).
@@ -190,6 +191,9 @@ runtime hooks. "Confirmed" = read in the code; "inferred" = a guess to check in 
 
 Goal: Budokai Tenkaichi style tag battles. Two fighters per side on the stage at once, the rest of the party roster
 comes in when a fighter is KO'd, the existing lock-on cycling switches between the enemy fighters.
+
+## Batch eighty-four: banter length per machine (27 Nov, branch tt-dpdesync, tree ttdpds)
+See the TODO line (frame-335 desync, `PSPRECOMP_TAGTEAM_LINEWAIT_NET_OLD=1`). Test: `mp_diverge.py --mode team2` PASS new (1456/0 frames) and with the old flag; the differing voice data of the real devices could not be reproduced here.
 
 ## Batch: cross-device online test (27 Nov, branch tt-xdev, tree ttxdev)
 Same-host two-copy tests cannot see per-platform differences (Windows libm vs Linux/Android, stale heap words on a long-running Deck). `tools/xdev_test.py --work DIR --targets desktop,deck,laptop,rp6`
