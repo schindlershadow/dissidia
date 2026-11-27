@@ -1,0 +1,365 @@
+#!/usr/bin/env python3
+"""adhoc_relay_stats: analytics and an abuse view over the relay's JSON-lines event log.
+
+  adhoc_relay_stats                       # everything in ~/.local/state/adhoc_relay/
+  adhoc_relay_stats --days 7              # the last 7 days
+  adhoc_relay_stats --since 2026-11-01 --until 2026-11-30
+  adhoc_relay_stats --json                # the same numbers as one JSON object
+  adhoc_relay_stats --abuse               # per-IP view: rates, malformed packets, room hopping, joins per minute
+  adhoc_relay_stats --dir DIR             # another log directory (or a single .jsonl file)
+
+Log line formats are in README.md (one JSON object per line, "ev" names the event).
+"""
+import argparse, collections, datetime, glob, json, os, statistics, sys
+
+DEFAULT_DIR = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "adhoc_relay")
+
+
+def load(path, since, until):
+    """Yield events from relay-YYYY-MM-DD.jsonl files (or one file) between the two dates (UTC, inclusive)."""
+    files = [path] if os.path.isfile(path) else sorted(glob.glob(os.path.join(path, "relay-*.jsonl")))
+    for f in files:
+        day = os.path.basename(f)[6:16]
+        if os.path.isdir(path) and ((since and day < since) or (until and day > until)):
+            continue
+        with open(f, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue   # a torn last line while the relay is writing
+                if isinstance(ev, dict) and "ev" in ev:
+                    yield ev
+
+
+def pct(vals, p):
+    """p-th percentile of (value, weight) pairs."""
+    vals = sorted(vals)
+    tot = sum(w for _, w in vals)
+    if not tot:
+        return None
+    acc = 0
+    for v, w in vals:
+        acc += w
+        if acc >= tot * p / 100.0:
+            return v
+    return vals[-1][0]
+
+
+def fmt_bytes(n):
+    for u in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or u == "TB":
+            return "%.0f %s" % (n, u) if u == "B" else "%.1f %s" % (n, u)
+        n /= 1024.0
+
+
+def fmt_bps(b):
+    return "%.0f kbit/s" % (b / 1000.0) if b < 1e6 else "%.2f Mbit/s" % (b / 1e6)
+
+
+def fmt_dur(s):
+    s = int(s)
+    return "%dh%02dm" % (s // 3600, s % 3600 // 60) if s >= 3600 else "%dm%02ds" % (s // 60, s % 60)
+
+
+def analyse(events):
+    R = {"events": 0, "first": None, "last": None}
+    joins = []
+    macs, nicks = set(), set()
+    ips_by_mac = collections.defaultdict(set)
+    builds = collections.defaultdict(set)         # (build, proto) -> macs
+    mac_has_build = set()
+    matches = []                                  # match_end events
+    battles = []
+    pair_final = collections.Counter()
+    pair_reasons = collections.Counter()
+    path_events = []
+    rtt = []                                      # (avg ms, weight n)
+    rtt_max = []
+    rtt_min = []
+    rx = tx = 0
+    peak_bps = 0
+    errors = collections.Counter()
+    rooms = collections.defaultdict(lambda: {"joins": 0, "macs": set(), "matches": 0, "match_s": 0.0, "battles": 0})
+    nat = collections.Counter()
+    client_v = collections.Counter()
+    mapping = collections.Counter()
+    leaves = collections.Counter()
+    stats_peak = 0
+    for ev in events:
+        R["events"] += 1
+        R["first"] = R["first"] or ev.get("ts")
+        R["last"] = ev.get("ts")
+        k = ev["ev"]
+        if k == "join":
+            joins.append(ev)
+            macs.add(ev["mac"]); ips_by_mac[ev["mac"]].add(ev["ip"])
+            nat[ev.get("nat", "?")] += 1
+            r = rooms[ev["room"]]; r["joins"] += 1; r["macs"].add(ev["mac"])
+        elif k == "ident":
+            if ev.get("nick"):
+                nicks.add(ev["nick"])
+        elif k == "build":
+            builds[(ev.get("build", "?"), ev.get("proto", "?"))].add(ev["mac"]); mac_has_build.add(ev["mac"])
+        elif k == "client":
+            client_v[ev.get("client_v", 2)] += 1
+            mapping[ev.get("mapping", "?")] += 1
+        elif k == "leave":
+            leaves[ev.get("reason", "?")] += 1
+        elif k == "match_end":
+            matches.append(ev)
+            r = rooms[ev["room"]]; r["matches"] += 1; r["match_s"] += ev.get("dur_s", 0)
+            for p in ev.get("pairs", []):
+                pair_final[p["state"]] += 1
+                if p["state"] == "relay":
+                    pair_reasons[p.get("reason", "?")] += 1
+        elif k == "battle_end":
+            battles.append(ev)
+            rooms[ev["room"]]["battles"] += 1
+        elif k == "path":
+            path_events.append(ev)
+        elif k == "rate":
+            rx += ev.get("bytes", 0); tx += ev.get("tx_bytes", 0)
+            peak_bps = max(peak_bps, ev.get("peak_bps", 0))
+            if ev.get("rtt_n"):
+                rtt.append((ev["rtt_avg"], ev["rtt_n"])); rtt_max.append(ev["rtt_max"]); rtt_min.append(ev["rtt_min"])
+        elif k == "error":
+            errors[ev.get("kind", "?")] += ev.get("count", 1)
+        elif k == "stats":
+            stats_peak = max(stats_peak, ev.get("clients", 0))
+    R["joins"] = len(joins)
+    R["unique_players"] = len(macs)
+    R["unique_nicks"] = len(nicks)
+    R["unique_ips"] = len({j["ip"] for j in joins})
+    R["peak_clients"] = stats_peak
+    R["nat"] = dict(nat)
+    R["leave_reasons"] = dict(leaves)
+    R["client_relay_version"] = {str(k): v for k, v in client_v.items()}
+    R["nat_mapping"] = dict(mapping)
+
+    per_day = collections.OrderedDict()
+    for m in matches:
+        d = m["ts"][:10]
+        e = per_day.setdefault(d, {"matches": 0, "battles": 0, "players": set(), "dur_s": 0.0})
+        e["matches"] += 1; e["dur_s"] += m.get("dur_s", 0)
+        e["players"].update(p["mac"] for p in m.get("players", []))
+    for b in battles:
+        per_day.setdefault(b["ts"][:10], {"matches": 0, "battles": 0, "players": set(), "dur_s": 0.0})["battles"] += 1
+    joins_day = collections.Counter(j["ts"][:10] for j in joins)
+    R["per_day"] = {d: {"matches": e["matches"], "battles": e["battles"], "players_in_matches": len(e["players"]), "joins": joins_day.get(d, 0),
+                        "match_s": round(e["dur_s"])} for d, e in sorted(per_day.items())}
+    durs = [m.get("dur_s", 0) for m in matches]
+    R["matches"] = {"count": len(matches), "avg_s": statistics.mean(durs) if durs else 0, "median_s": statistics.median(durs) if durs else 0,
+                    "max_s": max(durs) if durs else 0, "avg_players": statistics.mean([len(m.get("players", [])) for m in matches]) if matches else 0}
+    bd = [b.get("dur_s", 0) for b in battles]
+    R["battles"] = {"count": len(battles), "avg_s": statistics.mean(bd) if bd else 0, "median_s": statistics.median(bd) if bd else 0, "max_s": max(bd) if bd else 0}
+
+    total_pairs = sum(pair_final.values())
+    t2d = [p["after_intro_s"] for p in path_events if p.get("state") == "direct" and p.get("after_intro_s", -1) >= 0]
+    R["paths"] = {"pairs": total_pairs, "direct": pair_final.get("direct", 0), "relay": pair_final.get("relay", 0), "unknown": pair_final.get("unknown", 0),
+                  "direct_share": pair_final.get("direct", 0) / total_pairs if total_pairs else None, "relay_reasons": dict(pair_reasons),
+                  "median_s_to_direct": statistics.median(t2d) if t2d else None,
+                  "path_changes": collections.Counter((p.get("state"), p.get("reason")) for p in path_events).most_common()}
+    R["paths"]["path_changes"] = [{"state": s, "reason": r, "n": n} for (s, r), n in R["paths"]["path_changes"]]
+
+    buckets = [(20, "<20 ms"), (40, "20-40 ms"), (80, "40-80 ms"), (150, "80-150 ms"), (300, "150-300 ms"), (1e9, ">300 ms")]
+    hist = collections.OrderedDict((n, 0) for _, n in buckets)
+    for v, w in rtt:
+        for lim, name in buckets:
+            if v < lim:
+                hist[name] += w
+                break
+    R["rtt"] = {"samples": sum(w for _, w in rtt), "p50": pct(rtt, 50), "p90": pct(rtt, 90), "p99": pct(rtt, 99), "min": min(rtt_min) if rtt_min else None,
+                "max": max(rtt_max) if rtt_max else None, "histogram": dict(hist),
+                "note": "round trip relay <-> client, sampled every 5 s; includes up to 10 ms of client tick; percentiles of 30 s window averages"}
+
+    mavg = [m.get("avg_bps", 0) for m in matches]
+    R["bandwidth"] = {"rx_bytes": rx, "tx_bytes": tx, "peak_client_bps": peak_bps, "match_avg_bps_mean": statistics.mean(mavg) if mavg else 0,
+                      "match_peak_bps_max": max([m.get("peak_bps", 0) for m in matches], default=0),
+                      "battle_avg_bps_mean": statistics.mean([b.get("avg_bps", 0) for b in battles]) if battles else 0}
+    nb = len({m for m in macs if m not in mac_has_build})
+    R["builds"] = [{"build": b, "proto": p, "players": len(ms)} for (b, p), ms in sorted(builds.items(), key=lambda kv: -len(kv[1]))]
+    R["builds_unknown_players"] = nb
+    R["errors"] = dict(errors)
+    top = sorted(rooms.items(), key=lambda kv: (-kv[1]["joins"], kv[0]))[:10]
+    R["top_rooms"] = [{"room": r, "joins": v["joins"], "players": len(v["macs"]), "matches": v["matches"], "match_s": round(v["match_s"]), "battles": v["battles"]} for r, v in top]
+    return R
+
+
+def abuse(events, a):
+    ips = collections.defaultdict(lambda: {"macs": set(), "rooms": collections.defaultdict(list), "joins": [], "pkts": 0, "bytes": 0, "tx_bytes": 0, "secs": 0.0,
+                                           "peak_pps": 0, "peak_win_pps": 0.0, "peak_bps": 0, "dropped": 0, "err": collections.Counter(), "unreg_pkts": 0,
+                                           "rereg": 0, "intros": 0, "ports": set()})
+    for ev in events:
+        k = ev["ev"]
+        ip = ev.get("ip") or ev.get("from_ip", "").rsplit(":", 1)[0]
+        if k == "join":
+            s = ips[ip]; s["macs"].add(ev["mac"]); s["joins"].append(ev["t"]); s["rooms"][ev["room"]].append(ev["t"]); s["ports"].add(ev.get("port"))
+        elif k == "rate":
+            s = ips[ip]; s["pkts"] += ev.get("pkts", 0); s["bytes"] += ev.get("bytes", 0); s["tx_bytes"] += ev.get("tx_bytes", 0)
+            secs = ev.get("secs") or 0
+            s["secs"] += secs; s["dropped"] += ev.get("dropped", 0)
+            s["peak_pps"] = max(s["peak_pps"], ev.get("peak_pps", 0)); s["peak_bps"] = max(s["peak_bps"], ev.get("peak_bps", 0))
+            if secs:
+                s["peak_win_pps"] = max(s["peak_win_pps"], ev.get("pkts", 0) / secs)
+        elif k == "error":
+            ips[ip]["err"][ev.get("kind", "?")] += ev.get("count", 1)
+        elif k == "ipstat":
+            s = ips[ip]; s["unreg_pkts"] += ev.get("unreg_pkts", 0); s["rereg"] += ev.get("rereg", 0)
+        elif k == "intro":
+            ips[ip]["intros"] += 1
+    rows = []
+    for ip, s in ips.items():
+        if not ip:
+            continue
+        js = sorted(s["joins"])
+        jpm = 0
+        j = 0
+        for i in range(len(js)):
+            while js[i] - js[j] > 60:
+                j += 1
+            jpm = max(jpm, i - j + 1)
+        # distinct rooms joined inside any 10 minute window (room hopping)
+        stamps = sorted((t, r) for r, ts in s["rooms"].items() for t in ts)
+        hop = 0
+        j = 0
+        for i in range(len(stamps)):
+            while stamps[i][0] - stamps[j][0] > 600:
+                j += 1
+            hop = max(hop, len({r for _, r in stamps[j:i + 1]}))
+        bad = s["err"]["malformed"] + s["err"]["unregistered"] + s["err"]["spoofed_mac"] + s["err"]["bad_type"] + s["err"]["bad_op"]
+        flags = []
+        if s["peak_pps"] >= a.flag_pps or s["peak_win_pps"] >= a.flag_pps / 2:
+            flags.append("high packet rate")
+        if s["peak_bps"] >= a.flag_kbps * 1000:
+            flags.append("high bandwidth")
+        if s["dropped"]:
+            flags.append("rate limited (%d dropped)" % s["dropped"])
+        if bad >= a.flag_bad:
+            flags.append("malformed/unregistered/spoofed packets (%d)" % bad)
+        if jpm >= a.flag_joins:
+            flags.append("%d joins in a minute" % jpm)
+        if hop >= a.flag_rooms:
+            flags.append("room hopping (%d rooms in 10 min)" % hop)
+        if len(s["macs"]) >= a.flag_macs:
+            flags.append("%d different MACs" % len(s["macs"]))
+        if s["err"]["challenge"] >= a.flag_challenges:
+            flags.append("challenge flood (%d)" % s["err"]["challenge"])
+        if s["err"]["room_full"] or s["err"]["server_full"]:
+            flags.append("hits full room/server (%d)" % (s["err"]["room_full"] + s["err"]["server_full"]))
+        rows.append({"ip": ip, "flags": flags, "players": len(s["macs"]), "joins": len(js), "joins_per_min_max": jpm, "rooms": len(s["rooms"]), "rooms_10min_max": hop,
+                     "pkts": s["pkts"], "mean_pps": (s["pkts"] / s["secs"]) if s["secs"] else 0, "peak_pps": s["peak_pps"], "peak_window_pps": round(s["peak_win_pps"], 1),
+                     "rx_bytes": s["bytes"], "tx_bytes": s["tx_bytes"], "peak_bps": s["peak_bps"], "dropped": s["dropped"], "rereg": s["rereg"],
+                     "errors": dict(s["err"]), "intros": s["intros"]})
+    rows.sort(key=lambda r: (-len(r["flags"]), -r["peak_pps"], -r["joins"]))
+    return rows
+
+
+def print_report(R):
+    p = print
+    p("Relay log: %d events, %s .. %s" % (R["events"], R["first"], R["last"]))
+    p("\nPlayers")
+    p("  joins %d   unique players (MAC) %d   unique nicknames %d   unique IPs %d   peak simultaneous clients (1 min samples) %d" %
+      (R["joins"], R["unique_players"], R["unique_nicks"], R["unique_ips"], R["peak_clients"]))
+    p("  network class at join: " + ", ".join("%s %d" % kv for kv in sorted(R["nat"].items(), key=lambda kv: -kv[1])))
+    if R["nat_mapping"]:
+        p("  port mapping of INTRO clients: " + ", ".join("%s %d" % kv for kv in R["nat_mapping"].items()))
+    p("  leave reasons: " + ", ".join("%s %d" % kv for kv in sorted(R["leave_reasons"].items(), key=lambda kv: -kv[1])))
+    m = R["matches"]
+    p("\nMatches (a group of 2+ connected players)")
+    p("  %d matches, average %s, median %s, longest %s, average %.1f players" % (m["count"], fmt_dur(m["avg_s"]), fmt_dur(m["median_s"]), fmt_dur(m["max_s"]), m["avg_players"]))
+    b = R["battles"]
+    p("  battles seen on the relay (relayed battle traffic): %d, average %s, median %s, longest %s" % (b["count"], fmt_dur(b["avg_s"]), fmt_dur(b["median_s"]), fmt_dur(b["max_s"])))
+    p("  per day:        matches battles players joins  time in matches")
+    for d, e in R["per_day"].items():
+        p("    %s   %5d %7d %7d %5d  %s" % (d, e["matches"], e["battles"], e["players_in_matches"], e["joins"], fmt_dur(e["match_s"])))
+    pt = R["paths"]
+    p("\nDirect path vs relay (per pair of players in a match)")
+    if pt["pairs"]:
+        p("  %d pairs: direct %d (%.0f%%), relay %d, unknown %d; median %s s from first INTRO to direct" %
+          (pt["pairs"], pt["direct"], 100.0 * pt["direct_share"], pt["relay"], pt["unknown"], "%.1f" % pt["median_s_to_direct"] if pt["median_s_to_direct"] is not None else "-"))
+        for r, n in sorted(pt["relay_reasons"].items(), key=lambda kv: -kv[1]):
+            p("    relay because %-22s %d" % (r, n))
+    else:
+        p("  no pairs yet")
+    r = R["rtt"]
+    p("\nPing (relay <-> client round trip)")
+    if r["samples"]:
+        p("  %d samples: p50 %.0f ms, p90 %.0f ms, p99 %.0f ms, min %.0f, max %.0f" % (r["samples"], r["p50"], r["p90"], r["p99"], r["min"], r["max"]))
+        p("  " + "   ".join("%s: %d" % kv for kv in r["histogram"].items()))
+    else:
+        p("  no samples")
+    w = R["bandwidth"]
+    p("\nBandwidth (through the relay)")
+    p("  received %s, sent %s; busiest client second %s; match average %s, highest match peak %s; battle average %s" %
+      (fmt_bytes(w["rx_bytes"]), fmt_bytes(w["tx_bytes"]), fmt_bps(w["peak_client_bps"]), fmt_bps(w["match_avg_bps_mean"]),
+       fmt_bps(w["match_peak_bps_max"]), fmt_bps(w["battle_avg_bps_mean"])))
+    p("\nBuilds in use (sent by the game in the lobby manifest / tag roster)")
+    for x in R["builds"]:
+        p("  %-14s netcode %-4s %d players" % (x["build"], x["proto"], x["players"]))
+    p("  no build id seen (older builds, or never sent one): %d players" % R["builds_unknown_players"])
+    p("\nTop rooms")
+    p("  %-24s joins players matches battles  time in matches" % "room")
+    for x in R["top_rooms"]:
+        p("  %-24s %5d %7d %7d %7d  %s" % ('"%s"' % x["room"], x["joins"], x["players"], x["matches"], x["battles"], fmt_dur(x["match_s"])))
+    if R["errors"]:
+        p("\nErrors: " + ", ".join("%s %d" % kv for kv in sorted(R["errors"].items(), key=lambda kv: -kv[1])))
+
+
+def print_abuse(rows, limit, show_all):
+    shown = rows if show_all else [r for r in rows if r["flags"]]
+    print("Per-IP view: %d IPs, %d flagged (use --all to list every IP)" % (len(rows), sum(1 for r in rows if r["flags"])))
+    print("%-16s %5s %5s %6s %5s %9s %8s %10s %10s %7s %6s  %s" % ("ip", "plrs", "joins", "j/min", "rooms", "mean pps", "peak pps", "rx", "tx", "dropped", "bad", "flags"))
+    for r in shown[:limit]:
+        e = r["errors"]
+        bad = e.get("malformed", 0) + e.get("unregistered", 0) + e.get("spoofed_mac", 0) + e.get("bad_type", 0) + e.get("bad_op", 0)
+        print("%-16s %5d %5d %6d %5d %9.1f %8d %10s %10s %7d %6d  %s" % (r["ip"], r["players"], r["joins"], r["joins_per_min_max"], r["rooms"], r["mean_pps"], r["peak_pps"],
+                                                                  fmt_bytes(r["rx_bytes"]), fmt_bytes(r["tx_bytes"]), r["dropped"], bad, "; ".join(r["flags"]) or "-"))
+    if not shown:
+        print("(nothing stands out)")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--dir", default=DEFAULT_DIR, help="log directory or one .jsonl file (default %(default)s)")
+    ap.add_argument("--days", type=int, help="only the last N days (UTC)")
+    ap.add_argument("--since", help="first day, YYYY-MM-DD")
+    ap.add_argument("--until", help="last day, YYYY-MM-DD")
+    ap.add_argument("--json", action="store_true", help="print JSON instead of text")
+    ap.add_argument("--abuse", action="store_true", help="per-IP abuse view instead of the analytics")
+    ap.add_argument("--all", action="store_true", help="with --abuse: list every IP, not only the flagged ones")
+    ap.add_argument("--limit", type=int, default=50, help="with --abuse: rows to show (default 50)")
+    ap.add_argument("--flag-pps", type=float, default=2000, help="flag a peak of this many packets/s from one client (default 2000; the relay limit is 6000)")
+    ap.add_argument("--flag-kbps", type=float, default=8000, help="flag a peak of this many kbit/s (default 8000)")
+    ap.add_argument("--flag-bad", type=int, default=50, help="flag this many malformed/unregistered/spoofed packets (default 50)")
+    ap.add_argument("--flag-joins", type=int, default=10, help="flag this many joins in a minute (default 10)")
+    ap.add_argument("--flag-rooms", type=int, default=5, help="flag this many different rooms from one IP in 10 minutes (default 5)")
+    ap.add_argument("--flag-macs", type=int, default=8, help="flag this many different MACs from one IP (default 8; players behind one router are normal in small numbers)")
+    ap.add_argument("--flag-challenges", type=int, default=200, help="flag this many cookie challenges from one IP (default 200)")
+    a = ap.parse_args()
+    since, until = a.since, a.until
+    if a.days:
+        since = (datetime.datetime.utcnow() - datetime.timedelta(days=a.days - 1)).strftime("%Y-%m-%d")
+    if not os.path.exists(a.dir):
+        print("no log at %s" % a.dir, file=sys.stderr)
+        return 1
+    events = load(a.dir, since, until)
+    if a.abuse:
+        rows = abuse(events, a)
+        if a.json:
+            json.dump(rows, sys.stdout, indent=1)
+            print()
+        else:
+            print_abuse(rows, a.limit, a.all)
+        return 0
+    R = analyse(events)
+    if a.json:
+        json.dump(R, sys.stdout, indent=1, default=lambda o: sorted(o) if isinstance(o, set) else str(o))
+        print()
+    else:
+        print_report(R)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
