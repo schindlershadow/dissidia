@@ -244,6 +244,7 @@ void finsnap_restore(bool keep_pair = false);
 void pair_restore(const char* why);
 float g_kofskip_age = -1e9f;   // KOLOOP: battle age of the last skipped finish request
 bool ffa_held_ko_only();
+void exko_scrub();   // [EXKOSCRUB] below ffa_held_ko_only
 bool g_pair_defer = false; float g_pair_defer_t0 = 0.f;   // KOFREEZE: the pair update switch (+88 / +89) stays off while a KO'd slot fighter waits for its tag-in (retail would start the finish again)
 float g_kolist_late = -1.f;   // test aid KOLIST_LATE: the KO flow waits 30 ticks (the finish is up by then)
 uint8_t g_pair_on = 0, g_pair_on2 = 0; bool g_pair_have = false;
@@ -4447,6 +4448,7 @@ void rebuild_frame() {
     g_frame_ticks++;
     latediff_step();
     frozen_fix();
+    exko_scrub();
     if (g_log && g_bs && std::getenv("PSPRECOMP_TAGTEAM_EXBFORCE5")) {   // test aid "<slot 0|1>:<s>": from battle second s, while that slot fighter is in EX Mode (machine +0x784 state 3), its burst chance flag (+0x5B2 bit 0x10, set by an HP hit in EX Mode) is set every frame until the machine takes it (state 5)
         int sl = 0; float at = 0; if (std::sscanf(std::getenv("PSPRECOMP_TAGTEAM_EXBFORCE5"), "%d:%f", &sl, &at) == 2) {
             const uint32_t F = srd(g_bs + 56u + 4u * static_cast<uint32_t>(sl & 1)); const float age = dissidia_battle_age() / 60.0f; static bool said = false;
@@ -8184,6 +8186,43 @@ bool ffa_held_ko_only() {
         bool parked = std::find(g_ffa_down.begin(), g_ffa_down.end(), a) != g_ffa_down.end() || (!pairold && is_rebuilding(a)); if (!pairold) for (const SlotCallin& c : g_slot_callin) if (c.S == a) parked = true;
         if (!parked) return false; any = true; }
     return any;
+}
+
+// [EXKOSCRUB] (27 Nov, exbko3; desktop FFA: "I killed Lightning with an EX Burst and now me and Vaan can't move"): a finish that is cut short while the match goes on (the KO flow's early release
+// with the slot's tag-in pending, or the KOLOOP guard skipping the finish of a parked slot fighter at the burst's end) leaves retail's finish machine running: its later steps put the WINNER back in the
+// victory state (+0x380 bit 2, +0x908 bit 2, decided byte +0x126B, lock-on off) and mark every other standing fighter with the finish latch (+0x380 0x20000000; the extras stood in script 1 for the whole
+// 20 s tag-in wait, nothing took the marks off: the release clears the slot fighters' 0x20000000 once only). Measured headless (FFA via the menus, EXBAT + KOLIST): human script 1 / f2, extras script 1 / f2000000,
+// d 0.00 from the release until the tag-in. (1) for 10 s after the phase goes 4 -> 3 with the match undecided every standing fighter's marks are taken off each tick; (2) net: a standing fighter that keeps the
+// latch (or the pad-driven slot fighter the victory bit) in the fight phase for 0.75 s (no burst / finish / entrance / rebuild) gets them off. Battle state + battle ticks only (same on every machine).
+// Independent of the ffastuck job's FINSCRUB (same cause: after a cut-short finish nothing takes the marks off; this one also covers the extras and the guard path). PSPRECOMP_TAGTEAM_EXKOSCRUB_OLD=1: off.
+void exko_scrub() {
+    static const bool off = std::getenv("PSPRECOMP_TAGTEAM_EXKOSCRUB_OLD") != nullptr; if (off || !g_bs) return;
+    static uint32_t gen = ~0u; static uint32_t lastph = 0; static float until = -1.f; static std::map<uint32_t, float> since;
+    const float age = dissidia_battle_age();
+    if (gen != g_battle_gen) { gen = g_battle_gen; lastph = 0; until = -1.f; since.clear(); }
+    const uint32_t ph = rd(g_bs + 72u);
+    if (lastph == 4u && ph == 3u && !g_decided) { until = age + 600.f; if (g_log) std::fprintf(stderr, "[EXKOSCRUB] t=%.2fs the finish phase ended (4 -> 3): marks are taken off every standing fighter for 10 s\n", age / 60.0f); }
+    lastph = ph;
+    { static float lastskip = -1e9f; if (g_kofskip_age > -1e8f && g_kofskip_age != lastskip && !g_decided) { lastskip = g_kofskip_age; until = age + 600.f; if (g_log) std::fprintf(stderr, "[EXKOSCRUB] t=%.2fs a finish request was skipped for a parked slot fighter (KOLOOP guard): marks are taken off every standing fighter for 10 s\n", age / 60.0f); } }   // (the guard path: the phase may never be seen at 4 here)
+    const bool chase_on = g_chase_ctl_now && rd(g_chase_ctl_now) != 0;   // (the pointer stays set after a chase: its state word says whether one runs)
+    if (ph != 3u || g_decided || !g_nextra || !intro_done() || exb_running() || finish_busy() || entrance_busy() || chase_on || age < 600.f) {   // (exb_busy() also holds for the burst CHANCE / EX Mode flags: the desktop log had it true for the first seconds after the burst while the human was frozen)
+        if (g_log && ph == 3u && until > 0.f && age < until) { static float lastp = -1e9f; static int n = 0; if (age - lastp >= 120.f && n++ < 40) { lastp = age; std::fprintf(stderr, "[EXKOSCRUB] t=%.2fs not scrubbing: undecided %d extras %d intro %d exb_busy %d (why %d) entrance %d chase %d\n", age / 60.0f, !g_decided, g_nextra, intro_done(), exb_busy(), g_exbdbg_why, entrance_busy(), chase_on); } }
+        since.clear(); return; }
+    static const bool dbg = std::getenv("PSPRECOMP_TAGTEAM_EXKOSCRUB_DBG") != nullptr; static float dbgt = -1e9f; const bool dbgnow = dbg && g_log && age - dbgt >= 60.f; if (dbgnow) dbgt = age;
+    auto one = [&](uint32_t a, bool slot) {
+        if (dbgnow) std::fprintf(stderr, "[EXKOSCRUB] dbg t=%.2fs %s %08X ok %d alive %d down %d rebuilding %d +380 %08X +908 %08X dec %d padd %d\n", age / 60.0f, role_of(a), a, ok(a, 0x12D0), ok(a, 0x12D0) && alive(a), is_down(a), is_rebuilding(a), rd(a + 0x380u), rd(a + 908u), g_ram[(a + 0x126Bu) & 0x07FFFFFFu], slot && pad_driven(a));
+        if (!ok(a, 0x12D0) || !alive(a) || is_down(a) || is_rebuilding(a)) { since.erase(a); return; }
+        const uint32_t f0 = rd(a + 0x380u), w0 = rd(a + 908u); const bool latch = (f0 & 0x20000000u) != 0, dec = slot && g_ram[(a + 0x126Bu) & 0x07FFFFFFu] == 1u, vict = slot && pad_driven(a) && (f0 & 2u);
+        if (!(latch || dec || vict || (slot && (w0 & 2u) && pad_driven(a)))) { since.erase(a); return; }
+        const bool win = age < until;
+        if (!win) { auto it = since.find(a); if (it == since.end()) { since[a] = age; return; } if (age - it->second < 45.f) return; }
+        since.erase(a);
+        wr(a + 0x380u, f0 & ~(0x20000000u | (slot || latch ? 2u : 0u))); if (slot || (w0 & 2u)) wr(a + 908u, w0 & ~2u);
+        if (slot) { g_ram[(a + 0x126Bu) & 0x07FFFFFFu] = 0u; const uint32_t L = rd(a + 0x5ACu); if (ok(L, 0x200) && rd(L + 248u) == a) g_ram[(L + 0x126u) & 0x07FFFFFFu] = 1u; }
+        if (g_log) std::fprintf(stderr, "[EXKOSCRUB] t=%.2fs %s %08X: finish marks taken off (%s): +380 %08X -> %08X, +908 %08X -> %08X%s\n", age / 60.0f, role_of(a), a, win ? "after the finish ended" : "kept 0.75 s in the fight phase", f0, rd(a + 0x380u), w0, rd(a + 908u), dec ? ", decided byte cleared" : "");
+    };
+    for (uint32_t k = 0; k < 2; k++) one(srd(g_bs + 56u + 4u * k), true);
+    for (int i = 0; i < g_nextra; i++) if (g_extra[i].started) one(g_extra[i].actor, false);
 }
 FuncPtr g_orig_phasechg = nullptr;
 void phasechg_hook(uint8_t* rdram, recomp_context* ctx) {
