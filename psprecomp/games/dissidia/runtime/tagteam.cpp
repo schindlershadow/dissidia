@@ -7825,7 +7825,16 @@ void ko_oneround() {
     if (const char* lw = std::getenv("PSPRECOMP_TAGTEAM_LOCKWATCH")) {   // debug (needs PSPRECOMP_MEM_WATCH=0 / FUNC_TRACE): memory watch on the human's lock block word (+0x124 = 1, handler +0x18 = 2, handler +0x28 = 3), armed 20 s into the battle
         static uint32_t gen = ~0u; if (gen != g_battle_gen && age >= 1200.f && g_bs) { const uint32_t hum = srd(g_bs + 56u + 4u * rd(g_bs + 84u)), Lb = ok(hum, 0x12D0) ? rd(hum + 0x5ACu) : 0u, h = ok(Lb, 0x200) ? rd(Lb + 304u) : 0u;
             if (ok(h, 0x40)) { gen = g_battle_gen; const uint32_t w = lw[0] == '1' ? Lb + 0x124u : lw[0] == '2' ? h + 0x18u : h + 0x28u; psp_mem_watch_set(w); std::fprintf(stderr, "[LOCKWATCH] watching %08X (lock block %08X handler %08X)\n", w, Lb, h); } } }
-    if (g_bs && rd(g_bs + 72u) == 3u && !g_pair_defer) { const uint32_t pm = rd(0x089D69F8u); if (ok(pm, 0x100)) { g_pair_on = g_ram[(pm + 88u) & 0x07FFFFFFu]; g_pair_on2 = g_ram[(pm + 89u) & 0x07FFFFFFu]; g_pair_have = true; } }   // the fighter-pair update's switch (see finsnap_restore)
+    // KOSTUCK (27 Nov, desktop vs phone, kill at 343 s): a second finish request in the same tick as "KO flow done" (KOLOOP guard, phase 3 -> 4 -> 3 within 0.1 s) zeroed the pair switch (+88 / +89) again AFTER the put-back;
+    // this snapshot then recorded the zeros as the "on" value, so nothing ever restored it: both damage handlers (BRV regen, hit damage) of the slot fighters stayed off for the rest of the match (BRV 0 for ever, no damage).
+    // Now only a non-zero switch is recorded, and a switch found off in phase 3 (no finish / KO pending, not decided, 1 s) is put back. PSPRECOMP_TAGTEAM_KOSTUCK_OLD=1: old.
+    static const bool kostuck_old = std::getenv("PSPRECOMP_TAGTEAM_KOSTUCK_OLD") != nullptr;
+    if (!kostuck_old && g_bs && g_pair_have && !g_pair_defer) { static uint32_t pg = ~0u; static float off_since = -1.f; if (pg != g_battle_gen) { pg = g_battle_gen; off_since = -1.f; }
+        const uint32_t pm = rd(0x089D69F8u);
+        if (rd(g_bs + 72u) == 3u && !g_decided && g_slot_callin.empty() && g_rebuild.empty() && ok(pm, 0x100) && (g_pair_on | g_pair_on2) && g_ram[(pm + 88u) & 0x07FFFFFFu] == 0 && g_ram[(pm + 89u) & 0x07FFFFFFu] == 0) {
+            if (off_since < 0.f) off_since = age; else if (age - off_since >= 60.f) { off_since = -1.f; if (g_log) std::fprintf(stderr, "[KOSTUCK] t=%.2fs pair update switch was off in phase 3 (a repeated finish request): ", age / 60.0f); pair_restore("kostuck"); } }
+        else off_since = -1.f; }
+    if (g_bs && rd(g_bs + 72u) == 3u && !g_pair_defer) { const uint32_t pm = rd(0x089D69F8u); if (ok(pm, 0x100)) { const uint8_t b8 = g_ram[(pm + 88u) & 0x07FFFFFFu], b9 = g_ram[(pm + 89u) & 0x07FFFFFFu]; if (kostuck_old || b8 || b9 || !g_pair_have) { g_pair_on = b8; g_pair_on2 = b9; g_pair_have = true; } } }   // the fighter-pair update's switch (see finsnap_restore)
     if (g_kodiff_kolate > 0.f && age >= g_kodiff_kolate) { g_kodiff_kolate = -1.f; kodiff_dump("kolate"); }
     if (g_kodiff_late > 0.f && age >= g_kodiff_late) { g_kodiff_late = -1.f; kodiff_dump("late"); }
     // With the KO hold gone (default) retail's finish presentation (phase 4, the KO fall + camera ~1.5 s) runs for a lethal hit on a slot fighter whose side goes on.
