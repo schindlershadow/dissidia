@@ -341,7 +341,7 @@ set_source_files_properties(src/psp_ge_draw.cpp PROPERTIES COMPILE_DEFINITIONS "
 # The commit the report button states (psp_report.cpp); "unknown" where there is no git (the setup app's on-device build of a source archive).
 # The build id is the last commit that changed code (docs / markdown-only commits do not change what the game does, so builds before and after
 # one still match online instead of warning "another player runs build ...").
-execute_process(COMMAND git log -1 --format=%h --abbrev=12 -- .. ":(exclude)*.md" ":(exclude)**/docs/**" WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+execute_process(COMMAND git log -1 --format=%h --abbrev=12 -- .. ":(top,exclude,glob)**/*.md" ":(top,exclude,glob)**/docs/**" WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                 OUTPUT_VARIABLE PSP_GIT_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET RESULT_VARIABLE PSP_GIT_COMMIT_RC)
 if(NOT PSP_GIT_COMMIT_RC EQUAL 0 OR NOT PSP_GIT_COMMIT)
     # no git (a tree rsynced without .git, e.g. the desktop test build): the commit comes from $PSPRECOMP_GIT_COMMIT or the one-line file
