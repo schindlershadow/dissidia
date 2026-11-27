@@ -61,13 +61,15 @@ std::string dissidia_voice_jp_dir();
 void dissidia_mods_net_possible();
 bool dissidia_mods_add_override(uint8_t* rdram, const std::string& asset, const std::string& file, uint32_t size);
 int dissidia_retail_moves_state(const std::string& folder);
-bool dissidia_ablt_ensure(uint8_t* rdram, uint16_t id, uint16_t copy, uint16_t cmd, uint8_t type, uint8_t phase, uint8_t owner);
+bool dissidia_ablt_ensure(uint8_t* rdram, uint16_t id, uint16_t copy, uint16_t cmd, uint8_t type, uint8_t phase, uint8_t owner, int cp, int cp_mastered, int ap);
+bool dissidia_chrl_set_row(uint8_t* rdram, int charId, const std::vector<uint8_t>& entries);
+void dissidia_ablt_dump(uint8_t* rdram, const char* tag, const uint16_t* ids, size_t nids);
 
 namespace {
 
 struct NetFile { const char* path; uint32_t size; const char* sha; uint32_t base_size; const char* base_sha; };
-struct NetAbil { uint16_t id, copy, cmd; uint8_t type, phase; };
-struct NetPack { const char* name; int version; int charId; std::vector<NetFile> files; std::vector<NetAbil> abilities; };
+struct NetAbil { uint16_t id, copy, cmd; uint8_t type, phase; int16_t cp, cp_mastered, ap; };   // costs -1: the copied record's own
+struct NetPack { const char* name; int version; int charId; std::vector<NetFile> files; std::vector<NetAbil> abilities; const char* chrl; };   // chrl: the character's 'chrl' row (hex of 8-byte entries), "" = none
 const std::vector<NetPack>& packs() {
     static const std::vector<NetPack> v = {
 #include "net_packs.inc"
@@ -588,7 +590,17 @@ void on_pump(uint8_t* rdram) {
             // src 1: this player's own install of the pack, served since boot
         }
         for (const NetAbil& a : p.abilities)
-            ok = ok && dissidia_ablt_ensure(rdram, a.id, a.copy, a.cmd, a.type, a.phase, (uint8_t)p.charId);
+            ok = ok && dissidia_ablt_ensure(rdram, a.id, a.copy, a.cmd, a.type, a.phase, (uint8_t)p.charId, a.cp, a.cp_mastered, a.ap);
+        if (ok && p.chrl[0] && !std::getenv("PSPRECOMP_NETPACK_COSTS_OLD")) {   // the learned-by-level row a native install has through its main.bin
+            std::vector<uint8_t> row;
+            for (const char* c = p.chrl; c[0] && c[1]; c += 2) { char h[3] = {c[0], c[1], 0}; row.push_back((uint8_t)std::strtoul(h, nullptr, 16)); }
+            ok = dissidia_chrl_set_row(rdram, p.charId, row);
+        }
+        {
+            std::vector<uint16_t> ids;
+            for (const NetAbil& a : p.abilities) ids.push_back(a.id);
+            dissidia_ablt_dump(rdram, "after the online pack", ids.data(), ids.size());
+        }
         std::lock_guard<std::mutex> lk(g_mu);
         if (ok) g_active[i] = true; else g_pack_state[i] = 2;
         std::fprintf(stderr, "[NETPACK] %s v%d %s for this session\n", p.name, p.version, ok ? "applied" : "could NOT be applied (no match with players who use it)");

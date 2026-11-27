@@ -87,6 +87,7 @@ ONLINE = [  # name, mp_diverge.py arguments (the slow copy alternates between ho
     ('mp_div_team3_lan', ['--mode', 'team3', '--net', 'lan', '--slow', 'b']),
     ('mp_div_team3_internet', ['--mode', 'team3', '--net', 'internet', '--slow', 'a']),
     ('mp_div_ffa_lan', ['--mode', 'ffa', '--net', 'lan', '--slow', 'a']),
+    ('mp_pack_bartz_internet', ['--same', '--mode', 'team2', '--net', 'internet', '--pack']),   # A has the Bartz D1 moves installed, B gets the pack online (27 Nov: ability costs + chrl row differed -> desync); fails (rc 2) without ~/dissidia/tt/s2/packmods_bartz (a built mods folder with bartz-dff)
     ('mp_div_ffa_internet', ['--mode', 'ffa', '--net', 'internet', '--slow', 'b']),
 ]
 

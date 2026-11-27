@@ -3,7 +3,7 @@
  "packs": [
   {
    "name": "bartz-dff",
-   "version": 1,
+   "version": 2,
    "char": 9,
    "files": [
     {
@@ -55,58 +55,83 @@
      "copy": "0x090C",
      "cmd": "0xB0",
      "type": 0,
-     "phase": 0
+     "phase": 0,
+     "cp": 35,
+     "cp_mastered": 15,
+     "ap": 120
     },
     {
      "id": "0x0911",
      "copy": "0x090C",
      "cmd": "0xB1",
      "type": 0,
-     "phase": 0
+     "phase": 0,
+     "cp": 35,
+     "cp_mastered": 20,
+     "ap": 120
     },
     {
      "id": "0x0912",
      "copy": "0x090D",
      "cmd": "0xB2",
      "type": 0,
-     "phase": 1
+     "phase": 1,
+     "cp": 35,
+     "cp_mastered": 15,
+     "ap": 180
     },
     {
      "id": "0x0913",
      "copy": "0x090D",
      "cmd": "0xB3",
      "type": 0,
-     "phase": 1
+     "phase": 1,
+     "cp": 35,
+     "cp_mastered": 15,
+     "ap": 180
     },
     {
      "id": "0x0914",
      "copy": "0x090E",
      "cmd": "0xB4",
      "type": 1,
-     "phase": 0
+     "phase": 0,
+     "cp": 45,
+     "cp_mastered": 25,
+     "ap": 180
     },
     {
      "id": "0x0915",
      "copy": "0x090E",
      "cmd": "0xB5",
      "type": 1,
-     "phase": 0
+     "phase": 0,
+     "cp": 45,
+     "cp_mastered": 25,
+     "ap": 180
     },
     {
      "id": "0x0916",
      "copy": "0x090F",
      "cmd": "0xB6",
      "type": 1,
-     "phase": 1
+     "phase": 1,
+     "cp": 45,
+     "cp_mastered": 25,
+     "ap": 300
     },
     {
      "id": "0x0917",
      "copy": "0x090F",
      "cmd": "0xB7",
      "type": 1,
-     "phase": 1
+     "phase": 1,
+     "cp": 45,
+     "cp_mastered": 25,
+     "ap": 180
     }
-   ]
+   ],
+   "chrl": "01032540aa40ffff030072401109ffff04000209ffffffff05006b407140ffff06002b401009ffff070021402240ffff090008092040ffff0a006a406c40ffff0c001209ffffffff0e0028402940ffff10000109ffffffff11006d406f40ffff12002e40ffffffff13001509ffffffff15001140ffffffff17000509ffffffff18001409ffffffff1a001e403940ffff1c001309ffffffff1d000b09ffffffff1e001340ffffffff22002340ffffffff260036401709ffff28000a400940ffff2a002a40ffffffff2d000f40ffffffff2e001609ffffffff2f003e403f40ffff32000b40ffffffff34002640ffffffff36001040ffffffff38003b403a40ffff3a000340ffffffff3c000d40ffffffff3e004240ffffffff40003c40ffffffff42007840ffffffff44000c40ffffffff46001640ffffffff48003d40ffffffff4a001240ffffffff4c000740ffffffff4e000040ffffffff50001740ffffffff52000e40ffffffff54001540ffffffff56001440ffffffff58000240ffffffff5b000640ffffffff5d00a840ffffffff5f007940ffffffff61000140ffffffff630086408740ffff640088408940ffff"
   }
  ]
 }
