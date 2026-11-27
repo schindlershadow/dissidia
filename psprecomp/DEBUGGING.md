@@ -194,8 +194,8 @@ silently dropped. Full protocol details in the issue #35 section below.
 | `LOGGZ <name> <offset> <len>` | Same, gzip-compressed (members concatenate) | `OK <gzlen> <rawlen>` + gzip bytes |
 
 **Pulling logs without adb / ssh** (27 Nov batch, `games/dissidia/tools/pull_log.py`): `pull_log.py <phone-ip>[:9999] [--prev] [--tail N] [--all] [--list] [-o out]`
-writes to `~/dissidia/tt/desk_logs/<host>_<date>/`; `pull_log.py --scan 192.168.2 [--pull]` finds the game devices on a /24. Dev builds bind all
-interfaces (a tagged release: loopback only; `PSPRECOMP_DEBUG_BIND=lan|loopback` in env.txt overrides). Peers other than the local machine may only use
+writes to `~/dissidia/tt/desk_logs/<host>_<date>/`; `pull_log.py --scan 192.168.2 [--pull]` finds the game devices on a /24. Android dev builds bind all
+interfaces (a tagged release and the desktop: loopback only; `PSPRECOMP_DEBUG_BIND=lan|loopback` in env.txt overrides). Peers other than the local machine may only use
 `I` and `LOG*` (`PSPRECOMP_DEBUG_LAN_FULL=1` lifts that). `PSPRECOMP_DEBUG_LOGS=0` switches the LOG commands off. The phone running as Android user 10
 works too: the game process reads its own folder. File IO is on the client's socket thread, not the game's.
 

@@ -143,9 +143,12 @@ int main(int argc, char* argv[]) {
     // PSPRECOMP_DEBUG_PORT overrides the port so several runtimes can run side by side.
     int debug_port = 9999;
     if (const char* dp = std::getenv("PSPRECOMP_DEBUG_PORT")) { int v = std::atoi(dp); if (v > 0 && v < 65536) debug_port = v; }
-    {   // dev builds (git describe with a commit suffix, or "dev") listen on the LAN for pull_log.py; a tagged release stays on loopback
+    {   // Android dev builds listen on the LAN so pull_log.py can fetch a phone's logs over Wi-Fi; a tagged release and every desktop build
+        // stay on loopback (desktop: PSPRECOMP_DEBUG_BIND=lan opts in; a LAN bind there slowed the two-copy online regression checks, 27 Nov)
+#ifdef __ANDROID__
         const std::string rv = psp_release_version();
         psp_debug_socket_set_bind_default(rv == "dev" || rv.find("-g") != std::string::npos || rv.find("dirty") != std::string::npos);
+#endif
     }
     psp_debug_socket_start(rdram, PSP_MEM_SIZE, debug_port);
     psp_report::set_ram(rdram, PSP_MEM_SIZE);   // Settings > Debug > Report an issue

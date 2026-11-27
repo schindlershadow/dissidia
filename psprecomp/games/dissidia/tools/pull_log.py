@@ -176,7 +176,7 @@ def main():
         return pull_host(host, port, a)
     except (OSError, IOError) as e:
         print('%s:%d: %s' % (host, port, e), file=sys.stderr)
-        print('(debug socket must listen on the LAN: dev builds do; a release needs env.txt PSPRECOMP_DEBUG_BIND=lan; Android: same Wi-Fi)', file=sys.stderr)
+        print('(debug socket must listen on the LAN: Android dev builds do; desktop and releases need PSPRECOMP_DEBUG_BIND=lan in the environment (Android: a line in env.txt); same Wi-Fi', file=sys.stderr)
         return 2
 
 
