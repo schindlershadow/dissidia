@@ -196,6 +196,11 @@ std::chrono::steady_clock::time_point g_wait_t0;
 constexpr uint32_t kBtnStart = 0x8u, kBtnUp = 0x10u, kBtnRight = 0x20u, kBtnDown = 0x40u, kBtnLeft = 0x80u, kBtnCircle = 0x2000u, kBtnCross = 0x4000u;
 constexpr uint32_t kForfeitLead = 30;   // frames between the YES press and the frame every machine applies it on (a human that drives nothing is not waited for)
 bool g_pm_off = false;
+// Leave watchdog (forfeit / lost peer): F_QUIT is set and retail's own leave (battle phase -> 8) is expected within a moment. If the battle is still running
+// kLeaveWatch dispatcher calls later (user log 27 Nov: forfeited on both machines and neither left), the leave is forced: the phase is set to 8 here.
+// PSPRECOMP_TTPAUSE_LEAVE_OLD=1: no watchdog (old behaviour). PSPRECOMP_TTPAUSE_LEAVE_TEST=1: test aid, the quit flag is not set at all (retail never leaves).
+uint32_t g_leave_gen = 0; bool g_leaving = false; uint32_t g_leave_calls = 0; bool g_leave_forced = false;
+constexpr uint32_t kLeaveWatch = 90;
 int g_pm_state = 0, g_pm_sel = 0;   // state: 0 closed, 1 menu, 2 confirm (sel 0 = NO, 1 = YES), 3 forfeit sent (waiting for its frame)
 uint32_t g_pm_prev = 0, g_pm_mask = 0; int g_pm_stick_prev = 0;
 uint32_t g_my_forfeit = 0;                  // the lock-step frame this player's forfeit takes effect on (0 = none)
@@ -409,6 +414,14 @@ void write_pad(recomp_context* ctx, uint32_t slot, uint16_t w) {
 void dispatch_hook(uint8_t* rdram, recomp_context* ctx) {
     g_ram = rdram;
     const uint32_t obj = static_cast<uint32_t>(ctx->r[4]);
+    if (g_leaving && g_leave_gen == dissidia_tagteam_battle_gen() && ok(obj, 0x400) && !g_leave_forced && !std::getenv("PSPRECOMP_TTPAUSE_LEAVE_OLD") && ++g_leave_calls >= kLeaveWatch) {
+        const uint32_t bs = rd(BATTLE_PTR);
+        if (ok(bs, 0x100) && rd(bs + 72u) == 3u) {
+            g_leave_forced = true;
+            std::fprintf(stderr, "[TTPAUSE] frame %u: retail did not leave %u frames after the quit flag (battle phase %u): the leave is forced (phase 8)\n", g_F, g_leave_calls, rd(bs + 72u));
+            wr(obj + OFF_FLAGS, rd(obj + OFF_FLAGS) | 4u); wr(bs + 72u, 8u);
+        }
+    }
     if (!g_enabled || !ok(obj, 0x400) || !(rd(obj + OFF_FLAGS) & 1u) || (rd(obj + OFF_FLAGS) & 4u) || !dissidia_tagteam_comms_battle()) { g_running = false; g_orig_dispatch(rdram, ctx); return; }
     if (!g_running || g_gen != dissidia_tagteam_battle_gen() || g_obj != obj) { g_gen = dissidia_tagteam_battle_gen(); reset(obj); }
     if (dissidia_tagteam_decided()) {
@@ -524,7 +537,7 @@ void dispatch_hook(uint8_t* rdram, recomp_context* ctx) {
             psp_net_notice("link_end", 0, "Online: nothing from another player for %.0f s. The battle ends.", g_timeout_s);
             wr(obj + OFF_FLAGS, rd(obj + OFF_FLAGS) | 4u);   // F_QUIT
             wr(obj + 12u, g_F);                               // quit frame
-            g_wait_since = 0; g_running = false;
+            g_wait_since = 0; g_running = false; g_leaving = true; g_leave_calls = 0; g_leave_forced = false; g_leave_gen = dissidia_tagteam_battle_gen();
             ctx->r[2] = 3; return;
         }
         if (!g_wait_logged && g_waits > 0 && (g_waits % 300) == 0) { g_wait_logged = true; std::fprintf(stderr, "[TTLOCK] frame %u: still waiting for %s's input (%u waits so far)\n", g_F, mac_str(missing).c_str(), g_waits); }
@@ -539,8 +552,9 @@ void dispatch_hook(uint8_t* rdram, recomp_context* ctx) {
         if (fm == g_me) {   // this player: the game's own leave path (as a lost peer), back to the room
             std::fprintf(stderr, "[TTPAUSE] frame %u: this player forfeits, the battle is left\n", g_F);
             psp_net_notice("link_end", 0, "You forfeited the match.");
-            wr(obj + OFF_FLAGS, rd(obj + OFF_FLAGS) | 4u); wr(obj + 12u, g_F);
-            g_pm_state = 0; g_running = false;
+            if (!std::getenv("PSPRECOMP_TTPAUSE_LEAVE_TEST")) wr(obj + OFF_FLAGS, rd(obj + OFF_FLAGS) | 4u);
+            wr(obj + 12u, g_F);
+            g_pm_state = 0; g_running = false; g_leaving = true; g_leave_calls = 0; g_leave_forced = false; g_leave_gen = dissidia_tagteam_battle_gen();
             ctx->r[2] = 3; return;
         }
         std::fprintf(stderr, "[TTPAUSE] frame %u: %s forfeits: his fighters are KO'd, his rows are used up\n", g_F, mac_str(fm).c_str());
