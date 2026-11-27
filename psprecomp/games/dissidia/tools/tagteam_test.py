@@ -168,6 +168,8 @@ def main():
     ap.add_argument('--remote', default=None, help='run a share of the checks on this host over ssh (the desktop, 192.168.2.131) when it is idle; see the docstring')
     ap.add_argument('--remote-jobs', type=int, default=3, help='checks in parallel on the remote (default 3)')
     ap.add_argument('--no-throttle', action='store_true', help='start local checks up to --jobs whatever the host load')
+    ap.add_argument('--no-xdev', action='store_true', help='with --baseline: skip the cross-device online test (tools/xdev_test.py: the real machines, run when reachable and idle)')
+    ap.add_argument('--xdev-targets', default='desktop,deck,laptop,rp6', help='xdev_test.py --targets')
     ap.add_argument('--no-online', action='store_true', help='with --baseline: skip the two-copy online checks (single-player checks only)')
     ap.add_argument('--only', default=None, help='comma-separated check names to run (instead of the default set)')
     ap.add_argument('--save-b', default=None, help='the second save (a Deck ms0) for the divergent online checks (default: $PSPRECOMP_TEST_SAVE_B or ~/dissidia/tt/s2/saves/deck/ms0)')
@@ -328,6 +330,13 @@ def main():
         except OSError:
             pass
         print('%s  %-24s %4.0f s  %s' % ('PASS' if okn else 'FAIL', n, secs, '' if okn else first + '   [' + os.path.join(out, n) + ']'))
+    if a.baseline and not a.no_online and not a.no_xdev and not a.only:   # the real devices (own dirs there; skipped with a printed reason when offline / busy)
+        try:
+            r = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'xdev_test.py'), '--work', a.work, '--targets', a.xdev_targets, '--out', os.path.join(out, 'xdev')], timeout=4500)
+            print('xdev (cross-device online test): ' + {0: 'PASS or skipped', 1: 'FAIL', 2: 'could not run (not counted)'}.get(r.returncode, 'rc %d' % r.returncode))
+            ok = ok and r.returncode != 1
+        except subprocess.TimeoutExpired:
+            print('xdev: timed out (not counted)')
     print('RESULT: ' + ('PASS' if ok else 'FAIL') + '  (logs in %s)' % out)
     sys.exit(0 if ok else 1)
 
