@@ -2,6 +2,7 @@
 
 ## TODO (kept up to date; newest first)
 - Outfits (user 27 Nov, later): the own-member look (OWNLOOK, Batch eighty-seven) is keyed by charId, so an enemy of the same character also gets the player's outfit: fix it. Every fighter's outfit should be decided before the battle starts (per fighter, not per character).
+- 2v2 forward / back stick moves (user 27 Nov): ROOT CAUSE actor +0x5B0 bit 0 (live whole-memory diff + reverse test on the RP6: clearing it gives the neutral Circle move for back + Circle, setting it gives the wind move); PAD5B0 sets it at the pad handover. Earlier TGT304 / SPAWNLOCK / DRVSNAP did not fix it.
 - 2v2 forward / back stick moves after the human's next member (user 27 Nov): TGT304 sets actor +0x304 (found by a live before / after diff of a manual target switch on the RP6); confirm on a device.
 - Outfits (user 27 Nov, later): when two fighters in a battle are the same character with the same outfit, force a different outfit on one of them.
 - Forward / back stick moves still wrong after the human's tag-in behind the partner-in-slot wait; wrong outfit for his own member (user 27 Nov, RP6 `rp6_fwdback_1127_1040`, tree ttfwdback2, branch tt-fwdback2, "Batch eighty-seven"): stale pre-AI brain / controller snapshot of the previous body no longer restored (`DRIVE_SNAP_OLD`); own members wear their saved look (`OWNLOOK_OLD`). Device effect unverified.
