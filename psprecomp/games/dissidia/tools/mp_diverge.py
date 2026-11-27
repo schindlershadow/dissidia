@@ -232,7 +232,7 @@ def main(argv):
     ap.add_argument('--pack-mods', default=os.environ.get('PSPRECOMP_TEST_PACK_MODS', '~/dissidia/tt/s2/packmods_bartz'), help='a mods folder with bartz-dff installed (default: ~/dissidia/tt/s2/packmods_bartz, a copy of a built mods folder without textures)')
     ap.add_argument('--pack-disc', default=os.environ.get('PSPRECOMP_TEST_PACK_DISC', '~/dissidia/work_tagslot/disc0'), help='the 012 disc folder netpack.py deltas reads the retail files from')
     ap.add_argument('--kolist', default=None, help="override the KO list ('none' = no KOs, the battle just runs --secs and no result is required)")
-    ap.add_argument('--min-frames', type=int, default=300)   # compared frames: the check hashes every 2nd frame (PSPRECOMP_NETSYNC_EVERY)
+    ap.add_argument('--min-frames', type=int, default=600)
     ap.add_argument('--env', default='')
     ap.add_argument('--env-a', default='')
     ap.add_argument('--env-b', default='')
