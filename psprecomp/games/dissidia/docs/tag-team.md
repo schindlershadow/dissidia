@@ -1,6 +1,7 @@
 # Tag team battles (2 v 2): research notes and plan
 
 ## TODO (kept up to date; newest first)
+- ~~Cross-device online test (user 27 Nov: same scripted tag battle on real machines)~~ DONE 27 Nov (tree ttxdev, branch tt-xdev, "Batch eighty-eight"): `tools/xdev_test.py`, run by `tagteam_test.py --baseline` (skip: `--no-xdev`). OPEN: a 3-4 machine match (the walk is two copies); the Deck leg needs no running game there.
 - KO death animation (user 27 Nov, later): a KO'd fighter's death animation must not start until the kill cam has finished; only after the death animation may the fighter disappear.
 - Outfits (user 27 Nov, later): the own-member look (OWNLOOK, Batch eighty-seven) is keyed by charId, so an enemy of the same character also gets the player's outfit: fix it. Every fighter's outfit should be decided before the battle starts (per fighter, not per character).
 - 2v2 forward / back stick moves (user 27 Nov): ROOT CAUSE actor +0x5B0 bit 0 (live whole-memory diff + reverse test on the RP6: clearing it gives the neutral Circle move for back + Circle, setting it gives the wind move); PAD5B0 sets it at the pad handover. Earlier TGT304 / SPAWNLOCK / DRVSNAP did not fix it.
@@ -189,6 +190,21 @@ runtime hooks. "Confirmed" = read in the code; "inferred" = a guess to check in 
 
 Goal: Budokai Tenkaichi style tag battles. Two fighters per side on the stage at once, the rest of the party roster
 comes in when a fighter is KO'd, the existing lock-on cycling switches between the enemy fighters.
+
+## Batch: cross-device online test (27 Nov, branch tt-xdev, tree ttxdev)
+Same-host two-copy tests cannot see per-platform differences (Windows libm vs Linux/Android, stale heap words on a long-running Deck). `tools/xdev_test.py --work DIR --targets desktop,deck,laptop,rp6`
+runs mp_diverge's scripted tag battle (menu walk through the debug socket, CPU fill, KO list on the lock-step frame, Internet mode through a relay on this host's LAN address, own port
+47900+slot) with copy A here and copy B on a real machine, then compares NETSYNC frames (compared / mismatched), the VS line-up, banters, roster and result like mp_diverge.
+Each target is probed first (reachable, idle) and SKIPped with a printed reason otherwise; the exit status never fails because a device is offline.
+- desktop (192.168.2.131): own dir `~/dissidia/xdev/` (symlinks to the generated data in `~/dissidia/work`, own binary copy and saves), nice, `PSPRECOMP_NO_PADS=1`, dummy audio, offscreen video; runs even while the user plays.
+- deck (`ssh deck`): same layout; the cross-built binary of `~/dissidia/build_devtest_deck` (stripped copy pushed, never built on the Deck); skipped while any psprecomp_runtime runs there.
+- laptop (Windows, 192.168.2.55): `C:\Users\Schindler\xdev\` with its own copy of Dissidia012_tt's disc0 and the test save; the exe (`~/dissidia/build_winrt_tt`, win_build.sh) is started through a
+  scheduled task (`/it`; an ssh-started game has no desktop and dies with the session), its log tailed back over ssh; skipped while a psprecomp_runtime.exe runs.
+- rp6 (wireless adb): `~/dissidia/tt/dissidia_tt.apk` installed over (`adb install -r`, never clear/uninstall), test env.txt + settings + save under `xdev/` in the game folder, the user's env.txt put back and `xdev/` removed afterwards.
+The debug socket is reached through `ssh -L` / `adb forward` (loopback on the device, no PSPRECOMP_DEBUG_BIND needed). All binaries must be built from the same commit (online build id).
+Fail-ability (`--neg`): copy B gets `PSPRECOMP_DMATH_OLD=1` (when the binary knows it) or `PSPRECOMP_NET_PERTURB=600`; the run PASSes only if a mismatch IS reported.
+`tagteam_test.py --baseline` runs xdev_test.py at the end (`--no-xdev` skips, `--xdev-targets` picks); a SKIP never fails the regression.
+Results 27 Nov (all PASS, 1300-1500 frames compared, 0 mismatched, line-up / banter / result equal): host<->desktop, host<->deck, host<->laptop, host<->rp6. Negative: `--neg` (PERTURB) is detected on desktop and laptop (277 / 294 mismatched frames, first at 601); `PSPRECOMP_DMATH_OLD=1` on the Windows copy did NOT mismatch in this scenario (the old C-library maths only differs where the two libms differ; the sim-maths fingerprint was equal). Output dirs `~/dissidia/tt/s2/xdev/run*`.
 
 ## Batch: installer failure reasons, free space, extra discs, early permission (26 Nov, branch tt-instopen, tree ttinst)
 
