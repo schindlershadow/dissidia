@@ -3996,6 +3996,7 @@ struct RebuildJob {
     bool own_stats = false;   // a member called in: his own max HP / base BRV once built (not the KO'd one's)
     bool newlb = false; uint8_t view125 = 0;   // the rebuilt fighter keeps the constructor's NEW lock block (made for its character); view125: the shown-camera byte of the old one
     uint32_t lbw[6] = {};     // the old lock block's +0x100 (dt source), +0x120 (pad object), +0x126 (camera input byte), +252 (override target), +276, +356: logged, +0x100 / +0x126 carried to a new block
+    bool was_pad = false;     // the old body was pad-driven when the rebuild began (same on every machine; the new body's brain is not yet)
     int drive = 0;            // multiplayer handover: once it stands, 1 = a pad drives the slot (brain +0x54, controller +0x48 = 0), 2 = the AI (CPU_MODE); 0 = as it was
     uint32_t new_lb = 0, t0 = 0, t1 = 0, lastfo = 0, player = 0;   // player: the world's player actor (world+20), which the destructor / constructor move off the slot
     std::string entr;   // a member called in straight into the slot: his name for the entrance (pose, pause, banner) once he stands
@@ -4171,7 +4172,7 @@ bool rebuild_begin(uint32_t A, int charId, int hp, int brv) {
     if (load_first) load_character(charId);
     const uint32_t info = info_for_char(charId);
     if (!info) { std::fprintf(stderr, "[TAGTEAM] rebuild: no info record for charId %d\n", charId); return false; }
-    RebuildJob j; j.A = A; j.charId = charId; j.hp = hp; j.brv = brv;
+    RebuildJob j; j.A = A; j.charId = charId; j.hp = hp; j.brv = brv; j.was_pad = pad_driven(A);
     j.L = rd(A + ACT_LOCKBLK); j.B = rd(A + ACT_BRAIN); j.ctrl = rd(A + 0x5A0u); j.assist = rd(A + 0x1108u); j.foe = rd(A + 0x300u);
     j.flags = g_ram[(A + 0x5B0u) & 0x07FFFFFFu]; j.stock = rd(A + 0x10CCu); j.rev = rd(A + 0x10D0u);
     const uint32_t stock_w = rdh(A + 0x10CEu);
@@ -4410,7 +4411,13 @@ void rebuild_lock(const RebuildJob& j) {
         if (j.lbw[0] != rd(L + 0x100u) || j.lbw[2] != g_ram[(L + 0x126u) & 0x07FFFFFFu]) { if (g_log) std::fprintf(stderr, "[TAGTEAM] rebuild %08X: new lock block %08X +0x100 %u -> %u, +0x126 %u -> %u (the old block's)\n", j.A, L, rd(L + 0x100u), j.lbw[0], g_ram[(L + 0x126u) & 0x07FFFFFFu], j.lbw[2]); }
         wr(L + 0x100u, j.lbw[0]); g_ram[(L + 0x126u) & 0x07FFFFFFu] = static_cast<uint8_t>(j.lbw[2]);
     }
-    if (old || !pad_driven(j.A)) {
+    // 27 Nov (fwdback, user 2v2: "forward / back moves do not work until I switch targets; maybe force no lock-on when spawning in"): at the rebuild the new body's brain is not yet pad-driven,
+    // so the local human's rebuilt slot fighter took the CPU branch and got LOCK_SET (override +252 = foe), which retail's player never has. It now starts like a battle start: no override, mode 1
+    // through LOCK_MODE, selector 0. [SPAWNLOCK] before / after. PSPRECOMP_TAGTEAM_SPAWN_NOLOCK_OLD=1: old.
+    static const bool sl_old = std::getenv("PSPRECOMP_TAGTEAM_SPAWN_NOLOCK_OLD") != nullptr;
+    const bool sl_human = !sl_old && !old && !pad_driven(j.A) && is_slot_fighter(j.A) && j.was_pad;
+    if (sl_human && g_log) std::fprintf(stderr, "[SPAWNLOCK] t=%.2fs %08X (c%d) human's spawn: override %08X mode %u +0x110 %u +0x114 %u -> no lock-on start (CPU LOCK_SET skipped)\n", dissidia_battle_age() / 60.0f, j.A, actor_char(j.A), rd(L + 252u), rd(L + 264u), rd(L + 0x110u), rd(L + 0x114u));
+    if ((old || !pad_driven(j.A)) && !sl_human) {
         call(LOCK_SET, L, j.foe); if (j.lockmode == 1 && rd(L + 264u) != 1) call(LOCK_MODE, L, 1, 0);
         // 27 Nov (lockind2, user: "the lock-on indicators still disappear with 4 players in the game after tag-ins"): LOCK_SET only sets the block's override (+252); the lock block's
         // ANSWER (LOCK_GET, what the indicator, the AI and the turn-to-target read) follows the actor's foe word +0x300, and a rebuilt body kept the FALLEN member's last target there
@@ -4436,6 +4443,7 @@ void rebuild_lock(const RebuildJob& j) {
         if (j.lockmode == 1 && rd(L + 264u) != 1) { g_lock_bypass = true; call(LOCK_MODE, L, 1, 0); g_lock_bypass = false; }
         const uint32_t h1 = rd(L + 304u); if (ok(h1, 0x40) && rd(L + 264u) == 1) wr(h1 + 28u, 0u);
         cyc_of(j.A) = CycState();
+        if (sl_human && g_log) std::fprintf(stderr, "[SPAWNLOCK] t=%.2fs %08X after: override %08X mode %u +0x110 %u +0x114 %u answer %08X foe %08X\n", dissidia_battle_age() / 60.0f, j.A, rd(L + 252u), rd(L + 264u), rd(L + 0x110u), rd(L + 0x114u), call(LOCK_GET, L), rd(j.A + 0x300u));
     }
     if (g_log) std::fprintf(stderr, "[TAGTEAM] rebuild %08X: lock %s: block %08X mode %u +252 %08X +276 %u +356 %u +0x100 %u +0x120 %08X (ctrl %08X) +0x126 %u, target %08X foe %08X (was foe %08X; old block +252 %08X +276 %u +356 %u +0x120 %08X)\n",
         j.A, (old || !pad_driven(j.A)) ? "LOCK_SET (CPU)" : "player's (no override)", L, rd(L + 264u), rd(L + 252u), rd(L + 276u), rd(L + 356u), rd(L + 0x100u), rd(L + 0x120u), rd(j.A + 0x5A0u), g_ram[(L + 0x126u) & 0x07FFFFFFu], call(LOCK_GET, L), rd(j.A + 0x300u), j.foe, j.lbw[3], j.lbw[4], j.lbw[5], j.lbw[1]);
