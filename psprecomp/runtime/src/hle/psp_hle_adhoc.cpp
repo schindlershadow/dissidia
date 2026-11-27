@@ -2395,3 +2395,12 @@ int psp_adhoc_side_recv(uint16_t chan, uint8_t src[6], uint8_t* buf, int max) {
     }
     return -1;
 }
+
+// The nickname of the peer with this MAC (the out-of-sync notice names who differs); "" when unknown or the peer table is busy.
+std::string psp_adhoc_peer_nick(const uint8_t* mac) {
+    std::unique_lock<std::mutex> lk(g_mu, std::try_to_lock);
+    if (!lk.owns_lock()) return {};
+    Mac m{}; std::memcpy(m.data(), mac, 6);
+    auto it = g_peers.find(m);
+    return it == g_peers.end() ? std::string() : std::string(it->second.nick);
+}
