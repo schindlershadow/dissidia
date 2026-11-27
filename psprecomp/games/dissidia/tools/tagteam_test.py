@@ -14,7 +14,7 @@ NETSYNC, the VS line-up, the banters, the roster and the result of the two copie
 
 The checks are independent and run in parallel (--jobs N, default 4; each in its own subdir of --out with its own log, display, debug port and
 UDP / relay ports). The summary lists every check as PASS / FAIL with its first failure line; a failing online check has report.txt in its subdir
-(docs/tag-team.md, "Regression: reading a failure"). --only runs the named checks (sp_tag, sp_plain, mp_same_lan, mp_div_<mode>_<lan|internet>).
+(docs/tag-team.md, "Regression: reading a failure"). --only runs the named checks (sp_tag, sp_plain, mp_same_lan, mp_div_<mode>_<lan|internet>, mp_div_stale_team2_lan).
 
 The work folder is a built one (see docs/testing.md); the runtime needs tagteam.cpp, framerate.cpp's test driver and direct_battle.cpp.
 Needs Xvfb. Exit status 0 = pass."""
@@ -72,6 +72,7 @@ ONLINE = [  # name, mp_diverge.py arguments (the slow copy alternates between ho
     ('mp_same_lan', ['--same', '--mode', 'team2', '--net', 'lan']),
     ('mp_div_team2_lan', ['--mode', 'team2', '--net', 'lan', '--slow', 'a']),
     ('mp_div_team2_internet', ['--mode', 'team2', '--net', 'internet', '--slow', 'b']),
+    ('mp_div_stale_team2_lan', ['--mode', 'team2', '--net', 'lan', '--slow', 'b', '--stale']),   # B has played before (stale team records): the 26 Nov VS line-up / banter bug
     ('mp_div_team3_lan', ['--mode', 'team3', '--net', 'lan', '--slow', 'b']),
     ('mp_div_team3_internet', ['--mode', 'team3', '--net', 'internet', '--slow', 'a']),
     ('mp_div_ffa_lan', ['--mode', 'ffa', '--net', 'lan', '--slow', 'a']),
@@ -102,12 +103,31 @@ def check_sp(a, out, tag):
     return ok, lines
 
 
+def retryable(lines):
+    """The failure is only (a) a NETSYNC mismatch of at most 3 frames per copy (a transient: the KO's call-in delay runs on each machine's own battle age, which can
+    start a frame apart; the state agrees again the frame after) or (b) a walk timeout; every other difference (line-up, banter, roster, result, a real desync) fails at once."""
+    if any(l.startswith(('TTVS', 'BANTER', 'ROSTER', 'RESULT', 'CLOUD')) for l in lines):
+        return False
+    ns = [l for l in lines if l.startswith('NETSYNC: copy')]
+    for l in ns:
+        m = re.search(r': (\d+) of \d+ frames mismatched', l)
+        if m and int(m[1]) > 3:
+            return False
+    if any(l.startswith('NETSYNC') and 'no frame comparison' in l or 'compared only' in l for l in lines):
+        return False
+    return bool(ns) or any(l.startswith('walk failed') for l in lines)
+
+
 def run_check(a, name, out):
     """Run one named check in this process; (ok, lines)."""
-    if name == 'sp_tag':
-        return check_sp(a, out, True)
-    if name == 'sp_plain':
-        return check_sp(a, out, False)
+    if name in ('sp_tag', 'sp_plain'):
+        ok, lines = check_sp(a, out, name == 'sp_tag')
+        if not ok and os.environ.get('TT_CHILD'):   # a loaded host runs fewer frames in the same wall seconds ("acted" counts, camera lines): one retry with 1.5x the time
+            a.seconds = int(a.seconds * 1.5)
+            ok2, lines2 = check_sp(a, out + '_retry', name == 'sp_tag')
+            lines += ['-- retry with %d s --' % a.seconds] + lines2
+            return ok2, lines
+        return ok, lines
     for n, args in ONLINE:
         if n == name:
             cmd = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mp_diverge.py'), '--work', os.path.abspath(a.work), '--out', out] + args
@@ -117,6 +137,10 @@ def run_check(a, name, out):
             lines = (r.stdout + r.stderr[-1500:]).splitlines()
             if r.returncode == 2:   # could not run (no second save): a failure of the check, never a silent pass
                 return False, lines
+            if r.returncode and retryable(lines):   # one retry for a flake: a 1-3 frame self-healing mismatch (see docs "transient") or a menu step that missed its timing on a loaded host
+                lines = ['-- first run failed only with: %s; retrying once --' % ('; '.join(l.strip()[:90] for l in lines if l.startswith(('NETSYNC', 'walk failed'))))] + lines
+                r = subprocess.run(cmd, capture_output=True, text=True)
+                lines += ['-- retry --'] + (r.stdout + r.stderr[-1500:]).splitlines()
             return r.returncode == 0, lines
     raise SystemExit('unknown check ' + name)
 

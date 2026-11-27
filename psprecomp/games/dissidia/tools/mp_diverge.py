@@ -193,6 +193,7 @@ def main(argv):
     ap.add_argument('--fps-b', type=int, default=120)
     ap.add_argument('--rs-a', default='1')
     ap.add_argument('--rs-b', default='2')
+    ap.add_argument('--stale', action='store_true', help="copy B plays as a machine that already played a battle (PSPRECOMP_TAGTEAM_STALEREC: the overlay's team records hold the previous battle's parties); with PSPRECOMP_TAGTEAM_VSRECORDS_OLD=1 in --env this must FAIL (the old VS line-up bug)")
     ap.add_argument('--kolist', default=None, help="override the KO list ('none' = no KOs, the battle just runs --secs and no result is required)")
     ap.add_argument('--min-frames', type=int, default=600)
     ap.add_argument('--env', default='')
@@ -236,6 +237,8 @@ def main(argv):
     else:
         envA['PSPRECOMP_ADHOC_SERVER'] = envB['PSPRECOMP_ADHOC_SERVER'] = '127.0.0.1:%d' % relay_port
         envA['PSPRECOMP_ADHOC_ROOM'] = envB['PSPRECOMP_ADHOC_ROOM'] = room
+    if a.stale:
+        envB['PSPRECOMP_TAGTEAM_STALEREC'] = '24,11,4,31,28;31,30,26,21,5'
     if a.slow != 'none':
         (envA if a.slow == 'a' else envB)['MP_TASKSET'] = cpus
     relay = None
