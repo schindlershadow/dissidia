@@ -8263,6 +8263,17 @@ void finstart_hook(uint8_t* rdram, recomp_context* ctx) {
     if (g_log && std::getenv("PSPRECOMP_TAGTEAM_KOSHOT")) { const float a = dissidia_battle_age() / 60.0f; tagteam_breakshot_event(a, g_battle_gen, "kofin", 0, "a", nullptr); tagteam_breakshot_event(a + 2.f, g_battle_gen, "kofin", 0, "b", nullptr); }   // debug: shots at the finish start +0 / 0.5 / 1.5 and +2 / 2.5 / 3.5 s
     g_orig_finstart(rdram, ctx);
     ret_dump(mid ? "finish start (mid-battle KO): right after" : "finish start (match end / forfeit): right after");
+    if (mid && who && ok(who, 0x12D0) && !std::getenv("PSPRECOMP_TAGTEAM_KOMARKTEAM_OLD")) {   // follow-up 11 (user, RP6 27 Nov: Jecht killed by Emperor, the first shot zoomed on his own call-in Cloud of Darkness): retail marks (+380 0x20000000) the winner's side by a team test that takes the victim's call-in for a winner. Only the killer may carry the mark: an extra on the VICTIM's side is unmarked (latch, victory state, decided byte) so it is neither framed as a winner nor frozen in a victory pose
+        const int vs = side_of(who);
+        for (int i = 0; i < g_nextra; i++) { const uint32_t a = g_extra[i].actor; if (!ok(a, 0x12D0) || a == who || side_of(a) != vs) continue;
+            const uint32_t f0 = rd(a + 0x380u), w0 = rd(a + 908u); if (!(f0 & 0x20000000u) && !(w0 & 2u)) continue;
+            wr(a + 0x380u, f0 & ~(0x20000000u | 2u)); wr(a + 908u, w0 & ~2u); g_ram[(a + 0x126Bu) & 0x07FFFFFFu] = 0u;
+            std::fprintf(stderr, "[KOEVT] t=%.2fs finish start: %s %08X (char %d) is the victim's teammate, not a winner: marks taken off (+380 %08X -> %08X, +908 %08X -> %08X)\n", dissidia_battle_age() / 60.0f, role_of(a), a, actor_char(a), f0, rd(a + 0x380u), w0, rd(a + 908u)); }
+    }
+    if (mid && who && ok(who, 0x12D0) && !std::getenv("PSPRECOMP_TAGTEAM_KOMARKTEAM_OLD")) {   // the finish machine's second subject (+0x24, the "loser" its first shot frames) was the victim's call-in (CoD, side 0) in the RP6 case: the victim is the loser
+        const uint32_t mw = rd(0x08B0CF20u);
+        if (ok(mw, 0x40) && rd(mw + 0x24u) != who) { std::fprintf(stderr, "[KOEVT] t=%.2fs finish machine loser (+0x24) %08X (%s) -> the victim %08X: the first shot frames the victim\n", dissidia_battle_age() / 60.0f, rd(mw + 0x24u), ok(rd(mw + 0x24u), 0x12D0) ? role_of(rd(mw + 0x24u)) : "-", who); wr(mw + 0x24u, who); }
+    }
     if (mid) { const uint32_t pm = rd(0x089D69F8u), wnr = ok(pm, 0x100) ? rd(pm + 180u) : 0u;   // always on: who retail named the winner and who carries its marks now
         std::fprintf(stderr, "[KOEVT] t=%.2fs finish start for a mid-battle KO of %s: retail winner %s %08X (char %d); marked (+380 bit 0x20000000):", dissidia_battle_age() / 60.0f, who && ok(who, 0x12D0) ? role_of(who) : "?", ok(wnr, 0x12D0) ? role_of(wnr) : "-", wnr, ok(wnr, 0x12D0) ? actor_char(wnr) : -1);
         for (uint32_t f : all_fighters_any()) if (rd(f + 0x380u) & 0x20000000u) std::fprintf(stderr, " %s %08X", role_of(f), f);
