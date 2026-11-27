@@ -159,7 +159,9 @@ def walk(a, b, slack=0.0, menu_mode=None, shots=None):   # slack: extra seconds 
     a.press('cross'); time.sleep(slack); b.press('right', 'cross')   # Party A / Party B
     time.sleep(12 + slack)
     shot(a, shots, 'partyselect'); shot(b, shots, 'partyselect')
-    a.press('cross'); time.sleep(5)                        # A: Tournament
+    if '[TTFMT] battle format dialog answered' not in a.text():   # (the tag modes answer the dialog themselves: PSPRECOMP_TAGTEAM_FMTDLG_OLD=1 shows it)
+        a.press('cross')                                   # A: Tournament
+    time.sleep(5)
     shot(a, shots, 'setup'); shot(b, shots, 'setup')
     for c in both:
         c.press('cross', gap=2.0)                          # the 1st slot -> Player Select
