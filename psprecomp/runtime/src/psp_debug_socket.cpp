@@ -6,13 +6,17 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <thread>
 #include <vector>
 
 #include "psp_platform.h"
+#include <zlib.h>
 
 static constexpr uint32_t PSP_DBG_ADDR_MASK = 0x07FFFFFFU;
 static constexpr size_t   MAX_READ_BYTES    = 65536;
@@ -37,6 +41,7 @@ static size_t   g_rdram_size = 0;
 
 // Providers for the I and S commands (see psp_debug_socket.h).
 static PspDebugHooks g_hooks;
+static bool g_bind_lan = false;   // see psp_debug_socket_set_bind_default
 
 // Process start reference for uptime. Set by psp_debug_socket_start; falls
 // back to first-use so the unit-testable handler works standalone.
@@ -329,10 +334,152 @@ static PspDebugReply handle_screenshot(const char* args) {
     return make_ok_empty();
 }
 
+
+// ---------------------------------------------------------------------------
+// Log pull commands (LOGLS / LOGGET / LOGGZ): read-only access to the game's own log files, so a phone / handheld /
+// laptop needs neither adb nor ssh to hand over last_run.log. All file IO runs on the calling client's thread (never the
+// game or render thread); one request moves at most LOG_MAX_CHUNK bytes, so a 200 MB log is pulled in slices.
+//   LOGLS                          -> JSON {"dir":..,"files":[{"name","size","mtime"}..]}
+//   LOGGET <name> <offset> <len>   -> OK <n>\n + raw bytes [offset, offset+n) (n < len at the end of the file; 0 past it)
+//   LOGGZ  <name> <offset> <len>   -> OK <gzlen> <rawlen>\n + gzip member of those rawlen bytes (members concatenate to a valid gzip)
+// <name> is a bare file name or <dir>/<name> with <dir> one of crash, crashes, logs (no .., no absolute paths, no
+// backslashes); only log-like files are served (never saves, settings, cloud.ini / cloud/, tokens, keys).
+// PSPRECOMP_DEBUG_LOGS=0 switches the three commands off.
+// ---------------------------------------------------------------------------
+
+static constexpr size_t LOG_MAX_CHUNK = 4u << 20;
+static std::string g_log_dir;   // the game's own folder, fixed when the socket starts (the cwd: the launchers run the game in its work folder)
+
+static std::string lower_s(std::string s) { for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); return s; }
+
+static bool log_name_ok(const std::string& leaf) {
+    const std::string l = lower_s(leaf);
+    if (l.empty() || l[0] == '.') return false;
+    for (const char* bad : {"cloud", "token", "secret", "password", "passwd", "key", "auth", "cred", "save", "settings", ".ini", ".json"})
+        if (l.find(bad) != std::string::npos) return false;
+    auto ends = [&](const char* e) { const size_t n = std::strlen(e); return l.size() > n && l.compare(l.size() - n, n, e) == 0; };
+    if (ends(".log") || ends(".log.gz") || ends(".txt") || ends(".dmp") || ends(".trace")) return true;
+    for (const char* pre : {"crash", "hs_err", "tombstone", "sigsegv", "hang", "netdump", "last_run", "prev_run"})
+        if (l.rfind(pre, 0) == 0) return true;
+    return false;
+}
+
+/// Resolve a client-supplied name to a path under g_log_dir; false = refused.
+static bool log_resolve(const std::string& name, std::string* rel_out) {
+    if (name.empty() || name.size() > 200 || name[0] == '/' || name[0] == '\\' || name.find("..") != std::string::npos
+        || name.find('\\') != std::string::npos || name.find(':') != std::string::npos) return false;
+    std::string leaf = name;
+    const size_t sl = name.find('/');
+    if (sl != std::string::npos) {
+        const std::string d = name.substr(0, sl);
+        leaf = name.substr(sl + 1);
+        if ((d != "crash" && d != "crashes" && d != "logs") || leaf.find('/') != std::string::npos) return false;
+    }
+    if (!log_name_ok(leaf)) return false;
+    *rel_out = name;
+    return true;
+}
+
+static bool log_enabled() {
+    static const bool on = [] { const char* e = std::getenv("PSPRECOMP_DEBUG_LOGS"); return !(e && e[0] == '0'); }();
+    return on;
+}
+
+static std::string log_dir() {
+    if (!g_log_dir.empty()) return g_log_dir;
+    std::error_code ec;
+    return std::filesystem::current_path(ec).u8string();
+}
+
+static PspDebugReply handle_log_ls() {
+    namespace fs = std::filesystem;
+    const std::string base = log_dir();
+    std::string j = "{\"dir\":\"";
+    for (char c : base) { if (c == '"' || c == '\\') j += '\\'; j += c; }
+    j += "\",\"files\":[";
+    bool first = true;
+    std::error_code ec;
+    for (const char* sub : {"", "crash", "crashes", "logs"}) {
+        const fs::path d = fs::u8path(base) / sub;
+        for (fs::directory_iterator it(d, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
+            std::error_code e2;
+            if (!it->is_regular_file(e2)) continue;
+            const std::string leaf = it->path().filename().u8string();
+            if (!log_name_ok(leaf) || leaf.find('"') != std::string::npos) continue;
+            const auto sz = it->file_size(e2);
+            if (e2) continue;
+            long long mt = 0;
+            const auto ft = it->last_write_time(e2);
+            if (!e2) mt = static_cast<long long>(std::chrono::duration_cast<std::chrono::seconds>(
+                (ft - fs::file_time_type::clock::now()) + std::chrono::system_clock::now().time_since_epoch()).count());
+            char b[64];
+            std::snprintf(b, sizeof b, "\",\"size\":%llu,\"mtime\":%lld}", static_cast<unsigned long long>(sz), mt);
+            if (!first) j += ',';
+            first = false;
+            j += "{\"name\":\"";
+            if (*sub) { j += sub; j += '/'; }
+            j += leaf;
+            j += b;
+        }
+        ec.clear();
+    }
+    j += "]}\n";
+    return make_ok(std::vector<uint8_t>(j.begin(), j.end()));
+}
+
+static PspDebugReply handle_log_get(const char* args, bool gz) {
+    char name[256];
+    unsigned long long off = 0, len = 0;
+    if (std::sscanf(args, "%255s %llu %llu", name, &off, &len) != 3) return make_err("bad-args");
+    std::string rel;
+    if (!log_resolve(name, &rel)) return make_err("bad-path");
+    if (len > LOG_MAX_CHUNK) len = LOG_MAX_CHUNK;
+    std::ifstream f(std::filesystem::u8path(log_dir()) / std::filesystem::u8path(rel), std::ios::binary);
+    if (!f) return make_err("not-found");
+    f.seekg(0, std::ios::end);
+    const unsigned long long size = static_cast<unsigned long long>(f.tellg());
+    std::vector<uint8_t> raw;
+    if (off < size && len > 0) {
+        raw.resize(static_cast<size_t>(std::min<unsigned long long>(len, size - off)));
+        f.seekg(static_cast<std::streamoff>(off));
+        f.read(reinterpret_cast<char*>(raw.data()), static_cast<std::streamsize>(raw.size()));
+        raw.resize(static_cast<size_t>(f.gcount()));   // a file that shrank / is being rewritten: what is there
+    }
+    if (!gz) return make_ok(std::move(raw));
+    std::vector<uint8_t> out(compressBound(static_cast<uLong>(raw.size())) + 32);
+    z_stream zs{};
+    if (deflateInit2(&zs, 1, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK) return make_err("zlib");
+    zs.next_in = raw.data(); zs.avail_in = static_cast<uInt>(raw.size());
+    zs.next_out = out.data(); zs.avail_out = static_cast<uInt>(out.size());
+    const int rc = deflate(&zs, Z_FINISH);
+    const size_t gzlen = zs.total_out;
+    deflateEnd(&zs);
+    if (rc != Z_STREAM_END) return make_err("zlib");
+    out.resize(gzlen);
+    PspDebugReply r;
+    char hdr[48];
+    std::snprintf(hdr, sizeof hdr, "OK %zu %zu\n", gzlen, raw.size());
+    r.header = hdr;
+    r.payload = std::move(out);
+    return r;
+}
+
+// Peers that are not the local machine (a LAN bind) get only I and the log commands unless PSPRECOMP_DEBUG_LAN_FULL=1.
+static thread_local bool g_peer_remote = false;
+static bool lan_full() { static const bool v = [] { const char* e = std::getenv("PSPRECOMP_DEBUG_LAN_FULL"); return e && e[0] == '1'; }(); return v; }
+
 PspDebugReply psp_debug_handle_line(const char* line,
                                     uint8_t* rdram,
                                     size_t rdram_size) {
     if (!line || line[0] == '\0') return make_err("empty");
+
+    if (std::strncmp(line, "LOG", 3) == 0) {
+        if (!log_enabled()) return make_err("logs-disabled");
+        if (std::strcmp(line, "LOGLS") == 0 || std::strncmp(line, "LOGLS ", 6) == 0) return handle_log_ls();
+        if (std::strncmp(line, "LOGGET ", 7) == 0) return handle_log_get(line + 7, false);
+        if (std::strncmp(line, "LOGGZ ", 6) == 0) return handle_log_get(line + 6, true);
+    }
+    if (g_peer_remote && !lan_full() && !(line[0] == 'I' && (line[1] == '\0' || line[1] == ' '))) return make_err("remote-denied");
 
     if (line[0] == 'V' && (line[1] == '\0' || (line[1] == ' ' && *skip_spaces(line + 2) == '\0'))) {
         // V (no path): the GE view matrix (12 floats) as of now; sampling a few times
@@ -476,7 +623,8 @@ static bool send_all(int fd, const void* data, size_t len) {
 
 /// Handle one connected client: read lines, dispatch commands, send the
 /// framed reply. Returns when the client disconnects or the server stops.
-static void handle_client(int client_fd) {
+static void handle_client(int client_fd, bool remote) {
+    g_peer_remote = remote;
     std::vector<char> line(MAX_LINE);
     size_t pos = 0;
     bool overflow = false;
@@ -552,7 +700,10 @@ static void server_loop(int port) {
     struct sockaddr_in addr{};
     addr.sin_family      = AF_INET;
     addr.sin_port        = htons(static_cast<uint16_t>(port));
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    // Dev builds listen on every interface (so pull_log.py can reach a phone / handheld over Wi-Fi; peers other than this machine
+    // may only use I and the LOG commands); a tagged release listens on loopback only. PSPRECOMP_DEBUG_BIND=loopback|lan overrides.
+    const bool lan = g_bind_lan;
+    addr.sin_addr.s_addr = htonl(lan ? INADDR_ANY : INADDR_LOOPBACK);
 
     if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
         std::fprintf(stderr,
@@ -570,7 +721,7 @@ static void server_loop(int port) {
     }
 
     std::fprintf(stderr,
-        "[DEBUG] Debug socket listening on port %d\n", port);
+        "[DEBUG] Debug socket listening on port %d (%s)\n", port, lan ? "all interfaces: LAN peers get I + LOG commands" : "loopback");
 
     while (g_debug_running.load(std::memory_order_relaxed)) {
         // Use select() with 1-second timeout so we can check g_debug_running
@@ -591,14 +742,19 @@ static void server_loop(int port) {
         // One thread per client -- concurrent sessions are independent.
         std::lock_guard<std::mutex> lock(g_clients_mutex);
         g_client_fds.push_back(client_fd);
-        g_client_threads.emplace_back(handle_client, client_fd);
+        const bool remote = client_addr.sin_addr.s_addr != htonl(INADDR_LOOPBACK);
+        g_client_threads.emplace_back(handle_client, client_fd, remote);
     }
 
     psp_plat::close_socket(fd);
     g_server_fd = -1;
 }
 
+void psp_debug_socket_set_bind_default(bool lan) { g_bind_lan = lan; }
+
 void psp_debug_socket_start(uint8_t* rdram, size_t rdram_size, int port) {
+    if (const char* b = std::getenv("PSPRECOMP_DEBUG_BIND")) { if (!std::strcmp(b, "lan")) g_bind_lan = true; else if (!std::strcmp(b, "loopback")) g_bind_lan = false; }
+    { std::error_code ec; g_log_dir = std::filesystem::current_path(ec).u8string(); }
     g_rdram      = rdram;
     g_rdram_size = rdram_size;
     g_start_time = std::chrono::steady_clock::now();
