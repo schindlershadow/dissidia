@@ -25,6 +25,9 @@
 //   PSPRECOMP_TTLOCK_PADTEST=1      single player: tag extras flagged human are driven by the local pad (mirror of the player)
 //   PSPRECOMP_TTLOCK_FOLLOW=1       the camera follows the extra this machine drives (splits the battle today: camera-dependent movement)
 //   PSPRECOMP_TTLOCK_SHORTWAIT_MS=<ms>  how long a frame waits for a late word before the game waits a whole frame (default 25, 0 = no short wait)
+//   PSPRECOMP_TTLOCK_BOUND=0        a slow machine's lead also grows for late reports (the old rule; default: not when it is the bottleneck itself)
+//   PSPRECOMP_TTLOCK_PROBE=0        the lead is shortened only while every player holds 3+ of our words (default: also after 10 s with no late report: probe down)
+//   PSPRECOMP_TTLOCK_SHORTEN=0      no shortening of the lead (default: on, see g_shrink_cur)
 //   PSPRECOMP_TTLOCK_ADAPT=0        the input lead grows with every wait and never gets shorter (the old behaviour);
 //   PSPRECOMP_TTLOCK_SHRINK_MIN=<n> words of ours every other player must hold ahead for 3 s before the lead is shortened by one (default 3)
 //   PSPRECOMP_TTLOCK_TIMEOUT=<s>    seconds without a needed peer's input before this machine leaves the battle (default 10, 0 = wait forever)
@@ -147,11 +150,28 @@ std::map<std::array<uint8_t, 6>, std::deque<int64_t>> g_late;   // when we had t
 std::map<std::array<uint8_t, 6>, std::deque<Report>> g_mine;   // what we reported to every player in the last 2 s: how many of ITS words we held
 std::map<std::array<uint8_t, 6>, std::deque<Report>> g_slack;   // the last 3 s of every player's reports
 std::chrono::steady_clock::time_point g_quiet_t0;                // the last wait or change of the lead
-int g_floor = 2, g_start = 2, g_shrink_min = 3, g_shrink_s = 10, g_late_min = 2; bool g_adapt = true, g_shorten = false; uint32_t g_shrinks = 0, g_kept = 0, g_grows = 0, g_slips = 0;
+int g_floor = 2, g_start = 2, g_shrink_min = 3, g_shrink_s = 10, g_shrink_cur = 10, g_late_min = 2; bool g_adapt = true, g_shorten = true, g_bound_ok = true, g_probe = true; uint32_t g_shrinks = 0, g_kept = 0, g_grows = 0, g_slips = 0;
 // When the lead was last made longer. A report counts the holds of the sender's last 5 s, so the next lengthening waits until those
 // holds are out of the reports (5 s + the trip): with only the 2.5 s quiet rule the same two holds made the lead longer twice
 // (measured 26 Nov, 80 ms + 30 ms jitter + 2 % loss: 5 -> 7 frames for two late words in the whole battle).
 int64_t g_grow_ms = -1000000;
+// A dip must not stay in the lead (user 27 Nov: a phone running its logic at 24-30 fps against a 30 fps peer went 1 -> 5 frames in 12 s and stayed).
+//  - When THIS machine is the slow one (it delivers under 29.3 frames a second and has not waited itself in the last 4 s), the others hold
+//    for our words however far ahead we sample: a longer lead only adds input delay, the fight simply runs slower for everyone (as on
+//    the PSP). Late reports then do not lengthen the lead (PSPRECOMP_TTLOCK_BOUND=0: they do, as before).
+//  - Shortening is on: after 10 s in which every player held 3+ of our words and nobody waited, one frame shorter, repeatedly. A
+//    lengthening within 40 s of a shortening doubles that quiet time (up to 80 s), 60 s without one sets it back to 10 s.
+int64_t now_ms();
+int64_t g_shrunk_ms = -1000000, g_shrink_ok_ms = 0;
+struct Sec { int64_t ms; uint32_t delivered, waits; };
+std::deque<Sec> g_secs;
+bool self_bound() {
+    const int64_t t = now_ms();
+    if (g_secs.empty() || t - g_secs.back().ms >= 1000) { g_secs.push_back({t, g_delivered, g_waits}); while (g_secs.size() > 6) g_secs.pop_front(); }
+    if (g_secs.size() < 5 || t - g_secs.front().ms > 6000) return false;
+    const Sec& a = g_secs.front(); const Sec& b = g_secs.back(); const double dt = (b.ms - a.ms) / 1000.0;
+    return dt >= 3.5 && (b.delivered - a.delivered) < 29.3 * dt && b.waits == a.waits;
+}
 int64_t now_ms() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 void slack_reset() { g_slack.clear(); g_late.clear(); g_mine.clear(); g_quiet_t0 = std::chrono::steady_clock::now(); }
 int late_count(const std::array<uint8_t, 6>& m) {   // holds for that player's words in the last 5 s
@@ -165,6 +185,14 @@ bool slack_of(const std::array<uint8_t, 6>& m, int64_t ms, int* count, int* leas
     const int64_t from = now_ms() - ms; int n = 0, mn = 255;
     for (auto r = it->second.rbegin(); r != it->second.rend() && r->ms >= from; ++r) { n++; mn = std::min(mn, r->have); }
     *count = n; *least = mn; return n > 0;
+}
+// no report of that player in the last `ms` said that our words were late there (a player who holds none of our words ahead, because it runs right at
+// the edge of what we send, is still not hurt by our lead: the lead is probed down then, and goes up again by the late reports if it was needed)
+bool late_free(const std::array<uint8_t, 6>& m, int64_t ms) {
+    auto it = g_slack.find(m); if (it == g_slack.end()) return false;
+    const int64_t from = now_ms() - ms;
+    for (auto r = it->second.rbegin(); r != it->second.rend() && r->ms >= from; ++r) if (r->late > 0) return false;
+    return true;
 }
 std::string slack_text() {   // log: every player's reports of the last 3 s (how many / the smallest)
     std::string t; for (auto& [m, q] : g_slack) { int n = 0, mn = 0; if (!slack_of(m, 3000, &n, &mn)) continue; char b[64]; std::snprintf(b, sizeof b, "; %02x:%02x holds %d+ of ours (%d reports)", m[4], m[5], mn, n); t += b; }
@@ -255,7 +283,7 @@ void reset(uint32_t obj) {
     g_roster_acked.clear(); g_gear_acked.clear(); g_gear_calls = 0; g_roster_calls = 0; g_roster_wait_logged = false;
     g_start = psp_netplay_pick_delay();   // Network Delay "Auto": this battle's first delay from the ping now
     g_floor = psp_netplay_delay_setting() == PSP_NETPLAY_AUTO_DELAY ? PSP_NETPLAY_MIN_DELAY : g_start;   // the lead never goes below it
-    g_shrinks = 0; g_kept = 0; g_grows = 0; g_slips = 0; g_grow_ms = -1000000; slack_reset(); g_pace5 = Pace{}; g_pace = Pace{};
+    g_shrinks = 0; g_kept = 0; g_grows = 0; g_slips = 0; g_grow_ms = -1000000; g_secs.clear(); g_shrunk_ms = -1000000; g_shrink_ok_ms = 0; g_shrink_cur = g_shrink_s; slack_reset(); g_pace5 = Pace{}; g_pace = Pace{};
     // The slot fighters' first drivers come from the game's own session: on a fighter's machine (+64 = 0) it is player +68 and the peer
     // is the other one; on a spectator's (+64 = 1) peer i is player i. Player k plays slot k (docs: players and slots).
     const uint32_t mode = rd(obj + OFF_MODE), me = rd(obj + OFF_LOCAL_IDX), n = rd(obj + OFF_PEER_COUNT);
@@ -288,7 +316,7 @@ void receive() {
         if (n >= fo + 4) { uint32_t ff; std::memcpy(&ff, buf + fo, 4); if (ff && !g_forfeit_at.count(m)) { g_forfeit_at[m] = ff; std::fprintf(stderr, "[TTPAUSE] %s forfeits at lock-step frame %u (this machine is at %u)\n", mac_str(m).c_str(), ff, g_F); } }
         Ring& r = g_remote[m];
         for (int i = 0; i < cnt; i++) { uint16_t w; std::memcpy(&w, buf + 8 + 2 * i, 2); if (first + i + RING > g_F) r.put(first + i, w); }
-        if (n >= 8 + 2 * cnt + 2 && buf[8 + 2 * cnt] == 'S') { auto& q = g_slack[m]; const int64_t t = now_ms(); q.push_back({t, buf[8 + 2 * cnt + 1], n >= 8 + 2 * cnt + 3 ? buf[8 + 2 * cnt + 2] : 0}); while (!q.empty() && q.front().ms < t - 1000ll * std::max(3, g_shrink_s)) q.pop_front(); }   // how many of OUR words that player holds
+        if (n >= 8 + 2 * cnt + 2 && buf[8 + 2 * cnt] == 'S') { auto& q = g_slack[m]; const int64_t t = now_ms(); q.push_back({t, buf[8 + 2 * cnt + 1], n >= 8 + 2 * cnt + 3 ? buf[8 + 2 * cnt + 2] : 0}); while (!q.empty() && q.front().ms < t - 1000ll * std::max(3, g_shrink_cur)) q.pop_front(); }   // how many of OUR words that player holds
     }
 }
 
@@ -458,20 +486,23 @@ void dispatch_hook(uint8_t* rdram, recomp_context* ctx) {
         uint8_t macs[16][6]; const int n = mine ? psp_adhoc_group_macs(macs, nullptr, 16) : 0;
         if (n > 0) {
             const auto since = std::chrono::steady_clock::now() - g_quiet_t0;
-            shorten = g_shorten && enough && !after_wait && since >= std::chrono::seconds(g_shrink_s) && g_seq >= g_F + static_cast<uint32_t>(g_floor + 1);
+            const bool bound = g_bound_ok && self_bound();   // we are the slow one: our lead is not what the others wait for, it can come down
+            shorten = g_shorten && enough && !after_wait && since >= std::chrono::seconds(g_shrink_cur) && g_seq >= g_F + static_cast<uint32_t>(g_floor + 1);
             keep = enough && after_wait;
             for (int i = 0; i < n && i < 16; i++) {
                 Mac m; std::memcpy(m.data(), macs[i], 6); int cnt = 0, least = 0;
-                if (!slack_of(m, 1000ll * g_shrink_s, &cnt, &least) || cnt < 15 * g_shrink_s || least < g_shrink_min) shorten = false;   // (an older build never reports)
+                if (!slack_of(m, 1000ll * g_shrink_cur, &cnt, &least) || cnt < 15 * g_shrink_cur || (least < g_shrink_min && !(g_probe && (bound || late_free(m, 1000ll * g_shrink_cur))))) shorten = false;   // (an older build never reports)
                 if (!slack_of(m, 1000, &cnt, &least) || cnt < 10 || least < 2) keep = false;
                 auto it = g_slack.find(m);
                 if (it != g_slack.end() && !it->second.empty() && now_ms() - it->second.back().ms < 500 && it->second.back().late >= g_late_min) lengthen = true;
             }
+            if (bound) lengthen = false;
             lengthen = lengthen && since >= std::chrono::milliseconds(2500) && now_ms() - g_grow_ms >= 5500 && g_seq + 1 < cap;
             if (lengthen) shorten = keep = false;
             if (shorten || lengthen) {
                 const int lead = static_cast<int>(g_seq - g_F);
-                if (shorten) g_shrinks++; else { g_grows++; g_grow_ms = now_ms(); }
+                if (shorten) { g_shrinks++; g_shrunk_ms = now_ms(); if (now_ms() - g_shrink_ok_ms > 60000) g_shrink_cur = g_shrink_s; g_shrink_ok_ms = now_ms(); }
+                else { g_grows++; g_grow_ms = now_ms(); if (now_ms() - g_shrunk_ms < 40000) g_shrink_cur = std::min(80, g_shrink_cur * 2); }
                 g_quiet_t0 = std::chrono::steady_clock::now();
                 if (g_log || g_shrinks + g_grows <= 6) std::fprintf(stderr, "[TTLOCK] frame %u: input lead %d -> %d frames (%s)\n", g_F, lead, lead + (shorten ? -1 : 1),
                                                                     shorten ? "every player held our input well ahead for a while" : "our input kept arriving late at another player");
@@ -568,6 +599,10 @@ void dispatch_hook(uint8_t* rdram, recomp_context* ctx) {
         if (g_lat && w != st.last) std::fprintf(stderr, "[TTLAT] frame %u stream %d word %04X (was %04X)\n", g_F, s, w, st.last);
         st.last = w;
         write_pad(ctx, st.pad, w);
+    }
+    {   // test aid PSPRECOMP_TTLOCK_TESTDIP=<from s>:<to s>:<ms>: every delivered frame between those wall seconds of the battle costs <ms> more (a phone's dip)
+        static const char* dip = std::getenv("PSPRECOMP_TTLOCK_TESTDIP"); static int64_t t0 = 0; static uint32_t gen = 0xFFFFFFFFu;
+        if (dip) { if (gen != g_gen) { gen = g_gen; t0 = now_ms(); } int a = 0, b = 0, ms = 0; if (std::sscanf(dip, "%d:%d:%d", &a, &b, &ms) == 3) { const int64_t el = now_ms() - t0; if (el >= a * 1000ll && el < b * 1000ll) std::this_thread::sleep_for(std::chrono::milliseconds(ms)); } }
     }
     dissidia_netplay_frame_delivered(g_F);
     {   // The effect LCG (0x09AFB89C) is seeded per machine and drawn from by cosmetic code whose amount depends on the local view (camera, visibility, effects shown):
@@ -701,6 +736,9 @@ void dissidia_ttnet_install(uint8_t* rdram) {
     if (const char* e = std::getenv("PSPRECOMP_TTLOCK_SHRINK_MIN")) g_shrink_min = std::clamp(std::atoi(e), 1, 250);
     if (const char* e = std::getenv("PSPRECOMP_TTLOCK_SHORTEN")) g_shorten = e[0] && e[0] != '0';
     if (const char* e = std::getenv("PSPRECOMP_TTLOCK_SHRINK_S")) g_shrink_s = std::clamp(std::atoi(e), 1, 120);
+    g_shrink_cur = g_shrink_s;
+    if (const char* e = std::getenv("PSPRECOMP_TTLOCK_PROBE")) g_probe = !(e[0] == '0');
+    if (const char* e = std::getenv("PSPRECOMP_TTLOCK_BOUND")) g_bound_ok = !(e[0] == '0');
     if (const char* e = std::getenv("PSPRECOMP_TTLOCK_LATE_MIN")) g_late_min = std::clamp(std::atoi(e), 1, 1000);
     g_log2 = std::getenv("PSPRECOMP_TTLOCK_LOG2") != nullptr;
     g_pm_off = std::getenv("PSPRECOMP_TTPAUSE_OFF") != nullptr;

@@ -14,6 +14,7 @@
 // (frame, checksum) pairs, +68 local player index, +72 the frame being delivered next, +76 peer records (84 bytes:
 // MAC at +0, +8 the received input window, +80 the last frame delivered with its input), +852 peer count, +860 the
 // local record (+8 its input window, +524 the newest local input frame = the send sequence). Pad slots: [0x089D6008] + 96 x player, words +64..+79 (SceCtrlData).
+#include <chrono>
 #include "psp_memory.h"
 #include "psp_game_module.h"
 #include "psp_netplay.h"
@@ -336,7 +337,17 @@ void dissidia_netplay_ls_reset() { g_ls_frame = 0; g_rb_addr[0] = g_rb_addr[1] =
 void dissidia_netplay_frame_delivered(uint32_t frame) {
     g_ls_frame = frame; g_hw_frame = frame;
     if (!g_ram) return;
-    if (psp_netplay_sync_check()) { uint32_t vals[NVALUES]; const int n = collect(vals); psp_netplay_submit_state(frame, vals, n); dump_start(frame); }
+    // The check's hashes (2 fighters x 4352 words, byte-wise FNV, plus a ~640 B packet) are taken every PSPRECOMP_NETSYNC_EVERY-th frame (default 1 = every frame; measured ~0.1% of a frame, so the saving is not worth halving detection; 2+ was for a phone
+    // that is the online-only work of every logic frame; a difference is found at most one frame later). Every machine uses the frame number, so the compared
+    // frames agree (an older build sends every frame: its extra frames are ignored). PSPRECOMP_NETSYNC_EVERY=1: every frame (the old behaviour).
+    static const uint32_t every = [] { const char* e = std::getenv("PSPRECOMP_NETSYNC_EVERY"); const int v = e ? std::atoi(e) : 1; return static_cast<uint32_t>(v < 1 ? 1 : v > 30 ? 30 : v); }();
+    static double cost_us = 0; static uint32_t cost_n = 0;
+    if (psp_netplay_sync_check() && (frame % every) == 0) {
+        const auto t0 = std::chrono::steady_clock::now();
+        uint32_t vals[NVALUES]; const int n = collect(vals); psp_netplay_submit_state(frame, vals, n); dump_start(frame);
+        cost_us += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+        if (++cost_n >= 300) { std::fprintf(stderr, "[NETSYNC] cost: %.0f us per checked frame (every %u frame(s), %u checked)\n", cost_us / cost_n, every, cost_n); cost_us = 0; cost_n = 0; }
+    }
     if (g_dump_blocks) dump_blocks(frame);
     ring_frame(frame);
     if (frame == g_perturb_frame) perturb();
