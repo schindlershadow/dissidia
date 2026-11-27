@@ -59,6 +59,7 @@ int dissidia_tagteam_roster_pack(uint8_t* out, int max);
 bool dissidia_tagteam_roster_adopt(const uint8_t* d, int n);
 uint32_t dissidia_tagteam_battle_gen();
 int dissidia_tagteam_fighters(uint32_t* out, int max);   // tagteam.cpp: every fighter of the battle (slots, extras)        // tagteam.cpp: +1 per battle setup
+void dissidia_netplay_ls_reset(); void dissidia_netplay_note_rebuild(int slot, uint32_t frame);
 void dissidia_netplay_frame_delivered(uint32_t frame);   // netplay.cpp: desync check / dumps for a delivered frame
 void dissidia_netplay_note_delay(int delay);
 void dissidia_tagteam_forfeit_apply(const uint8_t* mac, uint32_t frame);   // tagteam.cpp: a player forfeits at this lock-step frame (same on every machine)
@@ -229,6 +230,7 @@ uint32_t guest_call(recomp_context* ctx, FuncPtr f, uint32_t a0, uint32_t a1 = 0
 }
 
 void reset(uint32_t obj) {
+    dissidia_netplay_ls_reset();
     g_running = true; g_obj = obj; g_F = rd(obj + OFF_FRAME); g_seq = g_F; g_waits = 0; g_shortwaits = 0; g_delivered = 0; g_wait_since = 0; g_wait_logged = false; g_decided_logged = false;
     g_local = Ring{}; g_remote.clear(); for (LowHp& l : g_lowhp) l.done = false;
     g_pm_state = 0; g_pm_sel = 0; g_pm_prev = g_pm_mask = 0; g_pm_stick_prev = 0; g_my_forfeit = 0; g_forfeit_at.clear(); g_forfeit_done.clear();
@@ -641,7 +643,7 @@ bool dissidia_ttnet_driver_mac(int stream, uint32_t f, bool first, uint8_t* mac)
     if (first) { const std::vector<Sched>& v = g_streams[stream].s; if (v.empty() || !v[0].human) return false; std::memcpy(mac, v[0].mac.data(), 6); return true; }
     Mac m; if (!driver_at(stream, f, &m)) return false; std::memcpy(mac, m.data(), 6); return true;
 }
-void dissidia_ttnet_slot_rebuilt(int slot, int charId) { std::fprintf(stderr, "[TTLOCK] slot %d rebuilt as char %d at lock-step frame %u\n", slot, charId, g_F); }
+void dissidia_ttnet_slot_rebuilt(int slot, int charId) { dissidia_netplay_note_rebuild(slot, g_F); std::fprintf(stderr, "[TTLOCK] slot %d rebuilt as char %d at lock-step frame %u\n", slot, charId, g_F); }
 uint32_t dissidia_ttnet_object() { return g_obj; }
 // The pause menu for the HUD: 0 closed, 1 menu (sel 0 Resume / 1 Forfeit), 2 forfeit confirm (sel 0 NO / 1 YES), 3 forfeit sent. This machine only (view).
 int dissidia_ttnet_pause_menu(int* sel) { if (!g_running || g_pm_off) return 0; if (sel) *sel = g_pm_sel; return g_pm_state; }

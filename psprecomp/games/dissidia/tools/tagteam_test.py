@@ -104,18 +104,12 @@ def check_sp(a, out, tag):
 
 
 def retryable(lines):
-    """The failure is only (a) a NETSYNC mismatch of at most 3 frames per copy (a transient: the KO's call-in delay runs on each machine's own battle age, which can
-    start a frame apart; the state agrees again the frame after) or (b) a walk timeout; every other difference (line-up, banter, roster, result, a real desync) fails at once."""
-    if any(l.startswith(('TTVS', 'BANTER', 'ROSTER', 'RESULT', 'CLOUD')) for l in lines):
+    """The failure is only a walk timeout (a menu step that missed its timing on a loaded host). Every other difference (a NETSYNC mismatch of any size, line-up, banter,
+    roster, result) fails at once: the one-frame call-in transient this used to forgive was the battle age counting from each machine's own start (fixed in batch eighty-two:
+    online the age follows the lock-step frame)."""
+    if any(l.startswith(('TTVS', 'BANTER', 'ROSTER', 'RESULT', 'CLOUD', 'NETSYNC', 'DESYNC')) for l in lines):
         return False
-    ns = [l for l in lines if l.startswith('NETSYNC: copy')]
-    for l in ns:
-        m = re.search(r': (\d+) of \d+ frames mismatched', l)
-        if m and int(m[1]) > 3:
-            return False
-    if any(l.startswith('NETSYNC') and 'no frame comparison' in l or 'compared only' in l for l in lines):
-        return False
-    return bool(ns) or any(l.startswith('walk failed') for l in lines)
+    return any(l.startswith('walk failed') for l in lines)
 
 
 def run_check(a, name, out):
@@ -137,7 +131,7 @@ def run_check(a, name, out):
             lines = (r.stdout + r.stderr[-1500:]).splitlines()
             if r.returncode == 2:   # could not run (no second save): a failure of the check, never a silent pass
                 return False, lines
-            if r.returncode and retryable(lines):   # one retry for a flake: a 1-3 frame self-healing mismatch (see docs "transient") or a menu step that missed its timing on a loaded host
+            if r.returncode and retryable(lines):   # one retry for a menu step that missed its timing on a loaded host (never for a desync)
                 lines = ['-- first run failed only with: %s; retrying once --' % ('; '.join(l.strip()[:90] for l in lines if l.startswith(('NETSYNC', 'walk failed'))))] + lines
                 r = subprocess.run(cmd, capture_output=True, text=True)
                 lines += ['-- retry --'] + (r.stdout + r.stderr[-1500:]).splitlines()

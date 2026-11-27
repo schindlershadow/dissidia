@@ -1055,7 +1055,17 @@ bool run_cpu_record(uint32_t G, uint32_t ch, uint32_t tier, uint32_t lvl, uint32
     constexpr uint32_t GAME_LCG = 0x09AF84D0u;
     const bool pin = fix_time && !lcg_old; const uint32_t lcg = rd(GAME_LCG);
     if (pin) wr(GAME_LCG, fix_time ^ 0x2545F491u);
+    // The builder also READS THIS MACHINE'S SAVE (26 Nov, docs "Batch eighty-two"): the loadout (abilities, accessory, summon stone) is picked from what the player owns / has learned
+    // (the inventory counts and learned states at 0x08BBE410.., 0x08BBF8A0.., the money words at 0x08BBFA00, more tables up to 0x08BC....: found by loading the other machine's bytes
+    // into the range until the two records matched). Two machines with different saves built different CPU records (stone 4 vs 23, other ability / accessory ids) and the fill fighters'
+    // stats then differed at the first KO. In a lock-step battle (fix_time != 0) the builder now runs with that range of the save (0x08BAFC90..0x08C00000) zeroed - every machine
+    // sees the same empty save - and the save is put back right after. PSPRECOMP_TAGTEAM_CPUSAVE_OLD=1: old (the local save is read).
+    static const bool save_old = std::getenv("PSPRECOMP_TAGTEAM_CPUSAVE_OLD") != nullptr;
+    constexpr uint32_t SV_LO = 0x08BAFC90u, SV_HI = 0x08C00000u;
+    std::vector<uint8_t> save_keep;
+    if (pin && !save_old) { save_keep.assign(g_ram + (SV_LO & 0x07FFFFFFu), g_ram + (SV_HI & 0x07FFFFFFu)); std::memset(g_ram + (SV_LO & 0x07FFFFFFu), 0, SV_HI - SV_LO); }
     f(g_ram, g_ctx);
+    if (!save_keep.empty()) { std::memcpy(g_ram + (SV_LO & 0x07FFFFFFu), save_keep.data(), SV_HI - SV_LO); static int sl = 0; if (sl++ < 6) std::fprintf(stderr, "[CPUSAVE] CPU record of char %u built with the local save range %08X..%08X blanked (the same on every machine)\n", ch, SV_LO, SV_HI); }
     if (pin) wr(GAME_LCG, lcg);
     g_fix_time = 0;
     *g_ctx = sv;
@@ -1124,10 +1134,65 @@ bool make_comms_cpu_record(uint32_t G, int charId) {
     const uint32_t items = g_rec_scratch + 0x1070u;   // 2 words of -1: no item overrides
     wr(items, 0xFFFFFFFFu); wr(items + 4u, 0xFFFFFFFFu);
     const uint32_t seed = 0x5EED0000u + static_cast<uint32_t>(charId) * 0x101u + side;
+    if (const char* rl = std::getenv("PSPRECOMP_TAGTEAM_RECLOAD")) {   // test aid "file,lo,hi" (hex): overwrite this range with the same range of a memory dump taken from 0x08B80000 (RECDUMP's mem file)
+        char path[400] = {}; uint32_t lo = 0, hi = 0; if (std::sscanf(rl, "%399[^,],%x,%x", path, &lo, &hi) == 3) if (FILE* ff = std::fopen(path, "rb")) { std::vector<uint8_t> d(0x80000u); const size_t got = std::fread(d.data(), 1, d.size(), ff); std::fclose(ff);
+            if (got == d.size() && lo >= 0x08B80000u && hi <= 0x08C00000u) { std::memcpy(g_ram + (lo & 0x07FFFFFFu), d.data() + (lo - 0x08B80000u), hi - lo); std::fprintf(stderr, "[RECLOAD] loaded %08X..%08X from %s\n", lo, hi, path); } } }
     if (!run_cpu_record(G, static_cast<uint32_t>(charId), tier, lvlArg, typeArg, L0, 0xFFFFFFFFu, 0xFFFFFFFFu, items, 1u, seed)) return false;
+    if (const char* lb = std::getenv("PSPRECOMP_TAGTEAM_RECLOADBIS")) {   // test aid "memfile,reffile": which differing bytes of the other machine's memory (dump from 0x08B80000) make this machine's builder give the other's record?
+        static uint32_t done_gen2 = ~0u;
+        if (done_gen2 != g_battle_gen) { done_gen2 = g_battle_gen;
+            char pm[400] = {}, pr[400] = {}; uint32_t rlo = 0x08B80000u, rhi = 0x08C00000u; std::sscanf(lb, "%399[^,],%399[^,],%x,%x", pm, pr, &rlo, &rhi);
+            std::vector<uint8_t> mem(0x80000u), refb(0x1060u); bool have = false;
+            if (FILE* f1 = std::fopen(pm, "rb")) { have = std::fread(mem.data(), 1, mem.size(), f1) == mem.size(); std::fclose(f1); }
+            if (have) { have = false; if (FILE* f2 = std::fopen(pr, "rb")) { have = std::fread(refb.data(), 1, refb.size(), f2) == refb.size(); std::fclose(f2); } }
+            if (have) {
+                const uint32_t B0 = 0x08B80000u;
+                const std::vector<uint8_t> mine(g_ram + (B0 & 0x07FFFFFFu), g_ram + (B0 & 0x07FFFFFFu) + 0x80000u);
+                const std::vector<uint8_t> keepref(g_ram + (g_rec_scratch & 0x07FFFFFFu), g_ram + (g_rec_scratch & 0x07FFFFFFu) + 0x1060u);
+                std::memcpy(g_ram + (rlo & 0x07FFFFFFu), mem.data() + (rlo - B0), rhi - rlo);   // the range loaded
+                auto matches = [&]() { wr(items, 0xFFFFFFFFu); wr(items + 4u, 0xFFFFFFFFu); const bool okb = run_cpu_record(G, static_cast<uint32_t>(charId), tier, lvlArg, typeArg, L0, 0xFFFFFFFFu, 0xFFFFFFFFu, items, 1u, seed);
+                    return okb && std::memcmp(g_ram + (g_rec_scratch & 0x07FFFFFFu), refb.data(), 0x1060u) == 0; };
+                std::fprintf(stderr, "[RECLOADBIS] the other machine's range loaded: record %s the reference\n", matches() ? "MATCHES" : "does not match");
+                std::function<void(uint32_t, uint32_t)> rec = [&](uint32_t a, uint32_t b) {   // memory [B0 + a, B0 + b) currently the other's: put this machine's back; needed if the match is lost
+                    bool differs = false; for (uint32_t i = a; i < b && !differs; i++) differs = mine[i] != mem[i];
+                    if (!differs) return;
+                    std::memcpy(g_ram + ((B0 + a) & 0x07FFFFFFu), mine.data() + a, b - a);
+                    if (matches()) return;
+                    std::memcpy(g_ram + ((B0 + a) & 0x07FFFFFFu), mem.data() + a, b - a);
+                    if (b - a <= 4) { std::fprintf(stderr, "[RECLOADBIS] needed %08X..%08X: mine", B0 + a, B0 + b); for (uint32_t i = a; i < b; i++) std::fprintf(stderr, " %02X", mine[i]); std::fprintf(stderr, " other"); for (uint32_t i = a; i < b; i++) std::fprintf(stderr, " %02X", mem[i]); std::fprintf(stderr, "\n"); return; }
+                    const uint32_t m = a + (b - a) / 2; rec(a, m); rec(m, b);
+                };
+                rec(rlo - B0, rhi - B0);
+                std::memcpy(g_ram + (B0 & 0x07FFFFFFu), mine.data(), 0x80000u);
+                std::memcpy(g_ram + (g_rec_scratch & 0x07FFFFFFu), keepref.data(), 0x1060u); wr(items, 0xFFFFFFFFu); wr(items + 4u, 0xFFFFFFFFu);
+                std::fprintf(stderr, "[RECLOADBIS] done\n"); }
+        }
+    }
+    if (const char* bs = std::getenv("PSPRECOMP_TAGTEAM_RECBISECT")) {   // test aid "lo,hi" (hex): which bytes of the range does the CPU builder read? zero halves, rebuild, compare (once per battle)
+        static uint32_t done_gen = ~0u;
+        if (done_gen != g_battle_gen) { done_gen = g_battle_gen;
+            uint32_t lo = 0, hi = 0; std::sscanf(bs, "%x,%x", &lo, &hi);
+            const std::vector<uint8_t> ref(g_ram + (g_rec_scratch & 0x07FFFFFFu), g_ram + (g_rec_scratch & 0x07FFFFFFu) + 0x1060u);
+            std::function<void(uint32_t, uint32_t)> rec = [&](uint32_t a, uint32_t b) {
+                std::vector<uint8_t> sv(g_ram + (a & 0x07FFFFFFu), g_ram + (b & 0x07FFFFFFu)); std::memset(g_ram + (a & 0x07FFFFFFu), 0, b - a);
+                wr(items, 0xFFFFFFFFu); wr(items + 4u, 0xFFFFFFFFu);
+                const bool okb = run_cpu_record(G, static_cast<uint32_t>(charId), tier, lvlArg, typeArg, L0, 0xFFFFFFFFu, 0xFFFFFFFFu, items, 1u, seed);
+                const bool diff = !okb || std::memcmp(g_ram + (g_rec_scratch & 0x07FFFFFFu), ref.data(), 0x1060u) != 0;
+                std::memcpy(g_ram + (a & 0x07FFFFFFu), sv.data(), b - a);
+                if (!diff) return;
+                if (b - a <= 16) { std::fprintf(stderr, "[RECBISECT] the builder reads %08X..%08X:", a, b); for (uint32_t q = a; q < b; q++) std::fprintf(stderr, " %02X", g_ram[q & 0x07FFFFFFu]); std::fprintf(stderr, "\n"); return; }
+                const uint32_t m = a + (b - a) / 2; rec(a, m); rec(m, b);
+            };
+            rec(lo, hi); std::fprintf(stderr, "[RECBISECT] done for %08X..%08X\n", lo, hi);
+            std::memcpy(g_ram + (g_rec_scratch & 0x07FFFFFFu), ref.data(), 0x1060u); wr(items, 0xFFFFFFFFu); wr(items + 4u, 0xFFFFFFFFu); }
+    }
     g_rec_cpu_made = true;
     g_comms_cache[key].assign(g_ram + (g_rec_scratch & 0x07FFFFFFu), g_ram + (g_rec_scratch & 0x07FFFFFFu) + 0x1060u);
     uint32_t h = 2166136261u; for (uint32_t o = 0; o < 0x1060u; o++) h = (h ^ g_ram[(g_rec_scratch + o) & 0x07FFFFFFu]) * 16777619u;
+    if (const char* dd = std::getenv("PSPRECOMP_TAGTEAM_RECDUMP")) {   // test aid: the made record as a file (diff two machines' records)
+        char fn_[512]; std::snprintf(fn_, sizeof fn_, "%s/rec_s%u_c%d.bin", dd, side, charId);
+        if (FILE* ff = std::fopen(fn_, "wb")) { std::fwrite(g_ram + (g_rec_scratch & 0x07FFFFFFu), 1, 0x1060u, ff); std::fclose(ff); }
+        std::snprintf(fn_, sizeof fn_, "%s/mem_08B80000.bin", dd); if (FILE* ff = std::fopen(fn_, "wb")) { std::fwrite(g_ram + 0x0B80000u, 1, 0x80000u, ff); std::fclose(ff); } }
     std::fprintf(stderr, "[MATCHUP] comms side %u char %d: CPU row, strength %u (tier %u) level %u (0 = Auto) type %d (-1 = Random), base level %u, seed %08X -> record level %u, type %u, brain params %u %u, stone %d, hash %08X (battle LCG %08X)\n",
         side, charId, tier + 1u, tier, lvlArg, static_cast<int>(typeArg), L0, seed, g_ram[(g_rec_scratch + 1u) & 0x07FFFFFFu], rdh(g_rec_scratch + 3892u), rdh(g_rec_scratch + 3894u), rdh(g_rec_scratch + 3896u),
         static_cast<int8_t>(g_ram[(g_rec_scratch + 0x10u + 0xC6u * (g_ram[(g_rec_scratch + 0x773u) & 0x07FFFFFFu] > 4 ? 0u : g_ram[(g_rec_scratch + 0x773u) & 0x07FFFFFFu]) + 0xBAu) & 0x07FFFFFFu]), h, rd(0x09AF84D0u));
@@ -6647,6 +6712,15 @@ uint8_t save_level_of(int ch) {   // the level in the character's own save recor
     for (uint32_t i = 0; i < 48; i++) { const uint32_t r = kSaveChars + i * kSaveStride; if (g_ram[r & 0x07FFFFFFu] == ch) { const uint8_t lv = g_ram[(r + 1u) & 0x07FFFFFFu]; return lv <= 100 ? lv : 0; } }
     return 0;
 }
+// The level a character shows in an online battle (VS line-up, tally rows, result list) when the stage has not told it: NOT this machine's save (26 Nov, "Batch eighty-two": two machines
+// showed L57 and L100 / Lv2 and Lv100 for the same CPU fill). A player's member: the owner's record from the party data table (the same on every machine); a CPU (fill or CPU row):
+// 0 = none, the callers' next fallback (the lead row's level = the level its record is built with). Offline and PSPRECOMP_TAGTEAM_CPULEVEL_OLD=1: the local save.
+uint8_t shared_level_of(int ch) {
+    static const bool off = std::getenv("PSPRECOMP_TAGTEAM_CPULEVEL_OLD") != nullptr;
+    if (off || !comms_battle()) return save_level_of(ch);
+    for (int sd = 0; sd < 2; sd++) { const auto it = g_orec[sd].find(ch); if (it != g_orec[sd].end() && it->second.size() > 1 && it->second[1] >= 1 && it->second[1] <= 100) return it->second[1]; }
+    return 0;
+}
 void tally_write(bool post) {
     TallyPlan& T = g_tally; const uint32_t base = T.base;
     for (int r = 0; r < 2; r++) for (int i = 0; i < T.cnt[r]; i++) {
@@ -6655,12 +6729,12 @@ void tally_write(bool post) {
         if (!post && r == T.wrec && i == T.ws) w = T.wpre;   // the booking adds its one win to this row
         if (std::getenv("PSPRECOMP_TAGTEAM_TALLY_WINS") && r == T.wrec && i == 0) w = std::atoi(std::getenv("PSPRECOMP_TAGTEAM_TALLY_WINS"));   // debug: the first winner row shows this many wins (a 5-0 tally)
         g_ram[(row + 2u) & 0x07FFFFFFu] = static_cast<uint8_t>(w < 0 ? 0 : w);
-        if (!T.fought[r][i]) { if (!g_ram[(row + 1u) & 0x07FFFFFFu] && !std::getenv("PSPRECOMP_TAGTEAM_NOTALLYLEVEL")) { const uint8_t lv = save_level_of(g_ram[row & 0x07FFFFFFu]); if (lv) g_ram[(row + 1u) & 0x07FFFFFFu] = lv; } continue; }   // (never on the stage: the level is only filled if the row has none)
+        if (!T.fought[r][i]) { if (!g_ram[(row + 1u) & 0x07FFFFFFu] && !std::getenv("PSPRECOMP_TAGTEAM_NOTALLYLEVEL")) { const uint8_t lv = shared_level_of(g_ram[row & 0x07FFFFFFu]); if (lv) g_ram[(row + 1u) & 0x07FFFFFFu] = lv; } continue; }   // (never on the stage: the level is only filled if the row has none)
         uint8_t f = g_ram[(row + 3u) & 0x07FFFFFFu]; f = static_cast<uint8_t>(f & ~4u); f = static_cast<uint8_t>(T.down[r][i] ? (f | 2u) : (f & ~2u)); g_ram[(row + 3u) & 0x07FFFFFFu] = f;
         const MemberStat& s = T.st[r][i];
         if (s.lv) { g_ram[(row + 1u) & 0x07FFFFFFu] = s.lv; wr(row + 8u, s.s8); wr(row + 12u, s.sC); g_ram[(row + 18u) & 0x07FFFFFFu] = static_cast<uint8_t>(s.s18 & 0xFF); g_ram[(row + 19u) & 0x07FFFFFFu] = static_cast<uint8_t>((s.s18 >> 8) & 0xFF); }
         else if (!std::getenv("PSPRECOMP_TAGTEAM_NOTALLYLEVEL")) {   // booked, but never seen on the stage (a loser's later members): the level he would have fought at
-            const uint8_t lv = save_level_of(g_ram[row & 0x07FFFFFFu]); if (lv) g_ram[(row + 1u) & 0x07FFFFFFu] = lv; }
+            const uint8_t lv = shared_level_of(g_ram[row & 0x07FFFFFFu]); if (lv) g_ram[(row + 1u) & 0x07FFFFFFu] = lv; }
     }
     // the 13-byte records: the winner's member on the stage (the booking's row) and every member's result
     const uint32_t Rw = base + 10756u + 13u * static_cast<uint32_t>(T.wrec), Rl = base + 10756u + 13u * static_cast<uint32_t>(T.lrec);
@@ -6690,7 +6764,7 @@ void ffa_result_tick() {
     auto put = [&](int r, int i, int ch, int wins, bool fell_) {
         const uint32_t row = tally_row(base, r, i); const uint8_t lv0 = g_ram[(row + 1u) & 0x07FFFFFFu];
         g_ram[row & 0x07FFFFFFu] = static_cast<uint8_t>(ch);
-        if (g_ram[row & 0x07FFFFFFu] != ch || true) { const auto il = g_ffa_lvl.find(ch); const uint8_t lv = il != g_ffa_lvl.end() ? static_cast<uint8_t>(il->second) : save_level_of(ch); g_ram[(row + 1u) & 0x07FFFFFFu] = lv ? lv : (lv0 ? lv0 : 100); }
+        if (g_ram[row & 0x07FFFFFFu] != ch || true) { const auto il = g_ffa_lvl.find(ch); const uint8_t lv = il != g_ffa_lvl.end() ? static_cast<uint8_t>(il->second) : shared_level_of(ch); g_ram[(row + 1u) & 0x07FFFFFFu] = lv ? lv : (lv0 ? lv0 : 100); }
         g_ram[(row + 2u) & 0x07FFFFFFu] = static_cast<uint8_t>(wins); g_ram[(row + 3u) & 0x07FFFFFFu] = fell_ ? 2 : 0;
     };
     g_ram[(G + 8u + 104u * static_cast<uint32_t>(hr) + 100u) & 0x07FFFFFFu] = 1;
@@ -6751,7 +6825,7 @@ void ffa_result_build() {
         FfaResRow r; const FfaStat& st = g_ffa_stats[f.key];
         r.ch = f.ch; r.tag = st.tag; r.kos = st.kos; r.falls = st.falls; r.dmg = st.dmg; r.by = st.by ? (st.by_real > 0 ? st.by_real : ch_of_key(st.by)) : 0; r.forfeit = st.forfeit; r.alive = st.alive; r.cpu = f.cpu; r.who = f.who; r.you = f.who == "You"; r.key = f.key;
         if (st.victims_real.size() == st.victims.size()) r.victims = st.victims_real; else for (int v : st.victims) r.victims.push_back(ch_of_key(v));
-        const auto il = g_ffa_lvl.find(f.ch); r.level = f.level > 1 ? f.level : (il != g_ffa_lvl.end() ? il->second : 0); if (r.level <= 1) r.level = std::max<int>(save_level_of(f.ch), 0);
+        const auto il = g_ffa_lvl.find(f.ch); r.level = f.level > 1 ? f.level : (il != g_ffa_lvl.end() ? il->second : 0); if (r.level <= 1) r.level = std::max<int>(shared_level_of(f.ch), 0);
         r.slot = byf && f.key >= 100 && f.key < 104 ? f.key - 100 : idx;   // (online: P1 / P2 = the slot fighters of game side 0 / 1, P3 / P4 their extras: the same on every machine)
         idx++;
         if (!byf) if (const int ps = ffa_slot_of(f.ch); ps >= 0) { r.slot = ps; r.look = dissidia_tagteam_ffa_look_get(ps, 1); }
@@ -14948,7 +15022,7 @@ bool dissidia_tagteam_vs_lineup(VsLineup* out) {
         auto level_of = [&](int ch, int idx) {
             int lv = 0;
             if (ok(base, 0x3000) && idx >= 0 && idx < 5) { const uint32_t row = tally_row(base, rec, idx); if (g_ram[row & 0x07FFFFFFu] == ch) lv = g_ram[(row + 1u) & 0x07FFFFFFu]; }
-            if (lv <= 1) lv = std::max<int>(save_level_of(ch), 0);
+            if (lv <= 1) lv = std::max<int>(shared_level_of(ch), 0);
             if (lv <= 1 && ok(base, 0x3000)) lv = g_ram[(tally_row(base, rec, 0) + 1u) & 0x07FFFFFFu];   // (a CPU's Auto level: the side's lead)
             if (lv <= 1 && ok(base, 0x3000)) lv = g_ram[(tally_row(base, rec_of_team(0), 0) + 1u) & 0x07FFFFFFu];
             return lv > 100 ? 0 : lv;
@@ -14990,8 +15064,9 @@ bool dissidia_tagteam_vs_lineup(VsLineup* out) {
     L.valid = !L.team[0].empty() || !L.team[1].empty();
     cache = L; cache_gen = g_battle_gen; *out = L;
     static uint32_t logged = 0xFFFFFFFFu;
-    if (logged != g_battle_gen) { logged = g_battle_gen; std::fprintf(stderr, "[TTVS] line-up:%s", L.ffa ? " (free-for-all)" : "");
-        for (int t = 0; t < 2; t++) { std::fprintf(stderr, " | team %d:", t); for (const VsCard& c : L.team[t]) std::fprintf(stderr, " %s%d/%s/L%d/j%d/%s", c.role == 0 ? "S" : c.role == 1 ? "P" : "R", c.ch, c.who.c_str(), c.level, c.job, c.cpu ? "cpu" : "pl"); }
-        std::fprintf(stderr, "\n"); }
+    if (logged != g_battle_gen) { logged = g_battle_gen;   // (one write: a second thread's log line cannot cut it in two, which broke the regression's line-up parse)
+        std::string ln = std::string("[TTVS] line-up:") + (L.ffa ? " (free-for-all)" : ""); char b[96];
+        for (int t = 0; t < 2; t++) { std::snprintf(b, sizeof b, " | team %d:", t); ln += b; for (const VsCard& c : L.team[t]) { std::snprintf(b, sizeof b, " %s%d/", c.role == 0 ? "S" : c.role == 1 ? "P" : "R", c.ch); ln += b; ln += c.who; std::snprintf(b, sizeof b, "/L%d/j%d/%s", c.level, c.job, c.cpu ? "cpu" : "pl"); ln += b; } }
+        ln += "\n"; std::fwrite(ln.data(), 1, ln.size(), stderr); }
     return L.valid;
 }

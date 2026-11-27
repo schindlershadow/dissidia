@@ -43,6 +43,7 @@
 #include "recomp.h"
 #include "hle/psp_hle.h"
 #include "hle/psp_hle_adhoc.h"
+bool dissidia_ttnet_running(); uint32_t dissidia_netplay_ls_frame();   // tagteam_net.cpp / netplay.cpp
 float dissidia_tagteam_age();   // tagteam.cpp: its battle clock (one step per battle frame; the match pause runs on it)
 #include "psp_netplay.h"
 #include "psp_ge_draw.h"
@@ -1235,7 +1236,14 @@ void frame_end_hook(uint8_t* rdram, recomp_context* ctx) {
     g_play_ms += 1000.0 / static_cast<double>(std::max(30, g_rate));
     input_debug_frame();
     testdrive_frame(rdram, ctx);
-    if (battle_running()) g_battle_age += g_logic_step; else g_battle_age = 0.f;
+    if (battle_running()) {
+        g_battle_age += g_logic_step;
+        // Online tag battle (docs "Batch eighty-two"): the battle age counts frames from when the battle started running ON THIS MACHINE, which can be a frame or two
+        // apart between machines; everything timed on it (mate call-in 50 frames after a KO, slot call-ins, countdowns) then lands on different lock-step frames.
+        // With the lock-step running the age is the lock-step frame x 2 ticks (the lock-step runs 30 frames per second whatever the fps), the same on every machine. PSPRECOMP_TAGTEAM_LSAGE_OLD=1: old.
+        static const bool lsage_old = std::getenv("PSPRECOMP_TAGTEAM_LSAGE_OLD") != nullptr;
+        if (!lsage_old && dissidia_ttnet_running()) { const uint32_t lf = dissidia_netplay_ls_frame(); if (lf) { g_battle_age = static_cast<float>(lf) * 2.0f; static uint32_t once = 0; if (once++ == 0) std::fprintf(stderr, "[LSAGE] the battle age follows the lock-step frame (frame %u -> age %.0f)\n", lf, g_battle_age); } }
+    } else g_battle_age = 0.f;
     {   // Training mode (training.cpp; inert unless Battle Mode > Training was chosen): the fighters, the frames since one stepped (the pause menu) and the fight's age
         int idle = 1 << 20; uint32_t tf[4] = {}; for (int i = 0; i < 4; i++) if (g_fighters[i] && g_tick - g_fighter_seen[i] < 3600) { tf[i] = g_fighters[i]; idle = std::min<int>(idle, static_cast<int>(g_tick - g_fighter_seen[i])); }
         dissidia_training_frame_end(rdram, ctx, tf, idle, g_battle_age > 0.f ? g_battle_age : (overlay_id() == 1 ? 1.f : 0.f));
