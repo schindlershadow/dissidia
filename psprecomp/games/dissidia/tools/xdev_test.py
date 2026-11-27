@@ -18,6 +18,7 @@ Binaries: --work/build/psprecomp_runtime (this host + desktop), $XDEV_DECK_BIN (
 (default ~/dissidia/build_winrt_tt/psprecomp_runtime.exe). All must be built from the same commit (the online build id).
 Exit: 0 = every reachable target PASSed (none reachable = 0 with a SKIP line), 1 = a FAIL, 2 = could not run."""
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -76,19 +77,40 @@ def find_rp6():
 
 
 # ---------------------------------------------------------------- probes: (ok, reason)
+LINUX_PROBE = r'''busy=""
+for p in /proc/[0-9]*; do
+  exe=$(readlink $p/exe 2>/dev/null); args=$(tr '\0' ' ' < $p/cmdline 2>/dev/null)
+  case "$exe $args" in *psprecomp_runtime*|*/regrt\ *|*play_*.sh*|*tools/run.sh*) ;; *) continue;; esac
+  case "$args" in *probe_marker*) continue;; esac
+  case "$(readlink $p/cwd 2>/dev/null)" in */dissidia/xdev/*) continue;; esac   # (an xdev game of ours)
+  busy="$busy ${p#/proc/}"
+done
+echo "$(cut -d' ' -f1 /proc/loadavg) $(nproc) [$busy]"'''
+
+
+def user_game_running(name):
+    """'' while the machine is free of the user's game, else a reason. Ours (cwd under dissidia/xdev/) never counts; an ssh failure counts as busy."""
+    r = sh(TARGETS[name]['ssh'], 'bash -s', timeout=30, input=LINUX_PROBE)
+    mm = re.search(r'([\d.]+) (\d+) \[(.*)\]', r.stdout)
+    if r.returncode or not mm:
+        return 'ssh probe failed'
+    return mm[3].strip() and 'a game/runtime is running there (pid %s)' % mm[3].strip()
+
+
 def probe(name):
     t = TARGETS[name]
     try:
         if t['os'] == 'linux':
-            r = sh(t['ssh'], 'cut -d" " -f1 /proc/loadavg; nproc; pgrep -fc "[p]sprecomp_runtime"; true', timeout=20)
-            if r.returncode:
+            r = sh(t['ssh'], 'bash -s', timeout=30, input=LINUX_PROBE)
+            mm = re.search(r'([\d.]+) (\d+) \[(.*)\]', r.stdout)
+            if r.returncode or not mm:
                 return False, 'ssh failed'
-            load, cores, nrun = (float(x) for x in r.stdout.split()[:3])
-            if name == 'deck' and nrun > 0:
-                return False, 'a psprecomp_runtime is running on the Deck (the user plays)'
+            load, cores, busy = float(mm[1]), int(mm[2]), mm[3].strip()
+            if busy and name == 'deck':
+                return False, 'a game/runtime is running on the Deck (pid %s; the user plays)' % busy
             if load > cores * 0.5:
                 return False, 'load %.1f on %d cores' % (load, cores)
-            return True, 'idle (load %.1f on %d cores%s)' % (load, cores, ', %d runtime running (the user\'s)' % nrun if nrun else '')
+            return True, 'idle (load %.1f on %d cores%s)' % (load, cores, ', the user\'s game runs there (pid %s)' % busy if busy else '')
         if t['os'] == 'win':
             r = sh(t['ssh'], 'tasklist /fi "imagename eq psprecomp_runtime.exe" /nh', timeout=25)
             if r.returncode:
@@ -309,9 +331,15 @@ def run_pair(a, name, out, work, slot, relay_port):
         sc = m.load_scale()
         end = time.time() + a.secs * sc
         hard = time.time() + a.secs * max(sc, 1.0) * 3
-        last_frames, last_prog = None, time.time()
+        last_frames, last_prog, last_chk = None, time.time(), time.time()
         while True:
             m.exercise(A, B, 5)
+            if name == 'deck' and time.time() - last_chk > 40:   # the user may start their game on the Deck meanwhile: leave at once
+                last_chk = time.time()
+                why = user_game_running(name)
+                if why and 'ssh probe failed' not in why:
+                    bad.append('SKIPPED-BUSY: %s' % why)
+                    break
             texts = [c.text() for c in (A, B)]
             if all(any(d.RESULT_RE.match(l) for l in t.splitlines()) for t in texts) and all('[NETSYNC] so far' in t for t in texts):
                 break
@@ -337,6 +365,8 @@ def run_pair(a, name, out, work, slot, relay_port):
         B.stop()
         if sys.platform != 'win32':
             subprocess.run(['pkill', '-f', 'run.sh %s' % work], capture_output=True) if False else None
+    if any(x.startswith('SKIPPED-BUSY') for x in bad):
+        return {'target': name, 'neg': neg_kind, 'verdict': 'SKIP', 'A': None, 'B': None, 'bad': bad, 'lineup': False, 'banter': False, 'result': False}
     mism = bool(bad) and any(x.startswith(('NETSYNC: copy', 'DESYNC')) and ('mismatched' in x or 'DESYNC' in x) for x in bad)
     if a.neg:
         verdict = 'PASS(neg: mismatch detected via %s)' % neg_kind if mism else 'FAIL(neg: no mismatch detected via %s)' % neg_kind
@@ -381,6 +411,12 @@ def main(argv):
     if not os.path.isdir(os.path.join(os.path.expanduser(a.save_b), 'PSP')):
         print('xdev: SKIP/ERROR: the test save %s is missing' % a.save_b)
         return 2
+    xl = open('/tmp/xdev_run.lock', 'w')   # one xdev run at a time on this host: two runs share the devices' dirs / exe / relay ports and corrupt each other
+    try:
+        fcntl.flock(xl, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print('xdev: SKIP: another xdev run is in progress on this host')
+        return 0
     slot, lock = d.claim_slot(None)
     relay_port = 47900 + slot
     os.makedirs(out0, exist_ok=True)
