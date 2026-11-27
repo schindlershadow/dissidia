@@ -45,15 +45,22 @@ class Copy:
         self.proc = None
 
     def start(self):
+        # per-copy keys of self.env (divergent runs, tools/mp_diverge.py): MP_SAVE (source ms0 dir instead of the work folder's), MP_FPS, MP_RS (render_scale),
+        # MP_NETMODE (lan | internet), MP_INI (extra settings.ini lines, ';'-separated), MP_TASKSET (cpu list for taskset: a slower copy), MP_PORT (debug port)
         ms0 = os.path.join(self.out, 'ms0_' + self.side)
         shutil.rmtree(ms0, ignore_errors=True)
-        shutil.copytree(os.path.join(self.work, 'ms0'), ms0)
+        shutil.copytree(self.env.get('MP_SAVE') or os.path.join(self.work, 'ms0'), ms0, ignore=shutil.ignore_patterns('cloud*', 'SAVEDATA_BACKUP'))   # never a cloud file into a test dir
         ini = os.path.join(self.out, 'settings_%s.ini' % self.side)
+        netmode = self.env.get('MP_NETMODE', 'lan')
         with open(ini, 'w') as f:
-            f.write('display=window\nfps=%d\nrender_scale=1\nwidescreen=0\nvoice=en\ncheck_updates=0\nhd_textures=0\nnet_mode=lan\n' % int(os.environ.get('MP_FPS', '30')))   # MP_FPS=60: both copies at 60 fps (30 Hz logic)
+            f.write('display=window\nfps=%d\nrender_scale=%s\nwidescreen=0\nvoice=en\ncheck_updates=0\nhd_textures=0\nnet_mode=%s\n'
+                    % (int(self.env.get('MP_FPS', os.environ.get('MP_FPS', '30'))), self.env.get('MP_RS', '1'), netmode))   # MP_FPS=60: both copies at 60 fps (30 Hz logic)
             if self.env.get('MP_FILL'):
                 f.write('tagteam_lobby=1,2,1,5,0,0,0,0,0\n')
-        env = dict(os.environ, PSPRECOMP_SETTINGS=ini, PSPRECOMP_MS0=ms0, PSPRECOMP_ADHOC_MODE='lan', PSPRECOMP_ADHOC_NICK=self.side,
+            for l in self.env.get('MP_INI', '').split(';'):
+                if l.strip():
+                    f.write(l.strip() + '\n')
+        env = dict(os.environ, PSPRECOMP_SETTINGS=ini, PSPRECOMP_MS0=ms0, PSPRECOMP_ADHOC_MODE=netmode, PSPRECOMP_ADHOC_NICK=self.side,
                    PSPRECOMP_DEBUG_PORT=str(PORT[self.side]), PSPRECOMP_CHARMOD='0', PSPRECOMP_AUDIO='0', PSPRECOMP_SAVEDATA_AUTO='0',
                    PSPRECOMP_NET_TRACE='1', SDL_VIDEODRIVER='offscreen')
         egl = '/usr/share/glvnd/egl_vendor.d/10_nvidia.json'
@@ -62,8 +69,10 @@ class Copy:
         env.update(self.env)
         if os.path.exists(self.log):
             os.remove(self.log)
-        self.proc = subprocess.Popen([os.path.join(HERE, 'run.sh'), self.work, '--window', '480x272', '--log', self.log], env=env,
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        cmd = [os.path.join(HERE, 'run.sh'), self.work, '--window', '480x272', '--log', self.log]
+        if self.env.get('MP_TASKSET'):
+            cmd = ['taskset', '-c', self.env['MP_TASKSET']] + cmd
+        self.proc = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
     def stop(self):
         if self.proc and self.proc.poll() is None:

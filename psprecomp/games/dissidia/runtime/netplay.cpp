@@ -115,7 +115,14 @@ uint32_t viewer_mask(uint32_t off) {   // bits of the word at `off` that are has
     default: return ((off >= 0x700 && off < 0x768) || (off >= 0xCF4 && off < 0xD00)) ? 0 : ~0u;
     }
 }
+// The first frames after a slot fighter was rebuilt (the mate's call-in): word +0x3C4 holds, for one frame, a float a vector routine of the first update writes from FPU registers /
+// stack the new fighter's constructor has not initialised (found 26 Nov, docs "Batch eighty-two": 0x781200F0 vs 0xF81200F0, only bit 31 differs, the same guest code path on both
+// machines, back to the real value the next frame, about 1 run in 10). Not simulation state: left out of the check for the rebuild frame and the next two.
+// PSPRECOMP_NETSYNC_REBUILD_OLD=1: compared.
+uint32_t g_rb_addr[2] = {0, 0}, g_rb_until[2] = {0, 0}; uint32_t g_hw_frame = 0;
 uint32_t hashed_word(uint32_t a, uint32_t off) {
+    static const bool rb_old = std::getenv("PSPRECOMP_NETSYNC_REBUILD_OLD") != nullptr;
+    if (off == 0x3C4u && !rb_old) for (int i = 0; i < 2; i++) if (a && a == g_rb_addr[i] && g_hw_frame <= g_rb_until[i]) return 0;
     const uint32_t w = r32(a + off);
     return (ok(w) || psp_guest_user_ok(w, 4)) ? 0 : w & viewer_mask(off);   // a pointer (also into the high RAM, where a rebuilt fighter's files live) is not compared
 }
@@ -254,6 +261,12 @@ void ring_frame(uint32_t frame) {
         const uint32_t bt = r32(BATTLE_PTR), a = ok(bt) ? r32(bt + 56 + 4 * sl) : 0, lb = ok(a) ? r32(a + ACT_LOCKBLK) : 0;
         if (ok(lb) && lb + off != armed) { armed = lb + off; ::psp_mem_watch_set(armed); std::fprintf(stderr, "[LBWATCH] frame %u: watching %08X (slot %d lock block %08X +%X)\n", frame, armed, sl, lb, off); }
     }
+    if (const char* aw = std::getenv("PSPRECOMP_NETSYNC_ACTWATCH")) {   // "<slot>:<hex offset>:<from frame>": watch that word of the slot fighter from that lock-step frame on (re-armed when its address changes)
+        static uint32_t armed = 0; const int sl = std::atoi(aw) & 1; const char* c = std::strchr(aw, ':'); const uint32_t off = c ? static_cast<uint32_t>(std::strtoul(c + 1, nullptr, 16)) : 0x3C4u;
+        const char* c2 = c ? std::strchr(c + 1, ':') : nullptr; const uint32_t from = c2 ? static_cast<uint32_t>(std::strtoul(c2 + 1, nullptr, 0)) : 0u;
+        const uint32_t bt = r32(BATTLE_PTR), a = ok(bt) ? r32(bt + 56 + 4 * sl) : 0;
+        if (frame >= from && ok(a) && a + off != armed) { armed = a + off; ::psp_mem_watch_set(armed); std::fprintf(stderr, "[ACTWATCH] frame %u: watching %08X (slot %d fighter %08X +%X)\n", frame, armed, sl, a, off); }
+    }
     if (frame == 0) g_ring_dumped = false;
     Snap& r = g_ring[frame % 64];
     r.frame = frame; r.n = 0;
@@ -314,7 +327,12 @@ void dump_snap(uint32_t bad, uint32_t frame) {
 }  // namespace
 
 // tagteam_net.cpp (the tag battle's own lock-step, which replaces FUN_0890D664 there): a frame was delivered (state = the start of it).
+static uint32_t g_ls_frame = 0;
+uint32_t dissidia_netplay_ls_frame() { return g_ls_frame; }   // the last delivered lock-step frame (0 = none yet); tagteam.cpp's KOLIST test aid keys on it with PSPRECOMP_TAGTEAM_KOLIST_LSFRAME=1
+void dissidia_netplay_note_rebuild(int slot, uint32_t frame) { const uint32_t bt = r32(BATTLE_PTR), a = ok(bt) ? r32(bt + 56 + 4 * (slot & 1)) : 0; g_rb_addr[slot & 1] = a; g_rb_until[slot & 1] = frame + 2; }
+void dissidia_netplay_ls_reset() { g_ls_frame = 0; g_rb_addr[0] = g_rb_addr[1] = 0; }   // a new lock-step battle starts (tagteam_net.cpp): no delivered frame yet
 void dissidia_netplay_frame_delivered(uint32_t frame) {
+    g_ls_frame = frame; g_hw_frame = frame;
     if (!g_ram) return;
     if (psp_netplay_sync_check()) { uint32_t vals[NVALUES]; const int n = collect(vals); psp_netplay_submit_state(frame, vals, n); dump_start(frame); }
     if (g_dump_blocks) dump_blocks(frame);
