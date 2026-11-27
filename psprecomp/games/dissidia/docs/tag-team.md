@@ -183,7 +183,7 @@ comes in when a fighter is KO'd, the existing lock-on cycling switches between t
 
 **Opt-out flags** (in the setup app's environment / for the python tools): `PSPRECOMP_DISC_HOME_OLD=1` (old layout: disc0 in the work folder, copied at the end), `PSPRECOMP_KEEP_BUILD=1` (no clean-up).
 
-**Tests:** `setup/tests` (`disc_files_present`, new `kNeededBytesAndroid`), `tools/test_discdir.py` (adopt, move, clean, opt-outs, missing disc), a real run of setup_from_iso + psp_build + clean + psp_build again with `PSPRECOMP_DISC_HOME` on the desktop (sizes in the report), a full desktop install + game start. Phone/AVD checks: see the report of this batch.
+**Tests:** `setup/tests` (`disc_files_present`, new `kNeededBytesAndroid`), `tools/test_discdir.py` (adopt, move, clean, opt-outs, missing disc), a real run of setup_from_iso + psp_build + clean + psp_build again with `PSPRECOMP_DISC_HOME` on the desktop (sizes in the report), a full desktop install + game start. Phone/AVD checks: PASS (`~/dissidia/tt/s2/reg_exbmash`).
 
 ## Batch: out-of-bounds teleport (26 Nov, branch tt-oobfix)
 
@@ -6357,3 +6357,17 @@ User: during chases the effects and timers (hit / particle effects of the others
 - **Test.** `~/dissidia/tt/s2/ttcecil/` (`run.sh`, `mont.py`; runs g / h / i / j, sheet `all_sheet.png`): Cecil as P3 and as P4 (7 / 4, 4 / 7), Onion Knight-Golbez-type pairs (10 / 22) and 26 / 9: all faces on the big panel at every lock (Lightning's own, Emperor, Cecil, Tifa, ...), pixels `0D.. -> 0BAA0000 / 0BAA4400`, no WARNING, no cloud lines. Regression `tagteam_test.py --baseline`: PASS (`~/dissidia/tt/s2/ttcecil/reg`).
 - **Not verified:** the RP6 (the cause there is not proven; the move to region 2 is the only thing that differs from the two failing logs).
 
+### Batch seventy-seven (26 Nov, tree ttexbmash, branch tt-exbmash): EX Burst defence bar - not reproduced, diagnostics added
+
+**Report:** RP6, single-player 2v2, Kefka (slotC) burst on the human (Kain, slotH), "no matter how fast I hit A the defence bar won't go up"; Gabranth's burst was fine. The raw pad reaches the game (`[CHORD] raw 2000 -> game 2000` every ~150 ms, 136 edges in the burst).
+
+**What the headless runs show (host, `~/dissidia/tt/s2/ttexbmash/`, burst by `EXBAT=s1:25:s0`, enemy char swapped to Kefka with `TEST_CHAR_SWAP=31=12`, human Squall or Kain `15=24`):**
+- The DEF bar (left, vertical, prompt glyph "A" = PSP Circle with `BUTTON_PROMPTS=nintendo`) rises with Circle presses only (Cross does not): screenshots every 0.4 s (`shot` script command) show the marker going grey -> green -> yellow -> red in about 3.5 s. Same at 30 fps and 120 fps (`PSPRECOMP_L30_PACE=clock` too), with Kain as victim, with the victim at BRV 1 -> BREAK at the burst's first hit (`SETBRV=slotH:23:1 SETBRV_HOLD=1`), and with presses injected on the debug socket in wall-clock time with +-30 ms jitter (new `PSPRECOMP_TEST_PADFREE=1`: the test script's events run but it no longer owns the pad; `ttexbmash/wallmash.py`).
+- The burst flow is identical to the device log (`[EXBCTL]`: sub-stage -1 -> 1, phases 1-4, slotH script 700 / 560 / 700, positions).
+- The victim's presses are NOT read through the 37 virtual-button tests or `FUN_08AB399C` on the brain pad (never true for the human's pad in any run, also not outside the burst); the human reads through its controller object (see the EX state-machine notes above), so the headless `[EXBG]` counters (`used` / `edges`) stay 0 for the victim and say nothing about the bar. The CPU victim's mash is brain bit 16 pressed on its pad.
+- Not found as the cause (checked in code): the pad block of held fighters (`g_exb_frozen` holds only the outsiders, slotC / slotH are never in it; `PSPRECOMP_TAGTEAM_NOEXBPAD=1` changes nothing), the swap-button mask (0 unless env), the chord window (off in a burst), the press latch (not used with 30 Hz logic), lock-step pause neutralisation (comms battles only).
+
+**Left to test on the device** (cannot be reproduced here): a long session (the log is battle age 228 s, several rounds), the lobby path (Battle Mode > Tag Team Battle) instead of the debug walk, the real controller object of the human.
+
+**Diagnostics added (no behaviour change):** `PSPRECOMP_EXB_LOG=3`: every `FUN_08AB399C` call (pad, bit) counted calls / true, printed every 2 s (`[EXBP3]`); `=4`: the burst controller's 0x300 bytes plus both burst actors' virtual pad words every 60 ms (`[EXBW]`); `[EXBG] pair test ... actor` list at the end of a burst; `PSPRECOMP_TEST_PADFREE=1`.
+**Test:** the runs above; regression `tagteam_test.py --baseline`: PASS (`~/dissidia/tt/s2/reg_exbmash`).

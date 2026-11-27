@@ -777,7 +777,8 @@ void testdrive_frame(uint8_t* rdram, recomp_context* ctx) {
         }
         else if (e.kind == 3) { std::fprintf(stderr, "[TEST] quit at gt=%.0f ms\n", g_gt_ms); g_should_exit.store(true); }
     }
-    psp_ctrl_set_script(true, g_test_buttons, g_test_analog);
+    {   static const bool padfree = std::getenv("PSPRECOMP_TEST_PADFREE") != nullptr;   // test aid: the script's events (shots, quit, ...) run, but the pad is left to the debug socket / host (wall-clock presses)
+        if (!padfree) psp_ctrl_set_script(true, g_test_buttons, g_test_analog); }
     if (g_parity) {   // a sample every update (fps_parity.py compares on the 30 Hz lattice and aligns paths by whole updates): both fighters at this game moment
         const uint32_t pa = test_player(), da = test_fighter(1);
         char buf[512]; int n = std::snprintf(buf, sizeof buf, "[PAR] %.2f%s", g_gt_ms, lattice ? "" : "~");
@@ -1527,6 +1528,14 @@ void pressed_hook(uint8_t* rdram, recomp_context* ctx) {
             if (!k && ph && ns < 64) { seen[ns++] = key; std::fprintf(stderr, "[EXBT] pressed(08AB399C) obj=%08X bit=%u phase=%u in=%d gt=%.0f\n", obj, bit, ph, g_exb_in ? 1 : 0, g_gt_ms); } } }
     if (g_exb_log_on && (ctx->r[2] & 1) && overlay_id() == 1 && ok(r32(0x08A405E0u)) && r32(r32(0x08A405E0u) + 632u) != 0)
         std::fprintf(stderr, "[EXBG] bt=%.0f pad-edge pad=%08X(ctrl %08X) bit=%u owner=%08X in=%d\n", g_play_ms - g_exb_t0, obj, obj - 0x53Cu, bit, actor_of_pad(obj), g_exb_in ? 1 : 0);
+    {   static const bool lg3 = [] { const char* v = std::getenv("PSPRECOMP_EXB_LOG"); return v && v[0] == '3'; }();   // =3: every pad bit test (08AB399C) during a burst, counted by (pad, bit): calls / true
+        if (lg3 && overlay_id() == 1) {
+            static struct { uint32_t obj, bit; unsigned calls, tr, in; } tab[64]; static int nt = 0; static double lastp = 0;
+            int k = 0; while (k < nt && !(tab[k].obj == obj && tab[k].bit == bit)) k++;
+            if (k == nt && nt < 64) { tab[nt] = {obj, bit, 0, 0, 0}; nt++; }
+            if (k < 64) { tab[k].calls++; if (ctx->r[2] & 1) tab[k].tr++; if (g_exb_in) tab[k].in++; }
+            if (g_play_ms - lastp > 2000) { lastp = g_play_ms; for (int i = 0; i < nt; i++) std::fprintf(stderr, "[EXBP3] pad %08X bit %u: %u calls (%u in gated) %u true\n", tab[i].obj, tab[i].bit, tab[i].calls, tab[i].in, tab[i].tr); std::fprintf(stderr, "[EXBP3] --\n"); }
+        } }
     g_press_calls++;
     if (g_exb_in || g_exb_poll) return;   // the EX Burst keeps its own edges (sticky): a latched press would count once per run and again from the sticky flag
     if (!g_press_latch || g_ticks >= 2.0f || overlay_id() != 1) return;
@@ -2070,6 +2079,7 @@ template <int I> void vt_probe(uint8_t* rdram, recomp_context* ctx) {
 template <int I> struct VtReg { static void go() { VtReg<I - 1>::go(); if (k_vtests[I] != 0x08B326C4u && k_vtests[I] != 0x08B324CCu && (g_vt_orig[I] = dissidia_ovl_battle_lookup(k_vtests[I]))) psp_dispatch_register(k_vtests[I], vt_probe<I>); } };
 template <> struct VtReg<-1> { static void go() {} };
 void vt_summary() {
+    if (g_exb_log_on) for (int k = 0; k < g_vt_npairs; k++) std::fprintf(stderr, "[EXBG] pair test %08X actor %08X\n", k_vtests[g_vt_pairs[k].test], g_vt_pairs[k].actor);
     for (int i = 0; i < kNV; i++) {
         bool any = false;
         for (int ph = 1; ph < 6; ph++) any = any || g_vt_calls[i][ph];
@@ -2083,6 +2093,10 @@ void vt_summary() {
 }
 
 void exb_log(const char* what, uint32_t ctl, bool ran) {
+    {   static const bool d = [] { const char* v = std::getenv("PSPRECOMP_EXB_LOG"); return v && v[0] == '4'; }();   // =4: dump the controller's words every 0.3 s
+        static double last = 0;
+        if (d && ok(ctl) && g_play_ms - last > 60) { last = g_play_ms; std::fprintf(stderr, "[EXBW] t=%.0f", g_play_ms); for (uint32_t o = 0; o < 0x300; o += 4) std::fprintf(stderr, " %X", r32(ctl + o)); std::fprintf(stderr, "\n");
+            for (int w = 0; w < 2; w++) { const uint32_t a = r32(ctl + 620u + 4u * w), c = ok(a) ? r32(a + 0x5C4u) : 0u; if (ok(c)) std::fprintf(stderr, "[EXBW] actor%d %08X pad %08X: %08X %08X %08X %08X %08X %08X\n", w, a, c + 0x53Cu, r32(c + 0x53Cu), r32(c + 0x540u), r32(c + 0x544u), r32(c + 0x548u), r32(c + 0x54Cu), r32(c + 0x550u)); } } }
     static const char* lv = std::getenv("PSPRECOMP_EXB_LOG");
     if (!lv || !ok(ctl)) return;
     const bool verbose = lv[0] == '2';   // =2: also the held (skipped) updates, with the full [EXB] line
