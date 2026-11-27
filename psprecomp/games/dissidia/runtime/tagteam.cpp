@@ -3951,6 +3951,11 @@ void apply_drive(uint32_t A, int drive) {
         if (!std::getenv("PSPRECOMP_TTLOCK_KEEPGATE")) { const uint32_t f = rd(A + 0x380u); if (f & 2u) { wr(A + 0x380u, f & ~2u); std::fprintf(stderr, "[TTLOCK] %08X: AI gate bit (+0x380 bit 2) cleared for the pad (was %08X)\n", A, f); } }
         if (ok(brain, 0x60)) wr(brain + 0x54u, 1u);
         if (ok(ctrl, 0x50)) { wr(ctrl + 0x48u, 0u); wr(ctrl + 0x30u, 0u); }
+        // 27 Nov (user, RP6 2v2: stick-direction attacks - back + Circle - gave the neutral move after the human's own member took the slot back from the CPU partner, until a
+        // target switch): found by a live whole-memory diff + reverse test: actor +0x5B0 bit 0 (byte) decides whether the attack choice reads the stick; the slot's flags byte
+        // came from the AI-held body (bit 0 clear). A pad now drives it: set it. PSPRECOMP_TAGTEAM_PAD5B0_OLD=1: old.
+        { static const bool p5_old = std::getenv("PSPRECOMP_TAGTEAM_PAD5B0_OLD") != nullptr; uint8_t& fl = g_ram[(A + 0x5B0u) & 0x07FFFFFFu];
+          if (!p5_old && !(fl & 1u)) { std::fprintf(stderr, "[PAD5B0] t=%.2fs %08X (c%d) pad handover: +0x5B0 %02X -> %02X (stick-direction attacks)\n", dissidia_battle_age() / 60.0f, A, actor_char(A), fl, fl | 1u); fl = static_cast<uint8_t>(fl | 1u); } }
         { static const bool t304_old = std::getenv("PSPRECOMP_TAGTEAM_TGT304_OLD") != nullptr; const uint32_t fo = rd(A + 0x300u);
           if (!t304_old && rd(A + 0x304u) == 0u && ok(fo, 0x12D0) && fo != A) { std::fprintf(stderr, "[TGT304] t=%.2fs %08X (c%d) pad handover: +0x304 0 -> foe %08X\n", dissidia_battle_age() / 60.0f, A, actor_char(A), fo); wr(A + 0x304u, fo); } }
         // a pad now drives it: no override look target left in its lock block (LOCK_SET from the AI / call-in set-up; while +252 != 0 the L toggle
