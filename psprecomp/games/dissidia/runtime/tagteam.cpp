@@ -3919,7 +3919,7 @@ void hang_arm() { hang_watch_start(); g_hang_watch = true; }
 
 // A slot fighter's control after a multiplayer handover: 1 = a pad (brain +0x54 = 1, the game's controller k back to pad mode), 2 = the AI
 // (CPU_MODE as the setup gives a CPU fighter, the default brain parameters as spawn_fighter's "no CPU record" case; controller +0x48 = 1).
-struct CpuUndo { uint32_t gen = 0; std::vector<std::pair<uint32_t, uint32_t>> w; uint32_t brain = 0; std::vector<uint32_t> brain_snap; uint32_t ctrl = 0, pad = 0; std::vector<uint32_t> ctrl_snap, pad_snap; uint32_t lb = 0; std::vector<uint32_t> lb_snap; };   // + the game's controller object and its pad slot before CPU_MODE (a3: brain restored, the fighter still ignored its controller)   // brain_snap: the whole brain object before CPU_MODE (its AI state afterwards left the pad path dead: a2)   // the words CPU_MODE (+ brain params) changed on a slot fighter: (address, value before)
+struct CpuUndo { uint32_t gen = 0; std::vector<std::pair<uint32_t, uint32_t>> w; uint32_t brain = 0; std::vector<uint32_t> brain_snap; uint32_t ctrl = 0, pad = 0; std::vector<uint32_t> ctrl_snap, pad_snap; uint32_t lb = 0; std::vector<uint32_t> lb_snap; int ch = 0; };   // ch: the character in the body when the snapshot was taken (+ the game's controller object and its pad slot before CPU_MODE (a3: brain restored, the fighter still ignored its controller)   // brain_snap: the whole brain object before CPU_MODE (its AI state afterwards left the pad path dead: a2)   // the words CPU_MODE (+ brain params) changed on a slot fighter: (address, value before)
 std::map<uint32_t, CpuUndo> g_cpu_undo;   // per slot actor; put back when a pad drives it again (the same on every machine: same calls, same frame)
 void apply_drive(uint32_t A, int drive) {
     const uint32_t brain = rd(A + ACT_BRAIN), ctrl = rd(A + 0x5A0u), lb = rd(A + ACT_LOCKBLK);
@@ -3927,6 +3927,13 @@ void apply_drive(uint32_t A, int drive) {
     static const char* names[4] = {"actor", "brain", "ctrl", "lb"};
     if (drive == 1) {
         auto it = g_cpu_undo.find(A);
+        // the body was rebuilt as ANOTHER character since the snapshot (the CPU partner took the human's slot, then his own member came in): the pre-AI words
+        // are the old body's (brain / controller / pad slot state of a different character, 55 brain words differed in the RP6 log): not put back,
+        // the plain pad setup below applies (forward / back stick moves of the new member failed until a target switch). PSPRECOMP_TAGTEAM_DRIVE_SNAP_OLD=1: old.
+        if (it != g_cpu_undo.end() && it->second.gen == g_battle_gen && it->second.ch && it->second.ch != actor_char(A) && !std::getenv("PSPRECOMP_TAGTEAM_DRIVE_SNAP_OLD")) {
+            std::fprintf(stderr, "[DRVSNAP] t=%.1fs %08X: body is char %d now, the pre-AI snapshot is char %d's: not restored (brain %zu, controller %zu words kept as built)\n", dissidia_battle_age() / 60.0f, A, actor_char(A), it->second.ch, it->second.brain_snap.size(), it->second.ctrl_snap.size());
+            g_cpu_undo.erase(it); it = g_cpu_undo.end();
+        }
         if (it != g_cpu_undo.end() && it->second.gen == g_battle_gen) {   // undo CPU_MODE's writes (AI -> pad)
             for (auto& u : it->second.w) wr(u.first, u.second);
             size_t nb = 0;
@@ -3973,7 +3980,7 @@ void apply_drive(uint32_t A, int drive) {
         call(CPU_MODE, A, 0);
         if (ok(brain, 0x40)) { call(BRAIN_MODE, brain, p0); call(BRAIN_LEVEL, brain, p1); }
         g_ctx->r[29] = static_cast<int32_t>(sp0);
-        CpuUndo u; u.gen = g_battle_gen; std::string diff; int shown = 0;
+        CpuUndo u; u.gen = g_battle_gen; u.ch = actor_char(A); std::string diff; int shown = 0;
         if (ok(brain, 0x300)) { u.brain = brain; for (uint32_t o = 0; o < 0x300u; o += 4) u.brain_snap.push_back(snap[(brain + o - SB) / 4]); }
         if (ok(lb, 0x600)) { u.lb = lb; for (uint32_t o = 0; o < 0x600u; o += 4) u.lb_snap.push_back(snap[(lb + o - SB) / 4]); }
         if (ok(ctrl, 0x50)) { u.ctrl = ctrl; for (uint32_t o = 0; o < 0x50u; o += 4) u.ctrl_snap.push_back(snap[(ctrl + o - SB) / 4]); const uint32_t ps = snap[(ctrl + 0x40u - SB) / 4]; if (ok(ps, 0x60)) { u.pad = ps; for (uint32_t o = 0; o < 0x60u; o += 4) u.pad_snap.push_back(snap[(ps + o - SB) / 4]); } }
@@ -14820,7 +14827,23 @@ void dissidia_tagteam_ffa_p1_get(uint8_t out[2]) { out[0] = g_ffa_p1[0]; out[1] 
 // 26 Nov: the LOOK each Free-for-all fighter was given in Player Select (slot 0 = P1 .. 3 = P4; [0] main, [1] tag-in; 0 = not picked there: the save's)
 uint8_t g_ffa_look[4][2] = {};
 void dissidia_tagteam_ffa_look_set(int slot, int field, int look) { if (slot < 0 || slot > 3 || field < 1 || field > 2) return; g_ffa_look[slot][field - 1] = static_cast<uint8_t>(look >= 1 && look <= 8 ? look : 0); }
+// 27 Nov (user: his new player KAIN tagged in with the wrong outfit): the human's own members (single player party, rows not set to CPU) come in with the LOOK his save
+// has for them (+0x774 of the save record, the Party / Player Select value), not the default entry. PSPRECOMP_TAGTEAM_OWNLOOK_OLD=1: old (default look).
+int own_member_look(int charId) {
+    static const bool off = std::getenv("PSPRECOMP_TAGTEAM_OWNLOOK_OLD") != nullptr;
+    if (off || !g_bs || !g_ram || charId <= 0 || psp_adhoc_in_session() || comms_battle()) return 0;
+    const PartyList l = read_party(g_human_rec); bool own = false;
+    for (int i = 0; i < l.n; i++) if (l.ids[i] == charId && sp_cpu_row(charId) < 0) own = true;
+    if (!own) return 0;
+    const uint32_t base = rd(0x089D712Cu); if (base < 0x08800000u || base >= 0x0A000000u) return 0;
+    for (uint32_t i = 0; i < 31; i++) if (g_ram[(0x089CBC98u + i) & 0x07FFFFFFu] == charId) {
+        const int lk = g_ram[(base + 0xF58u + 0x778u * i + 0x774u) & 0x07FFFFFFu];
+        static std::set<int> logged; if (lk > 1 && logged.insert(charId).second) std::fprintf(stderr, "[OWNLOOK] char %d: the human's own member wears look %d from his save\n", charId, lk);
+        return lk >= 1 && lk <= 8 ? lk : 0; }
+    return 0;
+}
 int dissidia_tagteam_ffa_char_look(int charId) {
+    if (!sp_ffa_custom()) return own_member_look(charId);
     if (!sp_ffa_custom() || charId <= 0) return 0;
     const int picks[4][2] = {{g_ffa_p1[0], g_ffa_p1[1] == 255 ? 0 : g_ffa_p1[1]},   // (the picked characters only: a Random field has no LOOK)
                                {g_ffa_cfg[0].main, g_ffa_cfg[0].tag}, {g_ffa_cfg[1].main, g_ffa_cfg[1].tag}, {g_ffa_cfg[2].main, g_ffa_cfg[2].tag}};
