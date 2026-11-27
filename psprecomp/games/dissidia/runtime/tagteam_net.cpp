@@ -57,6 +57,13 @@ bool dissidia_tagteam_roster_host();           // tagteam.cpp: this machine is t
 bool dissidia_tagteam_roster_ready();          // tagteam.cpp: this machine has the battle's agreed roster
 int dissidia_tagteam_roster_pack(uint8_t* out, int max);
 bool dissidia_tagteam_roster_adopt(const uint8_t* d, int n);
+bool dissidia_tagteam_gear_pending();                                   // tagteam.cpp: the host offers the CPU builder's gear snapshot and has not decided the mode yet
+int dissidia_tagteam_gear_chunk(int idx, uint8_t* out, int max);        // 'T' 'G' chunk idx of the snapshot (0 = none)
+int dissidia_tagteam_gear_chunks();
+bool dissidia_tagteam_gear_rx(const uint8_t* d, int n, uint32_t* hash); // a member: a chunk came in; true = the snapshot is complete and valid
+bool dissidia_tagteam_gear_ack_ok(const uint8_t* d, int n);             // the host: a 'TK' for this snapshot
+void dissidia_tagteam_gear_decide(bool all_acked);
+bool dissidia_tagteam_gear_timed_out();
 uint32_t dissidia_tagteam_battle_gen();
 int dissidia_tagteam_fighters(uint32_t* out, int max);   // tagteam.cpp: every fighter of the battle (slots, extras)        // tagteam.cpp: +1 per battle setup
 void dissidia_netplay_ls_reset(); void dissidia_netplay_note_rebuild(int slot, uint32_t frame);
@@ -108,6 +115,7 @@ std::map<Mac, Ring> g_remote;
 Stream g_streams[MAX_STREAMS];
 uint32_t g_wait_since = 0; bool g_wait_logged = false;
 bool g_decided_logged = false;
+std::vector<Mac> g_gear_acked; uint32_t g_gear_calls = 0;   // the host: members that hold the CPU gear snapshot
 std::vector<Mac> g_roster_acked; uint32_t g_roster_calls = 0; bool g_roster_wait_logged = false;   // the host: members that have its roster
 // The input lead (how many frames the own input runs ahead of the battle = the input delay the player feels). Retail's rule: the pad is
 // sampled also in a call that has to wait, so every wait makes the lead one frame longer (up to MAX_LEAD - 1 above the delay). Nothing
@@ -239,7 +247,7 @@ void reset(uint32_t obj) {
     psp_adhoc_local_mac(g_me.data());
     uint8_t src[6], buf[128]; while (psp_adhoc_side_recv(CH_INPUT, src, buf, sizeof buf) >= 0) {}   // the last battle's leftovers
     { uint8_t rb[1024]; while (psp_adhoc_side_recv(CH_ROSTER, src, rb, sizeof rb) >= 0) {} }   // (the host sends its roster again until each member answers)
-    g_roster_acked.clear(); g_roster_calls = 0; g_roster_wait_logged = false;
+    g_roster_acked.clear(); g_gear_acked.clear(); g_gear_calls = 0; g_roster_calls = 0; g_roster_wait_logged = false;
     g_start = psp_netplay_pick_delay();   // Network Delay "Auto": this battle's first delay from the ping now
     g_floor = psp_netplay_delay_setting() == PSP_NETPLAY_AUTO_DELAY ? PSP_NETPLAY_MIN_DELAY : g_start;   // the lead never goes below it
     g_shrinks = 0; g_kept = 0; g_grows = 0; g_slips = 0; g_grow_ms = -1000000; slack_reset(); g_pace5 = Pace{}; g_pace = Pace{};
@@ -301,14 +309,33 @@ void roster_step() {
             if (told[m] != t) { told[m] = t; if (!t.empty()) { std::fprintf(stderr, "[BUILD] tag battle with %s: %s\n", mac_str(m).c_str(), t.c_str()); psp_net_notice("ttbuild", 20, "%s", t.c_str()); } }
             continue;
         }
+        if (n >= 2 && rb[0] == 'T' && rb[1] == 'G') {   // the host's CPU gear snapshot (a chunk): once complete, answer 'TK' + hash to every copy
+            uint32_t h = 0;
+            if (!host && dissidia_tagteam_gear_rx(rb, n, &h)) { uint8_t k[6] = {'T', 'K'}; std::memcpy(k + 2, &h, 4); psp_adhoc_side_send(src, CH_ROSTER, k, 6); }
+            continue; }
+        if (n >= 6 && rb[0] == 'T' && rb[1] == 'K') {
+            Mac m; std::memcpy(m.data(), src, 6);
+            if (host && dissidia_tagteam_gear_ack_ok(rb, n) && std::find(g_gear_acked.begin(), g_gear_acked.end(), m) == g_gear_acked.end()) { g_gear_acked.push_back(m); std::fprintf(stderr, "[CPUGEAR] frame %u: %s has the host's gear snapshot\n", g_F, mac_str(m).c_str()); }
+            continue; }
         if (n >= 2 && rb[0] == 'T' && rb[1] == 'A') { Mac m; std::memcpy(m.data(), src, 6); if (host && std::find(g_roster_acked.begin(), g_roster_acked.end(), m) == g_roster_acked.end()) { g_roster_acked.push_back(m); std::fprintf(stderr, "[TTLOCK] frame %u: %s has the roster\n", g_F, mac_str(m).c_str()); } continue; }
         if (n >= 5 && rb[0] == 'T' && rb[1] == 'R' && !host) {
             if (dissidia_tagteam_roster_adopt(rb, n)) std::fprintf(stderr, "[TTLOCK] frame %u: the host's roster is here\n", g_F);
             if (dissidia_tagteam_roster_ready()) { const uint8_t a[2] = {'T', 'A'}; psp_adhoc_side_send(src, CH_ROSTER, a, 2); }
         }
     }
+    if (host && dissidia_tagteam_gear_pending()) {   // the CPU gear snapshot goes to every member first; the roster (with the mode) follows once all have it or the wait ran out
+        uint8_t macs[16][6]; const int k = psp_adhoc_group_macs(macs, nullptr, 16);
+        bool all = true; for (int i = 0; i < k && i < 16; i++) { Mac m; std::memcpy(m.data(), macs[i], 6); if (std::find(g_gear_acked.begin(), g_gear_acked.end(), m) == g_gear_acked.end()) all = false; }
+        if (all) dissidia_tagteam_gear_decide(true);
+        else if (dissidia_tagteam_gear_timed_out()) dissidia_tagteam_gear_decide(false);
+        else if ((g_gear_calls++ % 4) == 0) {
+            const int cnt = dissidia_tagteam_gear_chunks(); uint8_t gb[512 + 16];
+            for (int i = 0; i < k && i < 16; i++) { Mac m; std::memcpy(m.data(), macs[i], 6); if (std::find(g_gear_acked.begin(), g_gear_acked.end(), m) != g_gear_acked.end()) continue;
+                for (int c = 0; c < cnt; c++) { const int len = dissidia_tagteam_gear_chunk(c, gb, sizeof gb); if (len > 0) psp_adhoc_side_send(macs[i], CH_ROSTER, gb, len); } }
+        }
+    }
     if (!host || (g_roster_calls++ % 6) != 0) return;
-    uint8_t out[5 + 54 * 16]; const int len = dissidia_tagteam_roster_pack(out, sizeof out);
+    uint8_t out[5 + 54 * 16 + 8]; const int len = dissidia_tagteam_roster_pack(out, sizeof out);
     if (len <= 0) return;
     uint8_t macs[16][6]; const int k = psp_adhoc_group_macs(macs, nullptr, 16);
     for (int i = 0; i < k && i < 16; i++) { Mac m; std::memcpy(m.data(), macs[i], 6); if (std::find(g_roster_acked.begin(), g_roster_acked.end(), m) == g_roster_acked.end()) psp_adhoc_side_send(macs[i], CH_ROSTER, out, len); }
