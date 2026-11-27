@@ -244,6 +244,11 @@ bool PackageMods::build(const std::vector<uint8_t>& original_index, uint64_t pac
             // textures/… is the texture-pack tree (psp_tex_pack.cpp serves it by xxhash id); the game never
             // requests those paths, and a dump of 1,000+ PNGs would otherwise flood the package index below.
             if (norm.compare(0, 9, "textures/") == 0) continue;
+            // texpacks/<id>/ holds installed texture packs (psp_texpacks.h): thousands of PNGs the game never requests as
+            // package assets. Indexing them filled the index buffer with NEW entries and pushed every later relocated file
+            // (the Japanese voice banks, scanned last) past 4 GiB of virtual PACKAGE.BIN, where the game's 32-bit
+            // sector * 2048 wraps and reads another file's bytes (issue #119: silent fighters with Japanese voices).
+            if (norm.compare(0, 9, "texpacks/") == 0) continue;
             crc = package_crc(norm);
         }
         if (st.st_size <= 0 || (uint64_t)st.st_size > kSizeMask) { note("[MODS] skip (size out of range): " + rel); continue; }
@@ -274,6 +279,10 @@ bool PackageMods::build(const std::vector<uint8_t>& original_index, uint64_t pac
                 // sectors() may be 0 for an empty original; keep at least `need`
                 if (ov.span < need * kSectorSize) ov.span = need * kSectorSize;
             } else {
+                if ((next_virtual + need) * kSectorSize > 0xFFFFF800ull) {   // the game's sector * 2048 is 32-bit: it would wrap onto another file
+                    note("[MODS] skip (virtual PACKAGE.BIN past 4 GiB, the game cannot address it): " + rel);
+                    continue;
+                }
                 ov.relocated = true;
                 ne.sector = (uint32_t)next_virtual;
                 ov.start = next_virtual * kSectorSize;
@@ -286,6 +295,10 @@ bool PackageMods::build(const std::vector<uint8_t>& original_index, uint64_t pac
             note("[MODS] override " + asset + " (" + std::to_string(ov.size) + " B, was " +
                  std::to_string(old_size) + " B" + (ov.relocated ? ", relocated" : "") + ")");
         } else {
+            if ((next_virtual + need) * kSectorSize > 0xFFFFF800ull) {
+                note("[MODS] skip (virtual PACKAGE.BIN past 4 GiB, the game cannot address it): " + rel);
+                continue;
+            }
             ov.is_new = true; ov.relocated = true;
             IndexEntry ne;
             ne.crc = crc; ne.sector = (uint32_t)next_virtual; ne.size_flags = (1u << 28) | ov.size;   // flags=1: see README
