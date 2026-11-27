@@ -1,6 +1,8 @@
 # Tag team battles (2 v 2): research notes and plan
 
 ## TODO (kept up to date; newest first)
+- Outfits (user 27 Nov, later): the own-member look (OWNLOOK, Batch eighty-seven) is keyed by charId, so an enemy of the same character also gets the player's outfit: fix it. Every fighter's outfit should be decided before the battle starts (per fighter, not per character).
+- Outfits (user 27 Nov, later): when two fighters in a battle are the same character with the same outfit, force a different outfit on one of them.
 - Forward / back stick moves still wrong after the human's tag-in behind the partner-in-slot wait; wrong outfit for his own member (user 27 Nov, RP6 `rp6_fwdback_1127_1040`, tree ttfwdback2, branch tt-fwdback2, "Batch eighty-seven"): stale pre-AI brain / controller snapshot of the previous body no longer restored (`DRIVE_SNAP_OLD`); own members wear their saved look (`OWNLOOK_OLD`). Device effect unverified.
 - Debug-port log pull (user 27 Nov, tree ttdbglog, branch tt-dbglog, "Batch eighty-two"): `LOGLS` / `LOGGET` / `LOGGZ` on the debug socket + `tools/pull_log.py <host>`; dev builds listen on the LAN. Device check (phone over Wi-Fi) still open; `tagteam_test --baseline` full online set not rerun (host overloaded).
 - Fully screen-free FFA start: build the FFA battle without the hidden retail Quick Battle app/setup screen (states 2/16/28/29/30/31/48) running under the start card — later (user 27 Nov).
