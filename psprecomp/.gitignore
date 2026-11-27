@@ -93,3 +93,4 @@ games/dissidia/docs/images/*.png
 .venv/
 /*-readme.md
 GIT_COMMIT
+xdev_out/

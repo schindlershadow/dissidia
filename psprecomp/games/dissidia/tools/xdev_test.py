@@ -395,7 +395,7 @@ def main(argv):
     ap.add_argument('--probe', action='store_true')
     a = ap.parse_args(argv)
     work = os.path.abspath(os.path.expanduser(a.work))
-    out0 = os.path.abspath(os.path.expanduser(a.out or 'xdev_out'))
+    out0 = os.path.abspath(os.path.expanduser(a.out or '~/dissidia/tt/s2/xdev/auto'))
     names = [x for x in a.targets.split(',') if x in TARGETS]
     ready = []
     for n in names:
