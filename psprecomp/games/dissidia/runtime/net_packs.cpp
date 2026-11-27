@@ -18,6 +18,8 @@
 //   'R' sha256[32] u32 offset u16 length          request a piece of a delta (at most kChunk bytes)
 //   'D' sha256[32] u32 total u32 offset bytes     a piece of a delta (total = the delta's size)
 //   'B' ...                                        the battle pad link, handed to comm_battle.cpp
+// The manifest ends with the build id (26 Nov): 'V' u16 netcode-protocol u8 len commit-string. Older builds stop reading after the
+// pack list, so the trailer is ignored by them (their players show up as "unknown build"). A different protocol = no match (refusal()).
 // A sender serves only the deltas tools/netpack.py wrote for packs whose files it has installed byte for byte
 // (<mods>/.net/<sha256 of the result>.dlt).
 #include "psp_game_module.h"
@@ -38,6 +40,7 @@ void dissidia_comm_on_side(const uint8_t mac[6], const uint8_t* data, size_t len
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -50,6 +53,7 @@ void dissidia_comm_on_side(const uint8_t mac[6], const uint8_t* data, size_t len
 #include <thread>
 #include <vector>
 
+std::string psp_git_commit();   // psp_report.cpp
 namespace psp_cloud { std::string sha256_hex(const std::vector<uint8_t>& data); }
 std::string dissidia_mods_dir();
 std::string dissidia_package_dir();
@@ -107,6 +111,22 @@ bool unhex(const char* h, uint8_t out[32]) {
     return true;
 }
 
+// ---- build id: the netcode protocol (bump when lock-step / simulation-visible behaviour changes in a way old builds cannot follow) and the
+// git commit this build was made from. Exchanged in the manifest (lobby) and the tag roster (tagteam_net.cpp). ----
+constexpr uint16_t kNetProtocolReal = 1;
+// PSPRECOMP_NETBUILD_FAKE=<id>[:<protocol>]: test aid, announces another build id (and netcode version) than this build's
+const char* fake_build() { static const char* e = std::getenv("PSPRECOMP_NETBUILD_FAKE"); return e && *e ? e : nullptr; }
+std::string local_commit() {
+    static const std::string c = [] { if (const char* f = fake_build()) return std::string(f, std::strcspn(f, ":")); return psp_git_commit(); }();
+    return c;
+}
+uint16_t local_proto() {
+    static const uint16_t p = [] { const char* f = fake_build(); const char* c = f ? std::strchr(f, ':') : nullptr; return c ? (uint16_t)std::atoi(c + 1) : kNetProtocolReal; }();
+    return p;
+}
+#define kNetProtocol local_proto()
+struct PeerBuild { bool known = false; uint16_t proto = 0; std::string commit; };
+
 // ---- state (g_mu; never held while calling into the ad-hoc layer, which calls the handler and filter with its own lock) ----
 struct Peer {
     int64_t seen = 0;
@@ -132,6 +152,7 @@ std::vector<bool> g_want_active, g_active;   // a peer in the group uses it / ap
 std::vector<bool> g_share;                   // this player uses it and can send it
 std::vector<int> g_use;                      // this player uses it: 1 shareable, 2 not shareable, 0 no
 std::vector<bool> g_use_exact;               // this player uses it AND its installed files are the listed ones byte for byte
+std::map<Mac, PeerBuild> g_builds;   // the build id every player sent (kept after the player left the manifest list: the tag battle reads it)
 std::map<Mac, std::pair<std::string, int64_t>> g_refuse_why;   // allow_match's last verdict per player ("" = allowed) and when, shown by the worker
 std::map<std::string, std::vector<uint8_t>> g_serve;   // sha -> delta bytes this player sends
 std::vector<Download> g_dl;
@@ -228,7 +249,23 @@ std::vector<uint8_t> manifest() {   // g_mu held
         if (g_use[i] ? (bool)g_use_exact[i] : g_pack_state[i] == 1 && g_active[i]) ready.push_back((int)i);
     b.push_back((uint8_t)ready.size());
     for (int i : ready) put_name(b, packs()[i].name, packs()[i].version);
+    const std::string c = local_commit();   // build id trailer (older builds ignore what follows the pack list)
+    b.push_back('V'); b.push_back(kNetProtocol & 0xff); b.push_back(kNetProtocol >> 8); b.push_back((uint8_t)std::min<size_t>(c.size(), 32));
+    b.insert(b.end(), c.begin(), c.begin() + std::min<size_t>(c.size(), 32));
     return b;
+}
+
+std::string build_mismatch_text(const PeerBuild& pb) {
+    if (!pb.known) return "Online: another player runs an older build (no build id; this game: build " + local_commit() + ", netcode " + std::to_string(kNetProtocol) + "). Fights may desync.";
+    return "Online: another player runs build " + pb.commit + " (netcode " + std::to_string(pb.proto) + "), this game build " + local_commit() + " (netcode " + std::to_string(kNetProtocol) +
+           (pb.proto != kNetProtocol ? "): no match possible." : "). Fights may desync.");
+}
+void note_build(const Mac& from, uint16_t pr, std::string c) {   // g_mu held
+    for (char& ch : c) if (ch < 32 || ch > 126) ch = '?';
+    PeerBuild& pb = g_builds[from];
+    if (!pb.known || pb.proto != pr || pb.commit != c)
+        std::fprintf(stderr, "[BUILD] %s runs build %s, netcode version %u (this game: %s, version %u)\n", mac_str(from).c_str(), c.c_str(), pr, local_commit().c_str(), kNetProtocol);
+    pb = {true, pr, c};
 }
 
 // ---- network thread: copy and queue only ----
@@ -252,6 +289,9 @@ std::string refusal(const Mac& m) {   // g_mu held
             return std::string("this game's ") + packs()[i].name + " is not the known build";
     bool i_use = false;
     for (int u : g_use) i_use = i_use || u != 0;
+    if (auto bi = g_builds.find(m); bi != g_builds.end() && bi->second.known && bi->second.proto != kNetProtocol)
+        return "that player's netcode version " + std::to_string(bi->second.proto) + " (build " + bi->second.commit + ") differs from this game's version " +
+               std::to_string(kNetProtocol) + " (build " + local_commit() + "): both need the same build";
     auto it = g_peers.find(m);
     if (it == g_peers.end() || !it->second.manifest) return i_use ? "no pack list from that player yet (or an older build)" : "";
     const Peer& p = it->second;
@@ -302,6 +342,13 @@ void handle(const Mac& from, const std::vector<uint8_t>& b, std::vector<std::pai
             const int idx = pack_by_name(&b[o], (uint16_t)(b[o + kName] | (b[o + kName + 1] << 8)));
             if (idx >= 0) p.ready.insert(idx);
             o += kName + 2;
+        }
+        if (o + 4 <= b.size() && b[o] == 'V' && o + 4 + b[o + 3] <= b.size()) {   // the build id (newer builds)
+            const uint16_t pr = (uint16_t)(b[o + 1] | (b[o + 2] << 8));
+            note_build(from, pr, std::string(reinterpret_cast<const char*>(&b[o + 4]), b[o + 3]));
+        } else if (!g_builds.count(from)) {
+            g_builds[from] = PeerBuild{};
+            std::fprintf(stderr, "[BUILD] %s sends no build id: an older build (this game: %s, version %u)\n", mac_str(from).c_str(), local_commit().c_str(), kNetProtocol);
         }
         for (auto [idx, state] : p.uses) {
             if (idx < 0) continue;
@@ -415,7 +462,7 @@ void worker() {
         const int64_t t = now_us();
         std::vector<std::pair<Mac, std::vector<uint8_t>>> out;
         std::vector<Download> done;
-        std::vector<std::string> toast;
+        std::vector<std::string> toast, buildwarn;
         uint8_t peers[32][6];
         size_t npeers = 0;
         psp_adhoc_group_peers(peers, 32, &npeers, g_own.data());
@@ -444,6 +491,18 @@ void worker() {
                     toast.push_back(why);
                     since = -1;
                 }
+            }
+            static std::map<Mac, std::string> warned;   // player -> the build we warned about
+            for (size_t i = 0; i < npeers && i < 32; i++) {
+                Mac pm; std::memcpy(pm.data(), peers[i], 6);
+                auto bi = g_builds.find(pm);
+                if (bi == g_builds.end()) continue;   // no manifest yet
+                const PeerBuild& pb = bi->second;
+                if (pb.known && pb.commit == local_commit() && pb.proto == kNetProtocol) { warned.erase(pm); continue; }
+                const std::string key = pb.known ? pb.commit + "/" + std::to_string(pb.proto) : "old";
+                if (warned[pm] == key) continue;
+                warned[pm] = key;
+                buildwarn.push_back(build_mismatch_text(pb));
             }
             if (npeers && t >= next_manifest) { next_manifest = t + kManifestUs; out.emplace_back(kBcast, manifest()); }
             for (auto it = g_dl.begin(); it != g_dl.end();) {
@@ -476,6 +535,7 @@ void worker() {
             }
         }
         for (auto& [m, b] : out) psp_adhoc_side_send(m.data(), b.data(), b.size());
+        for (const std::string& w : buildwarn) { std::fprintf(stderr, "[BUILD] %s\n", w.c_str()); psp_net_notice("netbuild", 15, "%s", w.c_str()); }
         for (const std::string& w : toast) psp_net_notice("netpack_refuse", 20, "Online: no match with a player in the lobby: %s.", w.c_str());
         for (Download& d : done) {
             const int r = finish(d);
@@ -545,4 +605,33 @@ void dissidia_net_packs_install() {
     psp_adhoc_set_match_filter(allow_match);
     psp_adhoc_set_pump_hook(on_pump);
     std::fprintf(stderr, "[NETPACK] %zu known pack(s); online players can send them to this game (verified)\n", packs().size());
+}
+
+// ---- build id for tagteam_net.cpp (the tag roster exchange) ----
+void dissidia_netbuild_local(char* out, size_t n, int* proto) {
+    std::snprintf(out, n, "%s", local_commit().c_str());
+    if (proto) *proto = kNetProtocol;
+}
+void dissidia_netbuild_note(const uint8_t mac[6], int proto, const char* commit) {   // a player's build id from the roster exchange
+    Mac m; std::memcpy(m.data(), mac, 6);
+    std::lock_guard<std::mutex> lk(g_mu);
+    note_build(m, (uint16_t)proto, commit ? commit : "");
+}
+// 0 = no information (no manifest / roster message seen), 1 = an older build (no build id), 2 = known (out, proto set)
+int dissidia_netbuild_peer(const uint8_t mac[6], char* out, size_t n, int* proto) {
+    Mac m; std::memcpy(m.data(), mac, 6);
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto it = g_builds.find(m);
+    if (it == g_builds.end()) return 0;
+    if (!it->second.known) return 1;
+    std::snprintf(out, n, "%s", it->second.commit.c_str());
+    if (proto) *proto = it->second.proto;
+    return 2;
+}
+std::string dissidia_netbuild_text(const uint8_t mac[6]) {
+    Mac m; std::memcpy(m.data(), mac, 6);
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto it = g_builds.find(m);
+    if (it == g_builds.end() || (it->second.known && it->second.commit == local_commit() && it->second.proto == kNetProtocol)) return "";
+    return build_mismatch_text(it->second);
 }

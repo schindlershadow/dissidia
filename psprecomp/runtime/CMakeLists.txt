@@ -344,6 +344,13 @@ execute_process(COMMAND git rev-parse --short=12 HEAD WORKING_DIRECTORY ${CMAKE_
 if(NOT PSP_GIT_COMMIT_RC EQUAL 0 OR NOT PSP_GIT_COMMIT)
     set(PSP_GIT_COMMIT "unknown")
 endif()
+# re-run cmake (so the commit above is current) whenever HEAD moves: the commit is also the online build id (net_packs.cpp)
+execute_process(COMMAND git rev-parse --git-path HEAD WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                OUTPUT_VARIABLE PSP_GIT_HEAD_FILE OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(PSP_GIT_HEAD_FILE)
+    get_filename_component(PSP_GIT_HEAD_FILE "${PSP_GIT_HEAD_FILE}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PSP_GIT_HEAD_FILE}")
+endif()
 set_source_files_properties(src/psp_report.cpp PROPERTIES COMPILE_DEFINITIONS "PSPRECOMP_GIT_COMMIT=\"${PSP_GIT_COMMIT}\"")
 add_library(psprecomp_core STATIC ${RUNTIME_SOURCES})
 add_executable(psprecomp_runtime src/main.cpp)

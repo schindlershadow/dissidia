@@ -6,14 +6,15 @@ Description=Dissidia ad-hoc multiplayer relay (UDP 27500)
 After=network-online.target
 
 [Service]
-ExecStart=%h/.local/lib/adhoc_relay/adhoc_relay --port 27500
+ExecStart=%h/.local/lib/adhoc_relay/adhoc_relay --port 27500 --log-dir %h/.local/state/adhoc_relay
 Restart=always
 RestartSec=2
-# The relay needs no files and no privileges.
+# The relay needs no privileges; it writes only its event log (create the directory once: mkdir -p ~/.local/state/adhoc_relay).
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
+ReadWritePaths=%h/.local/state/adhoc_relay
 MemoryMax=512M
 
 [Install]
