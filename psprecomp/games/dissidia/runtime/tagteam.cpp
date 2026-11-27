@@ -2794,13 +2794,16 @@ void lockind_cue() {   // the menu's cursor sound, once (view / audio only: the 
     g_ctx->r[29] = static_cast<int32_t>(sp0);
 }
 bool lockind_old() { static const bool o = std::getenv("PSPRECOMP_TAGTEAM_LOCKIND_OLD") != nullptr; return o; }   // =1: only +0x2FC counts (before 26 Nov)
+uint32_t hit_victim_of(uint32_t att);
 std::map<uint32_t, uint32_t> g_lockind_seen;   // enemy actor -> the HUD tick it last had us as its target
 void lockind_update(bool overhead_on) {
     TagHudLockInd li;
     static int force = [] { const char* e = std::getenv("PSPRECOMP_TAGTEAM_LOCKIND_FORCE"); return e ? std::atoi(e) : -1; }();
     static const bool snd = std::getenv("PSPRECOMP_TAGTEAM_LOCKIND_SND") != nullptr;
+    static const bool audit = std::getenv("PSPRECOMP_TAGTEAM_LOCKIND_AUDIT") != nullptr; static std::map<uint32_t, uint32_t> audit_last;   // test aid: every 2 s per enemy the words that decide the indicator
     if (g_lockind_on && g_bs && !exb_running() && intro_done()) {
         const uint32_t me = hud_panel_fighter(rd(g_bs + 84u) & 1u), hudme_slot = srd(g_bs + 56u + 4u * (rd(g_bs + 84u) & 1u));
+        if (audit && g_frame_ctr - audit_last[0] >= 120 && !(ok(me, 0x12D0) && alive(me) && !is_down(me))) { audit_last[0] = g_frame_ctr; std::fprintf(stderr, "[LOCKIND] audit: no indicator, me %08X ok %d alive %d down %d\n", me, ok(me, 0x12D0) ? 1 : 0, ok(me, 0x12D0) && alive(me) ? 1 : 0, ok(me, 0x12D0) && is_down(me) ? 1 : 0); }
         if (ok(me, 0x12D0) && alive(me) && !is_down(me)) {
             uint32_t f[8] = {}; const int n = all_fighters(f); int k = 0;
             for (int i = 0; i < n; i++) {
@@ -2815,6 +2818,7 @@ void lockind_update(bool overhead_on) {
                 const bool real = t == me || t3 == me || (hum != me && (t == hum || t3 == hum));
                 const bool on = force >= 0 ? ((force >> k) & 1) != 0 : (lockind_old() ? t == me : real);
                 k++;
+                if (audit && g_frame_ctr - audit_last[a] >= 120) { audit_last[a] = g_frame_ctr; const uint32_t L = rd(a + 0x5ACu); std::fprintf(stderr, "[LOCKIND] audit %s %08X c%d: +2FC %08X +300 %08X lockblk %08X (+0x118/+0x120 %08X/%08X) victim %08X me %08X hum %08X -> %s\n", role_of(a), a, actor_char(a), rd(a + 0x2FCu), rd(a + 0x300u), L, ok(L, 0x200) ? rd(L + 0x118u) : 0u, ok(L, 0x200) ? rd(L + 0x120u) : 0u, hit_victim_of(a), me, hum, on ? "ON" : "off"); }
                 if (!on) continue;
                 li.by.push_back(a);
                 auto it = g_lockind_seen.find(a);
@@ -4397,6 +4401,7 @@ void latediff_step() {
 // the way a battle start leaves it: foe word = the SLOT enemy (his cycle starts over on the foe: g_cycs.erase in rebuild_begin; the old member's
 // cycle had left the foe on the enemy partner), +252 = 0, mode 1 through LOCK_MODE with g_lock_bypass (not an L press), selector 0.
 // CPU-driven fighters keep the LOCK_SET (their AI reads the lock target). PSPRECOMP_TAGTEAM_REBUILD_LOCKSET=1: old behaviour for everyone.
+uint32_t tgt_local_human(); void tgt_resync_after_swap(uint32_t S, uint32_t pre_answer, uint32_t pre_foe);
 void rebuild_lock(const RebuildJob& j) {
     static const bool old = std::getenv("PSPRECOMP_TAGTEAM_REBUILD_LOCKSET") != nullptr;
     const uint32_t L = j.L;
@@ -4404,11 +4409,28 @@ void rebuild_lock(const RebuildJob& j) {
         if (j.lbw[0] != rd(L + 0x100u) || j.lbw[2] != g_ram[(L + 0x126u) & 0x07FFFFFFu]) { if (g_log) std::fprintf(stderr, "[TAGTEAM] rebuild %08X: new lock block %08X +0x100 %u -> %u, +0x126 %u -> %u (the old block's)\n", j.A, L, rd(L + 0x100u), j.lbw[0], g_ram[(L + 0x126u) & 0x07FFFFFFu], j.lbw[2]); }
         wr(L + 0x100u, j.lbw[0]); g_ram[(L + 0x126u) & 0x07FFFFFFu] = static_cast<uint8_t>(j.lbw[2]);
     }
-    if (old || !pad_driven(j.A)) { call(LOCK_SET, L, j.foe); if (j.lockmode == 1 && rd(L + 264u) != 1) call(LOCK_MODE, L, 1, 0); }
+    if (old || !pad_driven(j.A)) {
+        call(LOCK_SET, L, j.foe); if (j.lockmode == 1 && rd(L + 264u) != 1) call(LOCK_MODE, L, 1, 0);
+        // 27 Nov (lockind2, user: "the lock-on indicators still disappear with 4 players in the game after tag-ins"): LOCK_SET only sets the block's override (+252); the lock block's
+        // ANSWER (LOCK_GET, what the indicator, the AI and the turn-to-target read) follows the actor's foe word +0x300, and a rebuilt body kept the FALLEN member's last target there
+        // (Prishe came in with Cecil's slot-C target: `+252 human, answer slot C`), so the newcomer fought somebody else and nobody had the human as target for tens of seconds.
+        // The CPU newcomer now starts on the foe the call-in chose (the human for the other game side, as at the battle start). PSPRECOMP_TAGTEAM_CALLIN_FOE_OLD=1: old.
+        static const bool foe_old = std::getenv("PSPRECOMP_TAGTEAM_CALLIN_FOE_OLD") != nullptr;
+        if (!old && !foe_old && ok(j.foe, 0x12D0) && j.foe != j.A && xfoes(j.foe, j.A) && alive(j.foe) && !is_down(j.foe) && (rd(j.A + 0x300u) != j.foe || rd(j.A + 0x2FCu) != j.foe)) {
+            if (g_log) std::fprintf(stderr, "[LOCKIND] call-in %08X (c%d): foe word %08X / target %08X -> the call-in's foe %08X\n", j.A, actor_char(j.A), rd(j.A + 0x300u), rd(j.A + 0x2FCu), j.foe);
+            call(SET_FOE, j.A, j.foe); wr(j.A + 0x2FCu, j.foe);
+        }
+    }
     else {
         uint32_t f = j.foe; const uint32_t se = slot_enemy(j.A);
         if (ok(se, 0x12D0) && se != j.A && side_of(se) != side_of(j.A) && alive(se) && !is_down(se) && !is_rebuilding(se)) f = se;
-        if (ok(f, 0x12D0)) { call(SET_FOE, j.A, f); wr(j.A + 0x2FCu, f); }
+        // 27 Nov (lockind2, user 2v2: "when I spawn in my next tag team some of my moves don't work until I switch targets; forward / back moves depend on the stick pointing at / away from
+        // the enemy"): the newcomer's target fields. [TGTSYNC] logs each field before / after; the camera manager's foe word (+0x8B4, what the camera and the stick-relative move
+        // choice follow for the local human) is put on the new foe as well (it kept the fallen member's last lock). PSPRECOMP_TAGTEAM_TGTSYNC_OLD=1: old.
+        static const bool ts_old = std::getenv("PSPRECOMP_TAGTEAM_TGTSYNC_OLD") != nullptr;
+        const uint32_t tmgr = (!ts_old && j.A == tgt_local_human()) ? dissidia_camera_manager() : 0u;
+        if (g_log) std::fprintf(stderr, "[TGTSYNC] t=%.2fs %08X (c%d) before: 2FC %08X 300 %08X answer %08X override %08X sel %u camfoe %08X -> new foe %08X\n", dissidia_battle_age() / 60.0f, j.A, actor_char(j.A), rd(j.A + 0x2FCu), rd(j.A + 0x300u), call(LOCK_GET, L), rd(L + 252u), rd(L + 304u) && ok(rd(L + 304u), 0x40) ? rd(rd(L + 304u) + 28u) : 0u, tmgr ? rd(tmgr + 0x8B4u) : 0u, f);
+        if (ok(f, 0x12D0)) { call(SET_FOE, j.A, f); wr(j.A + 0x2FCu, f); if (tmgr && ok(tmgr, 0x900)) wr(tmgr + 0x8B4u, f); }
         wr(L + 252u, 0u);
         if (j.lockmode == 1 && rd(L + 264u) != 1) { g_lock_bypass = true; call(LOCK_MODE, L, 1, 0); g_lock_bypass = false; }
         const uint32_t h1 = rd(L + 304u); if (ok(h1, 0x40) && rd(L + 264u) == 1) wr(h1 + 28u, 0u);
@@ -4514,7 +4536,10 @@ bool swap_slot_with(uint32_t S, uint32_t T, bool ko) {
     chase_restore();   // a slot change in the middle of a chase: the lent slot entry goes back first
     if (!ok(S, 0x12D0) || !ok(T, 0x12D0)) return false;
     const int cS = actor_char(S), cT = actor_char(T);
-    if (cS == cT && !std::getenv("PSPRECOMP_TAGTEAM_FORCEREBUILD")) return content_swap(S, T);
+    if (cS == cT && !std::getenv("PSPRECOMP_TAGTEAM_FORCEREBUILD")) {   // (the same character: the content is exchanged, so the human keeps his own lock: tgt_resync_after_swap)
+        const bool ts_h = !std::getenv("PSPRECOMP_TAGTEAM_TGTSYNC_OLD") && pad_driven(S); const uint32_t ts_L = rd(S + 0x5ACu);
+        const uint32_t ts_pre = ts_h && ok(ts_L, 0x200) ? call(LOCK_GET, ts_L) : 0u, ts_pre3 = rd(S + 0x300u);
+        const bool r = content_swap(S, T); if (r && ts_h) tgt_resync_after_swap(S, ts_pre, ts_pre3); return r; }
     const int hpS = hp_of(S), hpT = hp_of(T), bS = brv_of(S), bT = brv_of(T);
     if (!rebuild_begin(S, cT, hpT, bT)) return false;
     if (ko) g_label_char[T] = cS;   // the panel of the parked actor names the character that fell
@@ -5847,7 +5872,14 @@ void ko_watch() {
                 if (alive(T) && ok(T, 0x12D0)) {
                     const uint32_t flag = rd(S + 0x10D0u), keep = g_ram[(S + 0x10CEu) & 0x07FFFFFFu];
                     static const int kofix = std::getenv("PSPRECOMP_TAGTEAM_KOFIX") ? std::atoi(std::getenv("PSPRECOMP_TAGTEAM_KOFIX")) : 0;
+                    // 27 Nov (lockind2, user 2v2: "when I spawn in my next tag team some of my moves don't work until I switch targets"): the swap exchanges the actors' words, so the human's slot
+                    // fighter takes the MATE's foe / target words (its CPU target) while the kept lock block, the camera's foe and the cycle state are the human's: the fields disagree, the
+                    // stick-relative moves (towards / away from the target) read a different enemy than the one locked. Keep the human's lock: see tgt_resync_after_swap.
+                    const bool ts_h = !std::getenv("PSPRECOMP_TAGTEAM_TGTSYNC_OLD") && pad_driven(S);
+                    const uint32_t ts_L = rd(S + 0x5ACu);
+                    const uint32_t ts_pre = ts_h && ok(ts_L, 0x200) ? call(LOCK_GET, ts_L) : 0u, ts_pre3 = rd(S + 0x300u);
                     if (content_swap(S, T)) {
+                        if (ts_h) tgt_resync_after_swap(S, ts_pre, ts_pre3);
                         if (!(kofix & 1)) { wr(S + 0x10D0u, flag); g_ram[(S + 0x10CEu) & 0x07FFFFFFu] = static_cast<uint8_t>(keep); }   // the slot keeps its stock and revive word
                         { const uint32_t j = 1u - k, J = srd(g_bs + 56u + 4u * j); if (snap[j] != 99 && ok(J, 0x12D0) && !pend_T[j] && g_ram[(J + 0x10CEu) & 0x07FFFFFFu] < snap[j]) g_ram[(J + 0x10CEu) & 0x07FFFFFFu] = static_cast<uint8_t>(snap[j]); }   // the other slot did not fall: its stock is as before
                         if (!(kofix & 2)) { wr(T + 0x10D0u, 0); g_ram[(T + 0x10CEu) & 0x07FFFFFFu] = 0;  }                               // the KO'd character stays down
@@ -11499,6 +11531,22 @@ const char* lock_word_bad(uint32_t t, uint32_t P, uint32_t mem) {
 }
 bool lock_gov_on() { static const bool off = std::getenv("PSPRECOMP_TAGTEAM_LOCKGOV_OLD") != nullptr; return !off; }
 uint32_t lock_local_human() { return g_bs ? srd(g_bs + 56u + 4u * (rd(g_bs + 84u) & 1u)) : 0u; }
+uint32_t tgt_local_human() { return lock_local_human(); }
+// After the KO swap the human's slot fighter holds the mate's words. Target = the human's own lock before the swap (the lock block's answer, else his foe word) when it is a living
+// enemy, else the slot enemy; written to the foe word, the target word, the lock block (override cleared when it is the slot enemy) and the camera's foe. [TGTSYNC] before / after.
+void tgt_resync_after_swap(uint32_t S, uint32_t pre_answer, uint32_t pre_foe) {
+    const uint32_t L = rd(S + 0x5ACu); if (!ok(L, 0x200)) return;
+    auto good = [&](uint32_t t) { return t && ok(t, 0x12D0) && !lock_word_bad(t, S, t); };
+    const uint32_t se = slot_enemy(S);
+    uint32_t t = good(pre_answer) ? pre_answer : good(pre_foe) ? pre_foe : (ok(se, 0x12D0) ? se : 0u);
+    const uint32_t mgr = S == lock_local_human() ? dissidia_camera_manager() : 0u;
+    if (g_log) std::fprintf(stderr, "[TGTSYNC] t=%.2fs swap %08X before: 2FC %08X 300 %08X answer %08X override %08X camfoe %08X (human's lock before the swap: answer %08X foe %08X) -> %08X\n", dissidia_battle_age() / 60.0f, S, rd(S + 0x2FCu), rd(S + 0x300u), call(LOCK_GET, L), rd(L + 252u), mgr ? rd(mgr + 0x8B4u) : 0u, pre_answer, pre_foe, t);
+    if (!t) return;
+    call(SET_FOE, S, t); wr(S + 0x2FCu, t);
+    if (t == se) wr(L + 252u, 0u); else call(LOCK_SET, L, t);
+    if (mgr && ok(mgr, 0x900)) wr(mgr + 0x8B4u, t);
+    if (g_log) std::fprintf(stderr, "[TGTSYNC] t=%.2fs swap %08X after: 2FC %08X 300 %08X answer %08X override %08X camfoe %08X\n", dissidia_battle_age() / 60.0f, S, rd(S + 0x2FCu), rd(S + 0x300u), call(LOCK_GET, L), rd(L + 252u), mgr ? rd(mgr + 0x8B4u) : 0u);
+}
 void lock_govern() {
     if (!lock_gov_on() || !g_bs || !g_nextra) return;
     static uint32_t gen = ~0u; if (gen != g_battle_gen) { gen = g_battle_gen; g_lockmem.clear(); }
@@ -13590,6 +13638,10 @@ void dissidia_tagteam_frame(uint8_t* rdram, recomp_context* ctx) {
             static const bool side_old = std::getenv("PSPRECOMP_TAGTEAM_CAMFOE_SIDE_OLD") != nullptr;
             const uint32_t hL = rd(hum + 0x5ACu); const bool plain_fight = rd(g_bs + 72u) == 3u && !exb_running() && ok(hL, 0x200) && rd(hL + 264u) == 1u;   // (the same-side case only in the plain fight with the lock on: kill / finish / burst cameras aim where they like)
             bool is_enemy = false; for (int i = 0; i < n; i++) if (f[i] == cur && (side_old ? side_of(f[i]) != side_of(hum) : (side_of(f[i]) != side_of(hum) || plain_fight))) is_enemy = true;
+            // 27 Nov (lockind2): a camera foe that is no fighter of the list any more (a fallen / parked member's body, an extra that is down: all_fighters leaves them out) was never replaced,
+            // so after a tag-in the camera / stick-relative moves kept aiming at the old target until the player switched. PSPRECOMP_TAGTEAM_TGTSYNC_OLD=1: old.
+            static const bool ts_old2 = std::getenv("PSPRECOMP_TAGTEAM_TGTSYNC_OLD") != nullptr;
+            if (!is_enemy && !ts_old2 && cur && cur != foe) { const char* bad = lock_word_bad(cur, hum, foe); if (bad && (!std::strcmp(bad, "dead") || !std::strcmp(bad, "down") || !std::strcmp(bad, "parked") || !std::strcmp(bad, "not-an-actor"))) { is_enemy = true; if (g_log) std::fprintf(stderr, "[TGTSYNC] t=%.2fs camera foe %08X is %s: replaced by the lock target %08X\n", dissidia_battle_age() / 60.0f, cur, bad, foe); } }
             if (is_enemy && foe && foe != cur && alive(foe)) { if (g_log) std::fprintf(stderr, "[TAGTEAM] camera foe %08X -> %08X\n", cur, foe);
                 { static int rc = 0; if (side_of(cur) == side_of(hum) && rc++ < 60) std::fprintf(stderr, "[RETICLE] t=%.2fs camera foe was %s %08X (the human's own side), put back on the lock target %08X\n", dissidia_battle_age() / 60.0f, role_of(cur), cur, foe); }
                 wr(mgr + 0x8B4u, foe); }
