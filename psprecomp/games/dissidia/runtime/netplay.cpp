@@ -337,10 +337,10 @@ void dissidia_netplay_ls_reset() { g_ls_frame = 0; g_rb_addr[0] = g_rb_addr[1] =
 void dissidia_netplay_frame_delivered(uint32_t frame) {
     g_ls_frame = frame; g_hw_frame = frame;
     if (!g_ram) return;
-    // The check's hashes (2 fighters x 4352 words, byte-wise FNV, plus a ~640 B packet) are taken every PSPRECOMP_NETSYNC_EVERY-th frame (default 2: on a phone
+    // The check's hashes (2 fighters x 4352 words, byte-wise FNV, plus a ~640 B packet) are taken every PSPRECOMP_NETSYNC_EVERY-th frame (default 1 = every frame; measured ~0.1% of a frame, so the saving is not worth halving detection; 2+ was for a phone
     // that is the online-only work of every logic frame; a difference is found at most one frame later). Every machine uses the frame number, so the compared
     // frames agree (an older build sends every frame: its extra frames are ignored). PSPRECOMP_NETSYNC_EVERY=1: every frame (the old behaviour).
-    static const uint32_t every = [] { const char* e = std::getenv("PSPRECOMP_NETSYNC_EVERY"); const int v = e ? std::atoi(e) : 2; return static_cast<uint32_t>(v < 1 ? 1 : v > 30 ? 30 : v); }();
+    static const uint32_t every = [] { const char* e = std::getenv("PSPRECOMP_NETSYNC_EVERY"); const int v = e ? std::atoi(e) : 1; return static_cast<uint32_t>(v < 1 ? 1 : v > 30 ? 30 : v); }();
     static double cost_us = 0; static uint32_t cost_n = 0;
     if (psp_netplay_sync_check() && (frame % every) == 0) {
         const auto t0 = std::chrono::steady_clock::now();
