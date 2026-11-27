@@ -17,6 +17,8 @@
 #include "hle/psp_hle.h"
 #include "hle/psp_hle_io.h"
 #include "psp_debug_socket.h"
+#include <string>
+std::string psp_release_version();
 #include "psp_game_module.h"
 #include "psp_settings.h"
 #include "psp_report.h"
@@ -141,6 +143,10 @@ int main(int argc, char* argv[]) {
     // PSPRECOMP_DEBUG_PORT overrides the port so several runtimes can run side by side.
     int debug_port = 9999;
     if (const char* dp = std::getenv("PSPRECOMP_DEBUG_PORT")) { int v = std::atoi(dp); if (v > 0 && v < 65536) debug_port = v; }
+    {   // dev builds (git describe with a commit suffix, or "dev") listen on the LAN for pull_log.py; a tagged release stays on loopback
+        const std::string rv = psp_release_version();
+        psp_debug_socket_set_bind_default(rv == "dev" || rv.find("-g") != std::string::npos || rv.find("dirty") != std::string::npos);
+    }
     psp_debug_socket_start(rdram, PSP_MEM_SIZE, debug_port);
     psp_report::set_ram(rdram, PSP_MEM_SIZE);   // Settings > Debug > Report an issue
     {

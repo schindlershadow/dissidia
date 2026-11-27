@@ -574,6 +574,7 @@ target_include_directories(test_debug_socket PRIVATE
 
 target_link_libraries(test_debug_socket PRIVATE
     pthread
+    ZLIB::ZLIB
 )
 
 target_compile_options(test_debug_socket PRIVATE

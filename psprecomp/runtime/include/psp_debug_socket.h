@@ -19,6 +19,8 @@
 ///     RAW <hexaddr> <decsize> -- legacy v1 read: raw bytes, NO framing
 ///     W   <hexaddr> <hexbytes>-- write bytes into rdram (masked, bounds-checked)
 ///     B   <hexmask> <decms>   -- inject button mask for <ms> milliseconds
+///     LOGLS                   -- list the game folder's log files (JSON); LOGGET / LOGGZ <name> <offset> <len>
+///                                read a slice raw / gzipped (see the log pull block in psp_debug_socket.cpp)
 ///     S   <path>              -- screenshot: render thread writes a TGA to
 ///                                <path>; OK once written, ERR on timeout
 ///
@@ -77,7 +79,11 @@ PspDebugReply psp_debug_handle_line(const char* line,
                                     uint8_t* rdram,
                                     size_t rdram_size);
 
-/// Start the TCP debug socket server on the given port (loopback only).
+/// Default bind policy: true = all interfaces (dev builds), false = loopback (tagged releases). Call before psp_debug_socket_start;
+/// the PSPRECOMP_DEBUG_BIND=lan|loopback environment variable overrides it.
+void psp_debug_socket_set_bind_default(bool lan);
+
+/// Start the TCP debug socket server on the given port (loopback unless the bind policy says LAN).
 /// Runs a background accept thread; each client gets its own thread.
 ///
 /// @param rdram      Pointer to the 128MB PSP memory buffer.
