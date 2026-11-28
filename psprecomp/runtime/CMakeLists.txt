@@ -369,6 +369,13 @@ set_source_files_properties(src/psp_report.cpp PROPERTIES COMPILE_DEFINITIONS "P
 add_library(psprecomp_core STATIC ${RUNTIME_SOURCES})
 add_executable(psprecomp_runtime src/main.cpp)
 target_link_libraries(psprecomp_runtime PRIVATE psprecomp_core)
+# The shader pack (android/shaders/ -> shaders.pack) next to the executable: every platform compiles it at start ("Preparing graphics").
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../android/pack_shaders.py")
+    add_custom_command(TARGET psprecomp_runtime POST_BUILD
+        COMMAND ${Python3_EXECUTABLE} -I "${CMAKE_CURRENT_SOURCE_DIR}/../android/pack_shaders.py" -o "$<TARGET_FILE_DIR:psprecomp_runtime>/shaders.pack"
+        VERBATIM)
+endif()
 
 target_include_directories(psprecomp_core PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include

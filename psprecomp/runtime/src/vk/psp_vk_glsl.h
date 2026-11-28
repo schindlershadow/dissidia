@@ -50,10 +50,15 @@ bool compile_to_spirv(Stage stage, const std::string& glsl450, std::vector<uint3
 /// else ~/.cache/dissidia-vk (XDG_CACHE_HOME). On a miss it compiles (when glslang is built in) and stores the result.
 bool compile_cached(Stage stage, const std::string& glsl450, std::vector<uint32_t>* spirv, std::string* err);
 
+/// Called (from any thread) when compile_cached misses the cache and is about to compile. The runtime uses it for the "Compiling shaders" toast;
+/// set_compile_miss_hook(nullptr) / compile_miss_quiet(true) (the boot warm-up has its own progress screen) silence it.
+void set_compile_miss_hook(void (*fn)());
+void compile_miss_quiet(bool quiet);
+
 /// Whether the cache already holds the SPIR-V for this source (no compile, no read of the file's contents).
 bool cache_has(Stage stage, const std::string& glsl450);
 
-/// Shader recording (Android; PSPRECOMP_VK_RECORD=1 elsewhere, =0 off): every source handed to compile_cached is also written once to
+/// Shader recording (all platforms; PSPRECOMP_VK_RECORD=0 off): every source handed to compile_cached is also written once to
 /// <cache>/src/<hash>.<stage>.glsl. The list of what a device really asked for is how the release's shader pack (android/shaders/,
 /// android/sync_shader_list.py) is kept complete, so phones compile nothing during play.
 bool shader_recording();

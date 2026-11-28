@@ -6,6 +6,9 @@
 #include "psp_render_queue.h"
 #include "psp_scheduler.h"
 #include "psp_ge_draw.h"
+#if defined(PSPRECOMP_HAVE_VKGL)
+#include "vk/psp_vk_glsl.h"
+#endif
 #include "psp_settings.h"
 #include "psp_report.h"
 #include "psp_tex_pack.h"
@@ -1006,6 +1009,19 @@ int psp_runtime_init_sdl() {
     psp_gl_swap(g_window);
 
 #if defined(PSPRECOMP_HAVE_VKGL)
+    if (use_vk) {
+        // A shader compiled during play (cache miss outside the warm-up) stalls the draw: say so. One toast that every further compile
+        // renews (it hides 1.5 s after the last one); ge_draw_toast only stores the text, the render thread draws it. PSPRECOMP_SHADER_TOAST=0 turns it off.
+        const char* e = std::getenv("PSPRECOMP_SHADER_TOAST");
+        static int toast_ms = 1500;   // PSPRECOMP_SHADER_TOAST=<ms >= 100>: testing, keep the toast up longer
+        if (e && std::atoi(e) >= 100) toast_ms = std::atoi(e);
+        if (!(e && e[0] == '0'))
+            pspvk::set_compile_miss_hook([] {
+                static std::atomic<int> n{0};
+                if (n.fetch_add(1) == 0) std::fprintf(stderr, "[VKGL] compiling a shader during play (toast shown)\n");
+                ge_draw_toast("Compiling shaders...", toast_ms, 10);
+            });
+    }
     if (use_vk) vkgl::warmup_shaders();   // compile the shader pack's missing shaders behind a progress screen (vk/psp_vk_warmup.cpp)
 #endif
     std::fprintf(stderr, "[RT] SDL/GL initialized (480x272)\n");

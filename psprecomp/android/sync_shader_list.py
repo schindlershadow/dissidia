@@ -3,7 +3,10 @@
 (runtime/src/vk/psp_vk_glsl.h); this copies the ones the list does not have yet. Run before every Android build so the shader pack keeps up
 with what the game really uses (the build scripts call it; it does nothing, quietly, when no device with the game is reachable).
 
-  sync_shader_list.py [--serial SERIAL] [--prune] [--quiet]
+  sync_shader_list.py [--serial SERIAL] [--from-dir DIR ...] [--prune] [--quiet]
+
+--from-dir DIR (repeatable) merges a folder of recorded .glsl files (DIR, or DIR/src) instead of asking a phone: desktop, Deck, laptop copies
+(tools/collect_shaders.sh pulls them from every device, then runs this).
 
 --prune also deletes list entries the device did not record (clear the device's vk_cache/src first, play through the scenes you care about,
 then prune: it drops shaders of code that no longer exists).
@@ -11,7 +14,7 @@ then prune: it drops shaders of code that no longer exists).
 import argparse, os, shutil, subprocess, sys, tempfile
 
 PKG = "org.psprecomp.game"
-SRC = "/sdcard/Android/data/%s/files/game/vk_cache/src" % PKG
+SRCS = ["/sdcard/Android/media/%s/game/vk_cache/src" % PKG, "/sdcard/Android/data/%s/files/game/vk_cache/src" % PKG]   # newer installs: media/
 
 
 def adb(serial, *args):
@@ -35,18 +38,35 @@ def find_serial():
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--serial")
+    ap.add_argument("--from-dir", action="append", default=[])
     ap.add_argument("--prune", action="store_true")
     ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args()
     say = (lambda *x: None) if a.quiet else print
     out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shaders")
     os.makedirs(out, exist_ok=True)
+    if a.from_dir:
+        have = {n for n in os.listdir(out) if n.endswith(".glsl")}
+        tot = new = 0
+        for d in a.from_dir:
+            d = os.path.join(d, "src") if os.path.isdir(os.path.join(d, "src")) else d
+            got = [n for n in os.listdir(d) if n.endswith(".glsl")]
+            n_new = 0
+            for n in got:
+                if n not in have:
+                    shutil.copy2(os.path.join(d, n), os.path.join(out, n)); have.add(n); n_new += 1
+            say("sync_shader_list: %s: %d recorded, %d new" % (d, len(got), n_new))
+            tot += len(got); new += n_new
+        say("sync_shader_list: %d recorded in all, %d new; the list has %d" % (tot, new, len(have)))
+        return 0
     serial = a.serial or find_serial()
     if not serial:
         say("sync_shader_list: no device with %s reachable over adb; the list stays as it is (%d shaders)" % (PKG, len(os.listdir(out))))
         return 0
     with tempfile.TemporaryDirectory() as tmp:
-        r = adb(serial, "pull", SRC + "/.", tmp)
+        for SRC in SRCS:
+            r = adb(serial, "pull", SRC + "/.", tmp)
+            if r.returncode == 0 and os.listdir(tmp): break
         got = [n for n in os.listdir(tmp) if n.endswith(".glsl")]
         if r.returncode != 0 or not got:
             say("sync_shader_list: %s has no recorded shaders (%s)" % (serial, (r.stderr or r.stdout).strip()[:120]))
