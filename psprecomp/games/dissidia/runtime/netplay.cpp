@@ -127,6 +127,11 @@ uint32_t hashed_word(uint32_t a, uint32_t off) {
     static const bool rb_old = std::getenv("PSPRECOMP_NETSYNC_REBUILD_OLD") != nullptr;
     if (off == 0x3C4u && !rb_old) for (int i = 0; i < 2; i++) if (a && a == g_rb_addr[i] && g_hw_frame <= g_rb_until[i]) return 0;
     const uint32_t w = r32(a + off);
+    // +0x3C4 of EVERY fighter holds a float whose upper 16 bits are leftovers of FPU registers / stack the vector routine of the update does not initialise (final10: 5-device 5v5, extra2
+    // D5C39301 vs CC8AF333 for two frames, back in line the next: the only part0 word not tied to the motion counters; the same word as the rebuild case above, here on a parked extra).
+    // Only the low 16 bits are compared. PSPRECOMP_NETSYNC_3C4_OLD=1: the whole word.
+    static const bool w3c4_old = std::getenv("PSPRECOMP_NETSYNC_3C4_OLD") != nullptr;
+    if (off == 0x3C4u && !w3c4_old) return (ok(w) || psp_guest_user_ok(w, 4)) ? 0 : (w & 0xFFFFu);
     return (ok(w) || psp_guest_user_ok(w, 4)) ? 0 : w & viewer_mask(off);   // a pointer (also into the high RAM, where a rebuilt fighter's files live) is not compared
 }
 // The lock block's two cursor fade values (+0x444 and +0x584, 0..0xFF, FF = fully shown; the lock-on cursors' alpha) are drawing state: the UI update steps them on
