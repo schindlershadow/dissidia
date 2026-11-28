@@ -106,7 +106,7 @@ rm -rf cloud cloud.ini ms0/cloud.ini; test ! -e cloud.ini && test ! -e cloud && 
     def command(self, name, args):
         """The remote shell command running one check (a child of the parallel run: result in the exit status, report on stdout)."""
         # nice: the desktop is the user's; SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT: the test games must not open the user's real pad (its input would steer them)
-        env = 'nice -n 10 env -u DISPLAY PSPRECOMP_NO_PADS=1 SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT=0x0001/0x0001 BT_GPU=1 BT_EGL_VENDOR=/usr/share/glvnd/egl_vendor.d/50_mesa.json SDL_AUDIODRIVER=dummy PSPRECOMP_CLOUD=0 TT_CHILD=1'
+        env = 'nice -n 10 env -u DISPLAY PSPRECOMP_NO_PADS=1 SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT=0x0001/0x0001 BT_GPU=1 BT_EGL_VENDOR=/usr/share/glvnd/egl_vendor.d/50_mesa.json SDL_AUDIODRIVER=dummy PSPRECOMP_CLOUD=0 TT_CHILD=1 ' + os.environ.get('TT_REMOTE_ENV', '')   # TT_REMOTE_ENV='K=V ..': extra variables for the remote checks (e.g. PSPRECOMP_NETSYNC_DUMP=D00)
         out = '$HOME/%s/out/%s' % (BASE, self.run_id)   # (absolute: every command line of the run carries it, kill() finds them by it)
         return 'cd ~/%s && mkdir -p %s && %s python3 psprecomp/games/dissidia/tools/tagteam_test.py --work work --out %s --only %s %s --save-b saves/deck/ms0' % (
             BASE, out, env, out, name, ' '.join(shlex.quote(x) for x in args))
