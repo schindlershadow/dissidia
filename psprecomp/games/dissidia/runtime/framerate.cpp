@@ -73,6 +73,7 @@ float dissidia_tagteam_age();   // tagteam.cpp: its battle clock (one step per b
 #include <unordered_map>
 
 extern FuncPtr dissidia_ovl_battle_lookup(uint32_t vaddr);
+uint32_t dissidia_netplay_ls_frame();   // netplay.cpp
 extern FuncPtr dissidia_ovl_menu_lookup(uint32_t vaddr);
 extern FuncPtr dissidia_ovl_extra_lookup(uint32_t vaddr);
 
@@ -2357,6 +2358,25 @@ void gauge_sm_hook(uint8_t* rdram, recomp_context* ctx) {
     wrf(FRAME_STEP, step);
 }
 
+// final10b: ovl_battle FUN_08AC8318 (an effect component embedded in every fighter, +0xBA4 of the actor: its five random floats land at actor +0xC40 / +0xC68) draws from the
+// effect LCG (0x09AFB89C). That LCG is reseeded once per delivered lock-step frame (tagteam_net.cpp) but is also drawn from by cosmetic code whose amount depends on the local view,
+// so the same emitter got different numbers on the machines of the other team ("fighter1.blockC00" desyncs, same values shifted by an index). In a lock-step battle each call now
+// starts the LCG from (gameplay LCG, lock-step frame, component address) and puts it back afterwards: the component's values are the same everywhere and it no longer shifts what
+// other effect code draws. PSPRECOMP_FXEMIT_RNG_OFF=1: as before.
+constexpr uint32_t FXEMIT_FN = 0x08AC8318u;
+FuncPtr g_orig_fxemit = nullptr;
+void fxemit_hook(uint8_t* rdram, recomp_context* ctx) {
+    static const bool off = std::getenv("PSPRECOMP_FXEMIT_RNG_OFF") != nullptr;
+    const uint32_t f = off ? 0u : dissidia_netplay_ls_frame();
+    if (!f || overlay_id() != 1) { g_orig_fxemit(rdram, ctx); return; }
+    constexpr uint32_t EFF = 0x09AFB89Cu, SIM = 0x09AF84D0u;
+    const uint32_t a0 = static_cast<uint32_t>(ctx->r[4]), saved = r32(EFF);
+    uint32_t h = (r32(SIM) ^ 0x7F4A7C15u) + f * 2654435761u + a0 * 0x85EBCA6Bu; h ^= h >> 15; h *= 0x2C1B3C6Du; h ^= h >> 12; h *= 0x297A2D39u; h ^= h >> 15;
+    w32(EFF, h);
+    g_orig_fxemit(rdram, ctx);
+    w32(EFF, saved);
+}
+
 // PSPRECOMP_EXB_LOG=1: which of the button-mash style updaters (all six virtual-button tests) the burst calls (log only)
 #define EXB_PROBE(NAME, ADDR) \
     FuncPtr g_orig_probe_##NAME = nullptr; \
@@ -2725,6 +2745,7 @@ void dissidia_framerate_install(uint8_t* rdram) {
     if ((g_face_fix || g_face_log) && (g_orig_face_step = psp_dispatch_probe_lookup(FACE_STEP))) psp_dispatch_register(FACE_STEP, face_step_hook);
     if ((g_orig_exb_pressed = dissidia_ovl_battle_lookup(EXB_PRESSED))) psp_dispatch_register(EXB_PRESSED, exb_pressed_hook);
     if ((g_orig_exb_pressed2 = dissidia_ovl_battle_lookup(EXB_PRESSED2))) psp_dispatch_register(EXB_PRESSED2, exb_pressed2_hook);
+    if ((g_orig_fxemit = dissidia_ovl_battle_lookup(FXEMIT_FN))) psp_dispatch_register(FXEMIT_FN, fxemit_hook);
     VtReg<kNV - 1>::go();   // sticky presses for every virtual-button test the gated burst code calls (+ counts with PSPRECOMP_EXB_LOG)
     if (std::getenv("PSPRECOMP_EXB_LOG")) {
         if ((g_orig_probe_a = dissidia_ovl_battle_lookup(0x08A32EBCu))) psp_dispatch_register(0x08A32EBCu, probe_a);

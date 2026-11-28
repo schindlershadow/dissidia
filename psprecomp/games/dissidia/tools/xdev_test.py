@@ -743,7 +743,7 @@ def main(argv):
     ap.add_argument('--targets', default='desktop,deck,laptop,rp6')
     ap.add_argument('--mode', choices=sorted(d.KOLIST), default=None)
     ap.add_argument('--out', default=None)
-    ap.add_argument('--secs', type=float, default=110)
+    ap.add_argument('--secs', type=float, default=None, help='battle budget in seconds (default 110; 480 with --all: a full 10-character match plays several minutes at 60 Hz lock-step; the hard stop is 3x)')
     ap.add_argument('--min-frames', type=int, default=600)
     ap.add_argument('--save-b', default=d.DECK_SAVE)
     ap.add_argument('--env', default='')
@@ -757,6 +757,8 @@ def main(argv):
     ap.add_argument('--all', action='store_true', help='one match with all ready targets at once (default mode team3)')
     a = ap.parse_args(argv)
     a.mode = a.mode or ('team3' if a.all else 'team2')
+    if a.secs is None:
+        a.secs = 480 if a.all else 110
     work = os.path.abspath(os.path.expanduser(a.work))
     out0 = os.path.abspath(os.path.expanduser(a.out or 'xdev_out'))
     names = [x for x in a.targets.split(',') if x in TARGETS]

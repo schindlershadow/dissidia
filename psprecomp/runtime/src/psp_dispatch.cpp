@@ -267,6 +267,8 @@ static uint32_t g_mem_watch_addr = 0;
 static bool g_mem_watch_checked = false;
 static uint32_t g_mem_watch_last = 0xDEADBEEFu;
 static int g_mem_watch_n = 0;
+uint32_t g_mem_watch_tag = 0;   // set by the game (lock-step frame number) so [MEM_WATCH] lines say when
+static int mem_watch_max() { static int m = [] { const char* e = std::getenv("PSPRECOMP_MEM_WATCH_MAX"); return e ? std::atoi(e) : 400; }(); return m; }
 
 // Debug socket `M <hex addr>`: (re)arm the MEM_WATCH at run time. Heap addresses differ from run to run, so
 // the watch address usually has to be located in the running game first.
@@ -318,16 +320,21 @@ void psp_trace_checkpoint(uint32_t addr) {
             } else if (!bad) g_nanw_hit[i] = 0;
         }
     }
-    if (g_mem_watch_addr && g_dbg_rdram && g_mem_watch_n < 400) {
+    if (g_mem_watch_addr && g_dbg_rdram && g_mem_watch_n < mem_watch_max()) {
         uint32_t cur;
         std::memcpy(&cur, g_dbg_rdram + (g_mem_watch_addr & 0x07FFFFFFu), 4);
         static const char* hi_env = std::getenv("PSPRECOMP_MEM_WATCH_HI");  // only log when new value's top byte == this (hex)
         const bool hi_ok = !hi_env || (cur >> 24) == (uint32_t)std::strtoul(hi_env, nullptr, 16);
+        static const uint32_t from_tag = [] { const char* e = std::getenv("PSPRECOMP_MEM_WATCH_FROM"); return e ? (uint32_t)std::strtoul(e, nullptr, 0) : 0u; }();   // only report from this lock-step frame on
+        if (cur != g_mem_watch_last && g_mem_watch_tag < from_tag) g_mem_watch_last = cur;
         if (cur != g_mem_watch_last && !hi_ok) g_mem_watch_last = cur;
         if (cur != g_mem_watch_last) {
             g_mem_watch_n++;
-            std::fprintf(stderr, "[MEM_WATCH] %08X: %08X -> %08X  entering=0x%08X ring:",
-                g_mem_watch_addr, g_mem_watch_last, cur, addr);
+            uint32_t ra = 0, sp = 0; if (PspThread* t = sched_current_thread()) { ra = (uint32_t)t->ctx.r[31]; sp = (uint32_t)t->ctx.r[29]; }
+            { std::string st; if (sp && g_dbg_rdram) for (uint32_t o = 0; o < 0x400 && st.size() < 400; o += 4) { uint32_t w; std::memcpy(&w, g_dbg_rdram + ((sp + o) & 0x07FFFFFFu), 4); if (w >= 0x08800000u && w < 0x08B80000u && !(w & 3)) { char b[16]; std::snprintf(b, sizeof b, " %X:%08X", o, w); st += b; } }
+              std::fprintf(stderr, "[MEMW_STACK]%s\n", st.c_str()); }
+            std::fprintf(stderr, "[MEM_WATCH] f%u %08X: %08X -> %08X  entering=0x%08X ra=%08X sp=%08X ring:",
+                g_mem_watch_tag, g_mem_watch_addr, g_mem_watch_last, cur, addr, ra, sp);
             for (int k = 1; k <= 32; k++)
                 std::fprintf(stderr, " %08X", g_func_ring[(g_func_ring_pos - k) & 31u]);
             std::fprintf(stderr, "\n");
