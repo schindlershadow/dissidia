@@ -941,6 +941,15 @@ int psp_runtime_init_sdl() {
         SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,
         win_w, win_h, wflags);
+    if (!g_window && use_vk) {
+        // The Vulkan device was usable but SDL cannot make a Vulkan window here (e.g. SDL's offscreen / dummy video driver, or an
+        // SDL built without Vulkan): fall back to OpenGL instead of quitting, as when no Vulkan device exists (the notice below).
+        std::fprintf(stderr, "[RT] Vulkan window failed (%s): falling back to OpenGL\n", SDL_GetError());
+        use_vk = false;
+        { const char* rr1 = std::getenv("PSPRECOMP_RENDERER"); if (!(rr1 && rr1[0])) g_vk_fallback_notice = true; }
+        wflags = (wflags & ~static_cast<uint32_t>(SDL_WINDOW_VULKAN)) | SDL_WINDOW_OPENGL;
+        g_window = SDL_CreateWindow(g_window_title.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, win_w, win_h, wflags);
+    }
     apply_window_icon(g_window);
     if (!g_window) {
         std::fprintf(stderr,
