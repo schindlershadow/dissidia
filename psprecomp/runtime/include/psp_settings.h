@@ -57,7 +57,7 @@ struct PspTexPackHook {
 };
 void psp_settings_set_texpack_hook(const PspTexPackHook& hook);
 
-/// A game module that can install mods from a file (Dissidia: an .xdelta ISO patch) registers this: the Mods page then has
+/// A game module that can install mods from a file or folder (Dissidia: an .xdelta ISO patch, DLC from a folder or a zip) registers this: the Mods page then has
 /// an Install row that opens the system's file picker (psp_file_dialog.h) and hands the picked file to `start`, which works
 /// on its own thread; `status` is polled while the page is open (`revision` changes with the text, `busy` while it works).
 /// Without a file picker (Steam Deck game mode), files ending in `extension` in the mods folder are installed instead.
@@ -69,8 +69,10 @@ struct PspModInstaller {
     const char* extension;
     bool (*start)(const std::string& path);   // false: another install is running
     void (*status)(unsigned* revision, bool* busy, std::string* text);
+    int pick = 0;   // what the file picker chooses: 0 a file ending in `extension`, 1 a folder, 2 an archive (.zip ...)
 };
-void psp_settings_set_mod_installer(const PspModInstaller& inst);
+void psp_settings_set_mod_installer(const PspModInstaller& inst);   // the only installer (replaces the others)
+void psp_settings_add_mod_installer(const PspModInstaller& inst);   // one more Install row (up to 4)
 
 /// A game module adds on/off rows to the Debug page (this session only, not saved): `get` says whether it is on, `set` switches it.
 /// Any number up to 256 (the rows' animation-slot ids; the page scrolls) (under_fx: listed right below the FX Shaders row instead of at the end); the label and help text must stay valid (string literals).

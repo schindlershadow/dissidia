@@ -101,6 +101,11 @@ int decrypt_file(int prevMode, int detectedMode, const uint8_t* file,
 int update_sfo_hash(std::vector<uint8_t>& sfo, size_t paramsOffset,
                     int cryptMode);
 
+// KIRK CMD4/CMD7 (key vault seed) and CMD5/CMD8 (per-console fuse key) on [20-byte header][length bytes], in place:
+// encrypt leaves its output at data+20, decrypt writes at data+0 (the PPSSPP libkirk layout). Used by psp_npdrm (PGD).
+int kirk_aes_cmd(uint8_t* data, int length, int seed, bool encrypt);
+int kirk_fuse_cmd(uint8_t* data, int length, bool encrypt);
+
 // SavedataParam::BuildHash (exposed for tests). `len` must be 16-aligned.
 int build_hash(uint8_t out[16], const uint8_t* data, unsigned len, int mode,
                const uint8_t* cryptkey);

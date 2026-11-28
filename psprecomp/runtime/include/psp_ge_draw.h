@@ -117,6 +117,7 @@ void ge_draw_perf_set_gameplay(bool on);
 
 /// A short message over the picture, top centre, for `ms` milliseconds (a new call replaces the old
 /// message). Any thread. Used for "frame rate set to 30 fps" when a multiplayer group agrees on one.
+void ge_draw_toast_deferred(const char* text, int ms, int y_px = 10);   // the same, but the time starts at the first present (for a message queued at start-up)
 void ge_draw_toast(const char* text, int ms, int y_px = 10);   // y_px: distance of the box from the top of the picture, in PSP pixels (272 high)
 
 /// A bright frame around the picture (3% thick on every side, colour 0xRRGGBB) for `ms` milliseconds; a new call replaces the old one.

@@ -268,6 +268,7 @@ set(RUNTIME_SOURCES
     src/hle/psp_upnp.cpp
     src/hle/psp_netplay.cpp
     src/hle/psp_savedata_crypto.cpp
+    src/hle/psp_npdrm.cpp
     src/hle/psp_savedata_dialog.cpp
     ${PSP_SAVE_SOURCES}
     ${PSP_CLOUD_SOURCES}
@@ -531,6 +532,9 @@ add_test(NAME vfpu_atan2 COMMAND test_vfpu_atan2)
 # SDL2/GL; also runnable standalone via tests/run_savedata_*.sh).
 add_executable(test_savedata_crypto tests/test_savedata_crypto.cpp src/hle/psp_savedata_crypto.cpp)
 add_test(NAME savedata_crypto COMMAND test_savedata_crypto)
+# NPDRM EDAT (PGD) decryption, the DLC files of a PSP game
+add_executable(test_npdrm tests/test_npdrm.cpp src/hle/psp_npdrm.cpp src/hle/psp_savedata_crypto.cpp)
+add_test(NAME npdrm COMMAND test_npdrm)
 # PPSSPP-compatible texture pack keys (hashes + lookup in a throw-away folder).
 add_executable(test_texpacks tests/test_texpacks.cpp src/psp_texpacks.cpp)
 target_include_directories(test_texpacks PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
