@@ -1228,6 +1228,13 @@ void frame_end_hook(uint8_t* rdram, recomp_context* ctx) {
         g_ticks = rate > 60 ? step_for(rate, g_step_idx) : 60.0f / static_cast<float>(rate);   // the step the update that just ran was given
         g_logic_step = g_ticks;
         if (l30_active()) { g_ticks = 2.0f; g_logic_step = g_l30_logic_now ? 2.0f : 0.0f; }
+        else if (overlay_id() == 1 && (cap > 0 || dissidia_ttnet_running())) {
+            // Online: the frames before the 30 Hz logic engages (the fight's first lock-step frame) ran with the step of THIS machine's rate (90 fps: 171/256, 120 fps: 0.5, 30: 2),
+            // which the fighters keep in their blocks (+0x168 / +0x1B0 ..): a Deck at 90 fps desynced from two phones at 120 on lock-step frame 1. Every machine uses the 30 Hz step there.
+            // PSPRECOMP_NET_PRESTEP_OLD=1: the old per-machine step.
+            static const bool old_step = std::getenv("PSPRECOMP_NET_PRESTEP_OLD") != nullptr;
+            if (!old_step) { g_ticks = 2.0f; g_logic_step = 2.0f; }
+        }
         g_fx_period = rate / 30;
         psp_display_set_unlocked(unlocked_cfg && g_unlock_ok && rate == 240 && l30_active() && l30_clock_paced() && !g_scope_all);
     }
