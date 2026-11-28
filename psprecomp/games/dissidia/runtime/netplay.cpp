@@ -115,7 +115,14 @@ uint32_t viewer_mask(uint32_t off) {   // bits of the word at `off` that are has
     case 0x2F8: case 0x490: case 0x4A4: case 0x510: case 0x514: case 0x5B0: case 0xD00: case 0xD08: case 0x1078: return 0;
     case 0x380: return ~0x00200000u;
     case 0x388: return ~0x20000000u;
-    default: return ((off >= 0x700 && off < 0x768) || (off >= 0xCF4 && off < 0xD00)) ? 0 : ~0u;
+    default: {
+        // +0xC40..+0xCF3 (final10: 5-device 5v5, "fighter1.blockC00" differing for 1 to 300 frames at a time between the team-1 humans (B, D) and the team-0 machines, nothing else of the 124 fields
+        // differing: two arrays of 5 floats at +0xC40 and +0xC68, the same values on both sides but shifted by two entries, i.e. a history the update pushes one sample per call into, here two calls
+        // more on one side): view-side history, left out. PSPRECOMP_NETSYNC_C40_OLD=1: compared.
+        static const bool c40_old = std::getenv("PSPRECOMP_NETSYNC_C40_OLD") != nullptr;
+        if (!c40_old && off >= 0xC40 && off < 0xCF4) return 0;
+        return ((off >= 0x700 && off < 0x768) || (off >= 0xCF4 && off < 0xD00)) ? 0 : ~0u;
+    }
     }
 }
 // The first frames after a slot fighter was rebuilt (the mate's call-in): word +0x3C4 holds, for one frame, a float a vector routine of the first update writes from FPU registers /
