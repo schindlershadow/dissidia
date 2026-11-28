@@ -2523,6 +2523,9 @@ int party_order(int party, TagEntry* out, int max) {
             for (int r = 0; r < ps[k]->n; r++) if (((ps[k]->own_mask >> r) & 1) || !ps[k]->own_mask) { if (dfc && ((ps[k]->own_mask >> r) & 1) && !((ps[k]->cpu_mask >> r) & 1)) continue;
                 v.push_back(TagEntry{ps[k]->regs[r], static_cast<int8_t>(k), ((ps[k]->cpu_mask >> r) & 1) != 0, ps[k]->local, ps[k]->cfg[r][0], ps[k]->cfg[r][1], ps[k]->cfg[r][2]}); }
     }
+    if (const char* te = std::getenv("PSPRECOMP_TAGTEAM_TEST_TAGIN")) if (g_bs && g_ram && v.size() == 1 && std::atoi(te) > 0) {   // test aid (both copies the same): every one-member party gets this member as its player's tag-in row
+        for (size_t k = 0; k < ps.size(); k++) if (ps[k]->party == party) { v.push_back(TagEntry{std::atoi(te), static_cast<int8_t>(k), std::getenv("PSPRECOMP_TAGTEAM_TEST_TAGIN_CPU") != nullptr, ps[k]->local}); break; }
+    }
     if (defects_from(ps, 1 - party))   // the other party is a CPU party: its keepers' player rows join this one (after this party's own rows), driven by the keeper
         for (size_t k = 0; k < ps.size(); k++) if (ps[k]->party == 1 - party)
             for (int r = 0; r < ps[k]->n; r++) if (((ps[k]->own_mask >> r) & 1) && !((ps[k]->cpu_mask >> r) & 1)) v.push_back(TagEntry{ps[k]->regs[r], static_cast<int8_t>(k), false, ps[k]->local});
@@ -2982,9 +2985,13 @@ uint32_t ffa_human() { return g_bs ? srd(g_bs + 56u + 4u * (rd(g_bs + 84u) & 1u)
 // Random is resolved once per battle). A fallen fighter is replaced by that tag-in (slot call-in for the two slot fighters, the extra call-in for the others), never by another fighter's.
 // Until then he counts as still fighting (the battle is not decided while a tag-in is pending). PSPRECOMP_TAGTEAM_FFA_TAGIN_OLD=1: old (a fallen CPU was replaced from the team reserve, no tag-in for the slot fighters).
 bool ffa_sp_tags(); int ffa_player_of(uint32_t a); bool ffa_tag_pending(uint32_t a); bool ffa_entrance_inflight(); int ffa_tag_peek(int p); void ffa_tag_mark_used(int p); void ffa_owner_set(int ch, int p);
+// 28 Nov (ffareserve): online FFA, the game side's reserve belongs to the SLOT fighter (the player's own tag-in); a CPU/other-player extra of the same side never takes it, and the slot's fall
+// brings it in (the old rule let a fallen extra use it up, then the slot fell with nobody left and the battle was decided). PSPRECOMP_TAGTEAM_FFARES_OLD=1: old.
+bool ffares_on() { static const bool old = std::getenv("PSPRECOMP_TAGTEAM_FFARES_OLD") != nullptr; return !old && ffa_now() && comms_battle(); }
 bool ffa_keep(uint32_t a) {
     if (!ffa_now()) return false;
     if (comms_battle()) {   // online: battle state only, the same on every machine
+        if (ffares_on() && is_slot_fighter(a) && reserve_left(team_of(side_of(a))) > 0) return true;   // his own tag-in comes in
         uint32_t f[6]; const int n = all_fighters(f); int left = 0;
         for (int i = 0; i < n; i++) if (f[i] != a && ok(f[i], 0x12D0) && g_ram[(f[i] + 0x542u) & 0x07FFFFFFu] == 0 && alive(f[i])) left++;
         return left >= 2;
@@ -7779,6 +7786,7 @@ void ko_oneround() {
             if (g_kd_held.erase(S) && g_log) std::fprintf(stderr, "[KODESPAWN] t=%.2fs kill cam over: KO booking of slot %u %08X goes on\n", age / 60.0f, k, S); return false; };
         {   // a team mate is there: the fallen fighter plays its fall and KO line first (the mate takes over kKoSwapDelay s after the blow), it was replaced on the spot before
             bool mate = false; for (int i = 0; i < g_nextra; i++) if (g_extra[i].started && g_extra[i].actor != S && side_of(g_extra[i].actor) == side_of(S) && alive(g_extra[i].actor)) mate = true;
+            if (ffares_on()) mate = false;
             if (ffa_now() && !comms_battle() && S == ffa_human()) mate = false;   // FFA: nobody takes the human's place   // single player: his own next member comes into the slot, the CPU partner stays where it is
             static const float kKoSwapDelay = std::getenv("PSPRECOMP_TAGTEAM_KOSWAP_DELAY") ? static_cast<float>(std::atof(std::getenv("PSPRECOMP_TAGTEAM_KOSWAP_DELAY"))) : 1.6f;
             if (mate && !std::getenv("PSPRECOMP_TAGTEAM_NODEFEAT") && kKoSwapDelay > 0.f) {
@@ -7815,6 +7823,7 @@ void ko_oneround() {
         if (sp_own && !sp_wait) te = nullptr;
         if (spk && sp_own && !te) g_sp_wait.clear();
         if (ffa_now() && !comms_battle() && S == ffa_human()) te = nullptr;
+        if (te && ffares_on()) te = nullptr;   // online FFA: a fighter of the same game side is another player, not this one's tag-in
         if (te && ffa_sp_tags()) { const int fp0 = ffa_player_of(S); if (fp0 >= 0 && ffa_tag_peek(fp0)) te = nullptr; }   // FFA: a fallen slot fighter with a tag-in of his own is not replaced by a fighter of his side's   // single player with CPU rows: the human's own members only come into his slot (below: the slot call-in), never the CPU partner
         if (spk) std::fprintf(stderr, "[TTSP] t=%.1fs the human's slot fighter fell: own members left %d, CPU members left %d, CPU partner on the stage %08X -> %s\n", age / 60.0f, sp_left(true), sp_left(false) - sp_left(true), te ? te->actor : 0u,
             sp_wait ? "the CPU partner takes the slot (AI-driven), his next own member waits for the call-in delay" : sp_own ? "his next own member comes into the slot" : te ? "the CPU partner takes the slot (AI-driven)" : sp_left(false) > 0 ? "the next CPU member comes into the slot (AI-driven)" : "nobody left");
@@ -7828,6 +7837,13 @@ void ko_oneround() {
                 if (g_log) std::fprintf(stderr, "[FFA] t=%.1fs slot %u (P%d) fell: his tag-in %s comes into the slot in %.1f s\n", age / 60.0f, k, fp + 1, char_label(fc, true).c_str(), dly);
                 continue;
             }
+        }
+        if (!te && ffares_on() && reserve_left(team_of(side_of(S))) > 0 && next_member_char(team_of(side_of(S))) > 0) {   // online FFA: the slot's own tag-in comes into the slot
+            const int tm = team_of(side_of(S)); const float dly = slot_fall_delay();
+            g_slot_callin.push_back({S, age + dly * 60.f, tm, age}); side_entry_mark(side_of(S), age + dly * 60.f);
+            if (!std::getenv("PSPRECOMP_TAGTEAM_NODEFEAT")) { defeat_start(S); wr(S + 0x380u, rd(S + 0x380u) | 2u); g_defeat_hold[S] = 46.0f; }
+            if (g_log) std::fprintf(stderr, "[FFA] t=%.1fs slot %u fell: his tag-in comes into the slot in %.1f s (own reserve)\n", age / 60.0f, k, dly);
+            continue;
         }
         if (!te && ffa_now() && ffa_keep(S)) {   // FFA: the fallen slot fighter stays down, the others fight on
             if (!std::getenv("PSPRECOMP_TAGTEAM_NODEFEAT")) { defeat_start(S); wr(S + 0x380u, rd(S + 0x380u) | 2u); g_defeat_hold[S] = 46.0f; }
@@ -8113,7 +8129,7 @@ void ko_oneround() {
         DownRec& d = g_downrec[i];
         if (sp_wait_owns(d.actor)) { i++; continue; }   // single player: the human's wait (g_sp_wait) brings his own member
         const bool ftg = ffa_sp_tags(); const int fpl = ftg ? ffa_player_of(d.actor) : -1, fcid = ftg && fpl >= 0 ? ffa_tag_peek(fpl) : 0;   // FFA: the extra's own tag-in, not the team's reserve
-        const bool has_res = ftg ? fcid != 0 : reserve_left(team_of(d.side)) > 0;
+        const bool has_res = ftg ? fcid != 0 : (reserve_left(team_of(d.side)) > 0 && !ffares_on());
         if (g_nextra < 10 && has_res && age - d.since >= 90.f) preload_member(ftg ? fcid : next_member_char(team_of(d.side), false), age, std::max(d.since, g_side_entry[d.side & 1u]) + call_in_delay() - age);
         if (!exb_busy() && age - std::max(d.since, g_side_entry[d.side & 1u]) >= call_in_delay() && has_res && !entrance_busy()) {   // somebody came in meanwhile: the wait started again; never during another entrance
             const int cid = g_nextra < 10 ? (ftg ? fcid : next_member_char(team_of(d.side), false)) : 0;
