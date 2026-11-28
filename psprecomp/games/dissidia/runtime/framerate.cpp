@@ -152,6 +152,7 @@ bool g_exact_step = true;
 // every gameplay task skipped) and a zero step, so the game still draws but nothing advances. Gameplay is then the 30 fps game's by
 // construction; smoothing the frames in between is the renderer's job. The game's own frame-rate hooks see 30 fps (g_ticks 2).
 bool g_logic30 = true;
+bool in_fight();
 bool l30_active();                 // 30 Hz logic is on and the fight is past its intro
 uint64_t g_l30_frame = 0;
 bool g_l30_logic_now = true;       // the frame being run is a gameplay frame
@@ -1167,8 +1168,20 @@ bool l30_decide_next() {
         now, shown, g_l30_due_ms, g_l30_last_ms, g_l30_next_logic ? "GAMEPLAY" : "drawn", g_l30_next_phase); }
     return g_l30_next_logic;
 }
+// Online, before the 30 Hz logic engages (it needs a fighter that has been updated once: the first lock-step frames), the fighters' first update takes the
+// frame step of THIS machine's rate, and keeps it in their blocks (+0x168 / +0x1B0 .., and the position's last bit): 90 fps 171/256, 120 fps 0.5, 60 fps 1.0.
+// Every machine now gives that update the 30 Hz step (2.0), as an engaged gameplay frame has. PSPRECOMP_NET_PRESTEP_OLD=1: the old per-machine step.
+bool online_prestep() {
+    static const bool old_step = std::getenv("PSPRECOMP_NET_PRESTEP_OLD") != nullptr;
+    if (old_step || !g_logic30 || g_rate <= 30 || overlay_id() != 1 || !in_fight()) return false;
+    if (!(psp_adhoc_group_fps_cap() > 0 || dissidia_ttnet_running())) return false;
+    static int logged = 0;
+    if (logged++ < 4) std::fprintf(stderr, "[FPS] online fight, 30 Hz logic not on yet: frame step 2.0 (the machine's own rate %d would give %.3f)\n", g_rate, step_for(g_rate, g_step_idx + 1));
+    return true;
+}
 float next_frame_step() {
     if (l30_active()) return l30_decide_next() ? 2.0f : 0.0f;
+    if (online_prestep()) return 2.0f;
     if (g_rate > 60) return step_for(g_rate, g_step_idx + 1);
     return -1.0f;   // constant step: leave it
 }
@@ -1211,10 +1224,10 @@ void frame_end_hook(uint8_t* rdram, recomp_context* ctx) {
             if (cap > 0 && cap < rate && !own_rate) rate = cap;   // never above what the slowest player asked for
         }
         if (rate < 30) rate = 30;
-        // (user 27 Nov: Deck at 90 fps desynced from phones at 30 / 120 on lock-step frame 1) a rate whose rate/30 is not a power of two (90, 150, 180..) takes uneven
-        // steps that the fighters keep in their blocks; online such a rate runs at the next exact one (90 -> 120). PSPRECOMP_NET_ODDFPS_OLD=1: own rate.
-        { static const bool odd_old = std::getenv("PSPRECOMP_NET_ODDFPS_OLD") != nullptr;
-          if (!odd_old && (cap > 0 || dissidia_ttnet_running()) && overlay_id() == 1 && rate < kUnlocked) { const int n = rate / 30; if (n > 1 && (n & (n - 1)) != 0 || rate % 30) { int m = 1; while (m * 30 < rate) m <<= 1; rate = std::min(240, m * 30); } } }
+        // (user 27 Nov: Deck at 90 fps desynced from phones at 30 / 120 on lock-step frame 1) the cause was the fighters' first update taking this machine's own frame step
+        // (online_prestep, fixed), so every rate plays as it is set. PSPRECOMP_NET_ODDFPS_ROUND=1: the old workaround, a rate whose rate/30 is not a power of two runs at the next exact one (90 -> 120).
+        { static const bool odd_round = std::getenv("PSPRECOMP_NET_ODDFPS_ROUND") != nullptr;
+          if (odd_round && (cap > 0 || dissidia_ttnet_running()) && overlay_id() == 1 && rate < kUnlocked) { const int n = rate / 30; if (n > 1 && (n & (n - 1)) != 0 || rate % 30) { int m = 1; while (m * 30 < rate) m <<= 1; rate = std::min(240, m * 30); } } }
         const bool unlocked_cfg = g_target.load(std::memory_order_relaxed) == kUnlocked;
         if (unlocked_cfg && rate >= kUnlocked) rate = 240;
         const int interval = rate > 30 ? 1 : 2;      // vblanks per frame: the vblank clock itself runs faster above 60
@@ -1349,7 +1362,8 @@ void frame_end_hook(uint8_t* rdram, recomp_context* ctx) {
                                                              g_l30_list_tag.seq, g_l30_list_tag.record ? 1 : 0, tag.seq, tag.gen, tag.record ? 1 : 0, tag.phase);
         g_l30_list_tag = tag;
         if (rng_keep && !g_l30_logic_now) { for (int i = 0; i < 2; i++) rng_saved[i] = r32(RNG_WORDS[i]); rng_have = true; }   // the coming frame is drawn-only
-    } else if (g_rate > 60 && ok(timer)) wrf(timer + 0x18u, step_for(g_rate, ++g_step_idx));   // the frame waited for one (short) vblank: dt = 60 / rate (exact steps above)
+    } else if (ok(timer) && online_prestep()) wrf(timer + 0x18u, 2.0f);   // the next frame holds the fighters' first update (see online_prestep)
+    else if (g_rate > 60 && ok(timer)) wrf(timer + 0x18u, step_for(g_rate, ++g_step_idx));   // the frame waited for one (short) vblank: dt = 60 / rate (exact steps above)
     if (!l30_active()) { ge_interp_set_frame(GeInterpTag{}); g_l30_list_tag = GeInterpTag{}; }
 
     if (g_log && ok(timer)) {
