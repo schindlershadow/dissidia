@@ -490,7 +490,7 @@ def walk_all(cs, mode, shots):
     own = lambda c: c.text().count("is this player's own")
     for i, c in enumerate(cs):   # one copy at a time, each step confirmed by the log (a slow copy loses presses made while its picker loads)
         n0 = own(c)
-        for attempt in range(3):
+        for attempt in range(5):
             c.press('cross', gap=0.5)                       # the 1st slot -> Player Select
             nap(4 + 3 * attempt)
             if i:
@@ -522,8 +522,10 @@ def fill_parties(cs, shots, team_size=5):
             continue
         c = members[0]
         for k in range(team_size - len(members)):
-            n0 = c.text().count('[TTCPU] Add CPU')
-            for attempt in range(3):
+            n0 = c.text().count('as a CPU (Add CPU)')
+            for attempt in range(4):
+                if attempt == 0 and k == 0 and len(members) > 1:   # humans of the team are rows of its party already: the free row is below them
+                    c.press(*(['down'] * (len(members) - 1)), gap=0.5)
                 c.press('down', gap=0.6) if attempt else None
                 c.press('l', gap=0.5)
                 m.nap(4 + 2 * attempt)
@@ -533,13 +535,19 @@ def fill_parties(cs, shots, team_size=5):
                 c.press('cross', gap=0.5)                   # YES
                 m.nap(2)
                 try:
-                    m.wait(lambda: c.text().count('[TTCPU] Add CPU') > n0, 10, 'cpu row ' + c.side)
+                    m.wait(lambda: c.text().count('as a CPU (Add CPU)') > n0, 10, 'cpu row ' + c.side)
                     break
                 except RuntimeError:
                     (c.shot(shots, 'cpufail') if isinstance(c, XCopy) else m.shot(c, shots, 'cpufail'))
             else:
                 raise RuntimeError('copy %s could not add CPU row %d' % (c.side, k))
             log('party: %s added CPU row %d (team %d)' % (c.side, k + 1, team))
+        for _ in range(4):   # a picker / YES dialog still open (the last row's answer was lost): confirm it
+            m.nap(2)
+            st = gb_state(c)
+            if not st or st[2] == 7:
+                break
+            c.press('cross', gap=1.5); m.nap(3)
         (c.shot(shots, 'party') if isinstance(c, XCopy) else m.shot(c, shots, 'party'))
 
 
