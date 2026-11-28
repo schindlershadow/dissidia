@@ -325,6 +325,8 @@ void psp_trace_checkpoint(uint32_t addr) {
         std::memcpy(&cur, g_dbg_rdram + (g_mem_watch_addr & 0x07FFFFFFu), 4);
         static const char* hi_env = std::getenv("PSPRECOMP_MEM_WATCH_HI");  // only log when new value's top byte == this (hex)
         const bool hi_ok = !hi_env || (cur >> 24) == (uint32_t)std::strtoul(hi_env, nullptr, 16);
+        static const uint32_t from_tag = [] { const char* e = std::getenv("PSPRECOMP_MEM_WATCH_FROM"); return e ? (uint32_t)std::strtoul(e, nullptr, 0) : 0u; }();   // only report from this lock-step frame on
+        if (cur != g_mem_watch_last && g_mem_watch_tag < from_tag) g_mem_watch_last = cur;
         if (cur != g_mem_watch_last && !hi_ok) g_mem_watch_last = cur;
         if (cur != g_mem_watch_last) {
             g_mem_watch_n++;

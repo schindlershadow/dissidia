@@ -312,6 +312,10 @@ void ring_frame(uint32_t frame) {
     }
     r.cam_at = dissidia_camera_manager();
     for (uint32_t o = 0; o < CAM_LEN; o += 4) r.cam[o / 4] = (ok(r.cam_at) && ok(r.cam_at + CAM_LEN)) ? r32(r.cam_at + o) : 0;
+    if (const char* df = std::getenv("PSPRECOMP_NETSYNC_DUMPFRAME")) {   // dump frames N-2..N of THIS copy once (a copy that sees no mismatch itself, to diff against the one that does)
+        static bool done = false; const uint32_t n = static_cast<uint32_t>(std::strtoul(df, nullptr, 0));
+        if (!done && frame == n + 1) { done = true; for (uint32_t back = 3; back-- > 0;) dump_snap(n - back, frame); }
+    }
     const uint32_t bad = psp_netplay_first_mismatch();
     if (g_ring_dumped || bad == 0xFFFFFFFFu) return;
     g_ring_dumped = true;
