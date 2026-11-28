@@ -1822,6 +1822,11 @@ static void flush_batch() {
 #endif
             glBufferData(GL_COPY_WRITE_BUFFER, (GLsizeiptr)(s.cap * s.stride), nullptr, GL_STREAM_DRAW);
             s.write = 0;
+        } else if (g_ring_mode == 2) {
+            // PSPRECOMP_GE_RING=orphan (experiment for #131): fresh storage for every batch instead of appending to one buffer,
+            // for drivers (Mesa radeonsi) that mis-order uploads into a buffer the GPU is still reading.
+            glBufferData(GL_COPY_WRITE_BUFFER, (GLsizeiptr)(s.cap * s.stride), nullptr, GL_STREAM_DRAW);
+            s.write = 0;
         } else if (s.write + n > s.cap) {
 #ifdef PSP_GLES
             // Adreno does not honour orphaning: draws still pending when the buffer is re-specified read the NEW storage
@@ -2669,6 +2674,8 @@ void ge_draw_init() {
     if (const char* po = std::getenv("PSPRECOMP_PING_OVERLAY")) g_ping_overlay = po[0] && po[0] != '0';
     g_nobatch = std::getenv("PSPRECOMP_GE_NOBATCH") != nullptr;
     if (const char* sm = std::getenv("PSPRECOMP_GE_SYNC")) {
+        if (!std::strcmp(sm, "off") || !std::strcmp(sm, "none")) { g_sync_mode = 0; std::fprintf(stderr, "[DRAW] GE sync off\n"); }
+        else {
         g_sync_mode = !std::strcmp(sm, "flush") ? 4 : std::atoi(sm);
         if (g_sync_mode <= 0) g_sync_mode = 1;
         g_sync_each = g_sync_mode == 1;
@@ -2676,9 +2683,26 @@ void ge_draw_init() {
                      g_sync_mode == 1 ? "glFinish per batch" : g_sync_mode == 2 ? "glFinish per list"
                      : g_sync_mode == 3 ? "glFinish per present" : "glFlush per batch");
     }
+    }
+#if !defined(PSP_GLES) && !defined(__APPLE__)
+    else {
+        // Desktop OpenGL (Windows, Linux, Steam Deck): glFlush after every batch by default (#131: invisible menu, flickering
+        // textures, duplicated effects on real asynchronous drivers; the same cure the Steam Deck launcher already applied,
+        // but only run.sh did, so Windows never got it). Not with the Vulkan backend, where glFlush is a queue submit.
+        bool vk = false;
+#if defined(PSPRECOMP_HAVE_VKGL)
+        vk = vkgl::active();
+#endif
+        if (!vk) {
+            g_sync_mode = 4;
+            std::fprintf(stderr, "[DRAW] GE sync mode 4 (glFlush per batch) (desktop OpenGL default; PSPRECOMP_GE_SYNC=off to disable)\n");
+        }
+    }
+#endif
     if (const char* rm = std::getenv("PSPRECOMP_GE_RING")) {
         if (!std::strcmp(rm, "map")) g_ring_mode = 1;
         else if (!std::strcmp(rm, "sub")) g_ring_mode = 0;
+        else if (!std::strcmp(rm, "orphan")) g_ring_mode = 2;
 
     }
     g_verify = std::getenv("PSPRECOMP_GE_VERIFY") != nullptr;
@@ -5457,6 +5481,12 @@ static std::string g_toast_text;
 static std::chrono::steady_clock::time_point g_toast_until{};
 static bool g_toast_dirty = false;
 static int g_toast_y = 10;
+static std::string g_toast_pending; static int g_toast_pending_ms = 0, g_toast_pending_y = 10;   // shown from the first present on (the message is queued before the game draws)
+
+void ge_draw_toast_deferred(const char* text, int ms, int y_px) {
+    std::lock_guard<std::mutex> lk(g_toast_mu);
+    g_toast_pending = text ? text : ""; g_toast_pending_ms = ms; g_toast_pending_y = y_px;
+}
 
 void ge_draw_toast(const char* text, int ms, int y_px) {
     std::lock_guard<std::mutex> lk(g_toast_mu);
@@ -5761,6 +5791,11 @@ static void present_toast(const PresentRect& pr) {
     bool dirty;
     {
         std::lock_guard<std::mutex> lk(g_toast_mu);
+        if (g_toast_pending_ms > 0) {
+            g_toast_text = g_toast_pending; g_toast_y = g_toast_pending_y;
+            g_toast_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(g_toast_pending_ms);
+            g_toast_dirty = true; g_toast_pending_ms = 0;
+        }
         if (g_toast_text.empty() || std::chrono::steady_clock::now() >= g_toast_until) return;
         text = g_toast_text;
         dirty = g_toast_dirty;
