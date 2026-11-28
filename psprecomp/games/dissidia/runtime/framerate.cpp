@@ -1214,7 +1214,7 @@ void frame_end_hook(uint8_t* rdram, recomp_context* ctx) {
         // (user 27 Nov: Deck at 90 fps desynced from phones at 30 / 120 on lock-step frame 1) a rate whose rate/30 is not a power of two (90, 150, 180..) takes uneven
         // steps that the fighters keep in their blocks; online such a rate runs at the next exact one (90 -> 120). PSPRECOMP_NET_ODDFPS_OLD=1: own rate.
         { static const bool odd_old = std::getenv("PSPRECOMP_NET_ODDFPS_OLD") != nullptr;
-          if (!odd_old && cap > 0 && overlay_id() == 1 && rate < kUnlocked) { const int n = rate / 30; if (n > 1 && (n & (n - 1)) != 0 || rate % 30) { int m = 1; while (m * 30 < rate) m <<= 1; rate = std::min(240, m * 30); } } }
+          if (!odd_old && (cap > 0 || dissidia_ttnet_running()) && overlay_id() == 1 && rate < kUnlocked) { const int n = rate / 30; if (n > 1 && (n & (n - 1)) != 0 || rate % 30) { int m = 1; while (m * 30 < rate) m <<= 1; rate = std::min(240, m * 30); } } }
         const bool unlocked_cfg = g_target.load(std::memory_order_relaxed) == kUnlocked;
         if (unlocked_cfg && rate >= kUnlocked) rate = 240;
         const int interval = rate > 30 ? 1 : 2;      // vblanks per frame: the vblank clock itself runs faster above 60
