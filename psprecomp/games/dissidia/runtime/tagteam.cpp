@@ -2524,7 +2524,7 @@ int party_order(int party, TagEntry* out, int max) {
                 v.push_back(TagEntry{ps[k]->regs[r], static_cast<int8_t>(k), ((ps[k]->cpu_mask >> r) & 1) != 0, ps[k]->local, ps[k]->cfg[r][0], ps[k]->cfg[r][1], ps[k]->cfg[r][2]}); }
     }
     if (const char* te = std::getenv("PSPRECOMP_TAGTEAM_TEST_TAGIN")) if (g_bs && g_ram && v.size() == 1 && std::atoi(te) > 0) {   // test aid (both copies the same): every one-member party gets this member as its player's tag-in row
-        for (size_t k = 0; k < ps.size(); k++) if (ps[k]->party == party) { v.push_back(TagEntry{std::atoi(te), static_cast<int8_t>(k), std::getenv("PSPRECOMP_TAGTEAM_TEST_TAGIN_CPU") != nullptr, ps[k]->local}); break; }
+        for (size_t k = 0; k < ps.size(); k++) if (ps[k]->party == party) { v.push_back(TagEntry{static_cast<uint8_t>(std::atoi(te)), static_cast<int8_t>(k), std::getenv("PSPRECOMP_TAGTEAM_TEST_TAGIN_CPU") != nullptr, ps[k]->local}); break; }
     }
     if (defects_from(ps, 1 - party))   // the other party is a CPU party: its keepers' player rows join this one (after this party's own rows), driven by the keeper
         for (size_t k = 0; k < ps.size(); k++) if (ps[k]->party == 1 - party)
