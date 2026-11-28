@@ -629,6 +629,10 @@ def exercise_all(cs, secs):
             kind, arg = m.MOVES[(i + 3 * k) % len(m.MOVES)]
             try:
                 c.cmd(('A ' if kind == 'A' else 'A2 ' if kind == 'R' else 'B ') + arg)
+                # the human target switch (L), as mp_diverge --lpress: every MP_LEVERY-th move of each copy (MP_LEVERY=0: none)
+                lev = int(os.environ.get('MP_LEVERY', '3'))
+                if lev > 0 and (i + k) % lev == lev - 1:
+                    c.cmd('B %s 150' % os.environ.get('MP_LMASK', '100'))
             except OSError:
                 pass
         i += 1
