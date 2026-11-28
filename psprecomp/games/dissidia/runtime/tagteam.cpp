@@ -681,6 +681,16 @@ struct CycState { int cyc = 0; uint32_t target = 0; };
 std::map<uint32_t, CycState> g_cycs;
 CycState& cyc_of(uint32_t a) { return g_cycs[a]; }
 float g_lock_press_t = -1e9f;               // battle age of the last L / R press (lock_mode_hook): the governor stays away for 1 s after it
+// 27 Nov (lockdesync, online 2v2 desync at the frame the human switched lock target with L, also fighter1.lockblk / extra part2 desyncs): the camera manager's foe word
+// (+0x8B4) is what the retail control function FUN_08B3526C reads for its stick-relative move choice (and the CPU's virtual pad), and we wrote the LOCAL human's foe into it
+// for the camera / reticle: every machine had its own value, so the same frame of the same fighter chose differently as soon as the two humans locked different enemies.
+// Now that write is the view value only: around each fighter's control function the word holds that fighter's own foe (a pad-driven fighter: its +0x300, identical on every
+// machine; any other: the value retail left there), restored afterwards. PSPRECOMP_TAGTEAM_CAMFOE_SIM_OLD=1: old (the view value all the time).
+uint32_t g_cf_view = 0, g_cf_sim = 0;   // the view value we wrote / the value retail had left there
+bool camfoe_sim_old() { static const bool o = std::getenv("PSPRECOMP_TAGTEAM_CAMFOE_SIM_OLD") != nullptr; return o; }
+void camfoe_set(uint32_t mgr, uint32_t v);
+FuncPtr g_orig_control = nullptr;
+void control_foe_hook(uint8_t* rdram, recomp_context* ctx);
 std::string g_lock_whys;                  // [LOCKCHG] reasons noted by our own lock writers since the last poll ("a+b")
 void lock_why(const char* w) { if (g_lock_whys.find(w) == std::string::npos && g_lock_whys.size() < 200) { if (!g_lock_whys.empty()) g_lock_whys += '+'; g_lock_whys += w; } }
 bool g_lock_bypass = false;               // set while our own code puts a lock block's mode back: the L-press cycle in lock_mode_hook must not see it as a press
@@ -1676,6 +1686,7 @@ void setup_hook(uint8_t* rdram, recomp_context* ctx) {
     if (!ok(a0, 0x12D0) || !ok(a1, 0x12D0)) return;
     if (!g_orig_lock_other) {
         g_orig_lock_other = fn(LOCK_OTHER); g_orig_refresh = fn(TARGET_REFRESH); g_orig_lock_mode = fn(LOCK_MODE);
+        if (!camfoe_sim_old() && !g_orig_control) { g_orig_control = fn(0x08B3526Cu); if (g_orig_control) psp_dispatch_register(0x08B3526Cu, control_foe_hook); }
         if (g_orig_lock_other && g_orig_refresh && g_orig_lock_mode) { psp_dispatch_register(LOCK_OTHER, lock_other_hook); psp_dispatch_register(TARGET_REFRESH, refresh_hook); psp_dispatch_register(LOCK_MODE, lock_mode_hook); }
         if (std::getenv("PSPRECOMP_TAGTEAM_LOCKTRACE")) { g_orig_lt_h = fn(0x08B3AFD4u); g_orig_lt_own = fn(0x088378D8u); g_orig_lt_btn = fn(0x08B40168u); if (g_orig_lt_h && g_orig_lt_own && g_orig_lt_btn) { psp_dispatch_register(0x08B3AFD4u, lt_hook); psp_dispatch_register(0x088378D8u, lt_own_hook); psp_dispatch_register(0x08B40168u, lt_btn_hook); } }
         if (std::getenv("PSPRECOMP_TAGTEAM_CLIPDBG")) { g_orig_clip_len = fn(0x0886B344u); if (g_orig_clip_len) psp_dispatch_register(0x0886B344u, clip_len_hook); }
@@ -3255,6 +3266,25 @@ void lt_hook(uint8_t* rdram, recomp_context* ctx) {
     static int nl = 0; if ((key != last || (dissidia_battle_age() >= 1290.f && (nl++ % 8) == 0)) && nl < 400) { last = key; std::fprintf(stderr, "[LOCKTRACE] t=%.2fs L handler: lock %08X owner %08X mode %u: owner-test result %u, button-event calls %u last result %u, mode after %u\n", dissidia_battle_age() / 60.f, L, rd(L + 248u), mode0, g_lt_own_res, g_lt_btn_calls, g_lt_btn_res, rd(L + 264u)); }
 }
 
+void camfoe_set(uint32_t mgr, uint32_t v) {
+    if (!ok(mgr, 0x900)) return;
+    const uint32_t cur = rd(mgr + 0x8B4u);
+    if (!camfoe_sim_old() && cur != g_cf_view) g_cf_sim = cur;   // retail changed it since our last write: that is the value the simulation sees
+    g_cf_view = v; wr(mgr + 0x8B4u, v);
+}
+void control_foe_hook(uint8_t* rdram, recomp_context* ctx) {
+    g_ram = rdram;
+    const uint32_t actor = static_cast<uint32_t>(ctx->r[4]), mgr = dissidia_camera_manager();
+    uint32_t want = 0, saved = 0;
+    if (g_bs && mgr && !camfoe_sim_old() && ok(mgr, 0x900) && g_cf_view) {
+        saved = rd(mgr + 0x8B4u);
+        want = (ok(actor, 0x12D0) && pad_driven(actor)) ? rd(actor + 0x300u) : g_cf_sim;
+        if (!ok(want, 0x12D0) || want == saved) want = 0; else wr(mgr + 0x8B4u, want);
+    }
+    g_orig_control(rdram, ctx);
+    if (want && rd(mgr + 0x8B4u) == want) wr(mgr + 0x8B4u, saved);   // (unless retail wrote it meanwhile)
+}
+
 // FUN_08B3B3EC(block, mode, flag): L toggles the human's lock through it. Tag battle: with a second enemy alive, the press that would
 // release the lock first moves the lock to that enemy (the retail cycle selector, handler [1] +28 = 1); the next press releases it.
 void lock_mode_hook(uint8_t* rdram, recomp_context* ctx) {
@@ -4473,7 +4503,7 @@ void rebuild_lock(const RebuildJob& j) {
         static const bool ts_old = std::getenv("PSPRECOMP_TAGTEAM_TGTSYNC_OLD") != nullptr;
         const uint32_t tmgr = (!ts_old && j.A == tgt_local_human()) ? dissidia_camera_manager() : 0u;
         if (g_log) std::fprintf(stderr, "[TGTSYNC] t=%.2fs %08X (c%d) before: 2FC %08X 300 %08X answer %08X override %08X sel %u camfoe %08X -> new foe %08X\n", dissidia_battle_age() / 60.0f, j.A, actor_char(j.A), rd(j.A + 0x2FCu), rd(j.A + 0x300u), call(LOCK_GET, L), rd(L + 252u), rd(L + 304u) && ok(rd(L + 304u), 0x40) ? rd(rd(L + 304u) + 28u) : 0u, tmgr ? rd(tmgr + 0x8B4u) : 0u, f);
-        if (ok(f, 0x12D0)) { call(SET_FOE, j.A, f); wr(j.A + 0x2FCu, f); if (tmgr && ok(tmgr, 0x900)) wr(tmgr + 0x8B4u, f); }
+        if (ok(f, 0x12D0)) { call(SET_FOE, j.A, f); wr(j.A + 0x2FCu, f); if (tmgr && ok(tmgr, 0x900)) camfoe_set(tmgr, f); }
         // 27 Nov (user, RP6 2v2, still after fwdback2): a live diff before / after the user's manual target switch on the stuck newcomer showed one target word
         // that only the switch set: actor +0x304 (0 on the rebuilt body; the foe on every other fighter). Set it with the foe. PSPRECOMP_TAGTEAM_TGT304_OLD=1: old.
         static const bool t304_old = std::getenv("PSPRECOMP_TAGTEAM_TGT304_OLD") != nullptr;
@@ -11671,7 +11701,7 @@ void tgt_resync_after_swap(uint32_t S, uint32_t pre_answer, uint32_t pre_foe) {
     if (!t) return;
     call(SET_FOE, S, t); wr(S + 0x2FCu, t);
     if (t == se) wr(L + 252u, 0u); else call(LOCK_SET, L, t);
-    if (mgr && ok(mgr, 0x900)) wr(mgr + 0x8B4u, t);
+    if (mgr && ok(mgr, 0x900)) camfoe_set(mgr, t);
     if (g_log) std::fprintf(stderr, "[TGTSYNC] t=%.2fs swap %08X after: 2FC %08X 300 %08X answer %08X override %08X camfoe %08X\n", dissidia_battle_age() / 60.0f, S, rd(S + 0x2FCu), rd(S + 0x300u), call(LOCK_GET, L), rd(L + 252u), mgr ? rd(mgr + 0x8B4u) : 0u);
 }
 void lock_govern() {
@@ -11715,7 +11745,7 @@ void lock_govern() {
                     relock_t[P] = age; lock_why("relock-after-release");
                     wr(P + 0x300u, nt); wr(P + 0x2FCu, nt); CycState& cs = cyc_of(P); cs.cyc = 0; cs.target = 0; const uint32_t h1 = rd(L + 304u); if (ok(h1, 0x40)) wr(h1 + 28u, 0);
                     const uint32_t sp0 = static_cast<uint32_t>(g_ctx->r[29]); g_ctx->r[29] = static_cast<int32_t>(sp0 - 0x100u); g_lock_bypass = true; call(LOCK_MODE, L, 1u, 0u); g_lock_bypass = false; g_ctx->r[29] = static_cast<int32_t>(sp0);
-                    if (P == lock_local_human()) { const uint32_t mgr = dissidia_camera_manager(); if (mgr) wr(mgr + 0x8B4u, nt); }
+                    if (P == lock_local_human()) { const uint32_t mgr = dissidia_camera_manager(); if (mgr) camfoe_set(mgr, nt); }
                     g_lockmem[P] = lock_norm(nt);
                     std::fprintf(stderr, "[LOCKFIX] t=%.2fs %s %08X: the lock was released by retail (last locked %.1f s ago, no L press) and a valid enemy is there: locked on %s %08X again (mode %u)\n", age / 60.0f, role_of(P), P, (age - seen_locked[P]) / 60.0f, role_of(nt), nt, rd(L + 264u));
                 }
@@ -11738,7 +11768,7 @@ void lock_govern() {
         if (ov && bo) wr(L + 252u, 0u);
         wr(P + 0x300u, nt); wr(P + 0x2FCu, nt);
         CycState& cs = cyc_of(P); cs.cyc = 0; cs.target = 0; const uint32_t h1 = rd(L + 304u); if (ok(h1, 0x40)) wr(h1 + 28u, 0);
-        if (P == lock_local_human()) { const uint32_t mgr = dissidia_camera_manager(); if (mgr) { const uint32_t cur = rd(mgr + 0x8B4u); if (cur != nt) wr(mgr + 0x8B4u, nt); } }
+        if (P == lock_local_human()) { const uint32_t mgr = dissidia_camera_manager(); if (mgr) { const uint32_t cur = rd(mgr + 0x8B4u); if (cur != nt) camfoe_set(mgr, nt); } }
         g_lockmem[P] = lock_norm(nt);
         static int c = 0; if (g_log || c++ < 200) std::fprintf(stderr, "[LOCKFIX] t=%.2fs %s %08X: lock %08X tgt %08X foe %08X override %08X is bad (%s) -> %s %08X (kept %08X)\n", dissidia_battle_age() / 60.0f, role_of(P), P, lt, t2, fo, ov, why, ok(nt, 0x12D0) ? role_of(nt) : "?", nt, mem);
     }
@@ -13794,7 +13824,7 @@ void dissidia_tagteam_frame(uint8_t* rdram, recomp_context* ctx) {
             if (!is_enemy && !ts_old2 && cur && cur != foe) { const char* bad = lock_word_bad(cur, hum, foe); if (bad && (!std::strcmp(bad, "dead") || !std::strcmp(bad, "down") || !std::strcmp(bad, "parked") || !std::strcmp(bad, "not-an-actor"))) { is_enemy = true; if (g_log) std::fprintf(stderr, "[TGTSYNC] t=%.2fs camera foe %08X is %s: replaced by the lock target %08X\n", dissidia_battle_age() / 60.0f, cur, bad, foe); } }
             if (is_enemy && foe && foe != cur && alive(foe)) { if (g_log) std::fprintf(stderr, "[TAGTEAM] camera foe %08X -> %08X\n", cur, foe);
                 { static int rc = 0; if (side_of(cur) == side_of(hum) && rc++ < 60) std::fprintf(stderr, "[RETICLE] t=%.2fs camera foe was %s %08X (the human's own side), put back on the lock target %08X\n", dissidia_battle_age() / 60.0f, role_of(cur), cur, foe); }
-                wr(mgr + 0x8B4u, foe); }
+                camfoe_set(mgr, foe); }
         }
     }
     if (g_nextra && g_bs && std::getenv("PSPRECOMP_TAGTEAM_RETICLE")) {   // experiment: the overlay globals that hold the human's foe (reticle?)

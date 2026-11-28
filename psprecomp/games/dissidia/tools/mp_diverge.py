@@ -41,6 +41,25 @@ DECK_SAVE = os.path.expanduser(os.environ.get('PSPRECOMP_TEST_SAVE_B', '~/dissid
 # KOs by battle time (PSPRECOMP_TAGTEAM_KOLIST_NAT: like a natural lethal hit, the mate comes in; lock-step safe, side-based names)
 KOLIST = {'team2': 'slot0:22,slot1:36,slot0:50,slot1:64', 'team3': 'slot0:22,slot1:34,slot0:46,slot1:58,slot0:70,slot1:82',
           'ffa': 'extra0:22,extra1:34,slot1:46'}
+# the pad moves of the fight: mp_test's list plus an L press now and then (--lpress) (the human's lock switch: the lock cycle goes through retail's L handler on the copy
+# whose pad it is, and through the lock-stepped input on the other; a local-only write there is a NETSYNC desync, tt-lockdesync)
+LEVERY = int(os.environ.get('MP_LEVERY', '3'))   # an L press after every Nth move
+LMASK = os.environ.get('MP_LMASK', '100')       # its buttons (hex PSP mask: 100 = L; 8100 = L + square, a lock switch together with an attack)
+
+
+def exercise(a, b, secs, lpress):
+    """mp_test's moves on both copies; lpress 'a' / 'b' / 'both' / 'none': which human also presses L (switches the lock) after every third move."""
+    end, i = time.time() + secs, 0
+    while time.time() < end:
+        for c, off in ((a, 0), (b, 3)):
+            kind, arg = m.MOVES[(i + off) % len(m.MOVES)]
+            c.cmd(('A ' if kind == 'A' else 'A2 ' if kind == 'R' else 'B ') + arg)
+            if (i + off) % LEVERY == LEVERY - 1 and lpress in ('both', c.side.lower()):
+                c.cmd('B %s 150' % LMASK)
+        i += 1
+        time.sleep(0.7)
+
+
 # lines that say the battle was decided / its result (both copies must show the same ones)
 RESULT_RE = re.compile(r'^\[(?:TAGTEAM\] (?:t=[\d.]+s side \d has nobody left|group battle: winners|result menu)|FFARES\]|FFA\] result rows)')
 
@@ -233,6 +252,7 @@ def main(argv):
     ap.add_argument('--pack-disc', default=os.environ.get('PSPRECOMP_TEST_PACK_DISC', '~/dissidia/work_tagslot/disc0'), help='the 012 disc folder netpack.py deltas reads the retail files from')
     ap.add_argument('--kolist', default=None, help="override the KO list ('none' = no KOs, the battle just runs --secs and no result is required)")
     ap.add_argument('--min-frames', type=int, default=600)
+    ap.add_argument('--lpress', choices=('both', 'a', 'b', 'none'), default='both', help='which copy\'s human also presses L (switches the lock) during the fight')
     ap.add_argument('--env', default='')
     ap.add_argument('--env-a', default='')
     ap.add_argument('--env-b', default='')
@@ -321,7 +341,7 @@ def main(argv):
             log('host load %.1f on %d cores: fight budget %.0f s (x%.1f), up to %.0f s while progressing' % (os.getloadavg()[0], os.cpu_count() or 0, a.secs * sc, sc, hard - time.time()))
         last_frames, last_prog = None, time.time()
         while True:
-            m.exercise(A, B, 5)
+            exercise(A, B, 5, a.lpress)
             texts = [c.text() for c in (A, B)]
             if not nores and all(any(RESULT_RE.match(l) for l in t.splitlines()) for t in texts) and all('[NETSYNC] so far' in t for t in texts):
                 break
