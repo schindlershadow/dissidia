@@ -42,7 +42,8 @@ WINDIR = 'C:/Users/Schindler/xdev'
 TARGETS = {'desktop': {'ssh': 'schindler@192.168.2.131', 'os': 'linux', 'cores': 12},
            'deck': {'ssh': 'deck', 'os': 'linux'},
            'laptop': {'ssh': 'schindler@192.168.2.55', 'os': 'win'},
-           'rp6': {'os': 'android'}}
+           'rp6': {'os': 'android'},
+           'local': {'os': 'local'}}   # a second copy on THIS host (harness development / lobby experiments; not part of the default target list)
 
 
 def log(msg):
@@ -122,6 +123,8 @@ def probe(name):
             if load > cores * 0.5:
                 return False, 'load %.1f on %d cores' % (load, cores)
             return True, 'idle (load %.1f on %d cores%s)' % (load, cores, ', the user\'s game runs there (pid %s)' % busy if busy else '')
+        if t['os'] == 'local':
+            return True, 'a copy on this host'
         if t['os'] == 'win':
             r = sh(t['ssh'], 'tasklist /fi "imagename eq psprecomp_runtime.exe" /nh', timeout=25)
             if r.returncode:
@@ -503,7 +506,41 @@ def walk_all(cs, mode, shots):
         else:
             raise RuntimeError('copy %s never registered its character pick' % c.side)
         nap(2)
+    fill_parties(cs, shots)
     lobby_enter(cs, shots)
+
+
+def fill_parties(cs, shots, team_size=5):
+    """A real lobby's parties: 5 characters per team (the humans' picks + CPU rows, which become the reserves). The first human of each team adds CPU rows
+    ("Add a character (L: Add CPU)" on the free row: L, then Player Select -> a character -> YES) until the team has team_size rows. PSPRECOMP_XDEV_PARTY=0: skip."""
+    if os.environ.get('PSPRECOMP_XDEV_PARTY') == '0':
+        return
+    own = lambda c: c.text().count("is this player's own")
+    for team in (0, 1):
+        members = [c for i, c in enumerate(cs) if (i in PARTY_B) == bool(team)]
+        if not members:
+            continue
+        c = members[0]
+        for k in range(team_size - len(members)):
+            n0 = c.text().count('[TTCPU] Add CPU')
+            for attempt in range(3):
+                c.press('down', gap=0.6) if attempt else None
+                c.press('l', gap=0.5)
+                m.nap(4 + 2 * attempt)
+                c.press(*(['right'] * (1 + k + 3 * team)), gap=0.4)
+                c.press('cross', gap=1.5)                   # the character
+                m.nap(2)
+                c.press('cross', gap=0.5)                   # YES
+                m.nap(2)
+                try:
+                    m.wait(lambda: c.text().count('[TTCPU] Add CPU') > n0, 10, 'cpu row ' + c.side)
+                    break
+                except RuntimeError:
+                    (c.shot(shots, 'cpufail') if isinstance(c, XCopy) else m.shot(c, shots, 'cpufail'))
+            else:
+                raise RuntimeError('copy %s could not add CPU row %d' % (c.side, k))
+            log('party: %s added CPU row %d (team %d)' % (c.side, k + 1, team))
+        (c.shot(shots, 'party') if isinstance(c, XCopy) else m.shot(c, shots, 'party'))
 
 
 TTGB_RE = re.compile(r'\[TTGB\] setup screen \w+: column (\d+) row (\d+) state (\d+)')
@@ -607,6 +644,11 @@ def run_all(a, names, out, work, slot, relay_port):
             cs.append(m.Copy(side, work, out, {**e, 'MP_FILL': '1', **kv(a.env_a)}))
         else:
             e['MP_SAVE'] = os.path.abspath(os.path.expanduser(a.save_b))
+            if n == 'local':
+                cp = m.Copy(side, work, out, {**e, **kv(a.env_b)})
+                cp.name = 'local'
+                cs.append(cp)
+                continue
             cs.append(XCopy(side, work, out, {**e, **kv(a.env_b)}, n, '%d_%d' % (slot, os.getpid()), m.PORT[side]))
     desc = ', '.join('%s=%s' % (c.side, getattr(c, 'name', 'host')) for c in cs)
     res = {'targets': names, 'desc': desc}
