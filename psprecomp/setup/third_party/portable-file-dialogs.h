@@ -23,6 +23,7 @@
 #include <shellapi.h>
 #include <strsafe.h>
 #include <future>     // std::async
+#include <atomic>
 #include <userenv.h>  // GetUserProfileDirectory()
 
 #elif __EMSCRIPTEN__
@@ -174,6 +175,9 @@ public:
     // High level function to abort
     bool kill();
 
+    // (local) Ask the dialog to close without waiting for it (never blocks the caller; call again until ready()).
+    void close_async();
+
 #if _WIN32
     void start_func(std::function<std::string(int *)> const &fun);
     static BOOL CALLBACK enum_windows_callback(HWND hwnd, LPARAM lParam);
@@ -196,9 +200,7 @@ private:
 #if _WIN32
     std::future<std::string> m_future;
     std::set<HWND> m_windows;
-    std::condition_variable m_cond;
-    std::mutex m_mutex;
-    DWORD m_tid;
+    std::atomic<DWORD> m_tid{0};   // (local) 0 until the dialog thread has started; the UI thread never waits for it
 #elif __EMSCRIPTEN__ || __NX__
     // FIXME: do something
 #else
@@ -267,6 +269,7 @@ class dialog : protected settings, protected platform
 public:
     bool ready(int timeout = default_wait_timeout) const;
     bool kill() const;
+    void close_async() const;   // (local) non-blocking close request
 
 protected:
     explicit dialog();
@@ -698,7 +701,7 @@ inline std::string internal::executor::result(int *exit_code /* = nullptr */)
 inline bool internal::executor::kill()
 {
 #if _WIN32
-    if (m_future.valid())
+    if (m_future.valid() && m_tid)
     {
         // Close all windows that weren’t open when we started the future
         auto previous_windows = m_windows;
@@ -739,19 +742,23 @@ inline void internal::executor::start_func(std::function<std::string(int *)> con
 {
     stop();
 
+    // (local) Strictly asynchronous: the caller (the UI thread) never waits for the dialog thread to start, so there is
+    // nothing to deadlock on. The thread publishes its id for close_async()/kill() when it gets going.
     auto trampoline = [fun, this]()
     {
-        // Save our thread id so that the caller can cancel us
         m_tid = GetCurrentThreadId();
-        EnumWindows(&enum_windows_callback, (LPARAM)this);
-        m_cond.notify_all();
         return fun(&m_exit_code);
     };
 
-    std::unique_lock<std::mutex> lock(m_mutex);
     m_future = std::async(std::launch::async, trampoline);
-    m_cond.wait(lock);
     m_running = true;
+}
+
+inline BOOL CALLBACK close_thread_window_cb(HWND hwnd, LPARAM)
+{
+    PostMessage(hwnd, WM_CLOSE, 0, 0);   // Post, never Send: SendMessage would block on the dialog thread
+    PostMessage(hwnd, WM_COMMAND, IDCANCEL, 0);
+    return TRUE;
 }
 
 #elif __EMSCRIPTEN__
@@ -806,6 +813,15 @@ inline void internal::executor::start_process(std::vector<std::string> const &co
 }
 #endif
 
+inline void internal::executor::close_async()
+{
+#if _WIN32
+    DWORD tid = m_tid;
+    if (m_running && tid)
+        EnumThreadWindows(tid, close_thread_window_cb, 0);
+#endif   // elsewhere the helper process is killed with kill() instead
+}
+
 inline internal::executor::~executor()
 {
     stop();
@@ -822,15 +838,8 @@ inline bool internal::executor::ready(int timeout /* = default_wait_timeout */)
         auto status = m_future.wait_for(std::chrono::milliseconds(timeout));
         if (status != std::future_status::ready)
         {
-            // On Windows, we need to run the message pump. If the async
-            // thread uses a Windows API dialog, it may be attached to the
-            // main thread and waiting for messages that only we can dispatch.
-            MSG msg;
-            while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE))
-            {
-                TranslateMessage(&msg);
-                DispatchMessage(&msg);
-            }
+            // (local) No message pump here: the dialog has no owner window and runs its own loop on its own thread, and
+            // the caller (SDL) pumps its own window's messages.
             return false;
         }
 
@@ -970,6 +979,11 @@ inline bool internal::dialog::ready(int timeout /* = default_wait_timeout */) co
 inline bool internal::dialog::kill() const
 {
     return m_async->kill();
+}
+
+inline void internal::dialog::close_async() const
+{
+    m_async->close_async();
 }
 
 inline internal::dialog::dialog()
