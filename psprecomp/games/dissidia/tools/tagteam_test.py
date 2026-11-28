@@ -88,6 +88,8 @@ ONLINE = [  # name, mp_diverge.py arguments (the slow copy alternates between ho
     ('mp_div_team3_internet', ['--mode', 'team3', '--net', 'internet', '--slow', 'a']),
     ('mp_div_ffa_lan', ['--mode', 'ffa', '--net', 'lan', '--slow', 'a']),
     ('mp_pack_bartz_internet', ['--same', '--mode', 'team2', '--net', 'internet', '--pack']),   # A has the Bartz D1 moves installed, B gets the pack online (27 Nov: ability costs + chrl row differed -> desync); fails (rc 2) without ~/dissidia/tt/s2/packmods_bartz (a built mods folder with bartz-dff)
+    ('mp_div_fps90_internet', ['--mode', 'team2', '--net', 'internet', '--slow', 'a', '--fps-a', '120', '--fps-b', '90']),   # 27 Nov: every copy above 30 fps (one copy at 30 makes the group run at 30), an uneven-step rate (90) against 120: the fighters' first update took each machine's own frame step
+    ('mp_div_unlocked_lan', ['--mode', 'team2', '--net', 'lan', '--slow', 'b', '--fps-a', '90', '--fps-b', '1000']),   # 1000 = the Unlocked setting
     ('mp_div_ffa_internet', ['--mode', 'ffa', '--net', 'internet', '--slow', 'b']),
 ]
 

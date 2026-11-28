@@ -600,6 +600,9 @@ def run_all(a, names, out, work, slot, relay_port):
         side = SIDES[i]
         m.PORT[side] = 9600 + 2 * slot + 20 * i
         e = {**base, 'PSPRECOMP_ADHOC_PORT': str(48000 + 32 * slot + 8 * i)}
+        if a.fps:   # --fps: one rate per copy (host, then the targets in order); 1000 = Unlocked; a shorter list repeats its last entry
+            fl = a.fps.split(',')
+            e['MP_FPS'] = fl[min(i, len(fl) - 1)]
         if i == 0:
             cs.append(m.Copy(side, work, out, {**e, 'MP_FILL': '1', **kv(a.env_a)}))
         else:
@@ -694,6 +697,7 @@ def main(argv):
     ap.add_argument('--min-frames', type=int, default=600)
     ap.add_argument('--save-b', default=d.DECK_SAVE)
     ap.add_argument('--env', default='')
+    ap.add_argument('--fps', default='', help='with --all: the frame rate setting of each copy, comma separated: host,target1,target2.. (1000 = Unlocked); default 30 for all (or MP_FPS in --env for all)')
     ap.add_argument('--env-a', default='')
     ap.add_argument('--env-b', default='')
     ap.add_argument('--neg', action='store_true')
