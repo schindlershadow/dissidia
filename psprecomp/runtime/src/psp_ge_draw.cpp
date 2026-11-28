@@ -2693,7 +2693,12 @@ void ge_draw_init() {
 #if defined(PSPRECOMP_HAVE_VKGL)
         vk = vkgl::active();
 #endif
-        if (!vk) {
+        // (28 Nov) Not on NVIDIA: its GL driver stalls on a flush per batch (2.5 fps in the tests instead of 30), and the #131 hazard
+        // was seen on AMD / Mesa (radeonsi, the Deck). PSPRECOMP_GE_SYNC=flush forces it there too.
+        const char* ven = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
+        const bool nvidia = ven && std::strstr(ven, "NVIDIA") != nullptr;
+        if (!vk && nvidia) std::fprintf(stderr, "[DRAW] GE sync off (NVIDIA OpenGL: no flush per batch; PSPRECOMP_GE_SYNC=flush to force it)\n");
+        else if (!vk) {
             g_sync_mode = 4;
             std::fprintf(stderr, "[DRAW] GE sync mode 4 (glFlush per batch) (desktop OpenGL default; PSPRECOMP_GE_SYNC=off to disable)\n");
         }
