@@ -14,7 +14,9 @@
 // (frame, checksum) pairs, +68 local player index, +72 the frame being delivered next, +76 peer records (84 bytes:
 // MAC at +0, +8 the received input window, +80 the last frame delivered with its input), +852 peer count, +860 the
 // local record (+8 its input window, +524 the newest local input frame = the send sequence). Pad slots: [0x089D6008] + 96 x player, words +64..+79 (SceCtrlData).
+#include <atomic>
 #include <chrono>
+#include <thread>
 #include "psp_memory.h"
 #include "psp_game_module.h"
 #include "psp_netplay.h"
@@ -32,6 +34,7 @@ uint32_t dissidia_tagteam_fighter_sig();   // tagteam.cpp
 int dissidia_tagteam_extra_actors(uint32_t out[4], uint32_t flags[4]);   // tagteam.cpp
 uint32_t dissidia_camera_manager();   // camera.cpp
 void psp_mem_watch_set(uint32_t addr);   // runtime psp_dispatch.cpp (diagnostic watch)
+extern uint32_t g_mem_watch_tag;
 uint32_t dissidia_libm_fingerprint();
 uint32_t dissidia_simmath_fingerprint();   // net_packs.cpp
 namespace {
@@ -278,6 +281,7 @@ void dump_snap(uint32_t bad, uint32_t frame);
 bool g_ring_dumped = false;
 void ring_frame(uint32_t frame) {
     if (!wide_on()) return;
+    ::g_mem_watch_tag = frame;
     if (const char* lw = std::getenv("PSPRECOMP_NETSYNC_LBWATCH")) {   // "<slot>:<hex offset>": watch that word of the slot fighter's lock block (re-armed when the block changes)
         static uint32_t armed = 0; const int sl = std::atoi(lw) & 1; const char* c = std::strchr(lw, ':'); const uint32_t off = c ? static_cast<uint32_t>(std::strtoul(c + 1, nullptr, 16)) : 0x280u;
         const uint32_t bt = r32(BATTLE_PTR), a = ok(bt) ? r32(bt + 56 + 4 * sl) : 0, lb = ok(a) ? r32(a + ACT_LOCKBLK) : 0;
@@ -353,8 +357,31 @@ static uint32_t g_ls_frame = 0;
 uint32_t dissidia_netplay_ls_frame() { return g_ls_frame; }   // the last delivered lock-step frame (0 = none yet); tagteam.cpp's KOLIST test aid keys on it with PSPRECOMP_TAGTEAM_KOLIST_LSFRAME=1
 void dissidia_netplay_note_rebuild(int slot, uint32_t frame) { const uint32_t bt = r32(BATTLE_PTR), a = ok(bt) ? r32(bt + 56 + 4 * (slot & 1)) : 0; g_rb_addr[slot & 1] = a; g_rb_until[slot & 1] = frame + 2; }
 void dissidia_netplay_ls_reset() { g_ls_frame = 0; g_rb_addr[0] = g_rb_addr[1] = 0; }   // a new lock-step battle starts (tagteam_net.cpp): no delivered frame yet
+int psp_dispatch_get_recent_funcs(uint32_t* out, int max);   // runtime psp_dispatch.cpp (needs PSPRECOMP_FUNC_TRACE=1)
+// PSPRECOMP_STALL_DUMP=1 (diagnostic, final10b: all five copies stopped delivering frames at 9811 for 35-100 s): a thread logs, once a second while no lock-step frame has been
+// delivered for 3 s, the game threads' last function entries (with PSPRECOMP_FUNC_TRACE=1), so the log says where the main thread sits.
+static std::atomic<int64_t> g_wd_ms{0}; static std::atomic<uint32_t> g_wd_frame{0};
+static int64_t wd_now() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+static void stall_watch_start() {
+    static bool started = false; if (started || !std::getenv("PSPRECOMP_STALL_DUMP")) return; started = true;
+    std::thread([] {
+        int64_t last_dump = 0; int dumps = 0;
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            const int64_t t = g_wd_ms.load(); if (!t) continue;
+            const int64_t el = wd_now() - t;
+            if (el < 3000) { last_dump = 0; dumps = 0; continue; }
+            if (wd_now() - last_dump < 2000 || dumps >= 12) continue;
+            last_dump = wd_now(); dumps++;
+            uint32_t f[64]; const int n = psp_dispatch_get_recent_funcs(f, 64);
+            std::string l; char b[16]; for (int i = std::max(0, n - 40); i < n; i++) { std::snprintf(b, sizeof b, " %08X", f[i]); l += b; }
+            std::fprintf(stderr, "[STALL] no lock-step frame for %.1f s after frame %u; recent functions (oldest first):%s\n", el / 1000.0, g_wd_frame.load(), l.c_str());
+        }
+    }).detach();
+}
 void dissidia_netplay_frame_delivered(uint32_t frame) {
     g_ls_frame = frame; g_hw_frame = frame;
+    stall_watch_start(); g_wd_frame = frame; g_wd_ms = wd_now();
     if (!g_ram) return;
     // The check's hashes (2 fighters x 4352 words, byte-wise FNV, plus a ~640 B packet) are taken every PSPRECOMP_NETSYNC_EVERY-th frame (default 1 = every frame; measured ~0.1% of a frame, so the saving is not worth halving detection; 2+ was for a phone
     // that is the online-only work of every logic frame; a difference is found at most one frame later). Every machine uses the frame number, so the compared
