@@ -118,9 +118,9 @@ uint32_t viewer_mask(uint32_t off) {   // bits of the word at `off` that are has
     default: {
         // +0xC40..+0xCF3 (final10: 5-device 5v5, "fighter1.blockC00" differing for 1 to 300 frames at a time between the team-1 humans (B, D) and the team-0 machines, nothing else of the 124 fields
         // differing: two arrays of 5 floats at +0xC40 and +0xC68, the same values on both sides but shifted by two entries, i.e. a history the update pushes one sample per call into, here two calls
-        // more on one side): view-side history, left out. PSPRECOMP_NETSYNC_C40_OLD=1: compared.
-        static const bool c40_old = std::getenv("PSPRECOMP_NETSYNC_C40_OLD") != nullptr;
-        if (!c40_old && off >= 0xC40 && off < 0xCF4) return 0;
+        // more on one side): writer / readers NOT yet found, so NOT proven view-side: only with PSPRECOMP_NETSYNC_MASK_C40=1 (diagnostic), default compared.
+        static const bool c40_mask = std::getenv("PSPRECOMP_NETSYNC_MASK_C40") != nullptr;
+        if (c40_mask && off >= 0xC40 && off < 0xCF4) return 0;
         return ((off >= 0x700 && off < 0x768) || (off >= 0xCF4 && off < 0xD00)) ? 0 : ~0u;
     }
     }
@@ -136,9 +136,9 @@ uint32_t hashed_word(uint32_t a, uint32_t off) {
     const uint32_t w = r32(a + off);
     // +0x3C4 of EVERY fighter holds a float whose upper 16 bits are leftovers of FPU registers / stack the vector routine of the update does not initialise (final10: 5-device 5v5, extra2
     // D5C39301 vs CC8AF333 for two frames, back in line the next: the only part0 word not tied to the motion counters; the same word as the rebuild case above, here on a parked extra).
-    // Only the low 16 bits are compared. PSPRECOMP_NETSYNC_3C4_OLD=1: the whole word.
-    static const bool w3c4_old = std::getenv("PSPRECOMP_NETSYNC_3C4_OLD") != nullptr;
-    if (off == 0x3C4u && !w3c4_old) return (ok(w) || psp_guest_user_ok(w, 4)) ? 0 : (w & 0xFFFFu);
+    // NOT proven non-simulation (writer / readers not found): off by default, PSPRECOMP_NETSYNC_MASK_3C4=1 compares only the low 16 bits (diagnostic).
+    static const bool w3c4_mask = std::getenv("PSPRECOMP_NETSYNC_MASK_3C4") != nullptr;
+    if (off == 0x3C4u && w3c4_mask) return (ok(w) || psp_guest_user_ok(w, 4)) ? 0 : (w & 0xFFFFu);
     return (ok(w) || psp_guest_user_ok(w, 4)) ? 0 : w & viewer_mask(off);   // a pointer (also into the high RAM, where a rebuilt fighter's files live) is not compared
 }
 // The lock block's two cursor fade values (+0x444 and +0x584, 0..0xFF, FF = fully shown; the lock-on cursors' alpha) are drawing state: the UI update steps them on
