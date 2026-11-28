@@ -3050,7 +3050,10 @@ bool ko_state(uint32_t a);
 // goes to 0.02 for ~2.3 s, then 0.2 for ~3.3 s, then back to 2.0 (the finish camera runs in the same phase). When the match goes on (tag flow) the KO swap / call-in waits for it
 // and the phase goes back to 3 afterwards (its state machine would otherwise leave channel 0 at 0.02 for ever). Row off: no wait, the phase and the channel are restored at once.
 // Battle state only (the same on every machine). Gives up after kFinMax ticks (the channel is released by hand then).
+extern bool g_decided;
+extern std::set<uint32_t> g_kd_held;
 bool finish_busy() {
+    { static const bool kt = std::getenv("PSPRECOMP_TAGTEAM_KO10_TEST") != nullptr; if (kt && g_bs && !g_kd_held.empty() && !g_decided) return true; }   // test aid (tt-ko10): the finish part of the busy test never ends for a fighter whose KO booking is held (what the 5 v 5 match showed)
     static uint32_t gen = ~0u; static float t0 = -1.f; static bool seen = false;
     if (gen != g_battle_gen) { gen = g_battle_gen; t0 = -1.f; seen = false; }
     if (!g_bs || !g_kocam || rd(g_bs + 72u) != 4u) { t0 = -1.f; seen = false; return false; }
@@ -7738,6 +7741,13 @@ void ko_oneround() {
         if (have && since_dead >= 0 && since_dead < 1500 && shown < 80) for (uint32_t o = 0; o < 0x1400; o += 4) { const uint32_t v = rd(g_bs + o); if (v != snap[o / 4] && o != 0x48 && o != 0x60 && shown < 80) { std::fprintf(stderr, "[BSDIFF] f+%d t=%.2f bs+%04X: %08X -> %08X\n", since_dead, a / 60.0f, o, snap[o / 4], v); shown++; } }
         for (uint32_t o = 0; o < 0x1400; o += 4) snap[o / 4] = rd(g_bs + o); have = true; (void)lastage;
     }
+    // KO10 (28 Nov, tt-ko10; 5 v 5 online: the slot fighter's tag-in never came, 46 min): the booking was gated by exb_busy(), whose finish_busy() part stays on while retail keeps re-requesting the finish for
+    // the held fighter (KOLOOP guard: phase 4 <-> 3, its 12 s cap restarts at every 3), so kd_hold() was never reached, the KODESPAWN hold never ended and the guard kept the finish off for ever. A held fighter
+    // whose kill cam is over is no longer held by the finish part (a running / coming EX Burst still holds). PSPRECOMP_TAGTEAM_KO10_OLD=1: old.
+    auto ko10_busy = [&](uint32_t S) -> bool { static const bool off = std::getenv("PSPRECOMP_TAGTEAM_KO10_OLD") != nullptr;
+        const bool b = exb_busy(); if (off || !b) return b;
+        if (g_exbdbg_why == 2 && g_kd_held.count(S) && !killcam_running()) { static uint32_t lg = 0; if (g_log && lg != S) { lg = S; std::fprintf(stderr, "[KO10] t=%.2fs slot fighter %08X: the finish part of the busy test no longer holds its booking (kill cam over)\n", dissidia_battle_age() / 60.0f, S); } return false; }
+        return b; };
     static uint32_t prev_bs = 0; static bool handled[2] = {false, false}; static uint8_t lastStock[2] = {1, 1};
     if (prev_bs != g_battle_gen) { prev_bs = g_battle_gen; handled[0] = handled[1] = false; g_ahead.clear(); g_downrec.clear(); g_slot_callin.clear(); g_sp_wait.clear(); g_phase_hold_until = -1; g_ko_mark.clear(); g_park.clear(); g_ffa_down.clear(); g_called[0] = g_called[1] = 0; g_down.clear(); g_ko_swap_at.clear(); g_defeat_hold.clear(); g_decided = false; g_pair_defer = false; if (g_intro_obj) for (uint32_t o = 0; o < 16; o += 4) wr(g_intro_obj + o, 0); g_intro_free_at = 0.f; }
     // The battle is decided once a slot fighter goes down with nobody on its side to take over and no reserve: from then on the retail finish, the
@@ -7799,11 +7809,11 @@ void ko_oneround() {
                     if ((sc < 1200 || sc >= 1300) && !std::getenv("PSPRECOMP_TAGTEAM_NODEFEAT")) { wr(S + 0x380u, rd(S + 0x380u) | 2u); const uint32_t sp0 = static_cast<uint32_t>(g_ctx->r[29]); g_ctx->r[29] = static_cast<int32_t>(sp0 - 0x40u); g_ctx->f[12] = 0.0f; g_ctx->f[13] = 0.0f; call(START_ACTION, S + 304u, 1210u, 0); g_ctx->r[29] = static_cast<int32_t>(sp0); }
                     continue;
                 }
-                if (exb_busy()) continue;   // a tag-in waits for any EX Burst (the fall keeps playing, the AI gated)
+                if (ko10_busy(S)) continue;   // a tag-in waits for any EX Burst (the fall keeps playing, the AI gated)
                 if (kd_hold()) continue;
                 g_ko_swap_at.erase(it);
             }
-            else if (exb_busy() || dissidia_battle_age() < g_kolist_late || kd_hold()) continue;   // (test aid KOLIST_LATE: books after the finish has started, like a natural lethal hit)
+            else if (ko10_busy(S) || dissidia_battle_age() < g_kolist_late || kd_hold()) continue;   // (test aid KOLIST_LATE: books after the finish has started, like a natural lethal hit)
         }
         handled[k] = true;
         // Forfeit (pause > Forfeit > YES): retail runs the fall script (1210) on the human's slot fighter and the finish phase (bs+72 = 4) with the HP untouched
@@ -8311,7 +8321,8 @@ bool ffa_held_ko_only() {
     if (!(ffa_now() && !g_ffa_down.empty()) && (pairold || (g_slot_callin.empty() && g_rebuild.empty() && g_kd_held.empty()))) return false;
     bool any = false;
     for (uint32_t k = 0; k < 2; k++) { const uint32_t a = srd(g_bs + 56u + 4u * k); if (!ok(a, 0x12D0) || !(hp_eff(a) <= 0 || ko_state(a))) continue;
-        bool parked = std::find(g_ffa_down.begin(), g_ffa_down.end(), a) != g_ffa_down.end() || (!pairold && is_rebuilding(a)); if (g_kd_held.count(a)) parked = true;   // KODESPAWN: booking waits for the kill cam if (!pairold) for (const SlotCallin& c : g_slot_callin) if (c.S == a) parked = true;
+        bool parked = std::find(g_ffa_down.begin(), g_ffa_down.end(), a) != g_ffa_down.end() || (!pairold && is_rebuilding(a)); if (g_kd_held.count(a)) parked = true;   // KODESPAWN: booking waits for the kill cam
+        if (!pairold) for (const SlotCallin& c : g_slot_callin) if (c.S == a) parked = true;
         if (!parked) return false; any = true; }
     return any;
 }
