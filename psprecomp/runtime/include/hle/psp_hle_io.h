@@ -45,6 +45,9 @@ struct PspFileDesc {
     // Overlay-read tag (PspIoPolicy::classify_open). Non-zero routes reads on
     // this fd through PspIoPolicy::overlay_read before touching the host fd.
     int overlay_tag = 0;
+    // Opened with PSP_O_NPDRM (0x40000000): downloadable content. Its completion callback is not run inside sceIoSetAsyncCallback
+    // (see hle_sceIoSetAsyncCallback) but at the game's next callback check, as on the PSP.
+    bool npdrm_open = false;
 };
 
 // Initialize I/O subsystem
@@ -106,6 +109,10 @@ struct PspIoPolicy {
     /// host path psp_path_to_host made for a disc0: / umd0: path; return the path to use instead, or "" to
     /// keep it. Applies to every use of the path (open, stat, directory listing), so sizes stay consistent.
     std::string (*remap_disc_path)(const std::string& host_path);
+    /// The same for the memory stick: called with the host path psp_path_to_host made for an ms0: path; return the
+    /// path to use instead, or "" to keep it (Dissidia: downloadable content kept in a mod folder, files found by a
+    /// case-insensitive name). Applies to every use of the path.
+    std::string (*remap_ms_path)(const std::string& host_path);
 };
 void psp_io_set_policy(const PspIoPolicy& policy);
 

@@ -113,7 +113,10 @@ PspFrameRateHook g_fps{nullptr, 0, nullptr, nullptr};
 PspVoiceHook g_voice{nullptr};
 std::vector<PspDebugToggle> g_dbg_toggles;   // game-supplied Debug page rows
 PspTexPackHook g_texpack{nullptr};
-PspModInstaller g_installer{};
+std::vector<PspModInstaller> g_installers;   // Mods page: one Install row each (an ISO patch, a DLC folder, a DLC zip ...)
+int g_install_cur = 0;                       // the installer whose picker is open / that is working
+std::vector<unsigned> g_inst_rev;
+std::vector<char> g_inst_busy;
 int g_uninstall_pick = 0;               // which installed mod folder the Uninstall row names
 std::vector<PspTexPack> g_texpacks;     // the installed texture packs (texpacks_refresh)
 int g_texdel_pick = 0;                  // which pack the Delete a Texture Pack row names
@@ -208,7 +211,7 @@ enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_FPSCOUNT, ROW_VSYNC, RO
            ROW_SUB_ENV0, ROW_SUB_ENV_END = ROW_SUB_ENV0 + 15,   // Debug page: one row per developer-options category (psp_env_options.inc)
            ROW_ENV0, ROW_ENV_END = ROW_ENV0 + 63,               // a developer-options category page: one row per environment variable
            ROW_MOD0, ROW_MOD_END = ROW_MOD0 + 31, ROW_MODS_NONE,   // Mods page: one toggle per mod folder, or a note when there are none
-           ROW_MOD_INSTALL, ROW_MOD_INSTALL_STATUS,                // Mods page: install a mod from a file (a game module's PspModInstaller)
+           ROW_MOD_INSTALL, ROW_MOD_INSTALL_END = ROW_MOD_INSTALL + 3, ROW_MOD_INSTALL_STATUS,   // Mods page: install a mod from a file / folder (a game module's PspModInstaller, up to 4), and how it went
            ROW_MOD_UNINSTALL,                                       // Mods page: delete an installed mod folder (pick, then confirm twice)
            ROW_TEXPACK_DEL,                                         // Graphics page: delete an installed texture pack (pick, then confirm twice)
            ROW_TEXPACK_INSTALL, ROW_TEXPACK_INSTALL_STATUS,         // Graphics page: install a pack archive with the file picker, and how it went
@@ -858,12 +861,17 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
         switch (r) {
         case ROW_SEC_DEV: m.label = "Developer options"; break;
         case ROW_SEC_MODS: m.label = "Installed mods"; break;
-        case ROW_MOD_INSTALL:
-            m.label = g_installer.label ? g_installer.label : "";
-            m.value = g_install_busy ? "working..." : g_install_picking ? "choosing..." : "";
-            m.help = std::string(g_installer.help ? g_installer.help : "") +
-                     (psp_filedlg::available() ? "" : std::string("\nThis system has no file picker: put the file in the mods folder (") + mods_dir_path() + ") and choose this again.");
+        case ROW_MOD_INSTALL: case ROW_MOD_INSTALL + 1: case ROW_MOD_INSTALL + 2: case ROW_MOD_INSTALL_END: {
+            const size_t i = size_t(r - ROW_MOD_INSTALL);
+            if (i >= g_installers.size()) break;
+            const PspModInstaller& in = g_installers[i];
+            m.label = in.label ? in.label : "";
+            m.value = g_install_busy ? (g_install_cur == int(i) ? "working..." : "") : g_install_picking && g_install_cur == int(i) ? "choosing..." : "";
+            m.help = std::string(in.help ? in.help : "") +
+                     (psp_filedlg::available() ? "" : in.pick == 0 ? std::string("\nThis system has no file picker: put the file in the mods folder (") + mods_dir_path() + ") and choose this again."
+                                                                  : std::string("\nThis system has no file picker, so this cannot be chosen here."));
             break;
+        }
         case ROW_MOD_UNINSTALL: {
             const std::vector<size_t> v = uninstallable();
             if (g_uninstall_pick >= int(v.size())) g_uninstall_pick = 0;
@@ -1748,7 +1756,7 @@ psp_sddialog::SetKind row_kind(Row r) {
     case ROW_FPSCOUNT: case ROW_VSYNC: case ROW_WIDE: case ROW_TALL: case ROW_SOFT: case ROW_UPDATES: case ROW_NET_UPNP: case ROW_NET_PING: case ROW_DISCORD: case ROW_HDR: case ROW_HDR_SCENE: case ROW_CLOUD_AUTO:
     case ROW_CLOUD_REPLAYS: case ROW_PERF: case ROW_FX: case ROW_GLOWSOFT: case ROW_GLOWPASS:
     case ROW_FXL_INT: case ROW_FXL_RAD: case ROW_RT_CHAR: case ROW_LR_BUTTONS: return K::Choice;   // Character Shadows: Off / Soft (named values, not a switch)
-    case ROW_TEST_CTRL: case ROW_TOUCH_EDIT: case ROW_CLOUD_NOW: case ROW_CLOUD_GOOGLE: case ROW_GPU_DEL: case ROW_MOD_INSTALL: case ROW_TEXPACK_INSTALL: case ROW_TEXPACK_DOWNLOAD: return K::Action;
+    case ROW_TEST_CTRL: case ROW_TOUCH_EDIT: case ROW_CLOUD_NOW: case ROW_CLOUD_GOOGLE: case ROW_GPU_DEL: case ROW_MOD_INSTALL: case ROW_MOD_INSTALL + 1: case ROW_MOD_INSTALL + 2: case ROW_MOD_INSTALL_END: case ROW_TEXPACK_INSTALL: case ROW_TEXPACK_DOWNLOAD: return K::Action;
     case ROW_MOD_UNINSTALL: case ROW_TEXPACK_DEL: case ROW_TEXPACK: return K::Choice;
     case ROW_QUIT: return K::Danger;
     case ROW_SUB_HDR: case ROW_SUB_RT: return K::Submenu;
@@ -2645,8 +2653,8 @@ void build_rows() {
     }
     case PAGE_MODS:
         mods_load();
-        if (g_installer.label) {
-            add(ROW_MOD_INSTALL);
+        if (!g_installers.empty()) {
+            for (size_t i = 0; i < g_installers.size(); i++) add(Row(ROW_MOD_INSTALL + int(i)));
             if (!g_install_text.empty()) add(ROW_MOD_INSTALL_STATUS);
         }
         add(ROW_SEC_MODS);
@@ -3062,13 +3070,15 @@ void mod_uninstall_confirm() {
     g_dirty = true;
 }
 
-// ---- Mods page: install a mod from a file (PspModInstaller) --------------------------------------------------------------
+// ---- Mods page: install a mod from a file or folder (PspModInstaller) ---------------------------------------------------
 void mod_install_start(const std::string& path) {
-    if (g_installer.start && g_installer.start(path)) g_install_busy = true;
+    if (g_install_cur >= 0 && g_install_cur < int(g_installers.size()) && g_installers[size_t(g_install_cur)].start && g_installers[size_t(g_install_cur)].start(path)) g_install_busy = true;
     g_dirty = true;
 }
-void mod_install_choose() {
-    if (g_install_busy || g_install_picking || !g_installer.start) return;
+void mod_install_choose(int which) {
+    if (which < 0 || which >= int(g_installers.size()) || g_install_busy || g_install_picking || !g_installers[size_t(which)].start) return;
+    const PspModInstaller& in = g_installers[size_t(which)];
+    g_install_cur = which;
     if (psp_filedlg::available()) {
         psp_filedlg::set_scratch_dir(mods_dir_path() + "/.picked");   // Android copies the picked document here
         std::string start_dir;   // mods are usually downloaded: start in Downloads when there is one
@@ -3079,7 +3089,8 @@ void mod_install_choose() {
             const std::string d = std::string(home) + "/Downloads";
             if (std::filesystem::is_directory(std::filesystem::u8path(d), ec)) start_dir = d;
         }
-        if (psp_filedlg::start(psp_filedlg::Kind::ImportPatch, g_installer.dialog_title ? g_installer.dialog_title : "Choose a file", start_dir)) g_install_picking = true;
+        const psp_filedlg::Kind kind = in.pick == 1 ? psp_filedlg::Kind::ImportFolder : in.pick == 2 ? psp_filedlg::Kind::ImportArchive : psp_filedlg::Kind::ImportPatch;
+        if (psp_filedlg::start(kind, in.dialog_title ? in.dialog_title : "Choose a file", start_dir)) g_install_picking = true;
         g_dirty = true;
         return;
     }
@@ -3088,18 +3099,24 @@ void mod_install_choose() {
     std::error_code ec;
     fs::path best;
     fs::file_time_type best_t{};
-    const std::string ext = g_installer.extension ? g_installer.extension : "";
-    for (const auto& e : fs::directory_iterator(fs::u8path(mods_dir_path()), ec)) {
-        std::string n = e.path().filename().u8string();
-        if (ext.empty() || n.size() < ext.size()) continue;
-        std::string tail = n.substr(n.size() - ext.size());
-        for (char& c : tail) c = char(std::tolower((unsigned char)c));
-        if (tail != ext || !e.is_regular_file(ec)) continue;
-        const auto t = e.last_write_time(ec);
-        if (best.empty() || t > best_t) { best = e.path(); best_t = t; }
+    const std::string ext = in.extension ? in.extension : "";
+    if (in.pick == 0 || in.pick == 2) {
+        for (const auto& e : fs::directory_iterator(fs::u8path(mods_dir_path()), ec)) {
+            std::string n = e.path().filename().u8string();
+            if (ext.empty() || n.size() < ext.size()) continue;
+            std::string tail = n.substr(n.size() - ext.size());
+            for (char& c : tail) c = char(std::tolower((unsigned char)c));
+            if (tail != ext || !e.is_regular_file(ec)) continue;
+            const auto t = e.last_write_time(ec);
+            if (best.empty() || t > best_t) { best = e.path(); best_t = t; }
+        }
+        if (!best.empty()) { mod_install_start(best.u8string()); return; }
+        g_install_text = "This system has no file picker: put the " + ext + " file in " + mods_dir_path() + " and choose this again.";
+    } else {
+        g_install_text = "This system has no file picker: install it from a computer with the game's setup, or copy the folder into " + mods_dir_path() + "/_dlc_import and choose this again.";
+        const std::string drop = mods_dir_path() + "/_dlc_import";
+        if (std::filesystem::is_directory(fs::u8path(drop), ec)) { mod_install_start(drop); return; }
     }
-    if (!best.empty()) { mod_install_start(best.u8string()); return; }
-    g_install_text = "This system has no file picker: put the " + ext + " file in " + mods_dir_path() + " and choose this again.";
     g_sel_page[page_id()] = g_sel;
     build_rows();
     g_dirty = true;
@@ -3120,14 +3137,25 @@ void mod_install_tick() {
         default: break;
         }
     }
-    unsigned rev = 0;
-    bool busy = false;
+    if (g_inst_rev.size() != g_installers.size()) { g_inst_rev.assign(g_installers.size(), 0); g_inst_busy.assign(g_installers.size(), 0); }
+    bool changed = false, any_busy = false, finished = false;
     std::string text;
-    if (g_installer.status) g_installer.status(&rev, &busy, &text);
-    if (rev == g_install_rev && busy == g_install_busy) return;
-    const bool finished = g_install_busy && !busy, had = !g_install_text.empty();
-    g_install_rev = rev;
-    g_install_busy = busy;
+    for (size_t i = 0; i < g_installers.size(); i++) {
+        unsigned rev = 0;
+        bool busy = false;
+        std::string t;
+        if (g_installers[i].status) g_installers[i].status(&rev, &busy, &t);
+        any_busy = any_busy || busy;
+        if (rev == g_inst_rev[i] && busy == bool(g_inst_busy[i])) continue;
+        if (g_inst_busy[i] && !busy) finished = true;
+        g_inst_rev[i] = rev;
+        g_inst_busy[i] = busy ? 1 : 0;
+        if (!t.empty()) text = t;
+        changed = true;
+    }
+    if (!changed) return;
+    const bool had = !g_install_text.empty();
+    g_install_busy = any_busy;
     if (!text.empty()) g_install_text = text;
     if (finished) { std::error_code ec; std::filesystem::remove_all(std::filesystem::u8path(mods_dir_path() + "/.picked"), ec); }
     if (finished || had != !g_install_text.empty()) { g_sel_page[page_id()] = g_sel; build_rows(); }   // the new mod's row, the status row
@@ -3258,7 +3286,7 @@ void confirm_row() {
         break;
     case ROW_CLOUD_STATUS: break;
     case ROW_MOD_INSTALL_STATUS: break;
-    case ROW_MOD_INSTALL: mod_install_choose(); return;
+    case ROW_MOD_INSTALL: case ROW_MOD_INSTALL + 1: case ROW_MOD_INSTALL + 2: case ROW_MOD_INSTALL_END: mod_install_choose(g_rows[size_t(g_sel)] - ROW_MOD_INSTALL); return;
     case ROW_TEXPACK_INSTALL: texpack_install_choose(); return;
     case ROW_TEXPACK_DOWNLOAD: texpack_download_start(); return;
     case ROW_MOD_UNINSTALL: mod_uninstall_confirm(); return;
@@ -3540,7 +3568,8 @@ void psp_settings_add_debug_toggle(const PspDebugToggle& t) {
     if (t.group && std::find(g_dbg_groups.begin(), g_dbg_groups.end(), t.group) == g_dbg_groups.end() && g_dbg_groups.size() < size_t(ROW_GRP_END - ROW_GRP0 + 1)) g_dbg_groups.push_back(t.group);
 }
 void psp_settings_set_texpack_hook(const PspTexPackHook& hook) { g_texpack = hook; }
-void psp_settings_set_mod_installer(const PspModInstaller& inst) { g_installer = inst; }
+void psp_settings_set_mod_installer(const PspModInstaller& inst) { g_installers.assign(1, inst); }
+void psp_settings_add_mod_installer(const PspModInstaller& inst) { if (g_installers.size() < 4) g_installers.push_back(inst); }
 
 void psp_settings_load_early() {
     const char* e = std::getenv("PSPRECOMP_SETTINGS_MENU");
@@ -3907,7 +3936,7 @@ void psp_settings_tick() {
             g_dirty = true;
         }
     }
-    if (page_id() == PAGE_MODS && g_installer.label) mod_install_tick();
+    if (page_id() == PAGE_MODS && !g_installers.empty()) mod_install_tick();
     if (g_tpi_picking || g_tpi_busy || g_tpi_finished) texpack_install_tick();
     if (page_id() == PAGE_SAVES && g_saves_env && !g_edit.active) {   // file window answers, cloud status, questions
         g_saves.set_sel(g_sel);              // (before tick: an answer from the file window may open another level with its own cursor)

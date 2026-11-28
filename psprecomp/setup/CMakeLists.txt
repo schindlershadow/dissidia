@@ -36,6 +36,7 @@ execute_process(COMMAND ${CMAKE_COMMAND} -DFONT_DIR=${RT}/assets/fonts -DOUT=${F
 
 add_executable(psprecomp_setup
     setup_main.cpp install.cpp extras.cpp proc.cpp payload.cpp third_party/miniz.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../games/dissidia/runtime/dlc_import.cpp
     ${RT}/src/hle/psp_savedata_dialog.cpp ${RT}/src/hle/psp_savemgr.cpp ${RT}/src/hle/psp_savebackup.cpp ${RT}/src/hle/psp_savedata_crypto.cpp
     ${RT}/src/psp_report.cpp ${RT}/src/hle/psp_http.cpp ${CACERT_CPP}
     ${FONTS_CPP})

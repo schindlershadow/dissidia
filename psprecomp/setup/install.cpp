@@ -470,6 +470,14 @@ static void append_extras(std::vector<Step>& p, const Layout& l, const std::stri
         v.weight = 0.01;
         p.push_back(v);
     }
+    if (!o.import_dlc.empty()) {
+        Step v;
+        v.label = "Importing the DLC";
+        v.explain = "Copies Dissidia 012's downloadable content into the game as a mod (Settings > Mods turns it on and off). The originals are not changed.";
+        v.argv = {l.self, "--import-dlc", o.import_dlc, "--dir", workdir};
+        v.weight = 0.02;
+        p.push_back(v);
+    }
 }
 
 std::vector<Step> plan_install(const Layout& l, const std::string& iso, const std::string& workdir, const Options& o) {

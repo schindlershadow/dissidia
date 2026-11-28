@@ -14,6 +14,8 @@
 //   psprecomp_setup --headless --iso FILE --dir DIR   the install steps without a window (prints the output; for scripts/tests)
 //   psprecomp_setup --headless ... --saves SAVEDATA   also import the saves of a SAVEDATA folder
 //   psprecomp_setup --headless ... --extra KEY=VALUE  turn on an extra / give its disc (repeatable; e.g. d1_moves=1 d1_iso=FILE)
+//   psprecomp_setup --headless ... --dlc GAMEFOLDER   also import Dissidia 012's DLC (PSP/GAME/<id>: the .edat files) as a mod
+//   psprecomp_setup --import-dlc GAMEFOLDER --dir DIR  copy the DLC into an install (an install step; no window)
 //   psprecomp_setup --import-saves SAVEDATA --dir DIR  copy Dissidia 012 saves into an install (an install step; no window)
 //   psprecomp_setup --root DIR               use DIR as the release folder instead of this program's folder
 //   psprecomp_setup --report "TEXT" [--dir DIR] [--report-step "WHAT FAILED"]   send a "Report an issue" without a window (tests; PSPRECOMP_REPORT_URL picks the service)
@@ -37,6 +39,7 @@
 #include "../runtime/src/hle/psp_savedata_dialog.h"
 #include "../runtime/src/hle/psp_savemgr.h"
 #include "../runtime/include/psp_report.h"
+#include "../games/dissidia/runtime/dlc_import.h"
 #include "install.h"
 #include "extras.h"
 #include "../runtime/include/psp_app_icon_installer.h"   // the wizard has its own icon, not the game's
@@ -249,6 +252,7 @@ struct App {
     setup::Options opt;
     std::vector<psp_savemgr::Source> save_sources;   // PPSSPP / memory sticks that hold Dissidia 012 saves (found when Options opens)
     bool save_sources_scanned = false;
+    std::vector<dissidia_dlc::Source> dlc_sources;   // PPSSPP / memory sticks that hold Dissidia 012's DLC (found with the saves)
     bool rebuild_only = false;
     bool android_inst = false;   // the running plan is the Android device install
     bool updating = false;
@@ -301,7 +305,7 @@ struct App {
 
     // Every page is drawn by the game's Settings screen renderer. The extras' rows come from the shared list (setup/extras.cpp, also the
     // Android app's), then the desktop's own options.
-    enum OptKind { OR_EXTRA, OR_UPDATES, OR_ANDROID, OR_SAVES, OR_STEAM, OR_FOLDER, OR_START, OR_BACK };
+    enum OptKind { OR_EXTRA, OR_UPDATES, OR_ANDROID, OR_SAVES, OR_DLC, OR_STEAM, OR_FOLDER, OR_START, OR_BACK };
     struct OptRow {
         OptKind kind;
         std::string extra;   // OR_EXTRA: its key
@@ -319,6 +323,7 @@ struct App {
         }
         r.push_back({OR_ANDROID, ""});
         r.push_back({OR_SAVES, ""});
+        r.push_back({OR_DLC, ""});
         r.push_back({OR_STEAM, ""});
         if (!extras_mode) {
             r.push_back({OR_UPDATES, ""});
@@ -480,6 +485,8 @@ struct App {
             bool an = setup::feature_available(layout, "android");
             if (!save_sources_scanned) {
                 save_sources = psp_savemgr::detect_sources(true);
+                dlc_sources = dissidia_dlc::detect();
+                if (opt.import_dlc.empty() && !dlc_sources.empty()) opt.import_dlc = dlc_sources[0].path;   // found: import it unless the player turns it off
                 save_sources_scanned = true;
             }
             for (OptRow k : option_rows()) {
@@ -503,6 +510,18 @@ struct App {
                         sv.can_dec = sv.can_inc = true;
                     } else sv.help = "No PPSSPP or memory stick saves of Dissidia 012 were found. You can import saves later in the game (Triangle in the save list).";
                     p.rows.push_back(sv);
+                    break;
+                }
+                case OR_DLC: {
+                    MenuRow dl = row("Import DLC", "", "None found");
+                    if (!dlc_sources.empty()) {
+                        dl.help = "Copies Dissidia 012's downloadable content (extra costumes, music, Aerith's unlock) from PPSSPP or a PSP memory stick into the game as a mod, whatever the region. The originals are not changed. Settings > Mods in the game turns it on and off, and installs it later from a folder or a zip.";
+                        dl.value = "Off";
+                        for (auto& src : dlc_sources)
+                            if (src.path == opt.import_dlc) dl.value = src.label + " (" + std::to_string(src.files) + " files)";
+                        dl.can_dec = dl.can_inc = true;
+                    } else dl.help = "No PPSSPP or memory stick with Dissidia 012's DLC was found. You can install it later in the game: Settings > Mods > Install DLC (from a folder or a zip).";
+                    p.rows.push_back(dl);
                     break;
                 }
                 case OR_STEAM:
@@ -1094,6 +1113,13 @@ struct App {
             if (save_sources.empty()) opt.import_saves.clear();
             break;
         }
+        case OR_DLC: {   // Off -> each detected source -> Off
+            size_t i = 0;
+            if (!opt.import_dlc.empty()) { while (i < dlc_sources.size() && dlc_sources[i].path != opt.import_dlc) i++; i++; }
+            opt.import_dlc = i < dlc_sources.size() ? dlc_sources[i].path : "";
+            if (dlc_sources.empty()) opt.import_dlc.clear();
+            break;
+        }
         default: break;
         }
         dirty = true;
@@ -1579,7 +1605,7 @@ void write_ppm(const Canvas& c, const std::string& path) {
     std::fclose(f);
 }
 
-int run_headless(const setup::Layout& l, const std::string& iso, const std::string& dir, const std::string& saves,
+int run_headless(const setup::Layout& l, const std::string& iso, const std::string& dir, const std::string& saves, const std::string& dlc,
                  const std::vector<std::pair<std::string, std::string>>& extras) {
     std::string prob = l.problem();
     if (!prob.empty()) { std::fprintf(stderr, "error: %s\n", prob.c_str()); return 2; }
@@ -1587,6 +1613,7 @@ int run_headless(const setup::Layout& l, const std::string& iso, const std::stri
     fs::create_directories(dir, ec);
     setup::Options o;
     o.import_saves = saves;
+    o.import_dlc = dlc;
     for (const auto& kv : extras) o.set(kv.first, kv.second);
     auto plan = setup::plan_install(l, iso, dir, o);
     setup::Progress prog;
@@ -1686,6 +1713,14 @@ static int import_saves_cli(const std::string& from, const std::string& workdir)
     return failed ? 1 : 0;
 }
 
+// --import-dlc FROM --dir DIR: copy the DLC files (.edat) under FROM (a PSP/GAME/<id> folder) into DIR/mods as the mod Dissidia 012 DLC.
+// Run by the install plan as a step; no window.
+static int import_dlc_cli(const std::string& from, const std::string& workdir) {
+    const dissidia_dlc::Result r = dissidia_dlc::import_folder(from, (fs::path(workdir) / "mods").string());
+    std::printf("%s\n", r.text.c_str());
+    return r.ok ? 0 : 1;
+}
+
 // Unpacks the bundled release, with a small window that only shows a progress bar (title carries the text).
 static std::string unpack_payload_with_window(const std::filesystem::path& exe, const setup::Payload& pl,
                                               const std::filesystem::path& dest, bool quiet) {
@@ -1734,7 +1769,7 @@ static std::string unpack_payload_with_window(const std::filesystem::path& exe, 
 
 int main(int argc, char** argv) {
     attach_parent_console();
-    std::string root, iso, dir, play_dir, shots, import_from, saves_from;
+    std::string root, iso, dir, play_dir, shots, import_from, saves_from, import_dlc_from, dlc_from;
     bool autostart = false;
     bool headless = false, play = false, launch = false;
     std::string unpack_to, report_text, report_step;
@@ -1747,6 +1782,8 @@ int main(int argc, char** argv) {
         else if (a == "--dir") next(dir);
         else if (a == "--import-saves") next(import_from);
         else if (a == "--saves") next(saves_from);
+        else if (a == "--import-dlc") next(import_dlc_from);
+        else if (a == "--dlc") next(dlc_from);
         else if (a == "--unpack") next(unpack_to);   // single-file release: unpack the bundled release folder there and exit
         else if (a == "--headless") headless = true;
         else if (a == "--autostart") autostart = true;   // test aid: with --iso and --dir, open the window straight on the install (as if Start installing was chosen)
@@ -1766,6 +1803,10 @@ int main(int argc, char** argv) {
     if (!import_from.empty()) {
         if (dir.empty()) { std::fprintf(stderr, "--import-saves needs --dir DIR\n"); return 2; }
         return import_saves_cli(import_from, dir);
+    }
+    if (!import_dlc_from.empty()) {
+        if (dir.empty()) { std::fprintf(stderr, "--import-dlc needs --dir DIR\n"); return 2; }
+        return import_dlc_cli(import_dlc_from, dir);
     }
     SDL_SetMainReady();
     // Single-file release: the release folder is appended to this program (payload.h); unpack it once, then run from there.
@@ -1801,7 +1842,7 @@ int main(int argc, char** argv) {
     if (!report_text.empty()) return run_report_cli(layout, dir, report_text, report_step);
     if (headless) {
         if (iso.empty() || dir.empty()) { std::fprintf(stderr, "--headless needs --iso FILE and --dir DIR\n"); return 2; }
-        return run_headless(layout, iso, dir, saves_from, extras);
+        return run_headless(layout, iso, dir, saves_from, dlc_from, extras);
     }
     if (play) {
         std::string wd = play_dir.empty() ? state.workdir : play_dir;

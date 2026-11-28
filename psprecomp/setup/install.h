@@ -44,6 +44,7 @@ struct Options {
     bool android = false;               // also build the Android version (desktop)
     bool steam = false;                 // add the game to the Steam library (desktop; Steam is closed and reopened for a moment)
     std::string import_saves;           // a SAVEDATA folder to copy the player's Dissidia 012 saves from (empty = none; desktop)
+    std::string import_dlc;             // a PSP/GAME/<id> folder to copy Dissidia 012's DLC (.edat files) from, installed as a mod (empty = none; desktop)
     std::map<std::string, std::string> extras;   // extra key -> value ("1" / "0" or a choice); a second disc's path under its disc key
     std::string get(const std::string& key) const;   // the value, else the extra's default ("" for an unknown key)
     bool on(const std::string& key) const { return get(key) == "1"; }
