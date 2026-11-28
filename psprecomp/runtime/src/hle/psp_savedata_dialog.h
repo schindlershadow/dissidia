@@ -359,6 +359,7 @@ public:
     const std::u16string& text() const { return text_; }
     uint32_t revision() const { return rev_; }
     void render(Canvas& c) const;
+    bool pointer(float x, float y, bool click);   // mouse: select (and with `click` press) the key under x, y (design units); false = not over a key
 
 private:
     std::u16string title_, text_;

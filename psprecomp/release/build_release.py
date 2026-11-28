@@ -124,11 +124,20 @@ def main():
     android_part = None
     if a.android_sdk:
         android_part = os.path.join(work, "android-part")
+        stamp = os.path.join(android_part, "java.sha1")   # the skeleton's extra Java sources (android/game_java): a change rebuilds the part
+        import glob, hashlib
+        h = hashlib.sha1()
+        for f in sorted(glob.glob(os.path.join(REPO, "android", "game_java", "**", "*.java"), recursive=True)):
+            h.update(os.path.relpath(f, REPO).encode()); h.update(open(f, "rb").read())
+        if os.path.isfile(os.path.join(android_part, "android.json")) and (open(stamp).read().strip() if os.path.isfile(stamp) else "") != h.hexdigest():
+            print("build_release: android/game_java changed since the Android part was built: rebuilding it")
+            shutil.rmtree(android_part)
         if not os.path.isfile(os.path.join(android_part, "android.json")):
             run([sys.executable, "-I", os.path.join(HERE, "build_android_sdk.py"), "--sdk", a.android_sdk, "--cache", os.path.join(work, "cache"),
                  "--cmake", shutil.which("cmake", path=env["PATH"]) if not cross else os.path.join(bundle + ".host", "cmake", "bin", "cmake"),
                  "--ninja", shutil.which("ninja", path=env["PATH"]),
                  "--stub", os.path.join(stub, "out"), "--work", os.path.join(work, "android-work"), "--out", android_part], env=env)
+            open(stamp, "w").write(h.hexdigest() + "\n")
 
     # 5. assemble
     cmd = [sys.executable, "-I", os.path.join(HERE, "assemble.py"), "--platform", plat, "--version", a.version,

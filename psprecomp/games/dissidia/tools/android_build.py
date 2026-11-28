@@ -13,6 +13,7 @@ import concurrent.futures
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import stat
@@ -165,7 +166,104 @@ def pack_apk(adir, work, libmain, run, say, env):
 
 # --------------------------------------------------------------------------------------------------------------- on the phone
 
-def device_build(adir, work, jobs, say, tag, die):
+# The cold batches' flags (measured, see games/dissidia/docs/native-build.md "Fast build"): -O1 compiles as slowly as -O2 on this code (huge straight-line
+# functions: the time is in the inliner and the back end), -O0 is slower still (41 MB objects); -Os with no inlining is the cheapest and the smallest.
+COLD_OPT = "-Os -fno-inline"
+HOT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hot_funcs.txt")
+
+
+def build_profile(work):
+    """("fast" | "full", the cold files' -O level) for the phone's own build. PSPRECOMP_BUILD_PROFILE, else <work>/build_profile.txt
+    (written by the setup app), else fast. PSPRECOMP_COLD_OPT (-O1 / -O0) is for measuring."""
+    p = os.environ.get("PSPRECOMP_BUILD_PROFILE", "").strip().lower()
+    if not p:
+        try:
+            p = open(os.path.join(work, "build_profile.txt")).read().strip().lower()
+        except OSError:
+            p = ""
+    if p != "full":
+        p = "fast"
+    cold = os.environ.get("PSPRECOMP_COLD_OPT", COLD_OPT)
+    return p, (cold if cold in ("-O0", "-O1", "-Os", COLD_OPT) else COLD_OPT)
+
+
+def hot_functions():
+    """tools/hot_funcs.txt: {group: set of entry addresses} of the functions that run a lot; group = out (the EBOOT) or an overlay name.
+    No file = nothing known: every batch is hot (the same as Full)."""
+    d = {}
+    try:
+        for l in open(HOT_FILE):
+            t = l.split()
+            if len(t) == 2 and not l.startswith("#"):
+                d.setdefault(t[0], set()).add(int(t[1], 16))
+    except OSError:
+        return None
+    return d or None
+
+
+def src_is_batch(src):
+    return os.path.basename(src).startswith("batch_")
+
+
+_FUNC_RE = re.compile(rb"^RECOMP_FUNC void \w+\(.*\{ /\* 0x([0-9A-Fa-f]{8}) \*/", re.M)
+
+
+def batch_is_hot(src, work, hot):
+    """Does this generated batch file hold a function of the hot list? (by the entry addresses in the file: batch numbers can change)"""
+    if hot is None:
+        return True
+    parts = os.path.normpath(src).split(os.sep)
+    group = parts[-3] if len(parts) > 3 and parts[-3] != "output" and parts[-2] == "generated" and parts[-4] == "overlays" else "out"
+    want = hot.get(group, ())
+    with open(src, "rb") as f:
+        return any(int(m.group(1), 16) in want for m in _FUNC_RE.finditer(f.read()))
+
+
+MB = 1024 * 1024
+
+
+def free_mb(path):
+    """Free MB on the volume of `path` (the nearest existing parent); None when unknown."""
+    p = os.path.abspath(path)
+    while p and not os.path.exists(p) and os.path.dirname(p) != p:
+        p = os.path.dirname(p)
+    try:
+        return shutil.disk_usage(p).free // MB
+    except OSError:
+        return None
+
+
+def pick_zig_cache(base, need_mb, say):
+    """Where zig keeps its cache while it compiles: the work folder's, unless that drive is nearly full and another folder the app
+    can write to has the room (PSPRECOMP_ZIG_CACHE, the app's folder on an SD card). The cache is emptied after the build."""
+    default = os.path.join(base, "zig-cache")
+    cands = [default]
+    if os.environ.get("PSPRECOMP_ZIG_CACHE"):
+        cands.insert(0, os.environ["PSPRECOMP_ZIG_CACHE"])
+    import glob
+    for d in sorted(glob.glob("/storage/*/Android/data/org.psprecomp.setup")):
+        cands.append(os.path.join(d, "zig-cache"))
+    free = {}
+    for c in cands:
+        parent = os.path.dirname(c)
+        try:
+            os.makedirs(parent, exist_ok=True)
+        except OSError:
+            continue
+        f = free_mb(parent)
+        if f is not None and os.access(parent, os.W_OK):
+            free[c] = f
+    if not free:
+        return default
+    best = max(free, key=lambda c: free[c])
+    if free.get(default, 0) >= need_mb or free[best] <= free.get(default, 0):
+        return default
+    say("The work folder's drive has only %d MB free (the compile needs about %d MB): zig's cache goes to %s (%d MB free)" % (
+        free.get(default, 0), need_mb, best, free[best]))
+    return best
+
+
+def device_build(adir, work, jobs, say, tag, die, jobs_fixed=False):
     """Compile + link the generated game ON the phone with the zig that ships in the setup app (zig is clang + lld in one static binary).
 
     The prebuilt core (adir/sdk) and libraries (adir/deps) come from the NDK, so the game is compiled against the NDK's headers and
@@ -192,6 +290,20 @@ def device_build(adir, work, jobs, say, tag, die):
     os.makedirs(objdir, exist_ok=True)
     env = dict(os.environ, ZIG_GLOBAL_CACHE_DIR=os.path.join(base, "zig-cache"), HOME=base,
                ZIG_LIB_DIR=os.path.join(adir, "zig-lib"))
+    # zig keeps a second copy of every object it compiles in its cache folder, and never removes one: it grew with every update
+    # (the Shield install failed with "CacheCheckFailed" on a full disk). The objects are kept in objdir by content (below), so
+    # zig's cache is only needed while a compile runs: emptied before the build (a stopped one leaves it) and after it.
+    if not os.environ.get("PSPRECOMP_KEEP_ZIG_CACHE"):
+        shutil.rmtree(env["ZIG_GLOBAL_CACHE_DIR"], ignore_errors=True)
+    # a build that was killed leaves the half-written object it was compiling (<name>.part): discarded here. A finished object is only ever put in place by
+    # os.replace of a complete .part (below), so everything else in objdir is whole and is reused: a resumed build compiles only the missing files.
+    for dp, _, fns in os.walk(objdir):
+        for fn in fns:
+            if fn.endswith(".part"):
+                try:
+                    os.remove(os.path.join(dp, fn))
+                except OSError:
+                    pass
     deps = os.path.join(adir, "deps", "deps")
     out = os.path.join(work, "output")
     ovl = os.path.join(work, "overlays")
@@ -216,34 +328,162 @@ def device_build(adir, work, jobs, say, tag, die):
     flags = ["-target", "aarch64-linux-android", "-nostdinc++", "-I" + sysroot + "/usr/include/c++/v1",
              "-isystem", sysroot + "/usr/include/aarch64-linux-android", "-isystem", sysroot + "/usr/include",
              "-DANDROID", "-U__ANDROID_API__", "-D__ANDROID_API__=%d" % api, "-fdata-sections", "-ffunction-sections", "-funwind-tables",
-             "-fstack-protector-strong", "-D_FORTIFY_SOURCE=2", "-std=gnu++17", "-fPIC", "-O2", "-fno-lto", "-fno-strict-aliasing", "-Wno-everything"]
-    stamp = hashlib.sha256((" ".join(flags) + zig).encode()).hexdigest()[:12]
+             "-fstack-protector-strong", "-D_FORTIFY_SOURCE=2", "-std=gnu++17", "-fPIC", "-O2", "-fno-lto", "-fno-strict-aliasing", "-Wno-everything",
+             "-ffp-contract=off"]   # lock-step online play: no fused multiply-add (clang for ARM fuses a * b + c by default), same rounding as the PC build
+    # Build profile: "full" = -O2 everywhere; "fast" (the phone's default, chosen in the setup app) = -O2 only for the batch files that hold
+    # code that runs a lot (tools/hot_funcs.txt: measured during a battle and the menus), the cold batches with -O1: a shorter install
+    # for a slightly slower game. The flags are part of the object's key, so switching the profile compiles only the files that differ.
+    profile, cold_opt = build_profile(work)
+    hot_set = hot_functions() if profile == "fast" else None
+    opt_of = {}   # source -> "-O2" / cold_opt
+    hot_n = [0, 0]
+
+    def flags_for(src):
+        if src not in opt_of:
+            hot = hot_set is None or not src_is_batch(src) or batch_is_hot(src, work, hot_set)
+            opt_of[src] = "-O2" if hot else cold_opt
+            if src_is_batch(src):
+                hot_n[0 if hot else 1] += 1
+        out = []
+        for t in flags:
+            out += cold_opt.split() if (t == "-O2" and opt_of[src] != "-O2") else [t]
+        return out
+
+    # Objects are kept by what they were compiled from (objcache.py: the source's bytes, the generated headers it includes, the compiler
+    # and the flags without folder paths), so an update compiles only the files whose code changed. Before, the object names carried a
+    # hash of the flags and of zig's path, which are inside the release folder: every update compiled all files again.
+    # What is not generated code (the runtime's main.cpp), and everything with PSPRECOMP_NO_OBJCACHE=1, keeps the old rule: an object
+    # named after the source's path and the flags, compiled again when the source is newer.
+    import objcache
+    import threading
+    import time as _time
+    try:
+        zig_ver = subprocess.run([zig, "version"], env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        zig_ver = ""
+    cid = "zig %s size %d; ndk %s; api %s" % (zig_ver or "?", os.path.getsize(zig), v.get("ndk", {}).get("version", "?"), api)
+    use_cache = not os.environ.get("PSPRECOMP_NO_OBJCACHE")
+    old_stamp = {}
+    info = {}   # source -> (object file, the parts of its key or None when it is not cached)
 
     def obj_of(src):
-        return os.path.join(objdir, hashlib.sha1(src.encode()).hexdigest()[:10] + "_" + os.path.basename(src) + "." + stamp + ".o")
+        if src not in info:
+            parts = objcache.key_parts(work, src, flags_for(src), cid) if use_cache else None
+            info[src] = (objcache.entry(objdir, objcache.key_of(parts)) if parts else
+                         os.path.join(objdir, hashlib.sha1(src.encode()).hexdigest()[:10] + "_" + os.path.basename(src) + "." + hashlib.sha256((" ".join(flags_for(src)) + zig).encode()).hexdigest()[:12] + ".o"), parts)
+        return info[src][0]
 
-    todo = [(s, inc) for s, inc in srcs if not (os.path.isfile(obj_of(s)) and os.path.getmtime(obj_of(s)) >= os.path.getmtime(s))]
-    say("Compiling %d of %d files with zig (%d at a time)" % (len(todo), len(srcs), jobs))
+    def up_to_date(src):
+        o = obj_of(src)
+        return os.path.isfile(o) and (info[src][1] is not None or os.path.getmtime(o) >= os.path.getmtime(src))
+
+    todo = [(s, inc) for s, inc in srcs if not up_to_date(s)]
+    say("Build: %s (%s)" % ("Fast: -O2 for %d batch files that run a lot, '%s' for the other %d" % (hot_n[0], cold_opt, hot_n[1]) if profile == "fast" else "Full: -O2 for every file",
+                            "chosen in the setup app"))
+    reasons = {}   # why the cached files of this build are compiled (the part of the key that changed)
+    for s, _ in todo:
+        if info[s][1]:
+            r = objcache.explain(objcache.recall(objdir, work, s), info[s][1])
+            reasons[r] = reasons.get(r, 0) + 1
+    say("Compiling %d of %d files with zig; %d are unchanged since the last build%s" % (
+        len(todo), len(srcs), len(srcs) - len(todo), " (why: %s)" % objcache.reasons_text(reasons) if reasons else ""))
+    # Space: measured 26 Nov, one object is ~0.85 MB and zig keeps a second copy while compiling (its cache, emptied after the build);
+    # the link and the APK need ~200 MB more. Checked BEFORE the first compile, so a full phone says so in words (not "CacheCheckFailed").
+    need_mb = int(len(todo) * 2 + 200)
+    if todo and not os.environ.get("PSPRECOMP_SKIP_SPACE_CHECK"):
+        env["ZIG_GLOBAL_CACHE_DIR"] = pick_zig_cache(base, need_mb, say)
+        shutil.rmtree(env["ZIG_GLOBAL_CACHE_DIR"], ignore_errors=True)
+        same_drive = os.stat(base).st_dev == os.stat(os.path.dirname(env["ZIG_GLOBAL_CACHE_DIR"])).st_dev
+        base_need = int(len(todo) * (2 if same_drive else 1) + 200)   # the objects and the link here, plus the cache when it is on this drive
+        free_work = free_mb(base)
+        say("Space: about %d MB needed here for the compile, %s MB free%s" % (base_need, free_work, "" if same_drive else " (zig's cache is on another drive)"))
+        if free_work is not None and free_work < base_need:
+            die("not enough free disk space in %s: the compile needs about %d MB (objects and the compiler's cache) and %d MB are free" % (base, base_need, free_work))
     done = [0]
     errors = []
+    # How many files compile at once. Before: at most 3 (psp_build.py), whatever the phone. Now every core may be used, but a job is
+    # only started while the memory that is FREE right now covers it (objcache.may_start): a phone is killed, not slowed, when it
+    # runs out.
+    #  - the memory a job needs is measured (the peak of each finished compile, wait4); until the first one finishes it is taken as
+    #    1.5 GB (the old rule's figure). The largest files are compiled first, so the worst case is known early;
+    #  - a new job needs: free memory >= estimate x (1 + jobs started in the last 20 s, which have not grown yet) + 800 MB kept free;
+    #  - one job always runs. `--jobs N` (jobs_fixed) or PSPRECOMP_JOBS_FIXED=1 keeps a plain fixed count.
+    cpus = os.cpu_count() or 2
+    fixed = jobs_fixed or bool(os.environ.get("PSPRECOMP_JOBS_FIXED")) or objcache.mem_free_kb() is None
+    max_jobs = max(1, jobs if fixed else cpus)
+    cond = threading.Condition()
+    st = {"running": 0, "starts": [], "peak_kb": 0, "most": 0}
+
+    def may_start():
+        if st["running"] == 0:
+            return True
+        if st["running"] >= max_jobs:
+            return False
+        if fixed:
+            return True
+        now = _time.time()
+        return objcache.may_start(st["running"], sum(1 for t in st["starts"] if now - t < objcache.YOUNG_S),
+                                  objcache.estimate_kb(st["peak_kb"]), objcache.mem_free_kb())
 
     def compile_one(item):
         src, inc = item
+        if errors:   # one file failed: the rest is not started (a full disk fails every one of them)
+            return
         o = obj_of(src)
+        os.makedirs(os.path.dirname(o), exist_ok=True)
         part = o + ".part"
-        r = subprocess.run([zig, "c++"] + flags + inc + ["-c", src, "-o", part], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                           text=True, errors="replace")
-        if r.returncode != 0:
-            errors.append("%s\n%s" % (src, r.stdout[-1500:]))
+        with cond:
+            while not may_start():
+                cond.wait(1.0)
+            st["running"] += 1
+            st["most"] = max(st["most"], st["running"])
+            at_once = st["running"]
+            t0 = _time.time()
+            st["starts"].append(t0)
+        out, rc, peak = "", 1, 0
+        try:
+            pr = subprocess.Popen([zig, "c++"] + flags_for(src) + inc + ["-c", src, "-o", part], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            out = pr.stdout.read().decode("utf-8", "replace")
+            try:
+                _, status, ru = os.wait4(pr.pid, 0)
+                rc = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else (status >> 8)
+                peak = int(ru.ru_maxrss)   # KB on Linux / Android: the largest of zig and the clang it runs
+                pr.returncode = rc
+            except (AttributeError, ChildProcessError, OSError):
+                rc = pr.wait()
+        except OSError as e:
+            out = str(e)
+        finally:
+            with cond:
+                st["running"] -= 1
+                st["starts"].remove(t0)
+                st["peak_kb"] = max(st["peak_kb"], peak)
+                cond.notify_all()
+        if rc != 0:
+            hint = ""
+            if "CacheCheckFailed" in out or "NoSpaceLeft" in out or "No space left" in out:
+                free = shutil.disk_usage(base).free // (1024 * 1024)
+                hint = ("The compiler could not write its files (%d MB free in %s). " % (free, base) +
+                        ("The storage is nearly full: free some space and run the install again. " if free < 1024 else
+                         "The storage is not full, so the compiler could not use its own cache folder (zig-cache) there. ") +
+                        "What is already compiled is kept.\n")
+            errors.append("%s%s\n%s" % (hint, src, out[-1500:]))
             return
         os.replace(part, o)
+        if info[src][1]:
+            objcache.remember(objdir, work, src, info[src][1])
         done[0] += 1
         tag("PROGRESS", str(100 * done[0] // max(1, len(todo))))
-        say("[%d/%d] %s" % (done[0], len(todo), os.path.basename(src)))
+        say("[%d/%d] %s (%.0f s%s, %d at once)" % (done[0], len(todo), os.path.basename(src), _time.time() - t0,
+                                                 ", %d MB" % (peak // 1024) if peak else "", at_once))
 
     if todo:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as ex:
+        todo.sort(key=lambda it: -os.path.getsize(it[0]))   # the largest first: the memory a job needs is learned from the worst case
+        t_all = _time.time()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_jobs) as ex:
             list(ex.map(compile_one, todo))
+        say("Compiled %d files in %.0f s: up to %d at once (%d cores), largest job %d MB%s" % (
+            done[0], _time.time() - t_all, st["most"], cpus, st["peak_kb"] // 1024, " (fixed job count)" if fixed else ""))
     if errors:
         die("compiling failed:\n" + errors[0])
     say("Linking libmain.so")
@@ -267,4 +507,19 @@ def device_build(adir, work, jobs, say, tag, die):
     r = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
     if r.returncode != 0:
         die("linking failed:\n" + "\n".join(l[:300] for l in r.stdout.splitlines()[:12]))
+    used = set(o for o, _ in info.values())   # the objects of this build stay; older ones (another version's code, the old naming) are removed
+    removed = 0
+    for dp, _, fns in os.walk(objdir):
+        for fn in fns:
+            fp = os.path.join(dp, fn)
+            if fp not in used and fn.endswith((".o", ".part", ".d")):
+                try:
+                    os.remove(fp)
+                    removed += 1
+                except OSError:
+                    pass
+    if removed:
+        say("Removed %d object files of an older build" % removed)
+    if not os.environ.get("PSPRECOMP_KEEP_ZIG_CACHE"):
+        shutil.rmtree(env["ZIG_GLOBAL_CACHE_DIR"], ignore_errors=True)
     return libmain

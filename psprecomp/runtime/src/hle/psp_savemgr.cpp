@@ -154,7 +154,8 @@ bool read_save(const std::string& dir, SaveInfo* out, bool only_dissidia) {
     if (n.empty()) n = S(d.parent_path().filename());   // a trailing slash
     std::error_code ec;
     const fs::path sfop = d / "PARAM.SFO";
-    if (!fs::is_regular_file(sfop, ec)) return false;
+    struct stat st;   // one stat for "is it there" and the time
+    if (::stat(sfop.string().c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
     Sfo sfo;
     sfo.d = read_file(sfop);
     if (!sfo.parse()) return false;
@@ -168,8 +169,7 @@ bool read_save(const std::string& dir, SaveInfo* out, bool only_dissidia) {
     s.savetitle = sfo.str("SAVEDATA_TITLE");
     s.detail = sfo.str("SAVEDATA_DETAIL");
     if (only_dissidia && !is_dissidia012_save(s.disc, s.title)) return false;
-    struct stat st;
-    if (::stat(sfop.string().c_str(), &st) == 0) s.mtime = st.st_mtime;
+    s.mtime = st.st_mtime;
     for (const std::string& f : files_to_copy(sfo)) {
         const auto sz = fs::file_size(d / f, ec);
         if (!ec) s.bytes += sz;

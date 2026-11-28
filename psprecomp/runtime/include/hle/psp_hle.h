@@ -237,6 +237,9 @@ void psp_hle_register_atrac();
 /// A game module's policy for streamed ATRAC tracks that have loop info but whose loop count the game never set (they would play once): called from the
 /// decoder with (end sample, loop start sample); true = loop it forever. Must not block. nullptr: none.
 void psp_atrac_set_loop_policy(bool (*fn)(int endSample, int loopStart));
+/// End sample (length at 44.1 kHz) of the track the last sceAtracSetDataAndGetID created, and how many were created (data-derived: the same on every machine).
+int psp_atrac_last_end_sample();
+uint32_t psp_atrac_set_count();
 
 // sceMpeg movie playback (PSMF/MPEG-PS, H.264 + ATRAC3+) via libavcodec
 void psp_hle_register_mpeg();
@@ -245,3 +248,9 @@ void psp_hle_register_mpeg();
 /// Rate of the simulated vblank clock (default 60). A game that waits for one vblank per frame then runs at this
 /// rate. The vblank count carries on without a jump. 30..480.
 void psp_display_set_vblank_hz(int hz);
+
+/// Unlocked frame rate: while on, the vblank wait does not sleep to the next boundary (the game thread runs frames as fast as it
+/// can; the swap / vertical sync of the presenter is then the only pacing), but never faster than PSPRECOMP_UNLOCK_MAX fps
+/// (default 1000). The game module turns it on only where its own logic does not depend on the vblank clock.
+void psp_display_set_unlocked(bool on);
+bool psp_display_unlocked();

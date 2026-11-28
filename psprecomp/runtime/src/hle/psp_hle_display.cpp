@@ -107,6 +107,12 @@ static uint32_t vblank_count_now() {
     return static_cast<uint32_t>(g_vb_base + (game_now - g_vb_anchor) / g_vb_period);
 }
 
+static std::atomic<bool> g_unlocked{false};
+void psp_display_set_unlocked(bool on) {
+    if (g_unlocked.exchange(on) != on) std::fprintf(stderr, "[HLE] unlocked frame rate %s\n", on ? "on" : "off");
+}
+bool psp_display_unlocked() { return g_unlocked.load(std::memory_order_relaxed); }
+
 void psp_display_set_vblank_hz(int hz) {
     if (hz < 30) hz = 30;
     if (hz > 480) hz = 480;
@@ -163,7 +169,12 @@ static void hle_sceDisplayWaitVblankStart(
             late_ok = g_vb_hz > 60 && prev > t_last_game &&
                       (now + skew) - prev <= std::chrono::duration_cast<std::chrono::nanoseconds>(g_vb_period * tol);
         }
-        if (!late_ok) std::this_thread::sleep_until(next - skew);
+        if (g_unlocked.load(std::memory_order_relaxed)) {
+            // Unlocked: no wait for the boundary; only a floor on the frame time (a frame that costs a few microseconds would spin a core)
+            static const double min_ms = [] { const char* e = std::getenv("PSPRECOMP_UNLOCK_MAX"); const int f = e && e[0] ? std::atoi(e) : 1000; return f > 0 ? 1000.0 / f : 0.0; }();
+            if (min_ms > 0 && t_last_host.time_since_epoch().count() != 0)
+                std::this_thread::sleep_until(t_last_host + std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double, std::milli>(min_ms)));
+        } else if (!late_ok) std::this_thread::sleep_until(next - skew);
     }
     psp_prof::seq("vblank-end");
     if (g_vclock_on) g_vclock_us.fetch_add(16667);

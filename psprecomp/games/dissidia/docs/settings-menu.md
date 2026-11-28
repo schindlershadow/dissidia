@@ -78,6 +78,19 @@ Changes marked **Next start** ask "Restart now / Later" when the menu is closed.
 
 The **Mods** category lists mod folders with a `mod.json` (the repo's `mods/`, `PSPRECOMP_MODS_SRC`, and the game's mods folder) and extra
 characters from the mods folder's `roster.txt`. A switch writes `"enabled"` into `mod.json`, or puts `#off# ` in front of the roster line.
+The page has one Install row per installer the game offers: an `.xdelta` ISO patch, and the DLC from a folder or from a .zip (below).
+
+**DLC** (issue 134). Dissidia 012's downloadable content (costumes, music, Aerith's unlock key) is a folder of NPDRM EDAT files named by the
+8 hex digits of the asset's name hash (`PSP/GAME/ULUS10566/eac7bf53.edat` in PPSSPP or on a memory stick). The game opens each as
+`ms0:/PSP/GAME/<game id>/<hash>.edat` with the NPDRM flag, calls `sceNpDrmEdataSetupKey` on it and reads the plain data. The runtime
+decrypts an EDAT (`"\0PSPEDAT"` + PGD, `psp_npdrm.cpp`, ported from PPSSPP's amctrl) when the game sets the key; a file without the magic is
+plain data and is read as it is. Install DLC from a Folder / from a Zip (Settings > Mods, or the installer's Import DLC row, which finds
+PPSSPP and memory sticks itself) copies the files into the mod folder `mods/dissidia-dlc/dlc/` (`mod.json` with `"kind": "dlc"`), which shows
+in the list below with its switch (applies at the next start; with every DLC folder off the game finds no DLC). Files copied by hand into
+`ms0/PSP/GAME/<id>/` are found too, by name without regard to case, in any folder under `PSP/GAME` (a ULES01505 DLC folder works with a US game: the id is not matched), when there is no DLC mod folder. `PSPRECOMP_DLC_IMPORT=<folder or .zip>`
+installs one at start and exits (tests). The async open of an EDAT leaves its completion callback queued instead of running it inside
+`sceIoSetAsyncCallback`: the game stores the fd that `sceIoOpenAsync` returned only after that call returns, and the callback reads it back
+(running it in place made it see fd -1; the EDAT was then never keyed and its encrypted bytes were parsed as data).
 
 The **Network** category also has a **Discord** section (not on Android): **Discord Status** On / Off (applies at once, saved) and a
 connection line; see [discord.md](discord.md).

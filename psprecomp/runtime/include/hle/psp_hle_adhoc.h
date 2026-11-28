@@ -88,6 +88,8 @@ bool psp_net_notice_showing();
 /// The round trip to the slowest player in our group, in ms (smoothed, measured once a second), or -1 when unknown (no group, or the
 /// others run a build that does not answer pings).
 int psp_adhoc_ping_ms();
+int psp_adhoc_ping_loss_permille();   // lost pings of the worst path since the players joined, in 1/1000 (0: not known yet)
+int psp_adhoc_ping_jitter_ms();   // jitter of that path (mean deviation of single round trips, ms); -1 with no ping
 // Side channel for a game module: datagrams to one player (or the broadcast MAC ff:..:ff) of the group on channel `chan`, carried like the
 // game's PDP traffic on ports the game never uses. _recv pops the oldest message of that channel (-1 = none). Not reliable, not ordered.
 void psp_adhoc_local_mac(uint8_t out[6]);

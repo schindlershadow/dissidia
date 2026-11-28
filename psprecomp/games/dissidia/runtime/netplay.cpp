@@ -14,6 +14,9 @@
 // (frame, checksum) pairs, +68 local player index, +72 the frame being delivered next, +76 peer records (84 bytes:
 // MAC at +0, +8 the received input window, +80 the last frame delivered with its input), +852 peer count, +860 the
 // local record (+8 its input window, +524 the newest local input frame = the send sequence). Pad slots: [0x089D6008] + 96 x player, words +64..+79 (SceCtrlData).
+#include <atomic>
+#include <chrono>
+#include <thread>
 #include "psp_memory.h"
 #include "psp_game_module.h"
 #include "psp_netplay.h"
@@ -28,6 +31,12 @@
 #include <vector>
 
 uint32_t dissidia_tagteam_fighter_sig();   // tagteam.cpp
+int dissidia_tagteam_extra_actors(uint32_t out[4], uint32_t flags[4]);   // tagteam.cpp
+uint32_t dissidia_camera_manager();   // camera.cpp
+void psp_mem_watch_set(uint32_t addr);   // runtime psp_dispatch.cpp (diagnostic watch)
+extern uint32_t g_mem_watch_tag;
+uint32_t dissidia_libm_fingerprint();
+uint32_t dissidia_simmath_fingerprint();   // net_packs.cpp
 namespace {
 
 constexpr uint32_t BATTLE_PTR = 0x089D6A10u;          // battle object: +56 + 4 x side = fighter, +96 the battle clock (float)
@@ -54,7 +63,15 @@ constexpr Field k_fighter_fields[] = {
 };
 constexpr int k_nf = sizeof k_fighter_fields / sizeof k_fighter_fields[0];
 constexpr int PER_FIGHTER = k_nf + 2 + BLOCKS;   // + assist gauge (2) + blocks
-constexpr int NVALUES = 1 + 2 * PER_FIGHTER + 1;   // + the tag team's fighters on the stage (count and characters)
+// PSPRECOMP_NETSYNC_WIDE=1 (diagnostic, both players): also the game's two random sequences and the tag team's extras (up to 4: flags, a few
+// fields, the struct hashed in four pieces), which the slot-fighter fields only show once an extra has touched a slot fighter. Off = zeros.
+constexpr Field k_extra_fields[] = {{"pos.x", 0x80}, {"pos.y", 0x84}, {"pos.z", 0x88}, {"script", 0x540}, {"motion_time", 0x1A8}, {"hp", 0x10B0}};
+constexpr int k_nxf = sizeof k_extra_fields / sizeof k_extra_fields[0];
+constexpr int XPARTS = 4, PER_EXTRA = 1 + k_nxf + XPARTS + 2, NEXTRA = 4;   // (+ the extra's CPU brain and its lock block, hashed)
+constexpr uint32_t ACT_BRAIN = 0x5C4u, BRAIN_LEN = 0x800u, ACT_LOCKBLK = 0x5ACu, LB_LEN = 0x600u;
+constexpr uint32_t RNG_WORDS[2] = {0x09AF84D0u, 0x09AFB89Cu};   // rand() LCG, effect LCG (framerate.cpp)
+constexpr int NVALUES = 1 + 2 * PER_FIGHTER + 1 + 2 + 4 + NEXTRA * PER_EXTRA;   // + the tag team's fighters on the stage (count and characters) + the wide fields
+bool wide_on() { static const bool on = [] { const char* e = std::getenv("PSPRECOMP_NETSYNC_WIDE"); return e && e[0] == '1'; }(); return on; }
 const char* g_names[NVALUES];
 
 void build_names() {
@@ -73,6 +90,14 @@ void build_names() {
         }
     }
     store[k++] = "tag_fighters";
+    store[k++] = "rng"; store[k++] = "fighter0.brain"; store[k++] = "fighter1.brain"; store[k++] = "fighter0.lockblk"; store[k++] = "fighter1.lockblk"; store[k++] = "rng_fx";
+    for (int x = 0; x < NEXTRA; x++) {
+        const std::string p = "extra" + std::to_string(x) + ".";
+        store[k++] = p + "flags";
+        for (const Field& fl : k_extra_fields) store[k++] = p + fl.name;
+        for (int b = 0; b < XPARTS; b++) store[k++] = p + "part" + std::to_string(b);
+        store[k++] = p + "brain"; store[k++] = p + "lockblk";
+    }
     for (int i = 0; i < NVALUES; i++) g_names[i] = store[i].c_str();
 }
 
@@ -93,12 +118,44 @@ uint32_t viewer_mask(uint32_t off) {   // bits of the word at `off` that are has
     case 0x2F8: case 0x490: case 0x4A4: case 0x510: case 0x514: case 0x5B0: case 0xD00: case 0xD08: case 0x1078: return 0;
     case 0x380: return ~0x00200000u;
     case 0x388: return ~0x20000000u;
-    default: return ((off >= 0x700 && off < 0x768) || (off >= 0xCF4 && off < 0xD00)) ? 0 : ~0u;
+    default: {
+        // +0xC40..+0xCF3 (final10: 5-device 5v5, "fighter1.blockC00" differing for 1 to 300 frames at a time between the team-1 humans (B, D) and the team-0 machines, nothing else of the 124 fields
+        // differing: two arrays of 5 floats at +0xC40 and +0xC68, the same values on both sides but shifted by two entries, i.e. a history the update pushes one sample per call into, here two calls
+        // more on one side): writer / readers NOT yet found, so NOT proven view-side: only with PSPRECOMP_NETSYNC_MASK_C40=1 (diagnostic), default compared.
+        static const bool c40_mask = std::getenv("PSPRECOMP_NETSYNC_MASK_C40") != nullptr;
+        if (c40_mask && off >= 0xC40 && off < 0xCF4) return 0;
+        return ((off >= 0x700 && off < 0x768) || (off >= 0xCF4 && off < 0xD00)) ? 0 : ~0u;
+    }
     }
 }
+// The first frames after a slot fighter was rebuilt (the mate's call-in): word +0x3C4 holds, for one frame, a float a vector routine of the first update writes from FPU registers /
+// stack the new fighter's constructor has not initialised (found 26 Nov, docs "Batch eighty-two": 0x781200F0 vs 0xF81200F0, only bit 31 differs, the same guest code path on both
+// machines, back to the real value the next frame, about 1 run in 10). Not simulation state: left out of the check for the rebuild frame and the next two.
+// PSPRECOMP_NETSYNC_REBUILD_OLD=1: compared.
+uint32_t g_rb_addr[2] = {0, 0}, g_rb_until[2] = {0, 0}; uint32_t g_hw_frame = 0;
 uint32_t hashed_word(uint32_t a, uint32_t off) {
+    static const bool rb_old = std::getenv("PSPRECOMP_NETSYNC_REBUILD_OLD") != nullptr;
+    if (off == 0x3C4u && !rb_old) for (int i = 0; i < 2; i++) if (a && a == g_rb_addr[i] && g_hw_frame <= g_rb_until[i]) return 0;
     const uint32_t w = r32(a + off);
+    // +0x3C4 of EVERY fighter holds a float whose upper 16 bits are leftovers of FPU registers / stack the vector routine of the update does not initialise (final10: 5-device 5v5, extra2
+    // D5C39301 vs CC8AF333 for two frames, back in line the next: the only part0 word not tied to the motion counters; the same word as the rebuild case above, here on a parked extra).
+    // NOT proven non-simulation (writer / readers not found): off by default, PSPRECOMP_NETSYNC_MASK_3C4=1 compares only the low 16 bits (diagnostic).
+    static const bool w3c4_mask = std::getenv("PSPRECOMP_NETSYNC_MASK_3C4") != nullptr;
+    if (off == 0x3C4u && w3c4_mask) return (ok(w) || psp_guest_user_ok(w, 4)) ? 0 : (w & 0xFFFFu);
     return (ok(w) || psp_guest_user_ok(w, 4)) ? 0 : w & viewer_mask(off);   // a pointer (also into the high RAM, where a rebuilt fighter's files live) is not compared
+}
+// The lock block's two cursor fade values (+0x444 and +0x584, 0..0xFF, FF = fully shown; the lock-on cursors' alpha) are drawing state: the UI update steps them on
+// every game-loop pass, also on the passes where the lock-step waits for a late packet, so a machine that stalled shows one more fade step for a frame or two than the
+// other (30 Nov: mp_div_team3_lan desktop runs, "fighter1.lockblk" E5 vs FF at the frame the lock moved, back in line two frames later). PSPRECOMP_NETSYNC_LBFADE_OLD=1: compared.
+bool lb_fade_word(uint32_t i) {
+    static const bool old = std::getenv("PSPRECOMP_NETSYNC_LBFADE_OLD") != nullptr;
+    return !old && (i == 0x444u || i == 0x584u);
+}
+uint32_t fnv_plain(uint32_t a, uint32_t n, bool lockblk = false) {   // a block outside the fighter struct (the CPU brain, the lock block): guest pointers left out only
+    if (!ok(a) || !ok(a + n)) return 0;
+    uint32_t h = 2166136261u;
+    for (uint32_t i = 0; i < n; i += 4) { uint32_t w = r32(a + i); if (ok(w) || psp_guest_user_ok(w, 4) || (lockblk && (i == 0x124u || lb_fade_word(i)))) w = 0; for (int k = 0; k < 4; k++) { h ^= (w >> (8 * k)) & 0xFFu; h *= 16777619u; } }   // (lock block +0x125: the local player's own block)
+    return h;
 }
 uint32_t fnv(uint32_t a, uint32_t off, uint32_t n) {
     uint32_t h = 2166136261u;
@@ -123,6 +180,23 @@ int collect(uint32_t* v) {
         for (int b = 0; b < BLOCKS; b++) v[k++] = fnv(a, BLOCK_START + b * BLOCK, BLOCK);
     }
     v[k++] = dissidia_tagteam_fighter_sig();   // a different number of fighters (or characters) is a desync too
+    const bool w = wide_on();
+    if (!w) return k;   // (the wide fields are sent only when asked for: both players set PSPRECOMP_NETSYNC_WIDE=1)
+    v[k++] = r32(RNG_WORDS[0]);
+    for (int f = 0; f < 2; f++) { const uint32_t a = (w && ok(battle)) ? r32(battle + 56 + 4 * f) : 0; v[k++] = ok(a) ? fnv_plain(r32(a + ACT_BRAIN), BRAIN_LEN) : 0; }
+    for (int f = 0; f < 2; f++) { const uint32_t a = (w && ok(battle)) ? r32(battle + 56 + 4 * f) : 0; v[k++] = ok(a) ? fnv_plain(r32(a + ACT_LOCKBLK), LB_LEN, true) : 0; }
+    v[k++] = 0;   // (the effect LCG is per machine until tagteam_net.cpp reseeds it right after this: not compared)
+    uint32_t xa[4] = {}, xf[4] = {};
+    const int nx = w ? dissidia_tagteam_extra_actors(xa, xf) : 0;
+    for (int x = 0; x < NEXTRA; x++) {
+        const uint32_t a = x < nx ? xa[x] : 0;
+        if (!ok(a)) { for (int i = 0; i < PER_EXTRA; i++) v[k++] = 0; continue; }
+        v[k++] = xf[x] | 0x100u;
+        for (const Field& fl : k_extra_fields) v[k++] = r32(a + fl.off);
+        for (int b = 0; b < XPARTS; b++) v[k++] = fnv(a, b * (BLOCK_END / XPARTS), BLOCK_END / XPARTS);
+        v[k++] = fnv_plain(r32(a + ACT_BRAIN), BRAIN_LEN);
+        v[k++] = fnv_plain(r32(a + ACT_LOCKBLK), LB_LEN, true);
+    }
     return k;
 }
 
@@ -141,8 +215,11 @@ std::vector<uint32_t> g_dump_list;
 bool g_dump_blocks = false;
 void dump_blocks(uint32_t frame) {
     const uint32_t battle = r32(BATTLE_PTR);
-    for (int f = 0; f < 2; f++) {
-        const uint32_t a = ok(battle) ? r32(battle + 56 + 4 * f) : 0;
+    uint32_t xa[4] = {}, xf[4] = {};
+    const int nx = wide_on() ? dissidia_tagteam_extra_actors(xa, xf) : 0;   // wide: the extras too (fighter=2.. in spawn order)
+    if (wide_on()) std::fprintf(stderr, "[NETDUMP] frame=%u rng %08X %08X\n", frame, r32(RNG_WORDS[0]), r32(RNG_WORDS[1]));
+    for (int f = 0; f < 2 + nx; f++) {
+        const uint32_t a = f < 2 ? (ok(battle) ? r32(battle + 56 + 4 * f) : 0) : xa[f - 2];
         if (!ok(a)) continue;
         for (uint32_t off : g_dump_list) {
             std::string line;
@@ -153,13 +230,176 @@ void dump_blocks(uint32_t frame) {
     }
 }
 
+// The first two delivered frames of every battle: this machine's build (does the compiler fuse a * b + c?) and every word of both
+// fighters (pointers and viewer-only bits left out, as in the hashes), [NETDUMP0] lines. A DESYNC at frame 0 / 1 can then be pinned
+// to the words by diffing the two players' logs (grep NETDUMP0), also when only one of the two logs is at hand later.
+// PSPRECOMP_NETSYNC_F0DUMP=0 turns it off.
+bool fma_contracted() {   // true when this build fuses a * b - p into one FMA (the exact low part of a * b is left over)
+    volatile float xv = 1.0f + 1.0f / 4096.0f;
+    volatile float pv = xv * xv;   // rounded product
+    const float a = xv, b = xv;
+    const float r = a * b - pv;
+    return r != 0.0f;
+}
+void dump_start(uint32_t frame) {
+    static const bool off = [] { const char* e = std::getenv("PSPRECOMP_NETSYNC_F0DUMP"); return e && e[0] == '0'; }();
+    if (off || frame > 1) return;
+    if (frame == 0) {
+#if defined(__aarch64__)
+        const char* arch = "arm64";
+#elif defined(__x86_64__)
+        const char* arch = "x86_64";
+#else
+        const char* arch = "other";
+#endif
+        std::fprintf(stderr, "[NETSYNC] this build: %s, fused multiply-add %s, libm (log only) %08X, sim maths %08X, %s\n", arch, fma_contracted() ? "ON (differs from a PC build)" : "off", dissidia_libm_fingerprint(), dissidia_simmath_fingerprint(),
+#ifdef __clang__
+                     "clang " __clang_version__
+#else
+                     "gcc/other"
+#endif
+        );
+    }
+    const uint32_t battle = r32(BATTLE_PTR);
+    for (int f = 0; f < 2; f++) {
+        const uint32_t a = ok(battle) ? r32(battle + 56 + 4 * f) : 0;
+        if (!ok(a)) { std::fprintf(stderr, "[NETDUMP0] frame=%u fighter=%d none (battle %08X)\n", frame, f, battle); continue; }
+        for (uint32_t off2 = BLOCK_START; off2 < BLOCK_END; off2 += BLOCK) {
+            std::string line; char w[12];
+            for (uint32_t i = 0; i < BLOCK; i += 4) { std::snprintf(w, sizeof w, " %08X", hashed_word(a, off2 + i)); line += w; }
+            std::fprintf(stderr, "[NETDUMP0] frame=%u fighter=%d block=%03X%s\n", frame, f, off2, line.c_str());
+        }
+    }
+}
+
+// PSPRECOMP_NETSYNC_WIDE=1: the last 64 frames' words of every fighter (slot fighters, then the extras) are kept; once the desync check
+// names the first mismatching frame, that frame's words are logged ([NETDUMPX] lines), so diffing the two players' logs names the words.
+constexpr uint32_t CAM_LEN = 0x1000u;
+struct Snap { uint32_t frame = 0xFFFFFFFFu; uint32_t rng[2] = {}; int n = 0; uint32_t addr[6] = {}, baddr[6] = {}; uint32_t w[6][BLOCK_END / 4]; uint32_t b[6][BRAIN_LEN / 4]; uint32_t laddr[6] = {}; uint32_t l[6][LB_LEN / 4]; uint32_t cam_at = 0; uint32_t cam[CAM_LEN / 4]; };
+Snap g_ring[64];
+void dump_snap(uint32_t bad, uint32_t frame);
+bool g_ring_dumped = false;
+void ring_frame(uint32_t frame) {
+    if (!wide_on()) return;
+    ::g_mem_watch_tag = frame;
+    if (const char* lw = std::getenv("PSPRECOMP_NETSYNC_LBWATCH")) {   // "<slot>:<hex offset>": watch that word of the slot fighter's lock block (re-armed when the block changes)
+        static uint32_t armed = 0; const int sl = std::atoi(lw) & 1; const char* c = std::strchr(lw, ':'); const uint32_t off = c ? static_cast<uint32_t>(std::strtoul(c + 1, nullptr, 16)) : 0x280u;
+        const uint32_t bt = r32(BATTLE_PTR), a = ok(bt) ? r32(bt + 56 + 4 * sl) : 0, lb = ok(a) ? r32(a + ACT_LOCKBLK) : 0;
+        if (ok(lb) && lb + off != armed) { armed = lb + off; ::psp_mem_watch_set(armed); std::fprintf(stderr, "[LBWATCH] frame %u: watching %08X (slot %d lock block %08X +%X)\n", frame, armed, sl, lb, off); }
+    }
+    if (const char* aw = std::getenv("PSPRECOMP_NETSYNC_ACTWATCH")) {   // "<slot>:<hex offset>:<from frame>": watch that word of the slot fighter from that lock-step frame on (re-armed when its address changes)
+        static uint32_t armed = 0; const int sl = std::atoi(aw) & 1; const char* c = std::strchr(aw, ':'); const uint32_t off = c ? static_cast<uint32_t>(std::strtoul(c + 1, nullptr, 16)) : 0x3C4u;
+        const char* c2 = c ? std::strchr(c + 1, ':') : nullptr; const uint32_t from = c2 ? static_cast<uint32_t>(std::strtoul(c2 + 1, nullptr, 0)) : 0u;
+        const uint32_t bt = r32(BATTLE_PTR), a = ok(bt) ? r32(bt + 56 + 4 * sl) : 0;
+        if (frame >= from && ok(a) && a + off != armed) { armed = a + off; ::psp_mem_watch_set(armed); std::fprintf(stderr, "[ACTWATCH] frame %u: watching %08X (slot %d fighter %08X +%X)\n", frame, armed, sl, a, off); }
+    }
+    if (frame == 0) g_ring_dumped = false;
+    Snap& r = g_ring[frame % 64];
+    r.frame = frame; r.n = 0;
+    for (int i = 0; i < 2; i++) r.rng[i] = r32(RNG_WORDS[i]);
+    const uint32_t battle = r32(BATTLE_PTR);
+    uint32_t xa[4] = {}, xf[4] = {};
+    const int nx = dissidia_tagteam_extra_actors(xa, xf);
+    for (int f = 0; f < 2 + nx && f < 6; f++) {
+        const uint32_t a = f < 2 ? (ok(battle) ? r32(battle + 56 + 4 * f) : 0) : xa[f - 2];
+        r.addr[r.n] = a;
+        for (uint32_t o = 0; o < BLOCK_END; o += 4) r.w[r.n][o / 4] = ok(a) ? r32(a + o) : 0;   // (raw: pointers and viewer-only words included, the diff tells them apart)
+        const uint32_t br = ok(a) ? r32(a + ACT_BRAIN) : 0; r.baddr[r.n] = br;
+        for (uint32_t o = 0; o < BRAIN_LEN; o += 4) r.b[r.n][o / 4] = (ok(br) && ok(br + BRAIN_LEN)) ? r32(br + o) : 0;
+        const uint32_t lb = ok(a) ? r32(a + ACT_LOCKBLK) : 0; r.laddr[r.n] = lb;
+        for (uint32_t o = 0; o < LB_LEN; o += 4) r.l[r.n][o / 4] = (ok(lb) && ok(lb + LB_LEN)) ? r32(lb + o) : 0;
+        r.n++;
+    }
+    r.cam_at = dissidia_camera_manager();
+    for (uint32_t o = 0; o < CAM_LEN; o += 4) r.cam[o / 4] = (ok(r.cam_at) && ok(r.cam_at + CAM_LEN)) ? r32(r.cam_at + o) : 0;
+    if (const char* df = std::getenv("PSPRECOMP_NETSYNC_DUMPFRAME")) {   // dump frames N-2..N of THIS copy once (a copy that sees no mismatch itself, to diff against the one that does)
+        static bool done = false; const uint32_t n = static_cast<uint32_t>(std::strtoul(df, nullptr, 0));
+        if (!done && frame == n + 1) { done = true; for (uint32_t back = 3; back-- > 0;) dump_snap(n - back, frame); }
+    }
+    const uint32_t bad = psp_netplay_first_mismatch();
+    if (g_ring_dumped || bad == 0xFFFFFFFFu) return;
+    g_ring_dumped = true;
+    for (uint32_t back = 3; back-- > 0;) {   // the first mismatching frame and the two before it
+    const uint32_t fr = bad >= back ? bad - back : bad;
+    if (back && fr == bad) continue;
+    dump_snap(fr, frame);
+    }
+}
+void dump_snap(uint32_t bad, uint32_t frame) {
+    const Snap& b = g_ring[bad % 64];
+    if (b.frame != bad) { std::fprintf(stderr, "[NETDUMPX] frame=%u not in the ring any more (now %u)\n", bad, frame); return; }
+    std::fprintf(stderr, "[NETDUMPX] frame=%u rng %08X %08X fighters %d\n", bad, b.rng[0], b.rng[1], b.n);
+    for (int f = 0; f < b.n; f++)
+        for (uint32_t o = 0; o < BLOCK_END; o += BLOCK) {
+            std::string line; char t[12];
+            for (uint32_t i = 0; i < BLOCK; i += 4) { std::snprintf(t, sizeof t, " %08X", b.w[f][(o + i) / 4]); line += t; }
+            std::fprintf(stderr, "[NETDUMPX] frame=%u fighter=%d addr=%08X block=%03X%s\n", bad, f, b.addr[f], o, line.c_str());
+        }
+    for (int f = 0; f < b.n; f++)
+        for (uint32_t o = 0; o < BRAIN_LEN; o += BLOCK) {
+            std::string line; char t[12];
+            for (uint32_t i = 0; i < BLOCK; i += 4) { std::snprintf(t, sizeof t, " %08X", b.b[f][(o + i) / 4]); line += t; }
+            std::fprintf(stderr, "[NETDUMPX] frame=%u fighter=%d addr=%08X block=B%03X%s\n", bad, f, b.baddr[f], o, line.c_str());
+        }
+    for (int f = 0; f < b.n; f++)
+        for (uint32_t o = 0; o < LB_LEN; o += BLOCK) {
+            std::string line; char t[12];
+            for (uint32_t i = 0; i < BLOCK; i += 4) { std::snprintf(t, sizeof t, " %08X", b.l[f][(o + i) / 4]); line += t; }
+            std::fprintf(stderr, "[NETDUMPX] frame=%u fighter=%d addr=%08X block=A%03X%s\n", bad, f, b.laddr[f], o, line.c_str());
+        }
+    for (uint32_t o = 0; o < CAM_LEN; o += BLOCK) {   // the camera manager (fighter=9)
+        std::string line; char t[12];
+        for (uint32_t i = 0; i < BLOCK; i += 4) { std::snprintf(t, sizeof t, " %08X", b.cam[(o + i) / 4]); line += t; }
+        std::fprintf(stderr, "[NETDUMPX] frame=%u fighter=9 addr=%08X block=C%03X%s\n", bad, b.cam_at, o, line.c_str());
+    }
+}
+
 }  // namespace
 
 // tagteam_net.cpp (the tag battle's own lock-step, which replaces FUN_0890D664 there): a frame was delivered (state = the start of it).
+static uint32_t g_ls_frame = 0;
+uint32_t dissidia_netplay_ls_frame() { return g_ls_frame; }   // the last delivered lock-step frame (0 = none yet); tagteam.cpp's KOLIST test aid keys on it with PSPRECOMP_TAGTEAM_KOLIST_LSFRAME=1
+void dissidia_netplay_note_rebuild(int slot, uint32_t frame) { const uint32_t bt = r32(BATTLE_PTR), a = ok(bt) ? r32(bt + 56 + 4 * (slot & 1)) : 0; g_rb_addr[slot & 1] = a; g_rb_until[slot & 1] = frame + 2; }
+void dissidia_netplay_ls_reset() { g_ls_frame = 0; g_rb_addr[0] = g_rb_addr[1] = 0; }   // a new lock-step battle starts (tagteam_net.cpp): no delivered frame yet
+int psp_dispatch_get_recent_funcs(uint32_t* out, int max);   // runtime psp_dispatch.cpp (needs PSPRECOMP_FUNC_TRACE=1)
+// PSPRECOMP_STALL_DUMP=1 (diagnostic, final10b: all five copies stopped delivering frames at 9811 for 35-100 s): a thread logs, once a second while no lock-step frame has been
+// delivered for 3 s, the game threads' last function entries (with PSPRECOMP_FUNC_TRACE=1), so the log says where the main thread sits.
+static std::atomic<int64_t> g_wd_ms{0}; static std::atomic<uint32_t> g_wd_frame{0};
+static int64_t wd_now() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+static void stall_watch_start() {
+    static bool started = false; if (started || !std::getenv("PSPRECOMP_STALL_DUMP")) return; started = true;
+    std::thread([] {
+        int64_t last_dump = 0; int dumps = 0;
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            const int64_t t = g_wd_ms.load(); if (!t) continue;
+            const int64_t el = wd_now() - t;
+            if (el < 3000) { last_dump = 0; dumps = 0; continue; }
+            if (wd_now() - last_dump < 2000 || dumps >= 12) continue;
+            last_dump = wd_now(); dumps++;
+            uint32_t f[64]; const int n = psp_dispatch_get_recent_funcs(f, 64);
+            std::string l; char b[16]; for (int i = std::max(0, n - 40); i < n; i++) { std::snprintf(b, sizeof b, " %08X", f[i]); l += b; }
+            std::fprintf(stderr, "[STALL] no lock-step frame for %.1f s after frame %u; recent functions (oldest first):%s\n", el / 1000.0, g_wd_frame.load(), l.c_str());
+        }
+    }).detach();
+}
 void dissidia_netplay_frame_delivered(uint32_t frame) {
+    g_ls_frame = frame; g_hw_frame = frame;
+    stall_watch_start(); g_wd_frame = frame; g_wd_ms = wd_now();
     if (!g_ram) return;
-    if (psp_netplay_sync_check()) { uint32_t vals[NVALUES]; const int n = collect(vals); psp_netplay_submit_state(frame, vals, n); }
+    // The check's hashes (2 fighters x 4352 words, byte-wise FNV, plus a ~640 B packet) are taken every PSPRECOMP_NETSYNC_EVERY-th frame (default 1 = every frame; measured ~0.1% of a frame, so the saving is not worth halving detection; 2+ was for a phone
+    // that is the online-only work of every logic frame; a difference is found at most one frame later). Every machine uses the frame number, so the compared
+    // frames agree (an older build sends every frame: its extra frames are ignored). PSPRECOMP_NETSYNC_EVERY=1: every frame (the old behaviour).
+    static const uint32_t every = [] { const char* e = std::getenv("PSPRECOMP_NETSYNC_EVERY"); const int v = e ? std::atoi(e) : 1; return static_cast<uint32_t>(v < 1 ? 1 : v > 30 ? 30 : v); }();
+    static double cost_us = 0; static uint32_t cost_n = 0;
+    if (psp_netplay_sync_check() && (frame % every) == 0) {
+        const auto t0 = std::chrono::steady_clock::now();
+        uint32_t vals[NVALUES]; const int n = collect(vals); psp_netplay_submit_state(frame, vals, n); dump_start(frame);
+        cost_us += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+        if (++cost_n >= 300) { std::fprintf(stderr, "[NETSYNC] cost: %.0f us per checked frame (every %u frame(s), %u checked)\n", cost_us / cost_n, every, cost_n); cost_us = 0; cost_n = 0; }
+    }
     if (g_dump_blocks) dump_blocks(frame);
+    ring_frame(frame);
     if (frame == g_perturb_frame) perturb();
 }
 void dissidia_netplay_note_delay(int delay) {

@@ -18,6 +18,8 @@
 //   'R' sha256[32] u32 offset u16 length          request a piece of a delta (at most kChunk bytes)
 //   'D' sha256[32] u32 total u32 offset bytes     a piece of a delta (total = the delta's size)
 //   'B' ...                                        the battle pad link, handed to comm_battle.cpp
+// The manifest ends with the build id (26 Nov): 'V' u16 netcode-protocol u8 len commit-string. Older builds stop reading after the
+// pack list, so the trailer is ignored by them (their players show up as "unknown build"). A different protocol = no match (refusal()).
 // A sender serves only the deltas tools/netpack.py wrote for packs whose files it has installed byte for byte
 // (<mods>/.net/<sha256 of the result>.dlt).
 #include "psp_game_module.h"
@@ -36,8 +38,11 @@ void dissidia_comm_on_side(const uint8_t mac[6], const uint8_t* data, size_t len
 #include <iterator>
 #include <atomic>
 #include <chrono>
+#include <cmath>
+#include "dmath.h"
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -50,6 +55,7 @@ void dissidia_comm_on_side(const uint8_t mac[6], const uint8_t* data, size_t len
 #include <thread>
 #include <vector>
 
+std::string psp_git_commit();   // psp_report.cpp
 namespace psp_cloud { std::string sha256_hex(const std::vector<uint8_t>& data); }
 std::string dissidia_mods_dir();
 std::string dissidia_package_dir();
@@ -57,13 +63,15 @@ std::string dissidia_voice_jp_dir();
 void dissidia_mods_net_possible();
 bool dissidia_mods_add_override(uint8_t* rdram, const std::string& asset, const std::string& file, uint32_t size);
 int dissidia_retail_moves_state(const std::string& folder);
-bool dissidia_ablt_ensure(uint8_t* rdram, uint16_t id, uint16_t copy, uint16_t cmd, uint8_t type, uint8_t phase, uint8_t owner);
+bool dissidia_ablt_ensure(uint8_t* rdram, uint16_t id, uint16_t copy, uint16_t cmd, uint8_t type, uint8_t phase, uint8_t owner, int cp, int cp_mastered, int ap);
+bool dissidia_chrl_set_row(uint8_t* rdram, int charId, const std::vector<uint8_t>& entries);
+void dissidia_ablt_dump(uint8_t* rdram, const char* tag, const uint16_t* ids, size_t nids);
 
 namespace {
 
 struct NetFile { const char* path; uint32_t size; const char* sha; uint32_t base_size; const char* base_sha; };
-struct NetAbil { uint16_t id, copy, cmd; uint8_t type, phase; };
-struct NetPack { const char* name; int version; int charId; std::vector<NetFile> files; std::vector<NetAbil> abilities; };
+struct NetAbil { uint16_t id, copy, cmd; uint8_t type, phase; int16_t cp, cp_mastered, ap; };   // costs -1: the copied record's own
+struct NetPack { const char* name; int version; int charId; std::vector<NetFile> files; std::vector<NetAbil> abilities; const char* chrl; };   // chrl: the character's 'chrl' row (hex of 8-byte entries), "" = none
 const std::vector<NetPack>& packs() {
     static const std::vector<NetPack> v = {
 #include "net_packs.inc"
@@ -107,6 +115,61 @@ bool unhex(const char* h, uint8_t out[32]) {
     return true;
 }
 
+// ---- build id: the netcode protocol (bump when lock-step / simulation-visible behaviour changes in a way old builds cannot follow) and the
+// git commit this build was made from. Exchanged in the manifest (lobby) and the tag roster (tagteam_net.cpp). ----
+constexpr uint16_t kNetProtocolReal = 1;
+// PSPRECOMP_NETBUILD_FAKE=<id>[:<protocol>]: test aid, announces another build id (and netcode version) than this build's
+const char* fake_build() { static const char* e = std::getenv("PSPRECOMP_NETBUILD_FAKE"); return e && *e ? e : nullptr; }
+// A fingerprint of this machine's C math library: a hash of what sinf / cosf / tanf / atan2f / powf / expf / logf / fmodf / sqrtf / floorf give for a fixed set
+// of inputs (volatile: computed at run time, not folded by the compiler). The simulation itself does not call libm (the VFPU is table code, the generated code
+// is plain float operations), so every build gives the same value today; if a platform's math (msvcrt / ucrt / glibc / bionic) or float codegen ever differs,
+// the id below differs and both players are warned like for a build mismatch. PSPRECOMP_LIBM_FP_OFF=1: not part of the build id.
+uint32_t libm_fingerprint() {   // log only: the platform's libm
+    static const uint32_t fp = [] {
+        volatile float in[] = {0.0f, 0.1f, 0.5f, 0.7853982f, 1.0f, 1.5707964f, 2.0f, 3.1415927f, 4.7f, 6.2831855f, 10.0f, 100.0f, 1e-3f, 1234.5678f, -0.3f, -2.5f, -17.25f, 0.999f};
+        uint32_t h = 2166136261u;
+        auto mix = [&](float v) { uint32_t u; std::memcpy(&u, &v, 4); for (int k = 0; k < 4; k++) { h ^= (u >> (8 * k)) & 0xFFu; h *= 16777619u; } };
+        for (volatile float x : in) {
+            const float a = x;
+            mix(sinf(a)); mix(cosf(a)); mix(tanf(a)); mix(atanf(a)); mix(expf(a * 0.1f)); mix(sqrtf(a < 0 ? -a : a)); mix(floorf(a)); mix(truncf(a * 7.7f));
+            if (a > 0) { mix(logf(a)); mix(log2f(a)); mix(exp2f(a * 0.05f)); }
+            for (volatile float y : in) { const float b = y; mix(atan2f(a, b)); mix(fmodf(a, b == 0 ? 1.0f : b)); if (a > 0) mix(powf(a, b > 8 ? 8.0f : b)); }
+        }
+        return h;
+    }();
+    return fp;
+}
+// The "+m" part of the build id: the deterministic maths the simulation really uses (dmath.h) and the exact float operations (sqrt, floor, trunc) over a fixed
+// grid: equal on every correct build, different only if our own maths differs. (The platform libm hash above is only logged: the simulation does not use it.)
+uint32_t sim_math_fingerprint() {
+    static const uint32_t fp = [] {
+        volatile float in[] = {0.0f, 0.1f, 0.5f, 0.7853982f, 1.0f, 1.5707964f, 2.0f, 3.1415927f, 4.7f, 6.2831855f, 10.0f, 100.0f, 1e-3f, 1234.5678f, -0.3f, -2.5f, -17.25f, 0.999f};
+        uint32_t h = 2166136261u;
+        auto mix = [&](float v) { uint32_t u; std::memcpy(&u, &v, 4); for (int k = 0; k < 4; k++) { h ^= (u >> (8 * k)) & 0xFFu; h *= 16777619u; } };
+        for (volatile float x : in) {
+            const float a = x;
+            mix(dm::sinf_(a)); mix(dm::cosf_(a)); mix(sqrtf(a < 0 ? -a : a)); mix(floorf(a)); mix(truncf(a * 7.7f));
+            for (volatile float y : in) { const float b = y; mix(dm::atan2f_(a, b)); mix(dm::hypotf_(a, b)); }
+        }
+        return h;
+    }();
+    return fp;
+}
+std::string local_commit() {
+    static const std::string c = [] {
+        std::string s = fake_build() ? std::string(fake_build(), std::strcspn(fake_build(), ":")) : psp_git_commit();
+        if (!std::getenv("PSPRECOMP_LIBM_FP_OFF") && !fake_build()) { char b[16]; std::snprintf(b, sizeof b, "+m%06X", sim_math_fingerprint() & 0xFFFFFFu); s += b; }
+        return s;
+    }();
+    return c;
+}
+uint16_t local_proto() {
+    static const uint16_t p = [] { const char* f = fake_build(); const char* c = f ? std::strchr(f, ':') : nullptr; return c ? (uint16_t)std::atoi(c + 1) : kNetProtocolReal; }();
+    return p;
+}
+#define kNetProtocol local_proto()
+struct PeerBuild { bool known = false; uint16_t proto = 0; std::string commit; };
+
 // ---- state (g_mu; never held while calling into the ad-hoc layer, which calls the handler and filter with its own lock) ----
 struct Peer {
     int64_t seen = 0;
@@ -131,6 +194,9 @@ std::vector<int> g_pack_state;               // per pack: 0 not ready, 1 ready, 
 std::vector<bool> g_want_active, g_active;   // a peer in the group uses it / applied in this session
 std::vector<bool> g_share;                   // this player uses it and can send it
 std::vector<int> g_use;                      // this player uses it: 1 shareable, 2 not shareable, 0 no
+std::vector<bool> g_use_exact;               // this player uses it AND its installed files are the listed ones byte for byte
+std::map<Mac, PeerBuild> g_builds;   // the build id every player sent (kept after the player left the manifest list: the tag battle reads it)
+std::map<Mac, std::pair<std::string, int64_t>> g_refuse_why;   // allow_match's last verdict per player ("" = allowed) and when, shown by the worker
 std::map<std::string, std::vector<uint8_t>> g_serve;   // sha -> delta bytes this player sends
 std::vector<Download> g_dl;
 std::atomic<bool> g_started{false};
@@ -160,7 +226,7 @@ void refresh_local() {   // worker, once: what this player has and uses
     size_t nf = 0;
     for (const auto& p : P) nf += p.files.size();
     std::vector<int> ok(nf, 0), st(P.size(), 0), use(P.size(), 0);
-    std::vector<bool> share(P.size(), false);
+    std::vector<bool> share(P.size(), false), exact(P.size(), false);
     std::map<std::string, std::vector<uint8_t>> serve;
     for (size_t i = 0; i < P.size(); i++) {
         bool all = true, installed = true;
@@ -180,13 +246,19 @@ void refresh_local() {   // worker, once: what this player has and uses
             serve[f.sha] = std::move(d);
         }
         share[i] = deltas;
+        exact[i] = installed;
         use[i] = deltas ? 1 : 2;
+        // (23 Nov: one "NOT shareable" line covered both cases below; the first one made every other player that uses the pack refuse
+        // this one silently - "players cannot join", desktop + RP6)
         std::fprintf(stderr, "[NETPACK] %s v%d: in use here, %s\n", P[i].name, P[i].version,
-                     deltas ? "can be sent to players who don't have it" : "NOT shareable (this build differs from the known one): "
-                     "players without it cannot play this player online while it is on");
+                     deltas ? "can be sent to players who don't have it"
+                     : installed ? "the known build, but NOT shareable: its online copies (<mods>/.net/*.dlt) are missing (tools/netpack.py "
+                                   "deltas <mods> --disc <disc0> makes them): players who have it can play this player, players without it cannot"
+                                 : "but its files are NOT the known build (another version or an edited mod): NO online match with any "
+                                   "player while it is on (Settings > Mods turns it off, or reinstall it)");
     }
     std::lock_guard<std::mutex> lk(g_mu);
-    g_file_ok = ok; g_pack_state = st; g_use = use; g_share = share; g_serve = std::move(serve);
+    g_file_ok = ok; g_pack_state = st; g_use = use; g_use_exact = exact; g_share = share; g_serve = std::move(serve);
     g_want_active.assign(P.size(), false);
     g_active.assign(P.size(), false);
 }
@@ -214,10 +286,29 @@ std::vector<uint8_t> manifest() {   // g_mu held
     b.push_back((uint8_t)uses.size());
     for (int i : uses) { put_name(b, packs()[i].name, packs()[i].version); b.push_back((uint8_t)g_use[i]); }
     std::vector<int> ready;
-    for (size_t i = 0; i < g_pack_state.size(); i++) if (g_pack_state[i] == 1 && (g_active[i] || g_use[i])) ready.push_back((int)i);
+    // ready = this game runs the listed files: received and applied, or (a pack in use here) its own install byte for byte. A
+    // verified copy in the cache does not count for a pack in use here: the game runs the installed files.
+    for (size_t i = 0; i < g_pack_state.size(); i++)
+        if (g_use[i] ? (bool)g_use_exact[i] : g_pack_state[i] == 1 && g_active[i]) ready.push_back((int)i);
     b.push_back((uint8_t)ready.size());
     for (int i : ready) put_name(b, packs()[i].name, packs()[i].version);
+    const std::string c = local_commit();   // build id trailer (older builds ignore what follows the pack list)
+    b.push_back('V'); b.push_back(kNetProtocol & 0xff); b.push_back(kNetProtocol >> 8); b.push_back((uint8_t)std::min<size_t>(c.size(), 32));
+    b.insert(b.end(), c.begin(), c.begin() + std::min<size_t>(c.size(), 32));
     return b;
+}
+
+std::string build_mismatch_text(const PeerBuild& pb) {
+    if (!pb.known) return "Online: another player runs an older build (no build id; this game: build " + local_commit() + ", netcode " + std::to_string(kNetProtocol) + "). Fights may desync.";
+    return "Online: another player runs build " + pb.commit + " (netcode " + std::to_string(pb.proto) + "), this game build " + local_commit() + " (netcode " + std::to_string(kNetProtocol) +
+           (pb.proto != kNetProtocol ? "): no match possible." : "). Fights may desync.");
+}
+void note_build(const Mac& from, uint16_t pr, std::string c) {   // g_mu held
+    for (char& ch : c) if (ch < 32 || ch > 126) ch = '?';
+    PeerBuild& pb = g_builds[from];
+    if (!pb.known || pb.proto != pr || pb.commit != c)
+        std::fprintf(stderr, "[BUILD] %s runs build %s, netcode version %u (this game: %s, version %u)\n", mac_str(from).c_str(), c.c_str(), pr, local_commit().c_str(), kNetProtocol);
+    pb = {true, pr, c};
 }
 
 // ---- network thread: copy and queue only ----
@@ -232,22 +323,52 @@ void on_side(const uint8_t mac[6], const uint8_t* data, size_t len) {
 }
 
 // may a match with this player start? (network thread, called with the ad-hoc lock held: only reads state)
+// "" = yes, else why not. Both players decide from the same facts (each one's packs in use, shareable or not, and whether
+// it runs the listed files), so they agree: a match refused on one side only was a lobby where one player sees the other and
+// a battle request that does nothing (23 Nov, desktop + RP6 both using bartz-dff, the desktop's "not shareable").
+std::string refusal(const Mac& m) {   // g_mu held
+    for (size_t i = 0; i < g_use.size(); i++)   // a pack in use here whose files are not the listed ones: every player refuses us
+        if (g_use[i] && !(i < g_use_exact.size() && g_use_exact[i]))
+            return std::string("this game's ") + packs()[i].name + " is not the known build";
+    bool i_use = false;
+    for (int u : g_use) i_use = i_use || u != 0;
+    if (auto bi = g_builds.find(m); bi != g_builds.end() && bi->second.known && bi->second.proto != kNetProtocol)
+        return "that player's netcode version " + std::to_string(bi->second.proto) + " (build " + bi->second.commit + ") differs from this game's version " +
+               std::to_string(kNetProtocol) + " (build " + local_commit() + "): both need the same build";
+    auto it = g_peers.find(m);
+    if (it == g_peers.end() || !it->second.manifest) return i_use ? "no pack list from that player yet (or an older build)" : "";
+    const Peer& p = it->second;
+    for (auto [idx, state] : p.uses) {
+        if (idx < 0) return "that player uses a pack this build does not know";
+        // runs the listed files: shareable (state 1) or not (it listed the pack as ready: installed byte for byte)
+        if (state != 1 && !p.ready.count(idx)) return std::string("that player's ") + packs()[idx].name + " is not the known build";
+        if (!g_use[idx] && !(g_pack_state[idx] == 1 && g_active[idx]))
+            return std::string("that player's ") + packs()[idx].name + (state == 1 ? " is not received yet" : " cannot be sent (and this game does not have it)");
+    }
+    // A pack applied from an earlier lobby of this session stays in the game's tables and files (it cannot be taken out again): a player who does not use it
+    // any more (turned the mod off, or never had it) fights with other tables, so the two would desync at the first Bartz move. Say so instead of starting.
+    static const bool stale_old = std::getenv("PSPRECOMP_NETPACK_STALE_OLD") != nullptr;
+    if (!stale_old)
+        for (size_t i = 0; i < g_active.size(); i++) {
+            if (!g_active[i] || g_use[i]) continue;
+            bool theirs = false;
+            for (auto [idx, state] : p.uses) theirs = theirs || idx == (int)i;
+            if (!theirs) return std::string("this game still has ") + packs()[i].name + " from an earlier lobby (restart the game: that player does not use it)";
+        }
+    for (size_t i = 0; i < g_use.size(); i++)
+        if (g_use[i] && !p.ready.count((int)i))
+            return std::string("that player does not have ") + packs()[i].name + (g_use[i] == 1 ? " yet" : " (and this game cannot send it)");
+    return "";
+}
+
 bool allow_match(const uint8_t mac[6]) {
     Mac m;
     std::memcpy(m.data(), mac, 6);
     std::lock_guard<std::mutex> lk(g_mu);
-    bool i_use = false;
-    for (int u : g_use) i_use = i_use || u != 0;
-    auto it = g_peers.find(m);
-    if (it == g_peers.end() || !it->second.manifest) return !i_use;   // unknown player: fine only while no pack is in use here
-    const Peer& p = it->second;
-    for (auto [idx, state] : p.uses) {
-        if (idx < 0 || state != 1) return false;                     // unknown here, or the player's build is not the listed one
-        if (!g_use[idx] && !(g_pack_state[idx] == 1 && g_active[idx])) return false;   // not received / applied yet
-    }
-    for (size_t i = 0; i < g_use.size(); i++)
-        if (g_use[i] && !p.ready.count((int)i)) return false;        // the player has not confirmed having mine
-    return true;
+    std::string why = refusal(m);
+    const bool ok = why.empty();
+    g_refuse_why[m] = {std::move(why), now_us()};
+    return ok;
 }
 
 // ---- worker ----
@@ -275,10 +396,18 @@ void handle(const Mac& from, const std::vector<uint8_t>& b, std::vector<std::pai
             if (idx >= 0) p.ready.insert(idx);
             o += kName + 2;
         }
+        if (o + 4 <= b.size() && b[o] == 'V' && o + 4 + b[o + 3] <= b.size()) {   // the build id (newer builds)
+            const uint16_t pr = (uint16_t)(b[o + 1] | (b[o + 2] << 8));
+            note_build(from, pr, std::string(reinterpret_cast<const char*>(&b[o + 4]), b[o + 3]));
+        } else if (!g_builds.count(from)) {
+            g_builds[from] = PeerBuild{};
+            std::fprintf(stderr, "[BUILD] %s sends no build id: an older build (this game: %s, version %u)\n", mac_str(from).c_str(), local_commit().c_str(), kNetProtocol);
+        }
         for (auto [idx, state] : p.uses) {
             if (idx < 0) continue;
             g_want_active[idx] = true;
-            if (g_pack_state[idx] == 0 && state == 1) {   // fetch from this player what is missing
+            if (g_pack_state[idx] == 0 && state == 1 && !g_use[idx]) {   // fetch from this player what is missing (a pack in use here runs
+                                                                         // its installed files: a fetched copy would not be used)
                 for (size_t f = 0; f < packs()[idx].files.size(); f++) {
                     if (g_file_ok[file_slot(idx, (int)f)] != 0) continue;
                     bool have = false;
@@ -299,6 +428,7 @@ void handle(const Mac& from, const std::vector<uint8_t>& b, std::vector<std::pai
         }
         if (g_activate_pending.load() == false) for (size_t i = 0; i < g_want_active.size(); i++)
             if (g_want_active[i] && g_pack_state[i] == 1 && !g_active[i] && !g_use[i]) g_activate_pending = true;
+        g_refuse_why[from] = {refusal(from), t};   // known from the list alone (the other player may never send us a matching message)
         return;
     }
     if (b[0] == 'R' && b.size() == 1 + 32 + 4 + 2) {
@@ -385,6 +515,7 @@ void worker() {
         const int64_t t = now_us();
         std::vector<std::pair<Mac, std::vector<uint8_t>>> out;
         std::vector<Download> done;
+        std::vector<std::string> toast, buildwarn;
         uint8_t peers[32][6];
         size_t npeers = 0;
         psp_adhoc_group_peers(peers, 32, &npeers, g_own.data());
@@ -397,6 +528,35 @@ void worker() {
             }
             for (auto it = g_peers.begin(); it != g_peers.end();)
                 if (t - it->second.seen > kPeerGoneUs) it = g_peers.erase(it); else ++it;
+            // why a player in the lobby cannot be matched: in the log when it changes, on screen when it lasts (a refused match
+            // used to be silent: the other player just never showed up / a request did nothing)
+            static std::map<Mac, std::pair<std::string, int64_t>> shown;   // player -> (reason, since)
+            for (auto it = g_refuse_why.begin(); it != g_refuse_why.end();)
+                if (t - it->second.second > kPeerGoneUs) { shown.erase(it->first); it = g_refuse_why.erase(it); } else ++it;
+            for (auto& [m, v] : g_refuse_why) {
+                const std::string& why = v.first;
+                auto& [last, since] = shown[m];
+                if (why != last) {
+                    if (!why.empty()) std::fprintf(stderr, "[NETPACK] no match with %s: %s\n", mac_str(m).c_str(), why.c_str());
+                    else if (!last.empty()) std::fprintf(stderr, "[NETPACK] %s: match allowed now\n", mac_str(m).c_str());
+                    last = why; since = t;
+                } else if (!why.empty() && since >= 0 && t - since > 3000000) {
+                    toast.push_back(why);
+                    since = -1;
+                }
+            }
+            static std::map<Mac, std::string> warned;   // player -> the build we warned about
+            for (size_t i = 0; i < npeers && i < 32; i++) {
+                Mac pm; std::memcpy(pm.data(), peers[i], 6);
+                auto bi = g_builds.find(pm);
+                if (bi == g_builds.end()) continue;   // no manifest yet
+                const PeerBuild& pb = bi->second;
+                if (pb.known && pb.commit == local_commit() && pb.proto == kNetProtocol) { warned.erase(pm); continue; }
+                const std::string key = pb.known ? pb.commit + "/" + std::to_string(pb.proto) : "old";
+                if (warned[pm] == key) continue;
+                warned[pm] = key;
+                buildwarn.push_back(build_mismatch_text(pb));
+            }
             if (npeers && t >= next_manifest) { next_manifest = t + kManifestUs; out.emplace_back(kBcast, manifest()); }
             for (auto it = g_dl.begin(); it != g_dl.end();) {
                 Download& d = *it;
@@ -428,6 +588,8 @@ void worker() {
             }
         }
         for (auto& [m, b] : out) psp_adhoc_side_send(m.data(), b.data(), b.size());
+        for (const std::string& w : buildwarn) { std::fprintf(stderr, "[BUILD] %s\n", w.c_str()); psp_net_notice("netbuild", 15, "%s", w.c_str()); }
+        for (const std::string& w : toast) psp_net_notice("netpack_refuse", 20, "Online: no match with a player in the lobby: %s.", w.c_str());
         for (Download& d : done) {
             const int r = finish(d);
             std::lock_guard<std::mutex> lk(g_mu);
@@ -479,7 +641,17 @@ void on_pump(uint8_t* rdram) {
             // src 1: this player's own install of the pack, served since boot
         }
         for (const NetAbil& a : p.abilities)
-            ok = ok && dissidia_ablt_ensure(rdram, a.id, a.copy, a.cmd, a.type, a.phase, (uint8_t)p.charId);
+            ok = ok && dissidia_ablt_ensure(rdram, a.id, a.copy, a.cmd, a.type, a.phase, (uint8_t)p.charId, a.cp, a.cp_mastered, a.ap);
+        if (ok && p.chrl[0] && !std::getenv("PSPRECOMP_NETPACK_COSTS_OLD")) {   // the learned-by-level row a native install has through its main.bin
+            std::vector<uint8_t> row;
+            for (const char* c = p.chrl; c[0] && c[1]; c += 2) { char h[3] = {c[0], c[1], 0}; row.push_back((uint8_t)std::strtoul(h, nullptr, 16)); }
+            ok = dissidia_chrl_set_row(rdram, p.charId, row);
+        }
+        {
+            std::vector<uint16_t> ids;
+            for (const NetAbil& a : p.abilities) ids.push_back(a.id);
+            dissidia_ablt_dump(rdram, "after the online pack", ids.data(), ids.size());
+        }
         std::lock_guard<std::mutex> lk(g_mu);
         if (ok) g_active[i] = true; else g_pack_state[i] = 2;
         std::fprintf(stderr, "[NETPACK] %s v%d %s for this session\n", p.name, p.version, ok ? "applied" : "could NOT be applied (no match with players who use it)");
@@ -496,4 +668,35 @@ void dissidia_net_packs_install() {
     psp_adhoc_set_match_filter(allow_match);
     psp_adhoc_set_pump_hook(on_pump);
     std::fprintf(stderr, "[NETPACK] %zu known pack(s); online players can send them to this game (verified)\n", packs().size());
+}
+
+// ---- build id for tagteam_net.cpp (the tag roster exchange) ----
+uint32_t dissidia_libm_fingerprint() { return libm_fingerprint(); }
+uint32_t dissidia_simmath_fingerprint() { return sim_math_fingerprint(); }   // for netplay.cpp's "[NETSYNC] this build" line
+void dissidia_netbuild_local(char* out, size_t n, int* proto) {
+    std::snprintf(out, n, "%s", local_commit().c_str());
+    if (proto) *proto = kNetProtocol;
+}
+void dissidia_netbuild_note(const uint8_t mac[6], int proto, const char* commit) {   // a player's build id from the roster exchange
+    Mac m; std::memcpy(m.data(), mac, 6);
+    std::lock_guard<std::mutex> lk(g_mu);
+    note_build(m, (uint16_t)proto, commit ? commit : "");
+}
+// 0 = no information (no manifest / roster message seen), 1 = an older build (no build id), 2 = known (out, proto set)
+int dissidia_netbuild_peer(const uint8_t mac[6], char* out, size_t n, int* proto) {
+    Mac m; std::memcpy(m.data(), mac, 6);
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto it = g_builds.find(m);
+    if (it == g_builds.end()) return 0;
+    if (!it->second.known) return 1;
+    std::snprintf(out, n, "%s", it->second.commit.c_str());
+    if (proto) *proto = it->second.proto;
+    return 2;
+}
+std::string dissidia_netbuild_text(const uint8_t mac[6]) {
+    Mac m; std::memcpy(m.data(), mac, 6);
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto it = g_builds.find(m);
+    if (it == g_builds.end() || (it->second.known && it->second.commit == local_commit() && it->second.proto == kNetProtocol)) return "";
+    return build_mismatch_text(it->second);
 }

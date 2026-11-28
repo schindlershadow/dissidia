@@ -197,3 +197,5 @@ void ge_apply_fov(float* proj16);   // scales a perspective projection's focal l
 // The FOV offset is applied to the GE projection by default (generic runtime). A game module that changes the game's own camera FOV
 // instead (Dissidia: games/dissidia/runtime/camera.cpp) switches this off so the two do not stack.
 void ge_fov_use_projection(bool on);
+/// View-only zoom: every perspective projection's focal scales are multiplied by k (1 = off). Set per frame by a game module.
+void ge_set_fov_scale(float k);

@@ -21,6 +21,7 @@
 #include "psp_gpu_driver.h"
 #include "psp_gl_window.h"
 #include "psp_discord.h"
+#include "psp_report.h"
 #include "psp_texpacks.h"
 #include "psp_file_dialog.h"
 
@@ -112,7 +113,10 @@ PspFrameRateHook g_fps{nullptr, 0, nullptr, nullptr};
 PspVoiceHook g_voice{nullptr};
 std::vector<PspDebugToggle> g_dbg_toggles;   // game-supplied Debug page rows
 PspTexPackHook g_texpack{nullptr};
-PspModInstaller g_installer{};
+std::vector<PspModInstaller> g_installers;   // Mods page: one Install row each (an ISO patch, a DLC folder, a DLC zip ...)
+int g_install_cur = 0;                       // the installer whose picker is open / that is working
+std::vector<unsigned> g_inst_rev;
+std::vector<char> g_inst_busy;
 int g_uninstall_pick = 0;               // which installed mod folder the Uninstall row names
 std::vector<PspTexPack> g_texpacks;     // the installed texture packs (texpacks_refresh)
 int g_texdel_pick = 0;                  // which pack the Delete a Texture Pack row names
@@ -198,6 +202,7 @@ enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_FPSCOUNT, ROW_VSYNC, RO
            ROW_NET_MODE, ROW_NET_SERVER, ROW_NET_ROOM, ROW_NET_PEERS, ROW_NET_DELAY, ROW_NET_STATUS, ROW_NET_UPNP, ROW_NET_UPNP_STATUS, ROW_NET_PING, ROW_DISCORD, ROW_DISCORD_STATUS,   // Network page
            ROW_CLOUD_PROVIDER, ROW_CLOUD_FOLDER, ROW_CLOUD_URL, ROW_CLOUD_USER, ROW_CLOUD_PASS, ROW_CLOUD_GOOGLE,
            ROW_CLOUD_AUTO, ROW_CLOUD_REPLAYS, ROW_CLOUD_NOW, ROW_CLOUD_STATUS,   // Cloud page
+           ROW_REPORT, ROW_REP_TITLE, ROW_REP_DESC, ROW_REP_DUMP, ROW_REP_FILES, ROW_REP_SEND, ROW_REP_STATUS,   // Debug > Report an issue
            ROW_PERF, ROW_FX, ROW_SYNC, ROW_RING, ROW_GLOWSOFT, ROW_GLOWPASS, ROW_FXL_INT, ROW_FXL_RAD,   // Debug page
            ROW_DBG_CHORD, ROW_RESET_ALL, ROW_GRP0, ROW_GRP_END = ROW_GRP0 + 15,   // Debug page: chord window in ms, Reset All, one submenu row per game toggle group
            ROW_DBG0, ROW_DBG_END = ROW_DBG0 + 255,   // Debug page rows a game module adds (psp_settings_add_debug_toggle)
@@ -206,7 +211,7 @@ enum Row { ROW_DISPLAY, ROW_RES, ROW_SCALE, ROW_FPS, ROW_FPSCOUNT, ROW_VSYNC, RO
            ROW_SUB_ENV0, ROW_SUB_ENV_END = ROW_SUB_ENV0 + 15,   // Debug page: one row per developer-options category (psp_env_options.inc)
            ROW_ENV0, ROW_ENV_END = ROW_ENV0 + 63,               // a developer-options category page: one row per environment variable
            ROW_MOD0, ROW_MOD_END = ROW_MOD0 + 31, ROW_MODS_NONE,   // Mods page: one toggle per mod folder, or a note when there are none
-           ROW_MOD_INSTALL, ROW_MOD_INSTALL_STATUS,                // Mods page: install a mod from a file (a game module's PspModInstaller)
+           ROW_MOD_INSTALL, ROW_MOD_INSTALL_END = ROW_MOD_INSTALL + 3, ROW_MOD_INSTALL_STATUS,   // Mods page: install a mod from a file / folder (a game module's PspModInstaller, up to 4), and how it went
            ROW_MOD_UNINSTALL,                                       // Mods page: delete an installed mod folder (pick, then confirm twice)
            ROW_TEXPACK_DEL,                                         // Graphics page: delete an installed texture pack (pick, then confirm twice)
            ROW_TEXPACK_INSTALL, ROW_TEXPACK_INSTALL_STATUS,         // Graphics page: install a pack archive with the file picker, and how it went
@@ -232,10 +237,10 @@ int p1_index(const std::vector<std::pair<std::string, std::string>>& v);
 int g_sel = 0;
 // Pages: the categories shown in the sidebar, and the sub-menus a row can open (PAGE_HDR under Image, PAGE_RT under Effects).
 enum Page { PAGE_DISPLAY, PAGE_GRAPHICS, PAGE_IMAGE, PAGE_EFFECTS, PAGE_CONTROLS, PAGE_NETWORK, PAGE_CLOUD, PAGE_SYSTEM, PAGE_GPU, PAGE_DEBUG, PAGE_MODS,
-            PAGE_SAVES, PAGE_HDR, PAGE_RT, PAGE_KEYS, PAGE_DBGGRP, PAGE_ENV0, PAGE_ENV_END = PAGE_ENV0 + 10, PAGES };
+            PAGE_SAVES, PAGE_HDR, PAGE_RT, PAGE_KEYS, PAGE_DBGGRP, PAGE_REPORT, PAGE_ENV0, PAGE_ENV_END = PAGE_ENV0 + 10, PAGES };
 constexpr int k_env_cats = 11;   // = EC_COUNT (psp_env_options.inc)
 const char* const k_page_names[PAGES] = {"Display", "Graphics", "Image", "Effects", "Controls", "Network", "Cloud", "System", "Drivers", "Debug", "Mods", "Saves",
-                                         "HDR", "Ray Tracing", "Keyboard Controls", "Group",
+                                         "HDR", "Ray Tracing", "Keyboard Controls", "Group", "Report an issue",
                                          "Camera", "Input", "Timing", "Graphics", "Effects tuning", "Vulkan", "Textures", "Audio / video", "Game data", "Game logs", "Engine logs"};
 int g_page = 0;                        // the category (an index into page_list()): L / R, Q / E or Tab, the sidebar
 int g_sub = -1;                        // the open sub-menu page, -1 = none
@@ -259,7 +264,7 @@ const std::vector<int>& page_list() {
 }
 int page_id() { return g_sub >= 0 ? g_sub : page_list()[size_t(g_page)]; }
 // Sidebar icon of a page (settings_render.inc draw_icon).
-int page_icon(int page) { return page <= PAGE_SAVES ? page : (page == PAGE_HDR ? PAGE_IMAGE : page == PAGE_KEYS ? PAGE_CONTROLS : page == PAGE_DBGGRP ? PAGE_DEBUG : page >= PAGE_ENV0 ? PAGE_DEBUG : PAGE_EFFECTS); }
+int page_icon(int page) { return page <= PAGE_SAVES ? page : (page == PAGE_HDR ? PAGE_IMAGE : page == PAGE_KEYS ? PAGE_CONTROLS : page == PAGE_DBGGRP || page == PAGE_REPORT ? PAGE_DEBUG : page >= PAGE_ENV0 ? PAGE_DEBUG : PAGE_EFFECTS); }
 int g_ring_next = -1;                  // vertex upload mode saved for the next launch (-1 = unchanged)
 bool g_quit_armed = false;
 bool g_dirty = true;
@@ -386,18 +391,18 @@ int64_t g_status_next = 0;
 // the settings view) is driven by pad, mouse or touch.
 struct Edit {
     bool active = false;
-    int field = 0;          // 0 server, 1 room, 2 peers, 3 sync folder, 4 WebDAV address, 5 WebDAV user, 6 WebDAV password, 7 a Saves page question
+    int field = 0;          // 0 server, 1 room, 2 peers, 3 sync folder, 4 WebDAV address, 5 WebDAV user, 6 WebDAV password, 7 a Saves page question, 8 report title, 9 report description
     std::string buf;
     int row = 1, col = 0;   // the focused key of the on-screen keyboard
     bool shift = false, symbols = false;
 } g_edit;
 const char* edit_label() {
-    static const char* const n[] = {"Server", "Room", "Direct Peers", "Sync Folder", "WebDAV Address", "WebDAV User", "WebDAV Password"};
+    static const char* const n[] = {"Server", "Room", "Direct Peers", "Sync Folder", "WebDAV Address", "WebDAV User", "WebDAV Password", "", "Short title (optional)", "Describe the issue"};
     if (g_edit.field == 7) { static std::string t; psp_saves::TextAsk a; g_saves.text(&a); t = a.title; return t.c_str(); }
     return n[g_edit.field];
 }
 size_t edit_max() {
-    static const size_t m[] = {63, 31, 127, 255, 255, 63, 63, 400};
+    static const size_t m[] = {63, 31, 127, 255, 255, 63, 63, 400, 100, 1500};
     return m[g_edit.field];
 }
 
@@ -430,9 +435,13 @@ void net_apply() {   // use and remember the Network page's values
     g_status_next = 0;
 }
 std::string g_ext_text;   // field 7
+std::string g_rep_title, g_rep_desc;   // fields 8, 9 (Debug > Report an issue)
+bool g_rep_dump = true;
 std::string& edit_target() {
     switch (g_edit.field) {
     case 7: return g_ext_text;
+    case 8: return g_rep_title;
+    case 9: return g_rep_desc;
     case 0: return g_net_server;
     case 1: return g_net_room;
     case 2: return g_net_peers;
@@ -442,24 +451,35 @@ std::string& edit_target() {
     default: return g_cloud.webdav_pass;
     }
 }
+// Settings text fields: the event loop sets SDL_ENABLE_SCREEN_KEYBOARD to 0 (the Steam Deck rule), which on Android also keeps the
+// system keyboard (IME) from opening and closing. SDL reads the hint inside Start / StopTextInput, so allow it for these calls only.
+static void text_input(bool on) {
+#if defined(__ANDROID__)
+    SDL_SetHint("SDL_ENABLE_SCREEN_KEYBOARD", "1");
+#endif
+    if (on) SDL_StartTextInput(); else SDL_StopTextInput();
+#if defined(__ANDROID__)
+    SDL_SetHint("SDL_ENABLE_SCREEN_KEYBOARD", "0");
+#endif
+}
 void edit_begin(int field) {
     g_edit = Edit{};
     g_edit.active = true;
     g_edit.field = field;
     g_edit.buf = edit_target();
-    SDL_StartTextInput();
+    text_input(true);
     g_dirty = true;
 }
 void saves_sync(int depth_dir);
 void edit_end() {
     const bool ext = g_edit.active && g_edit.field == 7;
-    g_edit.active = false; SDL_StopTextInput(); g_dirty = true;
+    g_edit.active = false; text_input(false); g_dirty = true;
     if (ext) { g_saves.text_done(false, ""); saves_sync(0); }   // cancelled
 }
 void edit_commit() {
     std::string v = g_edit.buf;
     if (g_edit.field == 7) {   // a Saves page question: hand the text over (paths keep their spaces)
-        g_edit.active = false; SDL_StopTextInput(); g_dirty = true;
+        g_edit.active = false; text_input(false); g_dirty = true;
         g_saves.text_done(true, v);
         saves_sync(1);
         return;
@@ -469,7 +489,8 @@ void edit_commit() {
     if (g_edit.field == 0 && v.empty()) v = NET_DEFAULT_SERVER;
     edit_target() = v;
     edit_end();
-    if (g_edit.field >= 3) cloud_apply();
+    if (g_edit.field >= 8) {}
+    else if (g_edit.field >= 3) cloud_apply();
     else net_apply();
 }
 void edit_append(char c) {
@@ -840,12 +861,17 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
         switch (r) {
         case ROW_SEC_DEV: m.label = "Developer options"; break;
         case ROW_SEC_MODS: m.label = "Installed mods"; break;
-        case ROW_MOD_INSTALL:
-            m.label = g_installer.label ? g_installer.label : "";
-            m.value = g_install_busy ? "working..." : g_install_picking ? "choosing..." : "";
-            m.help = std::string(g_installer.help ? g_installer.help : "") +
-                     (psp_filedlg::available() ? "" : std::string("\nThis system has no file picker: put the file in the mods folder (") + mods_dir_path() + ") and choose this again.");
+        case ROW_MOD_INSTALL: case ROW_MOD_INSTALL + 1: case ROW_MOD_INSTALL + 2: case ROW_MOD_INSTALL_END: {
+            const size_t i = size_t(r - ROW_MOD_INSTALL);
+            if (i >= g_installers.size()) break;
+            const PspModInstaller& in = g_installers[i];
+            m.label = in.label ? in.label : "";
+            m.value = g_install_busy ? (g_install_cur == int(i) ? "working..." : "") : g_install_picking && g_install_cur == int(i) ? "choosing..." : "";
+            m.help = std::string(in.help ? in.help : "") +
+                     (psp_filedlg::available() ? "" : in.pick == 0 ? std::string("\nThis system has no file picker: put the file in the mods folder (") + mods_dir_path() + ") and choose this again."
+                                                                  : std::string("\nThis system has no file picker, so this cannot be chosen here."));
             break;
+        }
         case ROW_MOD_UNINSTALL: {
             const std::vector<size_t> v = uninstallable();
             if (g_uninstall_pick >= int(v.size())) g_uninstall_pick = 0;
@@ -930,11 +956,12 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
         case ROW_FPS: {
             const int i = fps_index();
             m.label = "Frame Rate";
-            std::snprintf(buf, sizeof buf, "%d fps", g_fps.rates[i]);
+            if (g_fps.rates[i] >= 1000) std::snprintf(buf, sizeof buf, "Unlocked");
+            else std::snprintf(buf, sizeof buf, "%d fps", g_fps.rates[i]);
             m.value = buf;
             m.can_dec = i > 0;
             m.can_inc = i + 1 < g_fps.count;
-            m.help = "Frame rate (multiples of 30)\nBattles run at this many frames a second; the PSP ran 30. Pick a rate your device can hold: if it cannot reach the target, the game will run slower than normal and stutter. Costs CPU and GPU time in proportion. Menus stay at 30. Saved.";
+            m.help = "Frame rate (multiples of 30)\nBattles run at this many frames a second; the PSP ran 30. Pick a rate your device can hold: if it cannot reach the target, the game will run slower than normal and stutter. Costs CPU and GPU time in proportion. Menus stay at 30. Unlocked: no limit, the battle is drawn as often as the device manages (the game itself still runs at its normal speed, and online it counts as 240 fps); turn Vertical Sync on to cap it at the screen's refresh rate and save power. Saved.";
             break;
         }
         case ROW_RENDERER: {
@@ -946,7 +973,7 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.disabled = !avail;
             m.can_dec = avail && vk;
             m.can_inc = avail && !vk;
-            m.help = avail ? "Graphics API (PSPRECOMP_RENDERER)\nVulkan is the default on Android when the GPU supports it (needs Vulkan 1.1); elsewhere OpenGL is the default and the most tested. Vulkan renders the same picture through a Vulkan layer. Takes effect the next time the game starts. Saved."
+            m.help = avail ? "Graphics API (PSPRECOMP_RENDERER)\nVulkan is the default when the GPU supports it (needs Vulkan 1.1); OpenGL is the fallback and the choice for GPUs without Vulkan. Vulkan renders the same picture through a Vulkan layer. Takes effect the next time the game starts. Saved."
                            : "Graphics API: Vulkan unavailable\n" + why + " OpenGL is used.";
             break;
         }
@@ -1099,12 +1126,12 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.help = "Direct peers\nExtra addresses to contact directly, in addition to the local network: host or host:port, comma separated. Press Cross to edit. Saved.";
             break;
         case ROW_NET_DELAY: {
-            const int d = psp_netplay_input_delay();
+            const int d = psp_netplay_delay_setting();
             m.label = "Network Delay";
-            m.value = std::to_string(d) + (d == 1 ? " frame" : " frames");
-            m.can_dec = d > PSP_NETPLAY_MIN_DELAY;
+            m.value = d == PSP_NETPLAY_AUTO_DELAY ? "Auto" : std::to_string(d) + (d == 1 ? " frame" : " frames");
+            m.can_dec = d > PSP_NETPLAY_AUTO_DELAY;
             m.can_inc = d < PSP_NETPLAY_MAX_DELAY;
-            m.help = "Network delay for online battles\nYour button presses take effect this many battle frames later (one frame is 33 ms at 30 fps), and in return the other player's input has that much longer to arrive, so the battle does not stall at higher pings. A rough guide: one frame per 70 ms of round-trip ping at 30 fps (per 35 ms at 60 fps); 3 frames each handled a 200 ms round trip in tests. Both players should pick the same value (the delays of both players add up). Cannot be changed during an online session. Saved.";
+            m.help = "Network delay for online battles\nYour button presses take effect this many battle frames later (one frame is 33 ms at 30 fps), and in return the other player's input has that much longer to arrive, so the battle does not stall at higher pings. A rough guide: one frame per 70 ms of round-trip ping at 30 fps (per 35 ms at 60 fps); 3 frames each handled a 200 ms round trip in tests. Both players should pick the same value (the delays of both players add up). Auto (the default) picks it at the start of every battle from the measured ping, so a good connection gets 1 frame and a slow one gets what it needs. Cannot be changed during an online session. Saved.";
             break;
         }
         case ROW_NET_STATUS:
@@ -1326,6 +1353,52 @@ std::vector<psp_sddialog::MenuRow> make_rows() {
             m.value = ms <= 0 ? "Off" : std::to_string(ms) + " ms";
             m.can_dec = ms > 0; m.can_inc = ms < 200;
             m.help = "Button chord window, fine (debug)\nHow long a face button pressed alone in battle is held back so that R or L pressed just after it still counts as one chord (R + Cross dodge, R + Square EX Mode ...). Off, or 10 to 200 ms in steps of 10. The same saved setting as Controls > Button Chord Window (70 ms by default); it applies at once.";
+            break;
+        }
+        case ROW_REPORT:
+            m.label = "Report an issue";
+            m.value = "";
+            m.help = "Report an issue\nSomething wrong? Describe it, and the game sends the developers a report: your text, the game's log, your settings and what device you use (and, if you leave it on, a copy of the game's memory). It opens a GitHub issue. Press Cross to open.";
+            break;
+        case ROW_REP_TITLE:
+            m.label = "Short title";
+            m.value = g_rep_title.empty() ? "optional" : tail_fit(g_rep_title, 30);
+            m.help = "Short title (optional)\nA few words for the issue's title. Press Cross to type it. " + g_rep_title;
+            break;
+        case ROW_REP_DESC:
+            m.label = "What went wrong";
+            m.value = g_rep_desc.empty() ? "type here" : tail_fit(g_rep_desc, 30);
+            m.help = "Describe the issue\nWhat you did, what you expected and what happened. Press Cross to type it (keyboard, or the on-screen keyboard with a pad or touch). " + g_rep_desc;
+            break;
+        case ROW_REP_DUMP:
+            m.label = "Include memory dump";
+            m.value = g_rep_dump ? "On" : "Off";
+            m.can_dec = g_rep_dump; m.can_inc = !g_rep_dump;
+            m.help = "Memory dump\nA compressed copy of the game's memory as it is right now. It helps the developers see what the game was doing; it can contain whatever the game had loaded (save data, your player name), nothing from outside the game. Left out when too big.";
+            break;
+        case ROW_REP_FILES: {
+            const auto fl = psp_report::preview(g_rep_dump);
+            size_t tot = 0;
+            std::string names;
+            for (const auto& f : fl) { tot += f.size; names += (names.empty() ? "" : ", ") + f.name; }
+            m.label = "Files to send";
+            m.value = std::to_string(fl.size()) + " files";
+            m.help = "What will be sent (before compression, " + std::to_string(tot >> 20) + " MB): " + names + ".\nYour user name and home folder are replaced by ~ in the text files; passwords and cloud sync settings are never included. The issue text is public on GitHub; the files are reachable through the link in the issue.";
+            break;
+        }
+        case ROW_REP_SEND: {
+            const bool busy = psp_report::status().state == psp_report::Status::Working;
+            m.label = "Send report";
+            m.value = busy ? "sending..." : "";
+            m.disabled = busy || g_rep_desc.empty();
+            m.help = g_rep_desc.empty() ? "Send report\nType what went wrong first (What went wrong)." : "Send report\nPress Cross to send it. Back leaves without sending.";
+            break;
+        }
+        case ROW_REP_STATUS: {
+            const psp_report::Status st = psp_report::status();
+            m.label = "Status";
+            m.value = st.state == psp_report::Status::Working ? "working..." : st.state == psp_report::Status::Done ? "sent" : "problem";
+            m.help = "Report status\n" + st.text + (st.issue_url.empty() ? "" : "\n" + st.issue_url);
             break;
         }
         case ROW_RESET_ALL:
@@ -1672,14 +1745,18 @@ psp_sddialog::SetKind row_kind(Row r) {
     if (const EnvOpt* o = env_row_opt(r)) return o->type == 'c' ? K::Choice : K::Toggle;
     if (r >= ROW_DBG0 && r <= ROW_DBG_END) return K::Toggle;
     if (r >= ROW_GRP0 && r <= ROW_GRP_END) return K::Submenu;
-    if (r == ROW_RESET_ALL) return K::Action;
+    if (r == ROW_RESET_ALL || r == ROW_REP_SEND) return K::Action;
+    if (r == ROW_REPORT) return K::Submenu;
+    if (r == ROW_REP_TITLE || r == ROW_REP_DESC) return K::Text;
+    if (r == ROW_REP_FILES || r == ROW_REP_STATUS) return K::Info;
+    if (r == ROW_REP_DUMP) return K::Choice;
     if (r == ROW_DBG_CHORD) return K::Choice;
     switch (r) {
     case ROW_RT_REFL_FX:
     case ROW_FPSCOUNT: case ROW_VSYNC: case ROW_WIDE: case ROW_TALL: case ROW_SOFT: case ROW_UPDATES: case ROW_NET_UPNP: case ROW_NET_PING: case ROW_DISCORD: case ROW_HDR: case ROW_HDR_SCENE: case ROW_CLOUD_AUTO:
     case ROW_CLOUD_REPLAYS: case ROW_PERF: case ROW_FX: case ROW_GLOWSOFT: case ROW_GLOWPASS:
     case ROW_FXL_INT: case ROW_FXL_RAD: case ROW_RT_CHAR: case ROW_LR_BUTTONS: return K::Choice;   // Character Shadows: Off / Soft (named values, not a switch)
-    case ROW_TEST_CTRL: case ROW_TOUCH_EDIT: case ROW_CLOUD_NOW: case ROW_CLOUD_GOOGLE: case ROW_GPU_DEL: case ROW_MOD_INSTALL: case ROW_TEXPACK_INSTALL: case ROW_TEXPACK_DOWNLOAD: return K::Action;
+    case ROW_TEST_CTRL: case ROW_TOUCH_EDIT: case ROW_CLOUD_NOW: case ROW_CLOUD_GOOGLE: case ROW_GPU_DEL: case ROW_MOD_INSTALL: case ROW_MOD_INSTALL + 1: case ROW_MOD_INSTALL + 2: case ROW_MOD_INSTALL_END: case ROW_TEXPACK_INSTALL: case ROW_TEXPACK_DOWNLOAD: return K::Action;
     case ROW_MOD_UNINSTALL: case ROW_TEXPACK_DEL: case ROW_TEXPACK: return K::Choice;
     case ROW_QUIT: return K::Danger;
     case ROW_SUB_HDR: case ROW_SUB_RT: return K::Submenu;
@@ -1935,6 +2012,7 @@ std::vector<size_t> texpack_deletable() {
     return v;
 }
 void build_rows();
+bool report_wanted();
 // ---- Graphics page: install a texture pack archive (file picker -> worker thread -> psp_texpacks_install) ------------------------------
 void texpack_install_start(const std::string& path) {
     if (g_tpi_busy.exchange(true)) return;
@@ -2265,12 +2343,14 @@ void change(int d) {   // left / right on the selected row
         }
         break;
     case ROW_NET_DELAY: {
-        const int v = std::clamp(psp_netplay_input_delay() + d, PSP_NETPLAY_MIN_DELAY, PSP_NETPLAY_MAX_DELAY);
+        const int v = std::clamp(psp_netplay_delay_setting() + d, PSP_NETPLAY_AUTO_DELAY, PSP_NETPLAY_MAX_DELAY);   // 0 = Auto
         psp_netplay_set_input_delay(v);
         save("net_input_delay", std::to_string(v));
         break;
     }
     case ROW_NET_SERVER: case ROW_NET_ROOM: case ROW_NET_PEERS: case ROW_NET_STATUS: case ROW_NET_UPNP_STATUS: case ROW_DISCORD_STATUS: break;
+    case ROW_REP_DUMP: g_rep_dump = d > 0; break;
+    case ROW_REPORT: case ROW_REP_TITLE: case ROW_REP_DESC: case ROW_REP_FILES: case ROW_REP_SEND: case ROW_REP_STATUS: break;
     case ROW_CLOUD_PROVIDER: {
         const int cur = int(g_cloud.provider), nx = std::clamp(cur + d, 0, 3);
         if (nx != cur) {
@@ -2573,8 +2653,8 @@ void build_rows() {
     }
     case PAGE_MODS:
         mods_load();
-        if (g_installer.label) {
-            add(ROW_MOD_INSTALL);
+        if (!g_installers.empty()) {
+            for (size_t i = 0; i < g_installers.size(); i++) add(Row(ROW_MOD_INSTALL + int(i)));
             if (!g_install_text.empty()) add(ROW_MOD_INSTALL_STATUS);
         }
         add(ROW_SEC_MODS);
@@ -2583,6 +2663,7 @@ void build_rows() {
         if (!uninstallable().empty()) add(ROW_MOD_UNINSTALL);
         break;
     case PAGE_DEBUG:
+        if (report_wanted()) add(ROW_REPORT);
         add(ROW_PERF); add(ROW_FX);
         for (size_t i = 0; i < g_dbg_toggles.size(); i++) if (g_dbg_toggles[i].under_fx) g_rows.push_back(Row(ROW_DBG0 + int(i)));   // (the Jecht combo helper)
         add(ROW_SYNC); add(ROW_RING); add(ROW_GLOWSOFT); add(ROW_GLOWPASS); add(ROW_FXL_INT); add(ROW_FXL_RAD);
@@ -2592,6 +2673,10 @@ void build_rows() {
         add(ROW_SEC_DEV);
         for (int c = 0; c < EC_COUNT; c++) g_rows.push_back(Row(ROW_SUB_ENV0 + c));
         add(ROW_RESET_ALL);
+        break;
+    case PAGE_REPORT:
+        add(ROW_REP_DESC); add(ROW_REP_TITLE); add(ROW_REP_DUMP); add(ROW_REP_FILES); add(ROW_REP_SEND);
+        if (psp_report::status().state != psp_report::Status::Idle) add(ROW_REP_STATUS);
         break;
     case PAGE_DBGGRP:
         for (size_t i = 0; i < g_dbg_toggles.size(); i++)
@@ -2681,6 +2766,54 @@ void test_tick(int64_t t) {   // the holds: Start + Select 2 s leaves, L + R 1 s
         if (!g_test.view_t0) g_test.view_t0 = t;
         if (!g_test.view_done && t - g_test.view_t0 >= 1000) { g_test.view_done = true; g_test.view ^= 1; g_dirty = true; }
     } else { g_test.view_t0 = 0; g_test.view_done = false; }
+}
+bool report_wanted() { const char* o = std::getenv("PSPRECOMP_REPORT_OLD"); return !(o && o[0] && o[0] != '0'); }
+// Debug > Report an issue > Send: hands the text and the facts only this file knows to psp_report (worker thread).
+void report_send() {
+    if (g_rep_desc.empty() || psp_report::status().state == psp_report::Status::Working) return;
+    psp_report::Params p;
+    p.title = g_rep_title;
+    p.description = g_rep_desc;
+    p.include_dump = g_rep_dump;
+    if (SDL_Window* w = win()) {
+        int dw = 0, dh = 0, ww = 0, wh = 0;
+        SDL_GetWindowSize(w, &ww, &wh);
+        psp_gl_drawable_size(w, &dw, &dh);
+        p.extra.push_back({"resolution", std::to_string(ww) + "x" + std::to_string(wh) + " (drawable " + std::to_string(dw) + "x" + std::to_string(dh) + ")"});
+        p.extra.push_back({"video_driver", SDL_GetCurrentVideoDriver() ? SDL_GetCurrentVideoDriver() : ""});
+    }
+    p.extra.push_back({"renderer", renderer_vulkan_at_start() ? "Vulkan" : "OpenGL"});
+    std::string on, groups;
+    for (const PspDebugToggle& t : g_dbg_toggles) {
+        if (t.get() == t.def) continue;
+        on += std::string(on.empty() ? "" : ", ") + (t.group ? std::string(t.group) + ": " : std::string()) + t.label + "=" + (t.get() ? "on" : "off");
+    }
+    p.extra.push_back({"tag_team_and_debug_switches_changed", on.empty() ? "none" : on});
+    p.extra.push_back({"fps_setting", g_fps.get ? std::to_string(g_fps.get()) : ""});
+    p.extra.push_back({"net_mode", g_net_internet ? "internet" : "lan"});
+    p.extra.push_back({"cloud_sync", "provider " + std::to_string(int(g_cloud.provider))});
+    for (const auto& kv : g_saved) {   // the saved settings are in settings.ini; a few that decide how the game looks
+        if (kv.first == "renderer" || kv.first == "gpu_driver") p.extra.push_back({"saved_" + kv.first, kv.second});
+    }
+    if (!psp_report::start(p)) return;
+    g_sel_page[page_id()] = g_sel;
+    build_rows();
+    g_dirty = true;
+}
+// Every tick (also with the menu closed): a finished report opens its issue and says so.
+void report_tick() {
+    if (!psp_report::take_finished()) { static unsigned seen = 0; const unsigned r = psp_report::status().rev; if (r != seen) { seen = r; g_dirty = true; } return; }
+    const psp_report::Status st = psp_report::status();
+    g_dirty = true;
+    if (st.state == psp_report::Status::Done) {
+        std::fprintf(stderr, "[REPORT] opening %s\n", st.issue_url.c_str());
+        ge_draw_toast(st.text.c_str(), 5000);
+        if (!std::getenv("PSPRECOMP_REPORT_NO_OPEN") && SDL_OpenURL(st.issue_url.c_str()) != 0)
+            ge_draw_toast(("Open " + st.issue_url + " in a browser").c_str(), 6000);
+    } else {
+        ge_draw_toast("The report was not sent: see Debug > Report an issue", 5000);
+    }
+    if (g_open.load()) { g_sel_page[page_id()] = g_sel; build_rows(); }
 }
 bool restart_supported() {
 #if defined(_WIN32) || defined(__ANDROID__)
@@ -2937,13 +3070,15 @@ void mod_uninstall_confirm() {
     g_dirty = true;
 }
 
-// ---- Mods page: install a mod from a file (PspModInstaller) --------------------------------------------------------------
+// ---- Mods page: install a mod from a file or folder (PspModInstaller) ---------------------------------------------------
 void mod_install_start(const std::string& path) {
-    if (g_installer.start && g_installer.start(path)) g_install_busy = true;
+    if (g_install_cur >= 0 && g_install_cur < int(g_installers.size()) && g_installers[size_t(g_install_cur)].start && g_installers[size_t(g_install_cur)].start(path)) g_install_busy = true;
     g_dirty = true;
 }
-void mod_install_choose() {
-    if (g_install_busy || g_install_picking || !g_installer.start) return;
+void mod_install_choose(int which) {
+    if (which < 0 || which >= int(g_installers.size()) || g_install_busy || g_install_picking || !g_installers[size_t(which)].start) return;
+    const PspModInstaller& in = g_installers[size_t(which)];
+    g_install_cur = which;
     if (psp_filedlg::available()) {
         psp_filedlg::set_scratch_dir(mods_dir_path() + "/.picked");   // Android copies the picked document here
         std::string start_dir;   // mods are usually downloaded: start in Downloads when there is one
@@ -2954,7 +3089,8 @@ void mod_install_choose() {
             const std::string d = std::string(home) + "/Downloads";
             if (std::filesystem::is_directory(std::filesystem::u8path(d), ec)) start_dir = d;
         }
-        if (psp_filedlg::start(psp_filedlg::Kind::ImportPatch, g_installer.dialog_title ? g_installer.dialog_title : "Choose a file", start_dir)) g_install_picking = true;
+        const psp_filedlg::Kind kind = in.pick == 1 ? psp_filedlg::Kind::ImportFolder : in.pick == 2 ? psp_filedlg::Kind::ImportArchive : psp_filedlg::Kind::ImportPatch;
+        if (psp_filedlg::start(kind, in.dialog_title ? in.dialog_title : "Choose a file", start_dir)) g_install_picking = true;
         g_dirty = true;
         return;
     }
@@ -2963,18 +3099,24 @@ void mod_install_choose() {
     std::error_code ec;
     fs::path best;
     fs::file_time_type best_t{};
-    const std::string ext = g_installer.extension ? g_installer.extension : "";
-    for (const auto& e : fs::directory_iterator(fs::u8path(mods_dir_path()), ec)) {
-        std::string n = e.path().filename().u8string();
-        if (ext.empty() || n.size() < ext.size()) continue;
-        std::string tail = n.substr(n.size() - ext.size());
-        for (char& c : tail) c = char(std::tolower((unsigned char)c));
-        if (tail != ext || !e.is_regular_file(ec)) continue;
-        const auto t = e.last_write_time(ec);
-        if (best.empty() || t > best_t) { best = e.path(); best_t = t; }
+    const std::string ext = in.extension ? in.extension : "";
+    if (in.pick == 0 || in.pick == 2) {
+        for (const auto& e : fs::directory_iterator(fs::u8path(mods_dir_path()), ec)) {
+            std::string n = e.path().filename().u8string();
+            if (ext.empty() || n.size() < ext.size()) continue;
+            std::string tail = n.substr(n.size() - ext.size());
+            for (char& c : tail) c = char(std::tolower((unsigned char)c));
+            if (tail != ext || !e.is_regular_file(ec)) continue;
+            const auto t = e.last_write_time(ec);
+            if (best.empty() || t > best_t) { best = e.path(); best_t = t; }
+        }
+        if (!best.empty()) { mod_install_start(best.u8string()); return; }
+        g_install_text = "This system has no file picker: put the " + ext + " file in " + mods_dir_path() + " and choose this again.";
+    } else {
+        g_install_text = "This system has no file picker: install it from a computer with the game's setup, or copy the folder into " + mods_dir_path() + "/_dlc_import and choose this again.";
+        const std::string drop = mods_dir_path() + "/_dlc_import";
+        if (std::filesystem::is_directory(fs::u8path(drop), ec)) { mod_install_start(drop); return; }
     }
-    if (!best.empty()) { mod_install_start(best.u8string()); return; }
-    g_install_text = "This system has no file picker: put the " + ext + " file in " + mods_dir_path() + " and choose this again.";
     g_sel_page[page_id()] = g_sel;
     build_rows();
     g_dirty = true;
@@ -2995,14 +3137,25 @@ void mod_install_tick() {
         default: break;
         }
     }
-    unsigned rev = 0;
-    bool busy = false;
+    if (g_inst_rev.size() != g_installers.size()) { g_inst_rev.assign(g_installers.size(), 0); g_inst_busy.assign(g_installers.size(), 0); }
+    bool changed = false, any_busy = false, finished = false;
     std::string text;
-    if (g_installer.status) g_installer.status(&rev, &busy, &text);
-    if (rev == g_install_rev && busy == g_install_busy) return;
-    const bool finished = g_install_busy && !busy, had = !g_install_text.empty();
-    g_install_rev = rev;
-    g_install_busy = busy;
+    for (size_t i = 0; i < g_installers.size(); i++) {
+        unsigned rev = 0;
+        bool busy = false;
+        std::string t;
+        if (g_installers[i].status) g_installers[i].status(&rev, &busy, &t);
+        any_busy = any_busy || busy;
+        if (rev == g_inst_rev[i] && busy == bool(g_inst_busy[i])) continue;
+        if (g_inst_busy[i] && !busy) finished = true;
+        g_inst_rev[i] = rev;
+        g_inst_busy[i] = busy ? 1 : 0;
+        if (!t.empty()) text = t;
+        changed = true;
+    }
+    if (!changed) return;
+    const bool had = !g_install_text.empty();
+    g_install_busy = any_busy;
     if (!text.empty()) g_install_text = text;
     if (finished) { std::error_code ec; std::filesystem::remove_all(std::filesystem::u8path(mods_dir_path() + "/.picked"), ec); }
     if (finished || had != !g_install_text.empty()) { g_sel_page[page_id()] = g_sel; build_rows(); }   // the new mod's row, the status row
@@ -3037,6 +3190,12 @@ void confirm_row() {
     case ROW_SUB_HDR: enter_sub(PAGE_HDR); return;
     case ROW_SUB_RT: enter_sub(PAGE_RT); return;
     case ROW_KEYS_INFO: enter_sub(PAGE_KEYS); return;
+    case ROW_REPORT: enter_sub(PAGE_REPORT); return;
+    case ROW_REP_TITLE: edit_begin(8); return;
+    case ROW_REP_DESC: edit_begin(9); return;
+    case ROW_REP_DUMP: change(g_rep_dump ? -1 : 1); return;
+    case ROW_REP_FILES: case ROW_REP_STATUS: return;
+    case ROW_REP_SEND: report_send(); return;
     case ROW_RESET_ALL: g_dlg_kind = 1; g_dlg_open = true; g_dlg_sel = 1; g_dlg_hover = -1; g_dirty = true; return;   // No is pre-selected
     case ROW_QUIT:
         if (!g_quit_armed) { g_quit_armed = true; g_dirty = true; return; }
@@ -3108,7 +3267,7 @@ void confirm_row() {
     case ROW_NET_SERVER: edit_begin(0); return;
     case ROW_NET_ROOM: edit_begin(1); return;
     case ROW_NET_PEERS: edit_begin(2); return;
-    case ROW_NET_DELAY: change(psp_netplay_input_delay() >= PSP_NETPLAY_MAX_DELAY ? PSP_NETPLAY_MIN_DELAY - PSP_NETPLAY_MAX_DELAY : 1); return;   // cycles round
+    case ROW_NET_DELAY: change(psp_netplay_delay_setting() >= PSP_NETPLAY_MAX_DELAY ? PSP_NETPLAY_AUTO_DELAY - PSP_NETPLAY_MAX_DELAY : 1); return;   // cycles round (Auto, 1 .. 8)
     case ROW_NET_STATUS: break;
     case ROW_CLOUD_PROVIDER: change(g_cloud.provider == psp_cloud_svc::Provider::Google ? -3 : 1); return;   // cycles round
     case ROW_CLOUD_FOLDER: edit_begin(3); return;
@@ -3127,7 +3286,7 @@ void confirm_row() {
         break;
     case ROW_CLOUD_STATUS: break;
     case ROW_MOD_INSTALL_STATUS: break;
-    case ROW_MOD_INSTALL: mod_install_choose(); return;
+    case ROW_MOD_INSTALL: case ROW_MOD_INSTALL + 1: case ROW_MOD_INSTALL + 2: case ROW_MOD_INSTALL_END: mod_install_choose(g_rows[size_t(g_sel)] - ROW_MOD_INSTALL); return;
     case ROW_TEXPACK_INSTALL: texpack_install_choose(); return;
     case ROW_TEXPACK_DOWNLOAD: texpack_download_start(); return;
     case ROW_MOD_UNINSTALL: mod_uninstall_confirm(); return;
@@ -3409,7 +3568,8 @@ void psp_settings_add_debug_toggle(const PspDebugToggle& t) {
     if (t.group && std::find(g_dbg_groups.begin(), g_dbg_groups.end(), t.group) == g_dbg_groups.end() && g_dbg_groups.size() < size_t(ROW_GRP_END - ROW_GRP0 + 1)) g_dbg_groups.push_back(t.group);
 }
 void psp_settings_set_texpack_hook(const PspTexPackHook& hook) { g_texpack = hook; }
-void psp_settings_set_mod_installer(const PspModInstaller& inst) { g_installer = inst; }
+void psp_settings_set_mod_installer(const PspModInstaller& inst) { g_installers.assign(1, inst); }
+void psp_settings_add_mod_installer(const PspModInstaller& inst) { if (g_installers.size() < 4) g_installers.push_back(inst); }
 
 void psp_settings_load_early() {
     const char* e = std::getenv("PSPRECOMP_SETTINGS_MENU");
@@ -3714,6 +3874,7 @@ static void apply_default_frame_rate() {
 
 void psp_settings_tick() {
     apply_default_frame_rate();
+    report_tick();
     if (g_request_open.exchange(false) && !g_open.load()) { set_open(true); g_gate_dirty.store(true); }
     if (g_request_saves.exchange(false)) {
         if (!g_open.load()) { set_open(true); g_gate_dirty.store(true); }
@@ -3775,7 +3936,7 @@ void psp_settings_tick() {
             g_dirty = true;
         }
     }
-    if (page_id() == PAGE_MODS && g_installer.label) mod_install_tick();
+    if (page_id() == PAGE_MODS && !g_installers.empty()) mod_install_tick();
     if (g_tpi_picking || g_tpi_busy || g_tpi_finished) texpack_install_tick();
     if (page_id() == PAGE_SAVES && g_saves_env && !g_edit.active) {   // file window answers, cloud status, questions
         g_saves.set_sel(g_sel);              // (before tick: an answer from the file window may open another level with its own cursor)

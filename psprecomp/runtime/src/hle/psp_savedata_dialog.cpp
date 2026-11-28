@@ -1608,6 +1608,19 @@ void KeyboardDialog::press() {
     }
 }
 
+// The mouse: x, y in design units (480x272). Returns true when the pointer is over a key; that key becomes the selected one and, with
+// `click`, is pressed (same geometry as render()).
+bool KeyboardDialog::pointer(float x, float y, bool click) {
+    const float gx = 46, gy = 96, kw = 36, kh = 22, gap = 3;
+    const float fx = (x - gx) / (kw + gap), fy = (y - gy) / (kh + gap);
+    if (x < gx || y < gy || fx >= float(OSK_COLS) || fy >= float(OSK_ROWS)) return false;
+    const int col = int(fx), row = int(fy);
+    if (fx - float(col) > kw / (kw + gap) || fy - float(row) > kh / (kh + gap)) return false;   // in the gap between keys
+    if (row_ != row || col_ != col) { row_ = row; col_ = col; ++rev_; }
+    if (click) press();
+    return true;
+}
+
 Result KeyboardDialog::update(uint32_t b, int64_t now_ms) {
     {   // the host keyboard
         std::vector<uint32_t> keys;

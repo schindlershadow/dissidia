@@ -12,6 +12,7 @@ struct TagHudFighter {
     int brv = -1;           // bravery (-1: not shown)
     bool active = false;    // the one the pad drives (later: the tag swap), marked with an arrow
     std::string code;       // file code of the character ("gst120"): its face strip
+    bool broken = false;        // in break status (from the break until the BRV is back at base): "BREAK" stays beside the BRV number
     float break_flash = -1.f;   // 0..1: a BREAK flash at this panel's BRV number (its fighter was just broken); < 0: none
     float ex = -1.f;            // EX gauge 0..1 (status +0x18 / 10000); < 0: not shown
     float assist = -1.f;        // assist gauge 0..1 (status +0x1C / 10000, two levels of 0.5); < 0: not shown
@@ -44,6 +45,15 @@ struct TagHudOverhead {
 // 2 = a mini status panel (name, Bravery, HP bar and number), 3 = the PPSSPP plugin's HUD (v0.52-v0.61): half-size panels with the face over the
 // enemies, the ally and the other enemy on the assist-gauge row at the bottom; 0 = off. With 1, 2 or 3 the side panels are not drawn.
 void tagteam_hud_overhead(const std::vector<TagHudOverhead>& bars, int style = 1, bool hide_panels = false);
+// Lock-on indicator (presentation only): the enemies that currently have the local player's fighter as their target. `me` = the player's actor,
+// `by` = the locked-on enemies' actors (empty: nobody), `fresh` = those among them that locked on just now (flash + optional cue).
+// Called every HUD tick; an empty `by` (or me == 0) removes the markers. oh_style = the overhead bar style (0..3), to place the eye above the bar.
+struct TagHudLockInd { uint32_t me = 0; std::vector<uint32_t> by, fresh; int oh_style = 0; };
+void tagteam_hud_lockind(const TagHudLockInd& li);
+// Height of a fighter's top (head / horns, metres above its feet, margin included), from tagteam.cpp; every marker drawn above a fighter is anchored with it.
+void tagteam_hud_set_top_fn(float (*fn)(uint32_t actor));
+// true until the fight has started (battle-start banters / retail intro): the side panels are not drawn.
+void tagteam_hud_set_intro(bool intro_running);
 // Guest memory, for the bars' positions (tagteam.cpp, every frame before tagteam_layer_frame).
 void tagteam_hud_set_ram(const uint8_t* rdram);
 
@@ -69,3 +79,11 @@ void tagteam_hud_hp_hit(const TagHudHit& h);
 // Which actor each big (retail) panel shows, by HUD side (0 = left); 0 = unknown. Called every tick with the fighters.
 void tagteam_hud_big_panels(uint32_t left_actor, uint32_t right_actor);
 bool tagteam_fx_project(const float p[3], float& sx, float& sy);   // tagteam_fx.cpp
+
+// View smoothing (26 Nov): called once per frame before tagteam_hud_pos / tagteam_layer_frame. on = 30 Hz logic interpolation is running, gen = the gameplay
+// frame the frame that just ran belongs to, slow_rate = the battle's slow-motion rate (1 = normal; the HUD's pulse clock follows it).
+void tagteam_hud_view(bool on, uint32_t gen, float slow_rate);
+// A fighter's feet (actor + 0x80) as the renderer's interpolated scene has them (the position to project with ge_draw_last_view_proj); false = no actor / memory.
+bool tagteam_hud_pos(uint32_t actor, float p[3]);
+// The actor the retail lock-on ring is on (0 = none): its position goes to the renderer so the ring is moved with the interpolated scene (call after tagteam_hud_view).
+void tagteam_hud_follow_target(uint32_t actor, bool has_target = true);   // actor 0 with has_target: a target whose position cannot be used (an EX core still at the origin): the ring is left where the game puts it (no offset)

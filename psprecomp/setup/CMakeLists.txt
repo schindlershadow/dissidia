@@ -17,6 +17,16 @@ else()
     pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
     pkg_check_modules(FREETYPE REQUIRED IMPORTED_TARGET freetype2)
 endif()
+if(NOT TARGET ZLIB::ZLIB)
+    find_package(ZLIB REQUIRED)
+endif()
+# "Report an issue" (the game's psp_report.cpp: zip + signed upload): HTTPS through mbedTLS when there is one (the bundle's deps.cmake, or
+# a system / -DPSPRECOMP_MBEDTLS_PREFIX one), the Mozilla CA bundle embedded like the runtime's.
+include(${CMAKE_CURRENT_SOURCE_DIR}/../runtime/cmake/psp_mbedtls.cmake)
+set(CACERT_CPP ${CMAKE_CURRENT_BINARY_DIR}/gen/psp_cacert.cpp)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/assets/ca/cacert.pem)
+execute_process(COMMAND ${CMAKE_COMMAND} -DPEM=${CMAKE_CURRENT_SOURCE_DIR}/../runtime/assets/ca/cacert.pem -DOUT=${CACERT_CPP}
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/assets/embed_cacert.cmake)
 
 # The menu fonts (OFL) are embedded, like in the runtime.
 set(FONTS_CPP ${CMAKE_CURRENT_BINARY_DIR}/gen/psp_ui_fonts.cpp)
@@ -26,9 +36,18 @@ execute_process(COMMAND ${CMAKE_COMMAND} -DFONT_DIR=${RT}/assets/fonts -DOUT=${F
 
 add_executable(psprecomp_setup
     setup_main.cpp install.cpp extras.cpp proc.cpp payload.cpp third_party/miniz.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../games/dissidia/runtime/dlc_import.cpp
     ${RT}/src/hle/psp_savedata_dialog.cpp ${RT}/src/hle/psp_savemgr.cpp ${RT}/src/hle/psp_savebackup.cpp ${RT}/src/hle/psp_savedata_crypto.cpp
+    ${RT}/src/psp_report.cpp ${RT}/src/hle/psp_http.cpp ${CACERT_CPP}
     ${FONTS_CPP})
-target_include_directories(psprecomp_setup PRIVATE ${RT}/include ${RT}/src/hle)
+set_source_files_properties(${RT}/src/psp_report.cpp PROPERTIES COMPILE_DEFINITIONS "PSP_REPORT_STANDALONE")
+target_include_directories(psprecomp_setup PRIVATE ${RT}/include ${RT}/src ${RT}/src/hle)
+target_link_libraries(psprecomp_setup PRIVATE ZLIB::ZLIB)
+if(TARGET PkgConfig::MBEDTLS)
+    message(STATUS "psprecomp_setup: mbedTLS ${MBEDTLS_VERSION} -> Report an issue over HTTPS")
+    target_compile_definitions(psprecomp_setup PRIVATE PSPRECOMP_HAVE_MBEDTLS)
+    target_link_libraries(psprecomp_setup PRIVATE PkgConfig::MBEDTLS)
+endif()
 target_link_libraries(psprecomp_setup PRIVATE PkgConfig::SDL2 PkgConfig::FREETYPE
     $<$<NOT:$<PLATFORM_ID:Windows>>:pthread>
     $<$<PLATFORM_ID:Windows>:ws2_32 ole32 oleaut32 shell32 comdlg32 uuid user32>)   # portable-file-dialogs uses COM dialogs on Windows

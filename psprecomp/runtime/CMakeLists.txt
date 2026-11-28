@@ -1,6 +1,13 @@
 cmake_minimum_required(VERSION 3.20)
 project(psprecomp_runtime CXX C)
 
+# Online play is lock-step: every machine runs the same simulation and the state is compared bit for bit (NETSYNC). Clang for
+# ARM (Android, Apple silicon) fuses a * b + c into one FMA instruction by default (-ffp-contract=on), rounding once where an x86
+# build rounds twice, so an Android copy and a PC copy drifted apart in the last bits of the fighters' positions from frame 1
+# (RP6 log 22 Nov, rp6_2v2_1122_2255: fighter0.body.x 3FD890C6 here, 3FD8918D on the PC). No contraction anywhere: the generated
+# code, the VFPU and the game's own C++ round every operation the same way on every platform.
+add_compile_options(-ffp-contract=off)
+
 set(PSP_VFPU_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/psp_vfpu_core.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/psp_vfpu_ops.cpp
@@ -230,6 +237,7 @@ set(RUNTIME_SOURCES
     src/psp_event_loop.cpp
     src/psp_present_sync.cpp
     src/psp_settings.cpp
+    src/psp_report.cpp
     src/psp_ge.cpp
     src/psp_ge_vertex.cpp
     src/psp_ge_texture.cpp
@@ -260,6 +268,7 @@ set(RUNTIME_SOURCES
     src/hle/psp_upnp.cpp
     src/hle/psp_netplay.cpp
     src/hle/psp_savedata_crypto.cpp
+    src/hle/psp_npdrm.cpp
     src/hle/psp_savedata_dialog.cpp
     ${PSP_SAVE_SOURCES}
     ${PSP_CLOUD_SOURCES}
@@ -330,9 +339,46 @@ if(NOT PSPRECOMP_RELEASE_VERSION)
     endif()
 endif()
 set_source_files_properties(src/psp_ge_draw.cpp PROPERTIES COMPILE_DEFINITIONS "PSPRECOMP_RELEASE_VERSION=\"${PSPRECOMP_RELEASE_VERSION}\"")
+# The commit the report button states (psp_report.cpp); "unknown" where there is no git (the setup app's on-device build of a source archive).
+# The build id is the last commit that changed code (docs / markdown-only commits do not change what the game does, so builds before and after
+# one still match online instead of warning "another player runs build ...").
+# (28 Nov) --no-merges: a merge commit and the branch commit it brings in hold the same code; without it the desktop (GIT_COMMIT written right after a
+# merge) and a build configured before the merge got different ids for identical code ("another player runs build ...").
+execute_process(COMMAND git log -1 --no-merges --format=%h --abbrev=12 -- .. ":(top,exclude,glob)**/*.md" ":(top,exclude,glob)**/docs/**" WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                OUTPUT_VARIABLE PSP_GIT_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET RESULT_VARIABLE PSP_GIT_COMMIT_RC)
+if(NOT PSP_GIT_COMMIT_RC EQUAL 0 OR NOT PSP_GIT_COMMIT)
+    # no git (a tree rsynced without .git, e.g. the desktop test build): the commit comes from $PSPRECOMP_GIT_COMMIT or the one-line file
+    # psprecomp/GIT_COMMIT (written by the sync script). Without it the other players see this build as "unknown" and warn about a mismatch.
+    set(PSP_GIT_COMMIT "")
+    if(DEFINED ENV{PSPRECOMP_GIT_COMMIT})
+        set(PSP_GIT_COMMIT "$ENV{PSPRECOMP_GIT_COMMIT}")
+    elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../GIT_COMMIT")
+        file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/../GIT_COMMIT" PSP_GIT_COMMIT LIMIT_COUNT 1)
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../GIT_COMMIT")
+    endif()
+    string(SUBSTRING "${PSP_GIT_COMMIT}" 0 12 PSP_GIT_COMMIT)
+    if(NOT PSP_GIT_COMMIT)
+        set(PSP_GIT_COMMIT "unknown")
+    endif()
+endif()
+# re-run cmake (so the commit above is current) whenever HEAD moves: the commit is also the online build id (net_packs.cpp)
+execute_process(COMMAND git rev-parse --git-path HEAD WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                OUTPUT_VARIABLE PSP_GIT_HEAD_FILE OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+if(PSP_GIT_HEAD_FILE)
+    get_filename_component(PSP_GIT_HEAD_FILE "${PSP_GIT_HEAD_FILE}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PSP_GIT_HEAD_FILE}")
+endif()
+set_source_files_properties(src/psp_report.cpp PROPERTIES COMPILE_DEFINITIONS "PSPRECOMP_GIT_COMMIT=\"${PSP_GIT_COMMIT}\"")
 add_library(psprecomp_core STATIC ${RUNTIME_SOURCES})
 add_executable(psprecomp_runtime src/main.cpp)
 target_link_libraries(psprecomp_runtime PRIVATE psprecomp_core)
+# The shader pack (android/shaders/ -> shaders.pack) next to the executable: every platform compiles it at start ("Preparing graphics").
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../android/pack_shaders.py")
+    add_custom_command(TARGET psprecomp_runtime POST_BUILD
+        COMMAND ${Python3_EXECUTABLE} -I "${CMAKE_CURRENT_SOURCE_DIR}/../android/pack_shaders.py" -o "$<TARGET_FILE_DIR:psprecomp_runtime>/shaders.pack"
+        VERBATIM)
+endif()
 
 target_include_directories(psprecomp_core PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -486,6 +532,9 @@ add_test(NAME vfpu_atan2 COMMAND test_vfpu_atan2)
 # SDL2/GL; also runnable standalone via tests/run_savedata_*.sh).
 add_executable(test_savedata_crypto tests/test_savedata_crypto.cpp src/hle/psp_savedata_crypto.cpp)
 add_test(NAME savedata_crypto COMMAND test_savedata_crypto)
+# NPDRM EDAT (PGD) decryption, the DLC files of a PSP game
+add_executable(test_npdrm tests/test_npdrm.cpp src/hle/psp_npdrm.cpp src/hle/psp_savedata_crypto.cpp)
+add_test(NAME npdrm COMMAND test_npdrm)
 # PPSSPP-compatible texture pack keys (hashes + lookup in a throw-away folder).
 add_executable(test_texpacks tests/test_texpacks.cpp src/psp_texpacks.cpp)
 target_include_directories(test_texpacks PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -552,6 +601,7 @@ target_include_directories(test_debug_socket PRIVATE
 
 target_link_libraries(test_debug_socket PRIVATE
     pthread
+    ZLIB::ZLIB
 )
 
 target_compile_options(test_debug_socket PRIVATE

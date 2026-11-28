@@ -1,10 +1,13 @@
 #include "extras.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <set>
+#include <vector>
 
 #include "install.h"
 
@@ -33,6 +36,7 @@ std::vector<Extra> make_extras() {
         // side (mods/texpacks/<id>, runtime/include/psp_texpacks.h); the game applies one, picked in Settings > Graphics > Texture Pack.
         Extra e;
         e.key = "hd_textures";
+        e.need_bytes = 3LL << 30;
         e.feature = "hd_textures";
         e.title = "HD textures (Dissidia Recomp HD)";
         e.help = "Downloads our HD texture pack (about 1.3 GB): the D012FFRT community pack plus our own AI upscales of the other textures. "
@@ -80,6 +84,7 @@ std::vector<Extra> make_extras() {
     {   // the player's own texture pack archive, added next to the installed packs (an action: it can be done again for another pack)
         Extra e;
         e.key = "texture_add";
+        e.need_bytes = 1LL << 30;
         e.feature = "hd_textures";
         e.title = "Add your own texture pack";
         e.help = "Installs a texture pack you downloaded yourself, as one compressed file: a PPSSPP-style pack for Dissidia 012 (a textures.ini with "
@@ -108,6 +113,7 @@ std::vector<Extra> make_extras() {
     {   // Japanese voices from an undub / Japanese disc
         Extra e;
         e.key = "jp_audio";
+        e.need_bytes = 1LL << 30;
         e.feature = "jp_audio";
         e.title = "Japanese voices (undub)";
         e.help = "Adds the Japanese voices and movies from a second disc image (an undub ISO) that you pick next.";
@@ -127,6 +133,7 @@ std::vector<Extra> make_extras() {
     {   // Bartz's eight moves of Dissidia (2008), rebuilt from the player's two discs
         Extra e;
         e.key = "d1_moves";
+        e.need_bytes = 1LL << 30;
         e.feature = "d1_moves";
         e.title = "Bartz: Dissidia 1 moves";
         e.help = "Gives Bartz back the eight moves he had in the first Dissidia (Soul Eater, Flood, Wind Shear, Paladin Force...), next to his 012 kit. "
@@ -287,6 +294,27 @@ std::vector<std::string> extras_needing_disc(const Layout& l, bool android, cons
 std::string extra_disc_problem(const std::string& key, const std::string& path) {
     const Extra* e = find_extra(key);
     return e && e->disc.check ? e->disc.check(path) : "";
+}
+
+std::string find_extra_disc(const std::string& key, const std::string& near_file) {
+    const Extra* e = find_extra(key);
+    if (!e || !e->disc.check || e->disc.patterns.empty() || e->disc.patterns.front() != ".iso" || near_file.empty() || near_file.compare(0, 3, "fd:") == 0) return "";
+    std::error_code ec;
+    const fs::path dir = fs::path(near_file).parent_path();
+    if (dir.empty() || !fs::is_directory(dir, ec)) return "";
+    std::vector<std::string> files;
+    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code e2;
+        if (!it->is_regular_file(e2) || it->file_size(e2) < 32768u) continue;   // not an empty / tiny file (a disc image is hundreds of MB)
+        std::string ext = it->path().extension().string();
+        for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+        for (const std::string& p : e->disc.patterns) if (ext == p) { files.push_back(it->path().string()); break; }
+    }
+    std::sort(files.begin(), files.end());
+    if (files.size() > 40) files.resize(40);
+    for (const std::string& f : files)
+        if (e->disc.check(f).empty()) return f;   // the id / voices match: this is the disc the extra needs
+    return "";
 }
 
 std::string extras_json(const Layout& l, bool android) {

@@ -41,7 +41,7 @@
 #   --legacy-ge              PSPRECOMP_GE_FAST=0: use the legacy per-PRIM renderer (CPU skinning, one draw per PRIM)
 #                            instead of the default batched GPU-skinning path. Escape hatch only; it is slower.
 #   --ge-sync 1|2|3|flush|off  PSPRECOMP_GE_SYNC: wait for the GPU (1 per batch, 2 per display list, 3 per frame,
-#                            flush = glFlush per batch, off = none). Default on a Steam Deck: flush (it fixes the
+#                            flush = glFlush per batch, off = none). Default with OpenGL on desktop (Windows, Linux, Deck): flush (it fixes the
 #                            flicker there, see docs/steamdeck.md); elsewhere off.
 #   --gl-debug               PSPRECOMP_GL_DEBUG=1 PSPRECOMP_GL_STATS=2: driver messages and GL errors in the log
 #   --log FILE               also write the runtime's stderr log to FILE (default: <workdir>/last_run.log)
@@ -181,14 +181,9 @@ fi
 export PSPRECOMP_PAD_L2="${PSPRECOMP_PAD_L2:-R+CROSS}"      # L2 = dodge
 export PSPRECOMP_PAD_R2="${PSPRECOMP_PAD_R2:-R+TRIANGLE}"   # R2 = dash
 [ "$LEGACY_GE" = 0 ] || export PSPRECOMP_GE_FAST=0
-# GPU sync: the Deck's driver runs GL work asynchronously and battles flicker without it; flush fixes that at no
-# visible cost. An explicit --ge-sync or PSPRECOMP_GE_SYNC wins; "off" = no sync.
-# Not with the Vulkan renderer: there glFlush is a vkQueueSubmit, so flush-per-batch meant ~340 submits and render passes a frame
-# (8-9 ms of CPU on the Deck: 42-52 fps in combat instead of ~90) and the layer tracks its own buffer/image hazards.
-if [ -z "$GE_SYNC" ] && [ -z "${PSPRECOMP_GE_SYNC:-}" ] && [ "${PSPRECOMP_RENDERER:-}" != vulkan ] && [ "$(cat /sys/devices/virtual/dmi/id/sys_vendor 2>/dev/null)" = Valve ]; then
-  GE_SYNC=flush
-fi
-case "$GE_SYNC" in "") ;; off) unset PSPRECOMP_GE_SYNC ;; *) export PSPRECOMP_GE_SYNC="$GE_SYNC" ;; esac
+# GPU sync: with desktop OpenGL the runtime itself defaults to glFlush per batch (the Deck's driver runs GL work asynchronously and
+# battles flicker without it; #131); with Vulkan there is no sync. An explicit --ge-sync or PSPRECOMP_GE_SYNC wins; "off" = no sync.
+case "$GE_SYNC" in "") ;; off) export PSPRECOMP_GE_SYNC=off ;; *) export PSPRECOMP_GE_SYNC="$GE_SYNC" ;; esac
 [ -z "$SCALE" ] || export PSPRECOMP_SCALE="$SCALE"
 [ -z "$WINSZ" ] || export PSPRECOMP_WINDOW="$WINSZ"
 [ "$FULL" = 0 ] || export PSPRECOMP_FULLSCREEN=1
@@ -220,6 +215,8 @@ if [ -z "${PSPRECOMP_FONT:-}" ]; then
 fi
 
 [ -n "$LOG" ] || LOG="$WORK/last_run.log"
+# keep the previous run's log as prev_run.log next to it (a restart must not erase the evidence); only a real session (>= 64 KB) replaces it
+if [ -f "$LOG" ] && [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -ge 65536 ]; then mv -f "$LOG" "$(dirname "$LOG")/prev_run.log" 2>/dev/null || true; fi
 echo "Dissidia 012 (native)  saves: $PSPRECOMP_MS0/PSP/SAVEDATA   log: $LOG" >&2
 cd "$WORK"
 "$BIN" 2> >(tee "$LOG" >&2) &

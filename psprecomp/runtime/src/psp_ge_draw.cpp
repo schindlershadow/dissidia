@@ -128,10 +128,26 @@ void ge_draw_set_hud_fixed_tex(const uint32_t* addrs, int n) {
     g_hud_fixed_n = std::clamp(n, 0, 8);
     for (int i = 0; i < g_hud_fixed_n; i++) g_hud_fixed[i] = addrs[i] & 0xFFFFFFu;
 }
+// The same textures by content (ge_draw_set_hud_fixed_tex_hash): the battle HUD archive is not at one address in every run (the lock-on ring was at
+// 0xC33070 when the table above was made, and is at 0x81D0F0 now, in 1v1 and in the tag team alike), so the ring stopped following. FNV-1a of the
+// first 256 bytes of the texture's memory.
+static uint64_t g_hud_fixed_hash[8];
+static int g_hud_fixed_hash_n = 0;
+static const uint8_t* g_hud_fixed_ram = nullptr;
+void ge_draw_set_hud_fixed_tex_hash(const uint64_t* hashes, int n, const uint8_t* rdram) {
+    g_hud_fixed_hash_n = std::clamp(n, 0, 8); g_hud_fixed_ram = rdram;
+    for (int i = 0; i < g_hud_fixed_hash_n; i++) g_hud_fixed_hash[i] = hashes[i];
+}
 static bool hud_fixed_tex(const GeState& st) {
     if (!st.texture_enable) return false;
     const uint32_t a = st.tex_addr[0] & 0xFFFFFFu;
     for (int i = 0; i < g_hud_fixed_n; i++) if (g_hud_fixed[i] == a) return true;
+    if (g_hud_fixed_hash_n > 0 && g_hud_fixed_ram && a >= 0x040000u && a < 0x1000000u) {
+        uint64_t hv = 1469598103934665603ull; const uint32_t ba = (a | 0x08000000u) & 0x07FFFFFFu;
+        if (ba + 256u > 0x08000000u) return false;
+        for (uint32_t k = 0; k < 256; k += 4) { uint32_t w; std::memcpy(&w, g_hud_fixed_ram + ba + k, 4); hv = (hv ^ w) * 1099511628211ull; }
+        for (int i = 0; i < g_hud_fixed_hash_n; i++) if (g_hud_fixed_hash[i] == hv) return true;
+    }
     return false;
 }
 // Field of view changed on the game's side (psp_ge_draw.h): the 2D marks that follow a fighter (lock-on ring, target pointer) were placed by
@@ -1383,6 +1399,11 @@ static float g_dbg_eye[3] = {0, 0, 0}, g_dbg_fwd[3] = {0, 0, 1};
 // tall screen included): game modules project world points onto the screen with them
 // (effects drawn on the game layer at a fighter's position).
 static float g_last_view[12] = {}, g_last_proj[16] = {}; static bool g_last_vp_ok = false;
+static std::atomic<uint64_t> g_last_vp_tag{0};   // (gen << 32 | phase bits) of the display list the last view / projection came from
+bool ge_draw_last_view_proj_tag(uint32_t* gen, float* phase) {   // interpolation tag of that list (phase -1: not interpolated)
+    const uint64_t v = g_last_vp_tag.load(); const uint32_t pb = static_cast<uint32_t>(v); float ph; std::memcpy(&ph, &pb, 4);
+    *gen = static_cast<uint32_t>(v >> 32); *phase = ph; return g_last_vp_ok;
+}
 bool ge_draw_last_view_proj(float view[12], float proj[16]) { std::memcpy(view, g_last_view, sizeof g_last_view); std::memcpy(proj, g_last_proj, sizeof g_last_proj); return g_last_vp_ok; }
 void ge_draw_last_eye(float eye[3], float fwd[3]) { for (int i = 0; i < 3; i++) { eye[i] = g_dbg_eye[i]; fwd[i] = g_dbg_fwd[i]; } }   // view blocker fade (ge_draw_set_view_blocker)
 static float vb_fade_factor(uint8_t* rdram, const GeState& st, int n, int prim);
@@ -1799,6 +1820,11 @@ static void flush_batch() {
 #ifdef PSP_GLES
             glFinish();
 #endif
+            glBufferData(GL_COPY_WRITE_BUFFER, (GLsizeiptr)(s.cap * s.stride), nullptr, GL_STREAM_DRAW);
+            s.write = 0;
+        } else if (g_ring_mode == 2) {
+            // PSPRECOMP_GE_RING=orphan (experiment for #131): fresh storage for every batch instead of appending to one buffer,
+            // for drivers (Mesa radeonsi) that mis-order uploads into a buffer the GPU is still reading.
             glBufferData(GL_COPY_WRITE_BUFFER, (GLsizeiptr)(s.cap * s.stride), nullptr, GL_STREAM_DRAW);
             s.write = 0;
         } else if (s.write + n > s.cap) {
@@ -2648,6 +2674,8 @@ void ge_draw_init() {
     if (const char* po = std::getenv("PSPRECOMP_PING_OVERLAY")) g_ping_overlay = po[0] && po[0] != '0';
     g_nobatch = std::getenv("PSPRECOMP_GE_NOBATCH") != nullptr;
     if (const char* sm = std::getenv("PSPRECOMP_GE_SYNC")) {
+        if (!std::strcmp(sm, "off") || !std::strcmp(sm, "none")) { g_sync_mode = 0; std::fprintf(stderr, "[DRAW] GE sync off\n"); }
+        else {
         g_sync_mode = !std::strcmp(sm, "flush") ? 4 : std::atoi(sm);
         if (g_sync_mode <= 0) g_sync_mode = 1;
         g_sync_each = g_sync_mode == 1;
@@ -2655,9 +2683,31 @@ void ge_draw_init() {
                      g_sync_mode == 1 ? "glFinish per batch" : g_sync_mode == 2 ? "glFinish per list"
                      : g_sync_mode == 3 ? "glFinish per present" : "glFlush per batch");
     }
+    }
+#if !defined(PSP_GLES) && !defined(__APPLE__)
+    else {
+        // Desktop OpenGL (Windows, Linux, Steam Deck): glFlush after every batch by default (#131: invisible menu, flickering
+        // textures, duplicated effects on real asynchronous drivers; the same cure the Steam Deck launcher already applied,
+        // but only run.sh did, so Windows never got it). Not with the Vulkan backend, where glFlush is a queue submit.
+        bool vk = false;
+#if defined(PSPRECOMP_HAVE_VKGL)
+        vk = vkgl::active();
+#endif
+        // (28 Nov) Not on NVIDIA: its GL driver stalls on a flush per batch (2.5 fps in the tests instead of 30), and the #131 hazard
+        // was seen on AMD / Mesa (radeonsi, the Deck). PSPRECOMP_GE_SYNC=flush forces it there too.
+        const char* ven = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
+        const bool nvidia = ven && std::strstr(ven, "NVIDIA") != nullptr;
+        if (!vk && nvidia) std::fprintf(stderr, "[DRAW] GE sync off (NVIDIA OpenGL: no flush per batch; PSPRECOMP_GE_SYNC=flush to force it)\n");
+        else if (!vk) {
+            g_sync_mode = 4;
+            std::fprintf(stderr, "[DRAW] GE sync mode 4 (glFlush per batch) (desktop OpenGL default; PSPRECOMP_GE_SYNC=off to disable)\n");
+        }
+    }
+#endif
     if (const char* rm = std::getenv("PSPRECOMP_GE_RING")) {
         if (!std::strcmp(rm, "map")) g_ring_mode = 1;
         else if (!std::strcmp(rm, "sub")) g_ring_mode = 0;
+        else if (!std::strcmp(rm, "orphan")) g_ring_mode = 2;
 
     }
     g_verify = std::getenv("PSPRECOMP_GE_VERIFY") != nullptr;
@@ -2770,6 +2820,7 @@ static void ge_draw_prim_one(uint8_t* rdram, int prim_type, int count);
 
 // ---- Frame interpolation (ge_interp_set_frame, psp_ge_draw.h) ----
 namespace {
+static void ip_note_vp_tag();
 struct IpMats { float w[12], v[12], p[16], b[96], tg[12], uv[4]; };   // uv: texture scale u/v, offset u/v (scrolling textures)
 std::mutex g_ip_set_mu;
 GeInterpTag g_ip_set;                  // the tag the game thread set for the frame it is building
@@ -2794,6 +2845,7 @@ uint64_t ip_key(const GeState& st, int prim_type, int count, bool loose = false)
     mix(st.tex_addr[0]);   // not the render target: the game alternates two framebuffers every frame
     return h;
 }
+static void ip_note_vp_tag() { uint32_t pb; std::memcpy(&pb, &g_ip_phase, 4); g_last_vp_tag.store((uint64_t(g_ip_gen) << 32) | pb); }   // ge_draw_last_view_proj_tag
 void ip_lerp(float* dst, const float* a, const float* b, float t, int n) { for (int i = 0; i < n; i++) dst[i] = a[i] + (b[i] - a[i]) * t; }
 bool ip_far(const float* a, const float* b) {   // world positions more than 3 m apart: a teleport, do not blend
     const float dx = a[9] - b[9], dy = a[10] - b[10], dz = a[11] - b[11];
@@ -2829,6 +2881,11 @@ uint8_t* g_ip_rdram = nullptr;
 // blended. Per frame, every skinned draw's root on screen (PSP pixels) with the newest and with the blended matrices; a following 2D draw
 // moves by the difference of the nearest one.
 struct IpAnchor { float live[2], drawn[2]; };
+struct IpCam { uint32_t seq = ~0u; float v0[12], p0[16], v1[12], p1[16]; };   // the camera of this list: newest gameplay frame (0) and as drawn, blended (1)
+IpCam g_ip_cam;
+// The world position of the mark's target (the game module: ge_draw_set_follow_world), per gameplay frame: newest and the one before.
+struct IpFollowW { uint32_t gen = 0; bool used = false, has_prev = false, none = false; float prev[3], cur[3]; };   // none: the target has no usable position: no offset (never the nearest-bone guess)
+IpFollowW g_ip_fw[8]; std::mutex g_ip_fw_mu;
 std::vector<IpAnchor> g_ip_anchors;
 uint32_t g_ip_anchor_seq = ~0u;
 bool g_ip2d_on = false;   // the draw being decoded is such a draw (set by ip_apply, cleared after the draw)
@@ -2918,6 +2975,7 @@ static bool ip_apply(int prim_type, int count, IpMats* saved) {
         ip_lerp(bp, pv.p, cur.p, ip_mode() == 2 ? 1.0f + g_ip_phase : g_ip_phase, 16); ip_lerp(bb, pv.b, cur.b, ip_mode() == 2 ? 1.0f + g_ip_phase : g_ip_phase, 12);
         IpAnchor a;
         if (g_ip_anchors.size() < 64 && ip_screen(cur.w, cur.v, cur.p, cur.b, a.live) && ip_screen(bw, bv, bp, bb, a.drawn)) g_ip_anchors.push_back(a);
+        if (g_ip_cam.seq != g_ip_seq) { g_ip_cam.seq = g_ip_seq; std::memcpy(g_ip_cam.v0, cur.v, sizeof cur.v); std::memcpy(g_ip_cam.p0, cur.p, sizeof cur.p); std::memcpy(g_ip_cam.v1, bv, sizeof bv); std::memcpy(g_ip_cam.p1, bp, sizeof bp); }   // the scene's camera, newest and blended
     }
     g_ge_state_gen++;   // the draw-key cache (keyed by this) must not reuse matrices built for another draw: the blend changes them without a GE command
     const float t = ip_mode() == 2 ? 1.0f + g_ip_phase : g_ip_phase;   // 1: prev -> cur (one frame behind); 2: cur projected ahead
@@ -2937,11 +2995,48 @@ static bool ip_apply(int prim_type, int count, IpMats* saved) {
     return true;
 }
 
+void ge_draw_set_follow_world(uint32_t gen, const float* prev, const float cur[3]) {
+    std::lock_guard<std::mutex> lk(g_ip_fw_mu);
+    IpFollowW* w = &g_ip_fw[gen & 7u];
+    w->gen = gen; w->used = true; w->none = cur == nullptr; w->has_prev = prev != nullptr; if (cur) std::memcpy(w->cur, cur, 12); if (prev) std::memcpy(w->prev, prev, 12);
+}
+static bool ip_world_screen(const float* X, const float* v, const float* p, float* out) {   // a world point -> PSP screen pixels
+    float vp[3], c[4];
+    for (int j = 0; j < 3; j++) vp[j] = X[0] * v[j] + X[1] * v[3 + j] + X[2] * v[6 + j] + v[9 + j];
+    for (int j = 0; j < 4; j++) c[j] = vp[0] * p[j] + vp[1] * p[4 + j] + vp[2] * p[8 + j] + p[12 + j];
+    if (c[3] <= 0.01f) return false;
+    out[0] = (c[0] / c[3] + 1.0f) * 240.0f; out[1] = (1.0f - c[1] / c[3]) * 136.0f;
+    return true;
+}
+
 // Vertex decoder (through mode, PSP pixels): the offset that moves this 2D draw from where the game put it (centre cx, cy) to the blend of
 // where it was on the last two gameplay frames. false = leave it.
+// The mark's target (the lock-on ring) is known to the game module as a world position per gameplay frame (ge_draw_set_follow_world): the offset is that
+// point projected with the blended camera and blended position minus projected with the newest camera and position, the game's own placement. That
+// follows the actor, not an animated bone: the nearest root bone of any skinned draw (the old way, still the fallback when no target is given or with
+// PSPRECOMP_HUD_FOLLOW_NEAREST=1) belonged to the wrong fighter or swayed with the animation, so the ring ran ahead and snapped back (RP6, 26 Nov).
 bool ge_draw_through_ip(float cx, float cy, float* dx, float* dy) {
     if (!g_ip2d_on || g_ip_anchor_seq != g_ip_seq || g_ip_anchors.empty()) return false;
-    const IpAnchor* best = nullptr; float bd = 90.0f * 90.0f;   // the fighter whose newest root is nearest (within 90 px)
+    static const bool s_old = std::getenv("PSPRECOMP_HUD_FOLLOW_NEAREST") != nullptr;
+    if (!s_old && g_ip_cam.seq == g_ip_seq) {
+        IpFollowW w; { std::lock_guard<std::mutex> lk(g_ip_fw_mu); w = g_ip_fw[g_ip_gen & 7u]; }
+        if (w.used && w.gen == g_ip_gen && w.none) return false;
+        if (w.used && w.gen == g_ip_gen) {
+            float Xc[3] = {w.cur[0], w.cur[1] + 0.9f, w.cur[2]}, Xb[3] = {Xc[0], Xc[1], Xc[2]};
+            if (w.has_prev) {
+                const float ddx = w.cur[0] - w.prev[0], ddy = w.cur[1] - w.prev[1], ddz = w.cur[2] - w.prev[2];
+                if (ddx * ddx + ddy * ddy + ddz * ddz <= 9.0f) { const float t = ip_mode() == 2 ? 1.0f + g_ip_phase : g_ip_phase; for (int i = 0; i < 3; i++) Xb[i] = w.prev[i] + (w.cur[i] - w.prev[i]) * t + (i == 1 ? 0.9f : 0.0f); }
+            }
+            float s0[2], s1[2];
+            if (ip_world_screen(Xc, g_ip_cam.v0, g_ip_cam.p0, s0) && ip_world_screen(Xb, g_ip_cam.v1, g_ip_cam.p1, s1)) {
+                *dx = s1[0] - s0[0]; *dy = s1[1] - s0[1];
+                if (*dx * *dx + *dy * *dy > 60.0f * 60.0f) return false;   // a cut: leave it
+                if (ip_trace_level() >= 3) std::fprintf(stderr, "[IP2D] seq %u phase %.2f centre %.1f,%.1f target live %.1f,%.1f drawn %.1f,%.1f -> %+.1f,%+.1f\n", g_ip_seq, g_ip_phase, cx, cy, s0[0], s0[1], s1[0], s1[1], *dx, *dy);
+                return true;
+            }
+        }
+    }
+    const IpAnchor* best = nullptr; float bd = 90.0f * 90.0f;   // fallback: the fighter whose newest root is nearest (within 90 px)
     for (const auto& a : g_ip_anchors) {
         const float d = (a.live[0] - cx) * (a.live[0] - cx) + (a.live[1] - cy) * (a.live[1] - cy);
         if (d < bd) { bd = d; best = &a; }
@@ -3574,7 +3669,7 @@ static void main_camera_vote(const GeState& st) {
     tall_proj(proj, draw_tall_y(st));
     const bool same = n > 0 && !std::memcmp(vp, proj, sizeof vp) && !std::memcmp(vv, st.view_matrix, sizeof vv);
     if (same) { if (n < 1000) n++; } else if (n > 0) n--; else { std::memcpy(vp, proj, sizeof vp); std::memcpy(vv, st.view_matrix, sizeof vv); n = 1; }
-    if (same && n >= 8) { std::memcpy(g_last_view, vv, sizeof g_last_view); std::memcpy(g_last_proj, vp, sizeof g_last_proj); g_last_vp_ok = true; }
+    if (same && n >= 8) { std::memcpy(g_last_view, vv, sizeof g_last_view); std::memcpy(g_last_proj, vp, sizeof g_last_proj); g_last_vp_ok = true; ip_note_vp_tag(); }
 }
 static void fx_track(const GeState& st, uint8_t* rdram, int prim_type, int count) {
     {   // effects draws (blended, depth tested, not depth writing) are also drawn into the SSR effects layer (fxl_*)
@@ -3635,7 +3730,7 @@ static void fx_track(const GeState& st, uint8_t* rdram, int prim_type, int count
             if (const float wx = draw_wide_x(st); wx != 1.0f) { proj[0] *= wx; proj[4] *= wx; proj[8] *= wx; proj[12] *= wx; }
             tall_proj(proj, draw_tall_y(st));
             const bool same = v.n > 0 && !std::memcmp(v.proj, proj, sizeof v.proj) && !std::memcmp(v.view, st.view_matrix, sizeof v.view);
-            if (same && v.n >= 8 && is_main_key(g_targets[cur].key)) { std::memcpy(g_last_view, v.view, sizeof g_last_view); std::memcpy(g_last_proj, v.proj, sizeof g_last_proj); g_last_vp_ok = true; }   // ge_draw_last_view_proj
+            if (same && v.n >= 8 && is_main_key(g_targets[cur].key)) { std::memcpy(g_last_view, v.view, sizeof g_last_view); std::memcpy(g_last_proj, v.proj, sizeof g_last_proj); g_last_vp_ok = true; ip_note_vp_tag(); }   // ge_draw_last_view_proj
             if (same) v.n++;
             else if (v.n > 0) v.n--;
             else {
@@ -3706,7 +3801,7 @@ static void fx_track(const GeState& st, uint8_t* rdram, int prim_type, int count
         std::memcpy(s.view, g_fx_vote[i].view, sizeof s.view);
         s.near_z = g_fx_vote[i].near_z; s.far_z = g_fx_vote[i].far_z;
         s.clear_z = g_fx_clearz[i];
-        std::memcpy(g_last_view, s.view, sizeof g_last_view); std::memcpy(g_last_proj, s.proj, sizeof g_last_proj); g_last_vp_ok = true;   // ge_draw_last_view_proj
+        std::memcpy(g_last_view, s.view, sizeof g_last_view); std::memcpy(g_last_proj, s.proj, sizeof g_last_proj); g_last_vp_ok = true; ip_note_vp_tag();   // ge_draw_last_view_proj
         { static int dbg = 0; if (psp_rt_available() && dbg++ % 600 == 0) std::fprintf(stderr, "[RT] scene complete: %zu captured triangles, rt %d\n", g_rt_tris[i].size() / 9, (int)psp_rt_available()); }
         if (psp_rt_scene_wanted() && (!g_rt_tris[i].empty() || !g_rt_persist[i].empty())) rt_persist_merge(i, s.proj, s.view);
         if (psp_rt_scene_wanted()) rt_static_refresh(i);
@@ -4661,6 +4756,34 @@ static void present_service_window_capture() {
     if (g_wc_state == 1) { g_wc_state = 2; g_wc_cv.notify_all(); }
 }
 
+// Debug socket 'REC <n> <dir>': write each of the next n presented frames (whole window) as <dir>/f<NNNNN>_<ms>.tga, numbered from 0
+// (<ms> = steady-clock milliseconds), for frame-by-frame checks of menu transitions. Test aid only; costs a read-back per frame while armed.
+static std::atomic<int> g_rec_left{0};
+static int g_rec_n = 0;
+static char g_rec_dir[200];
+void ge_draw_record_frames(int n, const char* dir) {
+    std::lock_guard<std::mutex> lock(g_wc_mutex);
+    std::strncpy(g_rec_dir, dir, sizeof(g_rec_dir) - 1); g_rec_dir[sizeof(g_rec_dir) - 1] = '\0';
+    g_rec_n = 0; g_rec_left.store(n);
+}
+static void present_service_record() {
+    if (g_rec_left.load(std::memory_order_relaxed) <= 0) return;
+    SDL_Window* window = psp_get_sdl_window();
+    int dw = 0, dh = 0;
+    psp_gl_drawable_size(window, &dw, &dh);
+    std::vector<uint8_t> px(size_t(dw) * dh * 4), fl(px.size());
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glReadBuffer(GL_BACK);
+    glReadPixels(0, 0, dw, dh, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    for (int y = 0; y < dh; y++)
+        std::memcpy(fl.data() + size_t(y) * dw * 4, px.data() + size_t(dh - 1 - y) * dw * 4, size_t(dw) * 4);
+    char path[260];
+    const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    std::snprintf(path, sizeof path, "%s/f%05d_%lld.tga", g_rec_dir, g_rec_n++, ms);
+    write_tga(path, fl.data(), dw, dh);
+    g_rec_left.fetch_sub(1);
+}
+
 // Utility-dialog overlay (sceUtilitySavedata list): the HLE renders the
 // dialog into an RGBA canvas at an integer multiple (1..4) of 480x272 chosen
 // from the output size (psp_sddialog::set_output_scale, updated each present)
@@ -4785,18 +4908,51 @@ static std::mutex g_gl_mu;
 static std::vector<uint32_t> g_gl_px;
 static int g_gl_w = 0, g_gl_h = 0;
 static bool g_gl_dirty = false;
+static bool g_gl_full = true;                 // the whole image must go to the texture (new size, new life); else only g_gl_dr
+static int g_gl_dr[4] = {0, 0, -1, -1};      // dirty rectangle (inclusive x0, y0, x1, y1): what differs from the texture's content
+static const bool g_gl_old_upload = std::getenv("PSPRECOMP_MENUFPS_OLD") != nullptr;   // 26 Nov: upload the whole image every time, as before
 static std::chrono::steady_clock::time_point g_gl_time;
+static int g_gl_next_ttl = 150, g_gl_ttl = 150;   // ms the layer stays without a new publish (ge_draw_set_game_layer_ttl: for the next publish only)
+void ge_draw_set_game_layer_ttl(int ms) { std::lock_guard<std::mutex> lk(g_gl_mu); g_gl_next_ttl = std::clamp(ms, 50, 2000); }
 static std::vector<GeLayerCopy> g_gl_copies;
+static uint64_t g_gl_serial = 0;
+uint64_t ge_draw_game_layer_serial() { std::lock_guard<std::mutex> lk(g_gl_mu); return g_gl_serial; }
+bool ge_draw_game_layer_touch() {
+    std::lock_guard<std::mutex> lk(g_gl_mu);
+    const auto now = std::chrono::steady_clock::now();
+    if (g_gl_w <= 0 || now - g_gl_time > std::chrono::milliseconds(g_gl_ttl)) return false;
+    g_gl_time = now; g_gl_ttl = g_gl_next_ttl; g_gl_next_ttl = 150;
+    return true;
+}
 void ge_draw_set_game_layer(const uint32_t* rgba, int w, int h) {
     if (!rgba || w <= 0 || h <= 0) { ge_draw_clear_game_layer(); return; }
     std::lock_guard<std::mutex> lk(g_gl_mu);
+    // 26 Nov (menus at 10 fps on the Deck): when the image has the shape of the one held, only the rows / columns that differ are copied and uploaded
+    if (!g_gl_old_upload && !g_gl_full && g_gl_w == w && g_gl_h == h && g_gl_px.size() == size_t(w) * size_t(h)) {
+        int y0 = -1, y1 = -1, x0 = w, x1 = -1;
+        for (int y = 0; y < h; y++) {
+            const uint32_t* a = rgba + size_t(y) * size_t(w); uint32_t* b = g_gl_px.data() + size_t(y) * size_t(w);
+            if (std::memcmp(a, b, size_t(w) * 4) == 0) continue;
+            int lo = 0, hi = w - 1; while (a[lo] == b[lo]) lo++; while (a[hi] == b[hi]) hi--;
+            std::memcpy(b + lo, a + lo, size_t(hi - lo + 1) * 4);
+            if (y0 < 0) y0 = y; y1 = y; x0 = std::min(x0, lo); x1 = std::max(x1, hi);
+        }
+        if (y0 >= 0) {
+            if (g_gl_dirty && g_gl_dr[2] >= g_gl_dr[0]) { x0 = std::min(x0, g_gl_dr[0]); y0 = std::min(y0, g_gl_dr[1]); x1 = std::max(x1, g_gl_dr[2]); y1 = std::max(y1, g_gl_dr[3]); }
+            g_gl_dr[0] = x0; g_gl_dr[1] = y0; g_gl_dr[2] = x1; g_gl_dr[3] = y1; g_gl_dirty = true;
+        }
+        g_gl_serial++;
+        g_gl_time = std::chrono::steady_clock::now(); g_gl_ttl = g_gl_next_ttl; g_gl_next_ttl = 150;
+        return;
+    }
     g_gl_px.assign(rgba, rgba + size_t(w) * size_t(h));
-    g_gl_w = w; g_gl_h = h; g_gl_dirty = true;
-    g_gl_time = std::chrono::steady_clock::now();
+    g_gl_full = false; g_gl_dr[0] = 0; g_gl_dr[1] = 0; g_gl_dr[2] = w - 1; g_gl_dr[3] = h - 1;
+    g_gl_w = w; g_gl_h = h; g_gl_dirty = true; g_gl_serial++;
+    g_gl_time = std::chrono::steady_clock::now(); g_gl_ttl = g_gl_next_ttl; g_gl_next_ttl = 150;
 }
 void ge_draw_clear_game_layer() {
     std::lock_guard<std::mutex> lk(g_gl_mu);
-    g_gl_px.clear(); g_gl_w = g_gl_h = 0; g_gl_dirty = true;
+    g_gl_px.clear(); g_gl_w = g_gl_h = 0; g_gl_dirty = true; g_gl_full = true; g_gl_serial++;
     g_gl_copies.clear();
 }
 void ge_draw_set_game_layer_copies(const GeLayerCopy* c, int n) {
@@ -4809,7 +4965,7 @@ static void present_game_layer_copies(GLuint src_tex, int spw, int h272, const P
     std::vector<GeLayerCopy> copies;
     {
         std::lock_guard<std::mutex> lk(g_gl_mu);
-        if (g_gl_w <= 0 || std::chrono::steady_clock::now() - g_gl_time > std::chrono::milliseconds(150)) return;
+        if (g_gl_w <= 0 || std::chrono::steady_clock::now() - g_gl_time > std::chrono::milliseconds(g_gl_ttl)) return;
         copies = g_gl_copies;
     }
     if (copies.empty() || !src_tex || spw <= 0 || h272 <= 0) return;
@@ -4833,7 +4989,7 @@ static void present_game_layer(const PresentRect& band) {
     static bool shown = false;
     {
         std::lock_guard<std::mutex> lk(g_gl_mu);
-        if (g_gl_w > 0 && std::chrono::steady_clock::now() - g_gl_time > std::chrono::milliseconds(150)) { g_gl_px.clear(); g_gl_w = g_gl_h = 0; g_gl_dirty = true; }
+        if (g_gl_w > 0 && std::chrono::steady_clock::now() - g_gl_time > std::chrono::milliseconds(g_gl_ttl)) { g_gl_px.clear(); g_gl_w = g_gl_h = 0; g_gl_dirty = true; g_gl_full = true; }
         if (g_gl_dirty) {
             g_gl_dirty = false;
             shown = g_gl_w > 0;
@@ -4846,15 +5002,21 @@ static void present_game_layer(const PresentRect& band) {
                 glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
                 if (!tex) glGenTextures(1, &tex);
                 glBindTexture(GL_TEXTURE_2D, tex);
+                bool resized = false;
                 if (tw != g_gl_w || th != g_gl_h) {
                     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, g_gl_w, g_gl_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-                    tw = g_gl_w; th = g_gl_h;
+                    tw = g_gl_w; th = g_gl_h; resized = true;
                 }
-                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, g_gl_w, g_gl_h, GL_RGBA, GL_UNSIGNED_BYTE, g_gl_px.data());
+                if (!resized && !g_gl_old_upload && g_gl_dr[2] >= g_gl_dr[0] && g_gl_dr[3] >= g_gl_dr[1] && !(g_gl_dr[0] == 0 && g_gl_dr[1] == 0 && g_gl_dr[2] == g_gl_w - 1 && g_gl_dr[3] == g_gl_h - 1)) {
+                    // only the part that changed (the texture already holds the rest)
+                    glPixelStorei(GL_UNPACK_ROW_LENGTH, g_gl_w);
+                    glTexSubImage2D(GL_TEXTURE_2D, 0, g_gl_dr[0], g_gl_dr[1], g_gl_dr[2] - g_gl_dr[0] + 1, g_gl_dr[3] - g_gl_dr[1] + 1, GL_RGBA, GL_UNSIGNED_BYTE, g_gl_px.data() + size_t(g_gl_dr[1]) * size_t(g_gl_w) + size_t(g_gl_dr[0]));
+                } else glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, g_gl_w, g_gl_h, GL_RGBA, GL_UNSIGNED_BYTE, g_gl_px.data());
+                g_gl_dr[0] = g_gl_dr[1] = 0; g_gl_dr[2] = g_gl_dr[3] = -1;
                 glBindTexture(GL_TEXTURE_2D, GLuint(prev_tex));
                 glPixelStorei(GL_UNPACK_ALIGNMENT, prev_align);
                 glPixelStorei(GL_UNPACK_ROW_LENGTH, prev_row);
@@ -5324,6 +5486,12 @@ static std::string g_toast_text;
 static std::chrono::steady_clock::time_point g_toast_until{};
 static bool g_toast_dirty = false;
 static int g_toast_y = 10;
+static std::string g_toast_pending; static int g_toast_pending_ms = 0, g_toast_pending_y = 10;   // shown from the first present on (the message is queued before the game draws)
+
+void ge_draw_toast_deferred(const char* text, int ms, int y_px) {
+    std::lock_guard<std::mutex> lk(g_toast_mu);
+    g_toast_pending = text ? text : ""; g_toast_pending_ms = ms; g_toast_pending_y = y_px;
+}
 
 void ge_draw_toast(const char* text, int ms, int y_px) {
     std::lock_guard<std::mutex> lk(g_toast_mu);
@@ -5628,6 +5796,11 @@ static void present_toast(const PresentRect& pr) {
     bool dirty;
     {
         std::lock_guard<std::mutex> lk(g_toast_mu);
+        if (g_toast_pending_ms > 0) {
+            g_toast_text = g_toast_pending; g_toast_y = g_toast_pending_y;
+            g_toast_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(g_toast_pending_ms);
+            g_toast_dirty = true; g_toast_pending_ms = 0;
+        }
         if (g_toast_text.empty() || std::chrono::steady_clock::now() >= g_toast_until) return;
         text = g_toast_text;
         dirty = g_toast_dirty;
@@ -6069,6 +6242,7 @@ static void present_blit(GLuint fbo, const char* why = "flip") {
         }
     }
     present_service_window_capture();
+    present_service_record();
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     if (g_sync_mode == 3) glFinish();
     {

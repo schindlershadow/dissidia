@@ -176,9 +176,26 @@ class Game:
             self.settle(quiet=wait)
 
 
+_HELD = []   # lock files kept open for the life of the process: parallel runs (tagteam_test.py --jobs) never pick the same display / port
+
+
+def _claim(path):
+    import fcntl
+    f = open(path, 'w')
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return False
+    _HELD.append(f)
+    import atexit
+    atexit.register(lambda p=path: os.path.exists(p) and os.unlink(p))
+    return True
+
+
 def free_display():
     for n in range(90, 120):
-        if not os.path.exists('/tmp/.X11-unix/X%d' % n) and not os.path.exists('/tmp/.X%d-lock' % n):
+        if not os.path.exists('/tmp/.X11-unix/X%d' % n) and not os.path.exists('/tmp/.X%d-lock' % n) and _claim('/tmp/bt_display_%d.lock' % n):
             return n
     raise RuntimeError('no free X display')
 
@@ -223,9 +240,13 @@ def start_xvfb():
 
 
 def free_port():
-    with socket.socket() as s:
-        s.bind(('127.0.0.1', 0))
-        return s.getsockname()[1]
+    for _ in range(200):
+        with socket.socket() as s:
+            s.bind(('127.0.0.1', 0))
+            p = s.getsockname()[1]
+        if _claim('/tmp/bt_port_%d.lock' % p):   # (two parallel processes can be given the same ephemeral port: the lock decides)
+            return p
+    raise RuntimeError('no free port')
 
 
 def hud_dark(im):
@@ -242,6 +263,11 @@ def walk_direct(g, ff_menus=4):
     if ff_menus != 0:
         g.cmd('FF 120000 %d' % max(ff_menus, 0))
     g.wait_log(r'\[DIRECT\] replay finished', 240)
+    if os.environ.get('BT_NOPROBE'):                   # test aid: no HUD probing (its screenshots collide with the runtime's own PSPRECOMP_TAGTEAM_AGESHOTS captures in the intro)
+        g.touch_go()
+        g.wait_log(r'\[TEST\] battle started', 90)
+        g.cmd('FF 0')
+        return
     seen = 0
     for _ in range(90):
         if not g.alive():

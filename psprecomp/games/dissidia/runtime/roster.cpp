@@ -5787,12 +5787,20 @@ void retail_moves_teach(uint8_t* rdram, uint32_t rec, int charId) {
 constexpr uint32_t ABLT_LOAD = 0x088B1CC0u, ABLT_HDR = 0x089D7290u, ABLT_RECS = 0x089D7294u;
 constexpr uint32_t ABLT_ROWS = 0x328u, ABLT_ROW = 0x28u;
 FuncPtr g_orig_ablt_load = nullptr;
+}  // namespace
+void dissidia_ablt_dump(uint8_t* rdram, const char* tag, const uint16_t* ids, size_t nids);
+namespace {
+void ablt_dump_retail(uint8_t* rdram) {   // [ABLT] lines for the moves mods this install has
+    std::vector<uint16_t> ids;
+    for (const RetailMoves& m : g_retail_moves) ids.insert(ids.end(), m.ids.begin(), m.ids.end());
+    dissidia_ablt_dump(rdram, "table loaded", ids.data(), ids.size());
+}
 void ablt_load_hook(uint8_t* rdram, recomp_context* ctx) {
     saverec_block();   // the extra characters' save records: allocated at boot, while the host heap has room
     const uint32_t src = static_cast<uint32_t>(ctx->r[4]), size = static_cast<uint32_t>(ctx->r[5]);
     if (src == 0 || size < 16u || rd32(rdram, src + 8) <= ABLT_ROWS) {
         g_orig_ablt_load(rdram, ctx);
-        if (size >= 16u) { retail_moves_hide(rdram); retail_moves_placeholders(rdram); }
+        if (size >= 16u) { retail_moves_hide(rdram); retail_moves_placeholders(rdram); ablt_dump_retail(rdram); }
         return;
     }
     const uint32_t buf = psp_kmem_bump_alloc_named((size + 0xFFu) & ~0xFFu, "ROSTER_ABLT");
@@ -5812,6 +5820,7 @@ void ablt_load_hook(uint8_t* rdram, recomp_context* ctx) {
     g_orig_ablt_load(rdram, ctx);
     retail_moves_hide(rdram);
     retail_moves_placeholders(rdram);
+    ablt_dump_retail(rdram);
 }
 }  // namespace
 
@@ -5826,8 +5835,18 @@ int dissidia_retail_moves_state(const std::string& folder) {
 // and kind back; a missing one is added in id order as a copy of `copy` (the record the pack copies: same costs and
 // equip bonus, so both players' games compute the same character). Never taught: this player's own character does
 // not learn it. Game thread.
-bool dissidia_ablt_ensure(uint8_t* rdram, uint16_t id, uint16_t copy, uint16_t cmd, uint8_t type, uint8_t phase, uint8_t owner) {
+bool dissidia_ablt_ensure(uint8_t* rdram, uint16_t id, uint16_t copy, uint16_t cmd, uint8_t type, uint8_t phase, uint8_t owner, int cp, int cp_mastered, int ap) {
+    // the costs the pack's own build writes (roster_mainbin.py: +0x0E CP to equip, +0x10 CP once mastered, +0x12 AP to master). The record
+    // made here used to keep the copied retail record's costs: the Bartz moves cost another CP / AP on a machine that got the pack online than
+    // on one that has it installed, so a CPU line-up / an equip check differed and the fights desynced. PSPRECOMP_NETPACK_COSTS_OLD=1: as before.
+    static const bool old_costs = std::getenv("PSPRECOMP_NETPACK_COSTS_OLD") != nullptr;
+    auto costs = [&](uint8_t* r) {
+        if (old_costs) return;
+        auto put = [&](uint32_t at, int v) { if (v >= 0) { r[at] = v & 0xFF; r[at + 1] = (v >> 8) & 0xFF; } };
+        put(0x0E, cp); put(0x10, cp_mastered); put(0x12, ap);
+    };
     if (uint8_t* a = ablt_record(rdram, id)) {
+        costs(a);
         a[kAbltOwnerByte] = owner;
         a[0x0C] = cmd & 0xFFu; a[0x0D] = cmd >> 8;
         a[0x16] = type; a[0x17] = phase;
@@ -5841,6 +5860,7 @@ bool dissidia_ablt_ensure(uint8_t* rdram, uint16_t id, uint16_t copy, uint16_t c
     rec[0] = id & 0xFFu; rec[1] = id >> 8;
     rec[0x0C] = cmd & 0xFFu; rec[0x0D] = cmd >> 8;
     rec[0x16] = type; rec[0x17] = phase;
+    costs(rec);
     const uint32_t n = rd32(rdram, blk + 8u);
     const uint32_t room = blk == g_ablt_host_block ? g_ablt_host_rows : ABLT_ROWS;   // the game's block holds 808 records
     if (n + 1u > room) {                       // full: a bigger host block, as ablt_load_hook does for big tables
@@ -5865,6 +5885,71 @@ bool dissidia_ablt_ensure(uint8_t* rdram, uint16_t id, uint16_t copy, uint16_t c
     std::memcpy(base + ABLT_ROW * at, rec, kAbltRecBytes);
     put_u32(rdram, (blk + 8u) & 0x07FFFFFFu, n + 1u);
     return true;
+}
+
+// Replace the 'chrl' row (abilities learned per level, 8-byte entries) of `charId` in the loaded table, as a native install of a moves mod has it
+// through its main.bin. FUN_088B6E60 copied the table into a heap block of its own size {16-byte header (count at +8), count index rows
+// {charId, entries, absolute address of the entries, word}, the entries}; the globals 0x089D7360 / 0x089D7364 hold the block and the index.
+// A different size: the table moves into a new host block (the old one is left). Game thread.
+bool dissidia_chrl_set_row(uint8_t* rdram, int charId, const std::vector<uint8_t>& entries) {
+    constexpr uint32_t kBlk = 0x089D7360u, kIdx = 0x089D7364u;
+    if (entries.empty() || entries.size() % 8u) return false;
+    const uint32_t blk = rd32(rdram, kBlk), idx = rd32(rdram, kIdx);
+    if (!psp_guest_ok(blk) || !psp_guest_ok(idx)) return false;
+    const uint32_t n = rd32(rdram, blk + 8u);
+    if (n == 0 || n > 256u) return false;
+    struct Row { uint32_t cid, cnt, w3; std::vector<uint8_t> e; };
+    std::vector<Row> rows;
+    bool found = false;
+    for (uint32_t k = 0; k < n; k++) {
+        const uint32_t at = idx + 16u * k;
+        Row r{rd32(rdram, at), rd32(rdram, at + 4u), rd32(rdram, at + 12u), {}};
+        const uint32_t off = rd32(rdram, at + 8u);
+        if (r.cnt > 4096u || !psp_guest_ok(off) || !psp_guest_ok(off + 8u * r.cnt)) return false;
+        r.e.assign(rdram + (off & 0x07FFFFFFu), rdram + (off & 0x07FFFFFFu) + 8u * r.cnt);
+        if (static_cast<int>(r.cid) == charId) { r.e = entries; r.cnt = static_cast<uint32_t>(entries.size() / 8u); found = true; }
+        rows.push_back(std::move(r));
+    }
+    if (!found) return false;
+    size_t total = 16u + 16u * rows.size();
+    for (const Row& r : rows) total += r.e.size();
+    const uint32_t nb = psp_kmem_bump_alloc_named((static_cast<uint32_t>(total) + 0xFFu) & ~0xFFu, "ROSTER_CHRL_NET");
+    if (!nb) return false;
+    uint8_t* d = rdram + (nb & 0x07FFFFFFu);
+    std::memcpy(d, rdram + (blk & 0x07FFFFFFu), 16);
+    uint32_t pos = 16u + 16u * static_cast<uint32_t>(rows.size());
+    for (size_t k = 0; k < rows.size(); k++) {
+        put_u32(rdram, (nb + 16u + 16u * static_cast<uint32_t>(k)) & 0x07FFFFFFu, rows[k].cid);
+        put_u32(rdram, (nb + 20u + 16u * static_cast<uint32_t>(k)) & 0x07FFFFFFu, rows[k].cnt);
+        put_u32(rdram, (nb + 24u + 16u * static_cast<uint32_t>(k)) & 0x07FFFFFFu, nb + pos);
+        put_u32(rdram, (nb + 28u + 16u * static_cast<uint32_t>(k)) & 0x07FFFFFFu, rows[k].w3);
+        std::memcpy(d + pos, rows[k].e.data(), rows[k].e.size());
+        pos += static_cast<uint32_t>(rows[k].e.size());
+    }
+    put_u32(rdram, kBlk & 0x07FFFFFFu, nb);
+    put_u32(rdram, kIdx & 0x07FFFFFFu, nb + 16u);
+    std::fprintf(stderr, "[NETPACK] chrl row of charId %d set (%zu entries) in a new table at 0x%08X\n", charId, entries.size() / 8u, nb);
+    return true;
+}
+// Log (and hash) the 'ablt' table and the given ids' records: the same table must come out of a native install of a moves mod and of a
+// pack received online (net_packs.cpp), or the two players' fights differ. Game thread.
+void dissidia_ablt_dump(uint8_t* rdram, const char* tag, const uint16_t* ids, size_t nids) {
+    const uint32_t blk = rd32(rdram, kAbltBlockPtr), recs = rd32(rdram, kAbltRecsPtr);
+    if (!psp_guest_ok(blk) || !psp_guest_ok(recs)) return;
+    const uint32_t n = rd32(rdram, blk + 8u);
+    uint32_t h = 2166136261u;
+    for (uint32_t i = 0; i < n * kAbltRecBytes && n < 0x1000u; i++) h = (h ^ rdram[(recs + i) & 0x07FFFFFFu]) * 16777619u;
+    // the gameplay hash leaves out the two display text ids (+2 name, +4 help): a native install's records point at the mod's own appended text records, a
+    // received pack's at the copied retail ability's (the texts are not in the pack): everything the fight reads is equal when this one is
+    uint32_t g = 2166136261u;
+    for (uint32_t i = 0; i < n * kAbltRecBytes && n < 0x1000u; i++) { const uint32_t o = i % kAbltRecBytes; g = (g ^ ((o >= 2 && o < 6) ? 0u : rdram[(recs + i) & 0x07FFFFFFu])) * 16777619u; }
+    std::fprintf(stderr, "[ABLT] %s: %u records, hash %08X, without the text ids %08X\n", tag, n, h, g);
+    for (size_t k = 0; k < nids; k++) {
+        const uint8_t* a = ablt_record(rdram, ids[k]);
+        char hex[kAbltRecBytes * 2 + 1] = {};
+        if (a) for (uint32_t i = 0; i < kAbltRecBytes; i++) std::snprintf(hex + 2 * i, 3, "%02X", a[i]);
+        std::fprintf(stderr, "[ABLT]   %04X %s\n", ids[k], a ? hex : "(none)");
+    }
 }
 
 // Called from dissidia_register_hooks; harmless with retail-sized tables (the originals run unchanged).

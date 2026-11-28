@@ -174,6 +174,8 @@ struct Page::Impl {
     std::vector<int> source_counts;
     std::vector<psp_savebackup::Backup> backups;
     bool backups_loaded = false;
+    unsigned bak_epoch = 0;            // bumped when the backups changed (an answer of an older load is dropped)
+    void inval_backups() { backups_loaded = false; ++bak_epoch; }
     // modals
     bool dlg_on = false;
     Dialog dlg;
@@ -242,6 +244,45 @@ struct Page::Impl {
             f->dests = detect ? detect(false) : psp_savemgr::detect_sources(false, root);
             f->done = true;
         }).detach();
+    }
+    // Opening the page (and its Backups list) reads every save and every backup on a thread: on a phone's shared storage (FUSE) each
+    // file costs a millisecond or more, and a long backup history is thousands of files. Rows say "Loading..." until it is back.
+    // PSPRECOMP_SAVES_SYNC_OLD=1: the old behaviour (read on the UI thread when a row needs it).
+    struct Preload {
+        std::atomic<bool> done{false};
+        bool with_mine = false;
+        unsigned changed_at = 0, epoch_at = 0;
+        std::vector<SaveInfo> mine;
+        std::vector<psp_savebackup::Backup> backups;
+    };
+    std::shared_ptr<Preload> pre;
+    bool mine_ok = false;               // mine_count is current (until `changed` moves)
+    unsigned mine_at = 0;
+    int mine_count = 0;
+    static bool sync_old() { static const bool v = [] { const char* e = std::getenv("PSPRECOMP_SAVES_SYNC_OLD"); return e && *e && *e != '0'; }(); return v; }
+    bool pending() const { return pre && !pre->done; }
+    void start_preload(bool with_mine) {
+        if (sync_old()) return;
+        auto f = std::make_shared<Preload>();
+        f->with_mine = with_mine;
+        f->changed_at = changed;
+        f->epoch_at = bak_epoch;
+        pre = f;
+        const std::string saves_root = env.saves_root, backup_root = env.backup_root;
+        std::thread([f, saves_root, backup_root] {
+            if (f->with_mine) f->mine = psp_savemgr::scan(saves_root);
+            f->backups = psp_savebackup::list(backup_root);
+            f->done = true;
+        }).detach();
+    }
+    bool take_preload() {
+        if (!pre || !pre->done) return false;
+        auto f = std::move(pre);
+        pre.reset();
+        if (f->with_mine && f->changed_at == changed) { mine_count = int(f->mine.size()); mine_at = changed; mine_ok = true; }
+        if (f->epoch_at == bak_epoch) { backups = std::move(f->backups); backups_loaded = true; }
+        dirty = true;
+        return true;
     }
     bool take_places() {
         if (!finding || !finding->done) return false;
@@ -372,7 +413,7 @@ struct Page::Impl {
             else { ++failed; fails += "\n" + slot_label(s.suffix) + ": " + e; }
         }
         std::fprintf(stderr, "[SAVEMGR] import from %s: %d copied, %d skipped, %d failed\n", l.src_path.c_str(), done, skipped, failed);
-        if (done) { backups_loaded = false; after_local_change(); }
+        if (done) { inval_backups(); after_local_change(); }
         pop_to_top();
         std::string t = "Imported " + plural(done, "save", "saves") + ".";
         if (skipped) t += " " + plural(skipped, "save was", "saves were") + " already there and kept.";
@@ -600,7 +641,7 @@ struct Page::Impl {
 
     // ---- backups ----
     const std::vector<psp_savebackup::Backup>& backup_list() {
-        if (!backups_loaded) { backups = psp_savebackup::list(env.backup_root); backups_loaded = true; }
+        if (!backups_loaded && !pending()) { backups = psp_savebackup::list(env.backup_root); backups_loaded = true; }
         return backups;
     }
     const psp_savebackup::Backup* find_backup(const std::string& id) {
@@ -627,7 +668,7 @@ struct Page::Impl {
             else fails += "\n" + slot_label(s.suffix) + ": " + e;
         }
         std::fprintf(stderr, "[SAVEMGR] restore from %s: %d restored, %d unchanged\n", id.c_str(), done, same);
-        backups_loaded = false;
+        inval_backups();
         if (done) after_local_change();
         std::string t = done ? "Restored " + plural(done, "save", "saves") + ". The saves they replaced are in Backups." : "Nothing to restore.";
         if (same) t += "\n" + plural(same, "save was", "saves were") + " already the same as the backup.";
@@ -643,7 +684,7 @@ struct Page::Impl {
     }
     void resolve(const std::string& suffix, psp_cloud::Choice c) {
         if (env.cloud_resolve) env.cloud_resolve(suffix, c);
-        if (c != psp_cloud::Choice::Skip) { ++changed; backups_loaded = false; }
+        if (c != psp_cloud::Choice::Skip) { ++changed; inval_backups(); }
     }
     void keep_newer_all() {
         const auto cs = conflicts();
@@ -699,9 +740,11 @@ struct Page::Impl {
             add(SetKind::Submenu, "Cloud settings...", "", "Cloud settings\nChoose the service and sign in (Settings > Cloud).", {A::CloudSettings});
         }
         {
-            const int n = int(psp_savemgr::scan(env.saves_root).size());
+            const bool known = mine_ok && mine_at == changed;
+            const bool wait = !known && pending();
+            const int n = known ? mine_count : wait ? 0 : int(psp_savemgr::scan(env.saves_root).size());
             header("This game's saves");
-            add(SetKind::Submenu, "Duplicate, move, rename or delete...", plural(n, "save", "saves"),
+            add(SetKind::Submenu, "Duplicate, move, rename or delete...", wait ? std::string("Loading...") : plural(n, "save", "saves"),
                 "This game's saves\nCopy a save into another slot, move it, change the name the save list shows, or delete it (deleted saves go to Backups).",
                 {A::Mine});
         }
@@ -744,7 +787,7 @@ struct Page::Impl {
         header("Backups");
         const auto& bl = backup_list();
         add(SetKind::Action, "Back up now", "", "Back up now\nCopy every save into a new backup that stays until you delete it.", {A::BackupNow});
-        add(SetKind::Submenu, "Restore a backup", plural(int(bl.size()), "backup", "backups"),
+        add(SetKind::Submenu, "Restore a backup", pending() ? std::string("Loading...") : plural(int(bl.size()), "backup", "backups"),
             "Restore a backup\nEvery save that cloud sync, an import or a restore replaced is kept here, and the saves are copied once a day. "
             "Put any of them back, for example to undo a cloud download. Folder: " + env.backup_root, {A::Backups});
 
@@ -863,6 +906,7 @@ struct Page::Impl {
 
     void build_backups() {
         const auto& bl = backup_list();
+        if (pending()) { add(SetKind::Info, "Loading backups...", "", "Loading\nThe backups are being read.", {}); return; }
         header(bl.empty() ? "No backups yet" : "Newest first");
         const size_t cap = 120;
         for (size_t i = 0; i < bl.size() && i < cap; ++i) {
@@ -879,6 +923,7 @@ struct Page::Impl {
     }
 
     void build_backup() {
+        if (pending()) { add(SetKind::Info, "Loading backups...", "", "Loading\nThe backups are being read.", {}); return; }
         const psp_savebackup::Backup* b = find_backup(top().backup_id);
         if (!b) { add(SetKind::Info, "This backup is gone", "", "", {}); return; }
         header(std::string(psp_savebackup::reason_text(b->reason)) + ", " + when_text(b->when));
@@ -967,7 +1012,7 @@ struct Page::Impl {
             if (e.empty() && cloud_configured() && env.cloud_delete) env.cloud_delete(s.suffix);
         }
         std::fprintf(stderr, "[SAVEMGR] %s %s -> %s: %s\n", moving ? "move" : "duplicate", s.name.c_str(), name.c_str(), e.empty() ? "ok" : e.c_str());
-        backups_loaded = false;
+        inval_backups();
         if (e.empty()) after_local_change();
         while (stack.size() > 2) pop();   // back to the list of saves
         if (!e.empty()) { message(moving ? "Move failed" : "Copy failed", e); return; }
@@ -983,7 +1028,7 @@ struct Page::Impl {
         const bool cloud = cloud_configured() && env.cloud_delete;
         if (cloud) env.cloud_delete(s.suffix);
         ++changed;
-        backups_loaded = false;
+        inval_backups();
         pop();
         message("Deleted", slot_numbered(s.suffix) + " was deleted. It is in Backups (Restore a backup) if you want it back." +
                 std::string(cloud ? "\nIt is deleted in the cloud and on your other devices at their next sync too." : ""));
@@ -999,7 +1044,7 @@ struct Page::Impl {
         psp_savebackup::snapshot(env.saves_root, env.backup_root, psp_savebackup::kRenamed, {s.name}, &id);
         const std::string e = psp_savemgr::set_title(s.path, title);
         std::fprintf(stderr, "[SAVEMGR] rename %s: %s\n", s.name.c_str(), e.empty() ? "ok" : e.c_str());
-        backups_loaded = false;
+        inval_backups();
         if (!e.empty()) { message("Cannot rename", e); return; }
         ++changed;   // (the content hash does not cover PARAM.SFO: the name stays on this device)
         dirty = true;
@@ -1068,13 +1113,13 @@ struct Page::Impl {
         case A::BackupNow: {
             std::string id;
             const std::string e = psp_savebackup::snapshot(env.saves_root, env.backup_root, psp_savebackup::kManual, {}, &id);
-            backups_loaded = false;
+            inval_backups();
             if (!e.empty()) message("Backup failed", e);
             else if (id.empty()) message("Nothing to back up", "This game has no saves yet.");
             else message("Backed up", "Your saves were copied into a new backup (" + id + "). It stays until you delete it.");
             break;
         }
-        case A::Backups: { Level n; n.v = V::Backups; n.title = "Backups"; backups_loaded = false; push(std::move(n)); break; }
+        case A::Backups: { Level n; n.v = V::Backups; n.title = "Backups"; inval_backups(); start_preload(false); push(std::move(n)); break; }
         case A::CloudSync: if (env.cloud_sync && cloud_status().state != psp_cloud_svc::Status::Syncing) env.cloud_sync(); dirty = true; break;
         case A::CloudSettings: want_cloud_settings = true; break;
         case A::SelAll: {
@@ -1153,7 +1198,7 @@ struct Page::Impl {
             question("Delete this backup?", "It cannot be brought back.", {"Delete", "Cancel"}, [this, id](int bt) {
                 if (bt != 0) return;
                 const std::string e = psp_savebackup::remove(env.backup_root, id);
-                backups_loaded = false;
+                inval_backups();
                 pop();
                 if (!e.empty()) message("Cannot delete", e);
             });
@@ -1179,7 +1224,9 @@ void Page::reset() {
     d_->pop_to_top();
     d_->dlg_on = d_->ask_on = false;
     d_->dlg_cb = nullptr;
-    d_->backups_loaded = false;
+    d_->inval_backups();
+    d_->mine_ok = false;
+    d_->start_preload(true);
     d_->load_places();
     if (!d_->env.scratch_dir.empty()) { std::error_code ec; fs::remove_all(P(d_->env.scratch_dir), ec); fs::create_directories(P(d_->env.scratch_dir), ec); }
     if (d_->env.cloud_status) d_->cloud_rev = d_->env.cloud_status().revision;
@@ -1237,12 +1284,13 @@ void Page::text_done(bool ok, const std::string& v) {
 bool Page::tick(int64_t) {
     bool changed = d_->native_poll();
     if (d_->take_places()) changed = true;
+    if (d_->take_preload()) changed = true;
     if (d_->env.cloud_status) {
         const psp_cloud_svc::Status st = d_->env.cloud_status();
         if (st.revision != d_->cloud_rev) {
             d_->cloud_rev = st.revision;
             if (st.state != psp_cloud_svc::Status::Syncing)
-                for (const auto& it : st.items) if (it.action == psp_cloud::Action::Pulled || it.action == psp_cloud::Action::Removed) { ++d_->changed; d_->backups_loaded = false; break; }
+                for (const auto& it : st.items) if (it.action == psp_cloud::Action::Pulled || it.action == psp_cloud::Action::Removed) { ++d_->changed; d_->inval_backups(); break; }
             d_->dirty = true;
             changed = true;
         }
@@ -1251,7 +1299,7 @@ bool Page::tick(int64_t) {
 }
 bool Page::wait_idle(int timeout_ms) {
     for (int t = 0; t < timeout_ms; t += 5) {
-        if (!d_->finding || d_->finding->done) { d_->take_places(); return true; }
+        if ((!d_->finding || d_->finding->done) && (!d_->pre || d_->pre->done)) { d_->take_places(); d_->take_preload(); return true; }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     return false;

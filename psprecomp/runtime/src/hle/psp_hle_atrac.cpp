@@ -83,6 +83,7 @@ constexpr int32_t REMAIN_NONLOOP_ON_MEMORY = -2;
 
 constexpr int MAX_ATRAC_IDS = 8;
 
+static int g_lastSetEnd = 0; static uint32_t g_setCount = 0;
 static bool (*g_loopPolicy)(int endSample, int loopStart) = nullptr;
 
 struct AtracCtx {
@@ -603,11 +604,17 @@ void hle_GetAtracID(uint8_t*, recomp_context* ctx) {
     ret(ctx, id < 0 ? ERR_NO_ATRACID : static_cast<uint32_t>(id));
 }
 
+// for games: is this ATRAC id a streamed track (the battle music)? (Dissidia's tag team keeps the battle music through a mid-battle KO's finish)
+bool atrac_is_streamed(int id) {
+    std::lock_guard<std::mutex> lk(g_mtx);
+    return get_ctx(id) && g_ctx[id].state == ST_STREAMED;
+}
+
 void hle_ReleaseAtracID(uint8_t*, recomp_context* ctx) {
     std::lock_guard<std::mutex> lk(g_mtx);
     int id = static_cast<int>(A(ctx, 0));
     if (!get_ctx(id)) { ret(ctx, ERR_BAD_ATRACID); return; }
-    { const AtracCtx& c = g_ctx[id]; if (c.state == ST_STREAMED) std::fprintf(stderr, "[ATRAC] release id=%d (streamed, at sample %d of %d, loops %d)\n", id, c.currentSample, c.endSample, (int)c.loops()); }   // the battle music: when does it stop
+    { const AtracCtx& c = g_ctx[id]; if (c.state == ST_STREAMED) std::fprintf(stderr, "[ATRAC] release id=%d (streamed, at sample %d of %d, loops %d) ra %08X\n", id, c.currentSample, c.endSample, (int)c.loops(), static_cast<uint32_t>(ctx->r[31])); }   // the battle music: when does it stop
     free_ctx(id);
     ret(ctx, 0);
 }
@@ -644,11 +651,12 @@ uint32_t set_and_get_id(uint8_t* rdram, uint32_t buf, uint32_t rs, uint32_t bs) 
     if (!range_ok(buf, std::max<uint32_t>(rs, 1))) return ERR_ILLEGAL_ADDRESS;
     Track t;
     uint32_t e = analyze(rdram + (buf & PSP_ADDR_MASK), rs, t);
-    if (e) return e;
+    if (e) { std::fprintf(stderr, "[ATRAC] SetDataAndGetID failed: error 0x%08X (buf 0x%08X size %u)\n", e, buf, rs); return e; }
     int id = alloc_ctx(t.codec);
-    if (id < 0) return ERR_NO_ATRACID;
+    if (id < 0) { std::fprintf(stderr, "[ATRAC] SetDataAndGetID: no free atrac id (buf 0x%08X)\n", buf); return ERR_NO_ATRACID; }
     e = ctx_set_data(g_ctx[id], t, buf, rs, std::max(bs, rs), 2, rdram);
     if (e) { free_ctx(id); return e; }
+    g_lastSetEnd = t.endSample; g_setCount++;
     std::fprintf(stderr,
         "[ATRAC] id=%d %s ch=%d align=%u state=%d fileSize=%u endSample=%d firstOff=%d loop=%d..%d buf=0x%08X\n",
         id, t.codec == CODEC_AT3PLUS ? "AT3+" : "AT3", t.channels, t.blockAlign,
@@ -959,6 +967,11 @@ void hle_Reinit(uint8_t*, recomp_context* ctx) { ret(ctx, 0); }
 void hle_StartEntry(uint8_t*, recomp_context* ctx) { ret(ctx, 0); }
 
 }  // namespace
+
+int psp_atrac_last_end_sample() { return g_lastSetEnd; }   // end sample of the track the last sceAtracSetDataAndGetID made (a game module measures a voice line's length with it)
+uint32_t psp_atrac_set_count() { return g_setCount; }
+
+bool psp_atrac_is_streamed(int id) { return atrac_is_streamed(id); }
 
 void psp_hle_register_atrac() {
     psp_hle_register("sceAtracGetAtracID", hle_GetAtracID);

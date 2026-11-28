@@ -64,6 +64,8 @@ extern uint32_t dissidia_model_budget_request(uint32_t bytes);
 extern uint32_t dissidia_model_budget();
 
 void dissidia_xdelta_register_installer();   // xdelta_import.cpp
+void dissidia_dlc_register_installers();     // dlc_mod.cpp: Settings > Mods > Install DLC
+std::string dissidia_dlc_remap_ms(const std::string& host);   // dlc_mod.cpp: the game's DLC files (ms0:/PSP/GAME/<id>/<hash>.edat)
 
 namespace {
 
@@ -736,6 +738,7 @@ void dissidia_install_mod_io() {
     policy.classify_open = classify_open;
     policy.overlay_read = overlay_read;
     policy.remap_disc_path = remap_disc_path;
+    policy.remap_ms_path = dissidia_dlc_remap_ms;
     psp_io_set_policy(policy);
     // The settings menu offers a Voice row once a Japanese voice pack has been extracted (tools/jp_audio.py).
     psp_settings_set_voice_hook({+[]() { return is_dir(work_parent() + "/voice_jp"); }});
@@ -750,6 +753,7 @@ void dissidia_install_mod_io() {
     psp_settings_set_texpack_hook(th);
     // Settings > Mods > Install ISO Patch (.xdelta): xdelta_import.cpp
     dissidia_xdelta_register_installer();
+    dissidia_dlc_register_installers();
     // Texture packs (runtime/include/psp_tex_pack.h): the one applied of those installed under <mods>/texpacks (psp_texpacks.h: chosen in
     // Settings, or the newest), and the textures/ of each installed mod folder that is on. Without any pack, <mods>/textures (dumps).
     psp_texpack_set_dir_provider([]() -> std::string {

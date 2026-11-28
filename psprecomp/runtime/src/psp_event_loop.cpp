@@ -6,7 +6,11 @@
 #include "psp_render_queue.h"
 #include "psp_scheduler.h"
 #include "psp_ge_draw.h"
+#if defined(PSPRECOMP_HAVE_VKGL)
+#include "vk/psp_vk_glsl.h"
+#endif
 #include "psp_settings.h"
+#include "psp_report.h"
 #include "psp_tex_pack.h"
 #include "hle/psp_savedata_dialog.h"   // on-screen keyboard: host typing
 #include "hle/psp_cloud_service.h"      // cloud sync sign-in helper
@@ -786,6 +790,7 @@ void psp_set_window_icon(const unsigned char* rgba, int w, int h) {
     apply_window_icon(g_window);
 }
 static SDL_GLContext g_gl_context = nullptr;
+static bool g_vk_fallback_notice = false;
 static bool vk_renderer_requested() {
 #if defined(PSPRECOMP_HAVE_VKGL)
     return vkgl::requested();
@@ -833,7 +838,9 @@ int psp_runtime_init_sdl() {
             SDL_SetHint(SDL_HINT_VIDEODRIVER, "wayland,x11");
     }
 #endif
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {
+    // PSPRECOMP_NO_PADS=1: no game controllers at all (test copies on a machine where the user plays: they must never open or read the user's pad).
+    static const bool no_pads = [] { const char* e = std::getenv("PSPRECOMP_NO_PADS"); return e && *e && *e != '0'; }();
+    if (SDL_Init(no_pads ? SDL_INIT_VIDEO : (SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER)) != 0) {
         std::fprintf(stderr,
             "[RT] SDL_Init failed: %s\n", SDL_GetError());
         return 1;
@@ -907,7 +914,11 @@ int psp_runtime_init_sdl() {
         }
     }
     const char* fs_env = std::getenv("PSPRECOMP_FULLSCREEN");
-    const bool use_vk = vk_renderer_requested();
+    bool use_vk = vk_renderer_requested();
+    {   // Vulkan is the default: no renderer chosen and none usable = an automatic fallback to OpenGL (announced below)
+        const char* rr0 = std::getenv("PSPRECOMP_RENDERER");
+        if (!use_vk && !(rr0 && rr0[0])) g_vk_fallback_notice = true;
+    }
     uint32_t wflags = (use_vk ? SDL_WINDOW_VULKAN : SDL_WINDOW_OPENGL) | SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE |
                       SDL_WINDOW_ALLOW_HIGHDPI;
     if (fs_env && fs_env[0] && fs_env[0] != '0') wflags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
@@ -930,6 +941,15 @@ int psp_runtime_init_sdl() {
         SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,
         win_w, win_h, wflags);
+    if (!g_window && use_vk) {
+        // The Vulkan device was usable but SDL cannot make a Vulkan window here (e.g. SDL's offscreen / dummy video driver, or an
+        // SDL built without Vulkan): fall back to OpenGL instead of quitting, as when no Vulkan device exists (the notice below).
+        std::fprintf(stderr, "[RT] Vulkan window failed (%s): falling back to OpenGL\n", SDL_GetError());
+        use_vk = false;
+        { const char* rr1 = std::getenv("PSPRECOMP_RENDERER"); if (!(rr1 && rr1[0])) g_vk_fallback_notice = true; }
+        wflags = (wflags & ~static_cast<uint32_t>(SDL_WINDOW_VULKAN)) | SDL_WINDOW_OPENGL;
+        g_window = SDL_CreateWindow(g_window_title.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, win_w, win_h, wflags);
+    }
     apply_window_icon(g_window);
     if (!g_window) {
         std::fprintf(stderr,
@@ -965,11 +985,31 @@ int psp_runtime_init_sdl() {
         std::string verr;
         if (!vkgl::init(g_window, psp_vsync_wanted() != 0, &verr)) {
             std::fprintf(stderr, "[RT] Vulkan backend unavailable: %s\n", verr.c_str());
+#ifndef PSP_GLES
+            // Vulkan is the default on desktops now: if it will not start (driver, display server), fall back to OpenGL
+            // with a new window (the first one was made for Vulkan).
+            std::fprintf(stderr, "[RT] falling back to OpenGL\n");
+            const char* rr = std::getenv("PSPRECOMP_RENDERER");
+            g_vk_fallback_notice = !(rr && rr[0]);   // only an automatic fallback is announced, not a Vulkan the player asked for
+            SDL_DestroyWindow(g_window);
+            wflags = (wflags & ~SDL_WINDOW_VULKAN) | SDL_WINDOW_OPENGL;
+            g_window = SDL_CreateWindow(g_window_title.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, win_w, win_h, wflags);
+            if (g_window) { apply_window_icon(g_window); g_gl_context = SDL_GL_CreateContext(g_window); }
+            if (!g_window || !g_gl_context) {
+                std::fprintf(stderr, "[RT] OpenGL fallback failed: %s\n", SDL_GetError());
+                if (g_window) SDL_DestroyWindow(g_window);
+                SDL_Quit();
+                return 1;
+            }
+            use_vk = false;
+#else
             SDL_DestroyWindow(g_window);
             SDL_Quit();
             return 1;
+#endif
         }
-    } else
+    }
+    if (!use_vk)
 #endif
 #ifdef PSP_GLES
     if (false) {   // libGLESv3 exports the ES 3.2 entry points directly
@@ -994,6 +1034,7 @@ int psp_runtime_init_sdl() {
         glGetString(GL_VERSION));
     std::fprintf(stderr, "[RT] GL renderer: %s (%s)\n",
         glGetString(GL_RENDERER), glGetString(GL_VENDOR));
+    if (!use_vk) psp_report::note_gpu(reinterpret_cast<const char*>(glGetString(GL_VERSION)), reinterpret_cast<const char*>(glGetString(GL_RENDERER)), reinterpret_cast<const char*>(glGetString(GL_VENDOR)));
     if (gl_debug && !use_vk) gl_debug_install();
 
     // 7. Clear to black and swap — show initial frame
@@ -1002,8 +1043,26 @@ int psp_runtime_init_sdl() {
     psp_gl_swap(g_window);
 
 #if defined(PSPRECOMP_HAVE_VKGL)
+    if (use_vk) {
+        // A shader compiled during play (cache miss outside the warm-up) stalls the draw: say so. One toast that every further compile
+        // renews (it hides 1.5 s after the last one); ge_draw_toast only stores the text, the render thread draws it. PSPRECOMP_SHADER_TOAST=0 turns it off.
+        const char* e = std::getenv("PSPRECOMP_SHADER_TOAST");
+        static int toast_ms = 1500;   // PSPRECOMP_SHADER_TOAST=<ms >= 100>: testing, keep the toast up longer
+        if (e && std::atoi(e) >= 100) toast_ms = std::atoi(e);
+        if (!(e && e[0] == '0'))
+            pspvk::set_compile_miss_hook([] {
+                static std::atomic<int> n{0};
+                if (n.fetch_add(1) == 0) std::fprintf(stderr, "[VKGL] compiling a shader during play (toast shown)\n");
+                ge_draw_toast("Compiling shaders...", toast_ms, 10);
+            });
+    }
     if (use_vk) vkgl::warmup_shaders();   // compile the shader pack's missing shaders behind a progress screen (vk/psp_vk_warmup.cpp)
 #endif
+    if (g_vk_fallback_notice && !use_vk) {
+        static const char* msg = "Vulkan couldn't start on this device - using OpenGL instead. Performance may be lower.";
+        std::fprintf(stderr, "[RT] NOTICE: %s\n", msg);
+        ge_draw_toast_deferred(msg, 12000, 10);
+    }
     std::fprintf(stderr, "[RT] SDL/GL initialized (480x272)\n");
     return 0;
 }

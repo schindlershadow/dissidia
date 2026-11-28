@@ -92,3 +92,5 @@ games/dissidia/docs/images/*.png
 # Python environment the tools set up on first run (tools/pydeps.py), and personal notes
 .venv/
 /*-readme.md
+GIT_COMMIT
+xdev_out/

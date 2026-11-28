@@ -11,6 +11,7 @@ import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.PowerManager;
 
 /**
  * Keeps the app alive while the game is built (10 to 20 minutes): a foreground service with a progress notification, so switching to
@@ -24,6 +25,7 @@ public class BuildService extends Service {
     private static volatile int percent = -1;
 
     static void start(Context c) {
+        hold(c);
         try {
             Intent i = new Intent(c, BuildService.class);
             if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(i); else c.startService(i);
@@ -34,6 +36,36 @@ public class BuildService extends Service {
 
     static void stop(Context c) {
         c.stopService(new Intent(c, BuildService.class));
+        release();
+    }
+
+    // The CPU stays on for the whole build (the screen may turn off): ONE lock for the process, taken when the build starts and given back
+    // when it ends (BuildRunner), fails or is cancelled, or when the service goes. A crash drops it with the process; the timeout is the last net.
+    private static PowerManager.WakeLock lock;
+
+    static synchronized void hold(Context c) {
+        try {
+            if (lock == null) {
+                PowerManager pm = (PowerManager) c.getApplicationContext().getSystemService(POWER_SERVICE);
+                lock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "psprecomp:build");
+                lock.setReferenceCounted(false);
+            }
+            if (!lock.isHeld()) lock.acquire(3 * 60 * 60 * 1000L);
+        } catch (Exception e) {
+            // no lock: the foreground service still keeps the process running
+        }
+    }
+
+    static synchronized void release() {
+        try {
+            if (lock != null && lock.isHeld()) lock.release();
+        } catch (Exception e) {
+            // already released
+        }
+    }
+
+    static boolean holding() {
+        return lock != null && lock.isHeld();
     }
 
     /** New progress for the notification (cheap: only posted when something visible changed). */
@@ -98,6 +130,12 @@ public class BuildService extends Service {
             stopSelf();
         }
         return START_NOT_STICKY;
+    }
+
+    @Override
+    public void onDestroy() {
+        release();
+        super.onDestroy();
     }
 
     @Override

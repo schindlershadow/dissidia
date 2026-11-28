@@ -140,6 +140,94 @@ int psp_android_display_hdr_peak_nits() {
     return nits;
 }
 
+// LAN play (23 Nov, PR #129: "LAN never finds the other player on the same WiFi"): Android's Wi-Fi stack drops broadcast / multicast packets
+// that are not addressed to this device unless an app holds a WifiManager.MulticastLock (many drivers filter them in power save). Needs
+// android.permission.CHANGE_WIFI_MULTICAST_STATE in the manifest (a normal permission, granted at install); without it acquire() throws and
+// this only logs. PSPRECOMP_ADHOC_NOMCASTLOCK=1: not taken.
+void psp_android_wifi_multicast_lock() {
+    static bool done = false;
+    if (done || std::getenv("PSPRECOMP_ADHOC_NOMCASTLOCK")) return;
+    done = true;
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
+    jobject act = static_cast<jobject>(SDL_AndroidGetActivity());
+    if (!env || !act) return;
+    bool ok = false;
+    jclass ac = env->GetObjectClass(act);
+    jmethodID gac = ac ? env->GetMethodID(ac, "getApplicationContext", "()Landroid/content/Context;") : nullptr;
+    jobject app = gac ? env->CallObjectMethod(act, gac) : nullptr;
+    jclass cc = app ? env->GetObjectClass(app) : nullptr;
+    jmethodID gss = cc ? env->GetMethodID(cc, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;") : nullptr;
+    jstring wifi = env->NewStringUTF("wifi");
+    jobject wm = (gss && !env->ExceptionCheck()) ? env->CallObjectMethod(app, gss, wifi) : nullptr;
+    jclass wmc = (wm && !env->ExceptionCheck()) ? env->GetObjectClass(wm) : nullptr;
+    jmethodID cml = wmc ? env->GetMethodID(wmc, "createMulticastLock", "(Ljava/lang/String;)Landroid/net/wifi/WifiManager$MulticastLock;") : nullptr;
+    jstring tag = env->NewStringUTF("psprecomp-lan");
+    jobject lock = (cml && !env->ExceptionCheck()) ? env->CallObjectMethod(wm, cml, tag) : nullptr;
+    jclass lc = (lock && !env->ExceptionCheck()) ? env->GetObjectClass(lock) : nullptr;
+    jmethodID src = lc ? env->GetMethodID(lc, "setReferenceCounted", "(Z)V") : nullptr;
+    jmethodID acq = lc ? env->GetMethodID(lc, "acquire", "()V") : nullptr;
+    if (src && !env->ExceptionCheck()) env->CallVoidMethod(lock, src, JNI_FALSE);
+    if (acq && !env->ExceptionCheck()) { env->CallVoidMethod(lock, acq); ok = !env->ExceptionCheck(); }
+    if (env->ExceptionCheck()) { env->ExceptionClear(); ok = false; }
+    if (ok) env->NewGlobalRef(lock);   // held for the life of the process
+    std::fprintf(stderr, "[ADHOC] Wi-Fi multicast lock %s\n", ok ? "held (LAN broadcasts reach the game)" : "NOT taken (no CHANGE_WIFI_MULTICAST_STATE permission in this APK?): LAN discovery may miss broadcasts");
+    if (lc) env->DeleteLocalRef(lc);
+    if (lock) env->DeleteLocalRef(lock);
+    env->DeleteLocalRef(tag);
+    if (wmc) env->DeleteLocalRef(wmc);
+    if (wm) env->DeleteLocalRef(wm);
+    env->DeleteLocalRef(wifi);
+    if (cc) env->DeleteLocalRef(cc);
+    if (app) env->DeleteLocalRef(app);
+    if (ac) env->DeleteLocalRef(ac);
+    env->DeleteLocalRef(act);
+}
+
+// Online play (26 Nov): Wi-Fi power save lets the radio sleep between beacons, which holds packets back by tens of ms at random: jitter the
+// lock-step pays for with waits or a longer input lead. A WifiManager.WifiLock in WIFI_MODE_FULL_LOW_LATENCY (4, Android 10 = this APK's
+// minimum) asks the driver to keep latency low; Android applies it only while this app is in the foreground with the screen on. Needs
+// android.permission.WAKE_LOCK in the manifest (a normal permission, granted at install); without it acquire() throws and this only logs.
+// Taken once, when Communications Mode first starts the network, for the life of the process. PSPRECOMP_ADHOC_NOWIFILOCK=1: not taken.
+// NOT TESTED on a device (no NDK / phone here): written after psp_android_wifi_multicast_lock above.
+void psp_android_wifi_low_latency_lock() {
+    static bool done = false;
+    if (done || std::getenv("PSPRECOMP_ADHOC_NOWIFILOCK")) return;
+    done = true;
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
+    jobject act = static_cast<jobject>(SDL_AndroidGetActivity());
+    if (!env || !act) return;
+    bool ok = false;
+    jclass ac = env->GetObjectClass(act);
+    jmethodID gac = ac ? env->GetMethodID(ac, "getApplicationContext", "()Landroid/content/Context;") : nullptr;
+    jobject app = gac ? env->CallObjectMethod(act, gac) : nullptr;
+    jclass cc = app ? env->GetObjectClass(app) : nullptr;
+    jmethodID gss = cc ? env->GetMethodID(cc, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;") : nullptr;
+    jstring wifi = env->NewStringUTF("wifi");
+    jobject wm = (gss && !env->ExceptionCheck()) ? env->CallObjectMethod(app, gss, wifi) : nullptr;
+    jclass wmc = (wm && !env->ExceptionCheck()) ? env->GetObjectClass(wm) : nullptr;
+    jmethodID cwl = wmc ? env->GetMethodID(wmc, "createWifiLock", "(ILjava/lang/String;)Landroid/net/wifi/WifiManager$WifiLock;") : nullptr;
+    jstring tag = env->NewStringUTF("psprecomp-online");
+    jobject lock = (cwl && !env->ExceptionCheck()) ? env->CallObjectMethod(wm, cwl, static_cast<jint>(4) /* WIFI_MODE_FULL_LOW_LATENCY */, tag) : nullptr;
+    jclass lc = (lock && !env->ExceptionCheck()) ? env->GetObjectClass(lock) : nullptr;
+    jmethodID src = lc ? env->GetMethodID(lc, "setReferenceCounted", "(Z)V") : nullptr;
+    jmethodID acq = lc ? env->GetMethodID(lc, "acquire", "()V") : nullptr;
+    if (src && !env->ExceptionCheck()) env->CallVoidMethod(lock, src, JNI_FALSE);
+    if (acq && !env->ExceptionCheck()) { env->CallVoidMethod(lock, acq); ok = !env->ExceptionCheck(); }
+    if (env->ExceptionCheck()) { env->ExceptionClear(); ok = false; }
+    if (ok) env->NewGlobalRef(lock);   // held for the life of the process
+    std::fprintf(stderr, "[ADHOC] Wi-Fi low-latency lock %s\n", ok ? "held (the radio does not sleep between packets while the game is on screen)" : "NOT taken (no WAKE_LOCK permission in this APK?): Wi-Fi power save may delay packets");
+    if (lc) env->DeleteLocalRef(lc);
+    if (lock) env->DeleteLocalRef(lock);
+    env->DeleteLocalRef(tag);
+    if (wmc) env->DeleteLocalRef(wmc);
+    if (wm) env->DeleteLocalRef(wm);
+    env->DeleteLocalRef(wifi);
+    if (cc) env->DeleteLocalRef(cc);
+    if (app) env->DeleteLocalRef(app);
+    if (ac) env->DeleteLocalRef(ac);
+    env->DeleteLocalRef(act);
+}
+
 void psp_android_frame_hint() {
     typedef void* (*PFN_mgr)();
     typedef void* (*PFN_create)(void*, const int32_t*, size_t, int64_t);
@@ -233,7 +321,15 @@ static bool import_from_host(const std::string& wd) {
 void psp_android_init() {
     const std::string wd = psp_android_workdir();
     // stderr -> logcat (tag psprecomp) and <workdir>/last_run.log, like the desktop launcher's log
+    // keep the previous run's log as prev_run.log (a restart after a crash / freeze must not erase the evidence). Only a real session replaces it:
+    // a log under 64 KB (a start that died at once, or a second restart) leaves the older prev_run.log alone.
+    {
+        const std::string cur = wd + "/last_run.log", prev = wd + "/prev_run.log";
+        struct stat sb;
+        if (stat(cur.c_str(), &sb) == 0 && sb.st_size >= (64 << 10)) { std::remove(prev.c_str()); std::rename(cur.c_str(), prev.c_str()); }
+    }
     g_logfile = std::fopen((wd + "/last_run.log").c_str(), "w");
+    if (g_logfile) setvbuf(g_logfile, nullptr, _IOLBF, 0);   // a line at a time (the pump also flushes after every read)
     if (pipe(g_pipe) == 0) {
         dup2(g_pipe[1], 2);
         dup2(g_pipe[1], 1);

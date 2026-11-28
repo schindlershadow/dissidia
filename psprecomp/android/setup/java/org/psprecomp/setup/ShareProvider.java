@@ -60,7 +60,7 @@ public class ShareProvider extends ContentProvider {
 
     @Override
     public String getType(Uri uri) {
-        return "text/plain";
+        return String.valueOf(uri.getLastPathSegment()).endsWith(".zip") ? "application/zip" : "text/plain";
     }
 
     @Override

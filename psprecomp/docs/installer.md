@@ -90,7 +90,11 @@ of the fork.
      version; **Import saves** (cycles Off / each PPSSPP or memory-stick SAVEDATA folder found with Dissidia 012 saves, found by
      `psp_savemgr::detect_sources`; it adds the last install step, `DissidiaRecomp --import-saves FROM --dir WORK`, which copies the
      saves under the installed game's disc ID, re-signed, and never replaces a save that already exists in the install; verified
-     2026-11-10 with a headless install from the US ISO, `--headless ... --saves DIR`). A release declares which of the optional features it implements in `game/features.ini` (`hd_textures=1`,
+     2026-11-10 with a headless install from the US ISO, `--headless ... --saves DIR`); **Import DLC** (cycles Off / each PPSSPP or
+     memory-stick `PSP/GAME/<Dissidia id>` folder that holds `.edat` files, found by `dissidia_dlc::detect` and on by default when one is
+     found; it adds the install step `DissidiaRecomp --import-dlc FROM --dir WORK`, which copies the files into `mods/dissidia-dlc` as a mod
+     the game's Settings > Mods can turn off; `--headless ... --dlc DIR`; not in the Android installer, which cannot see PPSSPP's files:
+     there the game's Settings > Mods > Install DLC from a Folder / Zip does it). A release declares which of the optional features it implements in `game/features.ini` (`hd_textures=1`,
      `jp_audio=1`, `android=1`); until a feature exists its row shows "Not yet" and cannot be switched on. The commands the
      wizard runs for them are fixed in `install.cpp` (`tools/fetch_textures.py <work> --pack ai|file`, `tools/jp_audio.py --iso <undub>
      --work <work>`, `psp_build.py ... --android`), so those tasks only have to provide the scripts and flip the line.

@@ -37,6 +37,7 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.view.animation.DecelerateInterpolator;
 import android.view.animation.OvershootInterpolator;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -91,7 +92,8 @@ public class SetupActivity extends Activity {
     // ---- state (install.ini, the choices of this run)
     private final Map<String, String> st = new LinkedHashMap<>();
     private Options opt = new Options();
-    private String stateFile, workdir, iso = "", isoName = "";
+    private String stateFile, workdir, iso = "", isoName = "", isoRef = "", pickedUriPath = "";
+    private Runnable earlyAllowNext;   // continues the install once "install unknown apps" is allowed (asked before the long build)
     private boolean prepared;
     private String problem = "";
     private boolean extrasMode;
@@ -119,7 +121,6 @@ public class SetupActivity extends Activity {
     private boolean wasStopped;
     private static final long INSTALL_HINT_MS = 30000;   // no answer from Android after this: the waiting page explains what to do
     private String pendingInstallApk;
-    private PowerManager.WakeLock wakeLock;
     private JSONObject upd;
     private volatile int checkSeq = 0;
     private Downloader updDl;
@@ -157,6 +158,15 @@ public class SetupActivity extends Activity {
         });
         setContentView(root);
 
+        BuildRunner.marker = new File(getFilesDir(), "build.running");
+        if (BuildRunner.current == null && BuildRunner.marker.isFile()) {   // a plan was running when the app last ended and it never finished: killed or crashed
+            String mk = readText(BuildRunner.marker, 1 << 16);
+            int nl = mk.indexOf('\n');
+            interruptedKind = (nl < 0 ? mk : mk.substring(0, nl)).trim();
+            interruptedOpts = nl < 0 ? "" : mk.substring(nl + 1);
+            if (interruptedKind.isEmpty()) interruptedKind = "install";
+            BuildRunner.marker.delete();
+        }
         stateFile = new File(getFilesDir(), "install.ini").getPath();   // where the SDL wizard kept it (its pref path): old installs carry over
         workdir = new File(getFilesDir(), "work").getPath();
         UpdateCheckService.schedule(this);
@@ -198,6 +208,11 @@ public class SetupActivity extends Activity {
             pendingInstall = false;
             doInstall(pendingInstallApk, installUpdate);
         } else if (page.id.equals("install-allow") && canInstallPackages()) refreshPage();
+        if (earlyAllowNext != null && page.id.equals("install-allow-early") && canInstallPackages()) {   // allowed before the build: go on with it
+            Runnable r = earlyAllowNext;
+            earlyAllowNext = null;
+            r.run();
+        }
     }
 
     @Override
@@ -633,6 +648,35 @@ public class SetupActivity extends Activity {
         return w != null && !w.isEmpty() && new File(w, "android/dissidia.apk").isFile();
     }
 
+    /** "fast" (default on a phone) or "full": how the game is compiled here (games/dissidia/tools/android_build.py reads work/build_profile.txt). */
+    private String buildProfile() {
+        return "full".equals(readText(new File(getFilesDir(), "build_profile.txt"), 16).trim()) ? "full" : "fast";   // own file: the engine's install.ini only keeps keys it knows
+    }
+
+    private static final String[] PROFILE_LABELS = {"Fast", "Full"};
+    private static final String PROFILE_HELP_FAST = "Fast: a shorter install; the parts of the game that run a lot are optimised fully, the rest for size. The game can be a little slower.";
+    private static final String PROFILE_HELP_FULL = "Full: the longest install (about half as long again) and the fastest game. You can switch later with Rebuild.";
+
+    private void setProfile(String p) {
+        try (java.io.FileOutputStream o = new java.io.FileOutputStream(new File(getFilesDir(), "build_profile.txt"))) {
+            o.write((p + "\n").getBytes("UTF-8"));
+        } catch (Exception e) {
+            // the choice is then not kept
+        }
+    }
+
+    /** The build's choice goes to the work folder: the build script reads it (the object cache keys include the flags, so switching rebuilds only what differs). */
+    private void writeProfile(String dir) {
+        try {
+            new File(dir).mkdirs();
+            try (java.io.FileOutputStream o = new java.io.FileOutputStream(new File(dir, "build_profile.txt"))) {
+                o.write((buildProfile() + "\n").getBytes("UTF-8"));
+            }
+        } catch (Exception e) {
+            // the build then uses its default (fast)
+        }
+    }
+
     private boolean needRebuild() {
         if (!installed()) return false;
         String fp = Engine.payloadFingerprint(), built = st.get("built_fp");
@@ -654,6 +698,7 @@ public class SetupActivity extends Activity {
             em.setMode(ProgressEmblem.FAILED);
             backdrop.setMood(BackdropView.MOOD_CHAOS);
             p.head("Setup", "Something is missing", problem);
+            p.card(new Card(this, Card.ACTION, Icons.BUG, "Report an issue", "Tell the developer about this problem.")).onClick(v -> beginReport(this::backHome, problem, "", ""));
             p.card(new Card(this, Card.ACTION, Icons.LOG, "Logs and reports", "Look at, save or share what the app wrote down.")).onClick(v -> go(this::showLogs));
             p.card(new Card(this, Card.ACTION, Icons.QUIT, "Close", null).style(Card.STYLE_QUIET)).onClick(v -> finishAndRemoveTask());
         } else if (installed()) {
@@ -670,9 +715,15 @@ public class SetupActivity extends Activity {
             if (!upd) ins.style(Card.STYLE_PRIMARY);
             ins.onClick(v -> installGame(new File(stWorkdir(), "android/dissidia.apk").getPath(), false));
             saveApkCard(p);
+            final boolean isFull = "full".equals(buildProfile());
+            p.card(new Card(this, Card.ACTION, Icons.REFRESH, isFull ? "Rebuild game (Fast)" : "Rebuild game (Full)", isFull
+                    ? "Builds again with the shorter install; the game can be a little slower. Now: Full. No disc needed."
+                    : "Builds again with full optimisation: the longest install, the fastest game. Now: Fast. No disc needed. Only part of the game is compiled again."))
+                    .onClick(v -> { setProfile(isFull ? "fast" : "full"); workdir = stWorkdir(); startPlan("rebuild", "", Options.from(st), null); });
             p.card(new Card(this, Card.ACTION, Icons.SLIDERS, "Change extras", "HD textures, texture pack, Japanese voices or Bartz's Dissidia 1 moves, without building again.")).onClick(v -> beginExtras());
             p.card(new Card(this, Card.ACTION, Icons.DISC, "Build it again", "Pick your game file and build from scratch. Your saves are kept.")).onClick(v -> beginPick(PICK_ISO, this::backHome));
             p.card(new Card(this, Card.ACTION, Icons.DOWNLOAD, "Check for updates", "Looks for a newer version of this app on github.com. Nothing about you or your game is sent.")).onClick(v -> beginCheck(true));
+            p.card(new Card(this, Card.ACTION, Icons.BUG, "Report an issue", "Something wrong? Tell the developer: you see what is sent first.").style(Card.STYLE_QUIET)).onClick(v -> beginReport(this::backHome, "", "", ""));
             p.card(new Card(this, Card.ACTION, Icons.LOG, "Logs and reports", "The build log, the game's last run and crash reports: view, save or share them.").style(Card.STYLE_QUIET)).onClick(v -> go(this::showLogs));
         } else {
             em.setMode(ProgressEmblem.SPIN);
@@ -680,6 +731,7 @@ public class SetupActivity extends Activity {
             p.card(new Card(this, Card.ACTION, Icons.BUILD, "Build the game", "About 10 to 20 minutes. You can use your phone meanwhile; the build keeps going.").style(Card.STYLE_PRIMARY).pulse())
                     .onClick(v -> beginPick(PICK_ISO, this::backHome));
             p.card(new Card(this, Card.ACTION, Icons.DOWNLOAD, "Check for updates", "Looks for a newer version of this app on github.com. Nothing about you or your game is sent.")).onClick(v -> beginCheck(true));
+            p.card(new Card(this, Card.ACTION, Icons.BUG, "Report an issue", "Something wrong? Tell the developer: you see what is sent first.").style(Card.STYLE_QUIET)).onClick(v -> beginReport(this::backHome, "", "", ""));
             p.card(new Card(this, Card.ACTION, Icons.LOG, "Logs and reports", "The build log, the game's last run and crash reports.").style(Card.STYLE_QUIET)).onClick(v -> go(this::showLogs));
         }
         show(p, dirOf(p));
@@ -804,6 +856,7 @@ public class SetupActivity extends Activity {
         }
         iso = path;
         isoName = name;
+        isoRef = path.startsWith("fd:") ? pickedUriPath : path;   // a real path when Android's picker gave one (primary / SD card storage)
         new File(workdir).mkdirs();
         if (hasAllFilesAccess()) go(this::showOptionsPage); else go(this::showPermission);
     }
@@ -974,6 +1027,11 @@ public class SetupActivity extends Activity {
             Card up = p.card(new Card(this, Card.TOGGLE, Icons.REFRESH, "Check for updates", "Look for a newer version of this app when it starts, and once a day in the background (a notification only).").toggle(opt.checkUpdates()));
             up.onChange(k -> opt.set("check_updates", k.isOn() ? "1" : "0"));
         }
+        if (!extrasMode) {
+            final int sel0 = "full".equals(buildProfile()) ? 1 : 0;
+            Card bp = p.card(new Card(this, Card.CHOICE, Icons.BUILD, "Build", (sel0 == 0 ? PROFILE_HELP_FAST : PROFILE_HELP_FULL)).choices(PROFILE_LABELS, sel0));
+            bp.onChange(c -> { setProfile(c.choice() == 1 ? "full" : "fast"); c.summary(c.choice() == 1 ? PROFILE_HELP_FULL : PROFILE_HELP_FAST); });
+        }
         long free = Engine.freeSpace(workdir);
         String space = free >= 0 ? "Free space: " + BuildRunner.size(free) + (free < (6L << 30) && !extrasMode ? " (about 6 GB are needed!)" : "") + "." : "";
         Card start = p.card(new Card(this, Card.ACTION, extrasMode ? Icons.CHECK : Icons.BUILD, extrasMode ? "Apply changes" : "Start building",
@@ -994,6 +1052,17 @@ public class SetupActivity extends Activity {
     private void startInstallOrAsk() {
         String prev = extrasMode ? Options.from(st).text() : null;
         String[] need = Engine.extrasNeedingDisc(opt.text(), prev);   // extras built from a second disc (undub, Dissidia 1...) need it first
+        // ... but look next to the first image first: a disc with the right id / voices in the same folder is used without asking
+        final String ref = !isoRef.isEmpty() ? isoRef : st.get("iso_ref") == null ? "" : st.get("iso_ref");
+        autoDiscNote = "";
+        while (need.length > 0 && extra(need[0]) != null && !ref.isEmpty() && hasAllFilesAccess()) {
+            JSONObject disc = extra(need[0]).optJSONObject("disc");
+            String found = disc == null ? "" : Engine.findExtraDisc(need[0], ref);
+            if (found.isEmpty()) break;
+            opt.set(disc.optString("key"), found);
+            autoDiscNote += (autoDiscNote.isEmpty() ? "" : " ") + "Used " + new File(found).getName() + " (same folder) for " + extra(need[0]).optString("title") + ".";
+            need = Engine.extrasNeedingDisc(opt.text(), prev);
+        }
         if (need.length > 0 && extra(need[0]) != null) {
             pickExtra = extra(need[0]);
             beginPick(PICK_DISC, this::showOptionsPage);
@@ -1007,13 +1076,81 @@ public class SetupActivity extends Activity {
         w.mkdirs();
         if (!w.isDirectory()) { failPage("Cannot create " + workdir + ".", ""); return; }
         File demo = new File(getFilesDir(), "ui_demo");   // test switch (run-as on a debuggable build): the build page without the tools
-        if (demo.isFile()) { startPlan(readText(demo, 64).contains("fail") ? "demo-fail" : "demo", iso, opt, null); return; }
+        if (demo.isFile()) {   // "fail" / "failmem" / "failiso" / "failspace" make a step fail, "lowspace" fakes a full drive, "noperm" skips the early permission page
+            String dt = readText(demo, 64);
+            String mode = dt.contains("failmem") ? "mem" : dt.contains("failiso") ? "iso" : dt.contains("failspace") ? "space" : dt.contains("fail") ? "compile" : "";
+            startPlan(mode.isEmpty() ? "demo" : "demo-fail:" + mode, iso, opt, null);
+            return;
+        }
         startPlan("install", iso, opt, null);
     }
 
     // ------------------------------------------------------------------------------------------------------------- the build
 
+    private static final int SKIP_SPACE = 1, SKIP_ALLOW = 2;
+
     private void startPlan(String kind, String isoPath, Options o, String prev) {
+        startPlan(kind, isoPath, o, prev, resumeNext ? SKIP_SPACE | SKIP_ALLOW : 0);
+    }
+
+    /** Before the long part: is there room for the whole install (and its extras), and may this app install the APK at the end? Both are
+     *  asked now, not after 20 minutes. True = a dialog / page took over; it calls startPlan again with the skip flag. */
+    private boolean preflight(final String kind, final String isoPath, final Options o, final String prev, int skip) {
+        final boolean demo = kind.startsWith("demo");
+        final String demoText = demo ? readText(new File(getFilesDir(), "ui_demo"), 64) : "";
+        final String wd = kind.equals("install") || demo ? workdir : stWorkdir();
+        if ((skip & SKIP_SPACE) == 0 && (!demo || demoText.contains("lowspace"))) {
+            long need = Engine.neededBytes(kind.equals("rebuild") ? "@none" : o.text(), wd, kind.equals("extras"));
+            if (demoText.contains("lowspace")) need = Math.max(need, Engine.freeSpace(wd) + (3L << 30));
+            final String why = Engine.spaceProblem(wd, need);
+            if (!why.isEmpty()) {
+                dialog("Not enough space", why, Icons.WARN,
+                        new Btn("Cancel", Icons.CLOSE, Card.STYLE_PRIMARY, this::backHome),
+                        new Btn("Try anyway", Icons.RETRY, Card.STYLE_NORMAL, () -> startPlan(kind, isoPath, o, prev, skip | SKIP_SPACE)));
+                return true;
+            }
+        }
+        if ((skip & SKIP_ALLOW) == 0 && (kind.equals("install") || kind.equals("rebuild") || demo) && !demoText.contains("noperm") && !canInstallPackages()) {
+            earlyAllowNext = () -> startPlan(kind, isoPath, o, prev, skip | SKIP_SPACE | SKIP_ALLOW);
+            go(this::showEarlyAllow);
+            return true;
+        }
+        return false;
+    }
+
+    private void showEarlyAllow() {
+        Page p = new Page(this, "install-allow-early");
+        p.back = () -> { earlyAllowNext = null; backHome(); };
+        boolean ok = canInstallPackages();
+        Icons.IconView hero = new Icons.IconView(this, ok ? Icons.CHECK : Icons.KEY, ok ? Theme.CRYSTAL : Theme.GOLD);
+        hero.strokeDp = 2.2f;
+        p.hero = hero;
+        p.heroHeightDp = 84;
+        p.head("Before the build", "Allow installing now", "When the game is built, Android has to be allowed to install it from this app. Switch it on now, so the build can finish without waiting for you. "
+                + "Android opens a settings page: switch on \"Allow from this source\", then come back: the build starts by itself.");
+        p.card(new Card(this, Card.ACTION, Icons.KEY, "Open the setting", "Opens Android's settings page for this app.").value(ok ? "Allowed" : "Needed").style(Card.STYLE_PRIMARY)).onClick(v -> {
+            if (canInstallPackages()) { Runnable r = earlyAllowNext; earlyAllowNext = null; if (r != null) r.run(); }
+            else startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName())));
+        });
+        p.card(new Card(this, Card.ACTION, Icons.CHEVRON, "Build without it", "The build runs now; Android asks for the permission at the end, before the game is installed.").style(Card.STYLE_QUIET)).onClick(v -> {
+            Runnable r = earlyAllowNext;
+            earlyAllowNext = null;
+            if (r != null) r.run();
+        });
+        show(p, dirOf(p));
+    }
+
+    private void startPlan(String kind, String isoPath, Options o, String prev, int skip) {
+        if ((kind.equals("rebuild") || kind.equals("extras")) && !Engine.discPresent(stWorkdir())) {
+            // the only copy of the disc files is in the game's folder: the player deleted it. They are made again from the game file.
+            dialog("The game's files are gone", "The game's files are no longer on this device (the game's folder was deleted or emptied), and "
+                    + (kind.equals("rebuild") ? "the game cannot be updated" : "extras cannot be added") + " without them. Pick your Dissidia 012 game file (.iso or .cso) again: "
+                    + "it is read once and the game is built again. Your saves are kept.", Icons.WARN,
+                    new Btn("Pick the game file", Icons.DISC, Card.STYLE_PRIMARY, () -> beginPick(PICK_ISO, this::backHome)),
+                    new Btn("Cancel", Icons.CLOSE, Card.STYLE_NORMAL, this::backHome));
+            return;
+        }
+        if (preflight(kind, isoPath, o, prev, skip)) return;
         if (!kind.startsWith("demo")) hideGameFromGallery(true, false);
         runKind = kind;
         runOpts = o.text();
@@ -1030,7 +1167,9 @@ public class SetupActivity extends Activity {
             dialog("Extras", "Nothing needed to be added: the extras you chose are already in place.", Icons.CHECK, new Btn("OK", Icons.CHECK, Card.STYLE_PRIMARY, this::backHome));
             return;
         }
-        BuildRunner r = new BuildRunner(kind, plan, new File(workdir, "setup.log"));
+        if (kind.equals("install") || kind.equals("rebuild")) writeProfile(workdir);
+        BuildRunner r = new BuildRunner(this, kind, plan, new File(workdir, "setup.log"), runOpts, resumeNext);
+        resumeNext = false;
         r.start();
         keepAwake(true);
         BuildService.start(this);
@@ -1038,6 +1177,7 @@ public class SetupActivity extends Activity {
     }
 
     private boolean logBig;
+    private String autoDiscNote = "";   // which extra discs were found next to the game file (said on the finished page)
 
     private void showBuild() {
         final BuildRunner r = BuildRunner.current;
@@ -1205,7 +1345,12 @@ public class SetupActivity extends Activity {
         backdrop.setSlow(false);
         if (!ok) {
             if (!resumed) BuildService.finished(this, false, error);
-            failPage(error, r.recentText());
+            try {
+                failStage = r.lastProgress == null ? "" : r.lastProgress.optString("stage");
+            } catch (Exception e) {
+                failStage = "";
+            }
+            failPage(error, r.recentText(6), r.reason);
             return;
         }
         if (r.kind.startsWith("demo")) { go(this::showDone); return; }   // the test plan built nothing
@@ -1214,6 +1359,7 @@ public class SetupActivity extends Activity {
         if (r.kind.equals("install")) {
             st.put("workdir", workdir);
             st.put("iso", iso);
+            if (!isoRef.isEmpty()) st.put("iso_ref", isoRef);   // where the first image was: the extras' discs are looked for next to it later
             st.put("version", "dev");
             Options done = opt.copy();
             done.clearActions();   // an added texture pack is done: the switch is off again next time
@@ -1236,7 +1382,7 @@ public class SetupActivity extends Activity {
         if (r.kind.equals("extras")) {
             extrasMode = false;
             backdrop.setMood(BackdropView.MOOD_GOLD);
-            dialog("Done", note.isEmpty() ? "The extras are in place." : note, Icons.CHECK, new Btn("OK", Icons.CHECK, Card.STYLE_PRIMARY, this::backHome));
+            dialog("Done", (note.isEmpty() ? "The extras are in place." : note) + (autoDiscNote.isEmpty() ? "" : " " + autoDiscNote), Icons.CHECK, new Btn("OK", Icons.CHECK, Card.STYLE_PRIMARY, this::backHome));
             return;
         }
         go(this::showDone);
@@ -1266,7 +1412,7 @@ public class SetupActivity extends Activity {
         em.setShowPercent(false);
         p.hero = em;
         p.heroHeightDp = 200;
-        p.head("Finished", "All done", "The game is built and its files are in place. Install it as an app: Android asks you to confirm.");
+        p.head("Finished", "All done", "The game is built and its files are in place. Install it as an app: Android asks you to confirm." + (autoDiscNote.isEmpty() ? "" : " " + autoDiscNote));
         p.card(new Card(this, Card.ACTION, Icons.INSTALL, "Install the game", "Then open \"Dissidia 012\" from your app list.").style(Card.STYLE_PRIMARY).pulse())
                 .onClick(v -> installGame(new File(stWorkdir(), "android/dissidia.apk").getPath(), false));
         saveApkCard(p);
@@ -1275,13 +1421,23 @@ public class SetupActivity extends Activity {
         show(p, dirOf(p));
     }
 
+    private String[] failReason;   // { kind, title, text } from the engine (setup/install.cpp explain_failure) for the run that failed
+
     private void failPage(String msg, String tail) {
+        failPage(msg, tail, null);
+    }
+
+    private void failPage(String msg, String tail, String[] reason) {
+        failReason = reason;
         failMsg = msg;
         failTail = tail;
         go(this::showFailed);
     }
 
-    private String failMsg = "", failTail = "";
+    private String failMsg = "", failTail = "", failStage = "";
+    private String interruptedOpts = "";
+    private boolean resumeNext;   // the next startPlan continues an interrupted run
+    private String interruptedKind = "";   // set at start when the last install did not end (offered once)
 
     private void showFailed() {
         Page p = new Page(this, "failed");
@@ -1293,7 +1449,10 @@ public class SetupActivity extends Activity {
         em.setShowPercent(false);
         p.hero = em;
         p.heroHeightDp = 150;
-        p.head("Stopped", "Not finished", failMsg + " Trying again continues where it stopped.");
+        final String[] rs = failReason;
+        final String[] parts = rs != null && rs.length >= 3 ? rs[2].split("\n\n") : null;   // what failed / Why: ... / What to do: ...
+        if (parts != null) p.head("Stopped", rs[1], parts[0]);
+        else p.head("Stopped", "Not finished", failMsg + " Trying again continues where it stopped.");
         if (!failTail.isEmpty()) {
             TextView tail = Theme.text(this, failTail, 11.5f, 0xFFE8C6C0, Theme.mono);
             tail.setPadding(Theme.dp(12), Theme.dp(10), Theme.dp(12), Theme.dp(10));
@@ -1305,12 +1464,19 @@ public class SetupActivity extends Activity {
             tail.setTextIsSelectable(true);
             p.headerExtra.add(tail);
         }
+        if (parts != null)
+            for (int i = 1; i < parts.length; i++) {
+                String t = parts[i], head = t.startsWith("Why: ") ? "Why" : t.startsWith("What to do: ") ? "What to do" : "More";
+                p.card(new Card(this, Card.INFO, head.equals("Why") ? Icons.INFO : Icons.CHECK, head, t.substring(t.indexOf(": ") + 2 > 1 && !head.equals("More") ? t.indexOf(": ") + 2 : 0)));
+            }
         final File log = new File(workdir, "setup.log");
         p.card(new Card(this, Card.ACTION, Icons.RETRY, "Try again", "Runs the same steps again; finished work is kept.").style(Card.STYLE_PRIMARY))
                 .onClick(v -> {
                     if (runKind.equals("install") && iso.isEmpty()) { beginPick(PICK_ISO, this::backHome); return; }
                     startPlan(runKind, iso, Options.parse(runOpts), runPrev);
                 });
+        p.card(new Card(this, Card.ACTION, Icons.BUG, "Report an issue", "Tell the developer what went wrong: you see what is sent first, then it opens a GitHub issue.").style(Card.STYLE_PRIMARY))
+                .onClick(v -> beginReport(() -> goBackTo(this::showFailed), failMsg, failStage, failTail));
         p.card(new Card(this, Card.ACTION, Icons.SHARE, "Share the log", "Send it to another app: messages, e-mail, a cloud drive...")).onClick(v -> shareFile(log, "dissidia-setup-log.txt", "Dissidia Recomp setup log"));
         p.card(new Card(this, Card.ACTION, Icons.SAVE, "Save the log", "Save it as a file where you choose.")).onClick(v -> saveFile(log, "dissidia-setup-log.txt"));
         p.card(new Card(this, Card.ACTION, Icons.EYE, "View the full log", null).style(Card.STYLE_QUIET)).onClick(v -> viewLog(log, "Build log"));
@@ -1319,12 +1485,11 @@ public class SetupActivity extends Activity {
 
     private void keepAwake(boolean on) {
         if (on) {
-            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-            if (wakeLock == null) wakeLock = ((PowerManager) getSystemService(Context.POWER_SERVICE)).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "psprecomp:build");
-            if (!wakeLock.isHeld()) wakeLock.acquire(3 * 60 * 60 * 1000L);
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);   // the screen stays on while this page is shown
+            BuildService.hold(this);   // the CPU stays on when it is not (the process-wide lock, given back when the build ends)
         } else {
             getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-            if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+            BuildService.release();
         }
     }
 
@@ -1388,6 +1553,9 @@ public class SetupActivity extends Activity {
                         installStatus = "confirm";
                     } else if (s == PackageInstaller.STATUS_SUCCESS) { installStatus = "ok"; lastConfirm = null; }
                     else if (s == PackageInstaller.STATUS_FAILURE_ABORTED) installStatus = "failed: cancelled";
+                    else if (s == PackageInstaller.STATUS_FAILURE_STORAGE) installStatus = "failed: storage";
+                    else if (s == PackageInstaller.STATUS_FAILURE_CONFLICT || s == PackageInstaller.STATUS_FAILURE_INCOMPATIBLE) installStatus = "failed: conflict";
+                    else if (s == PackageInstaller.STATUS_FAILURE_BLOCKED) installStatus = "failed: blocked";
                     else installStatus = "failed: " + i.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
                     ui.post(() -> { if (page != null && page.id.equals("installing")) refreshPage(); });
                 }
@@ -1538,6 +1706,21 @@ public class SetupActivity extends Activity {
         return out.getPath();
     }
 
+    /** Why Android refused the game's APK, in plain words with what to do (the last step of the install). */
+    private String installFailureWords(String s) {
+        String why = s.substring(Math.min(s.length(), 8));
+        switch (why) {
+            case "storage":
+                return "Why: the phone has no room for the game's app (about 100 MB; the game's files are already in place). What to do: free some space (Settings > Storage), then Install again.";
+            case "conflict":
+                return "Why: another Dissidia 012 app with a different signature is installed (for example one from another source). What to do: uninstall that app (Settings > Apps), then Install again. Back up your saves first if you can.";
+            case "blocked":
+                return "Why: Android or Play Protect blocked the installation. What to do: Install again and choose More details, then Install anyway; on Samsung phones switch off Auto Blocker (Settings > Security and privacy) for a moment.";
+            default:
+                return "Android said: " + why + ". If it asked for permission to install apps from this app, allow it and try again.";
+        }
+    }
+
     private void showInstalling() {
         Page p = new Page(this, "installing");
         p.back = this::backHome;
@@ -1564,7 +1747,7 @@ public class SetupActivity extends Activity {
             boolean cancelled = s.equals("failed: cancelled");
             p.head("Not installed", "Installation stopped", cancelled
                     ? "Android's confirmation was closed without installing. Tap Install again when you are ready" + (installUpdate ? "." : ", or save the APK and install it from your file manager.")
-                    : "Android said: " + s.substring(Math.min(s.length(), 8)) + ". If it asked for permission to install apps from this app, allow it and try again.");
+                    : installFailureWords(s));
             p.card(new Card(this, Card.ACTION, Icons.RETRY, "Install again", "Asks Android to install " + what + " again.").style(Card.STYLE_PRIMARY)).onClick(v -> installGame(pendingInstallApk, installUpdate));
             if (!installUpdate) saveApkCard(p);
             p.card(new Card(this, Card.ACTION, Icons.BACK, "Back to the start", null).style(Card.STYLE_QUIET)).onClick(v -> backHome());
@@ -1786,6 +1969,8 @@ public class SetupActivity extends Activity {
             if (e.file == null) k.onClick(v -> go(this::showPermission));
             else k.onClick(v -> viewLog(e.file, e.title, e.shareName));
         }
+        p.card(new Card(this, Card.ACTION, Icons.BUG, "Report an issue", "Send these logs and your description to the developer as a GitHub issue.").style(Card.STYLE_PRIMARY))
+                .onClick(v -> beginReport(() -> goBackTo(this::showLogs), "", "", ""));
         show(p, dirOf(p));
     }
 
@@ -1932,12 +2117,176 @@ public class SetupActivity extends Activity {
     /** The app closed unexpectedly last time: offer the report once. */
     private void offerCrashReport() {
         final File f = CrashReports.unseen(this);
-        if (f == null || overlay.getChildCount() > 0) return;
+        final String killed = interruptedKind;
+        if (overlay.getChildCount() > 0) return;
+        if (f == null && !killed.isEmpty()) {   // no crash report, but a run never ended: Android killed the app (memory?) or the device restarted
+            interruptedKind = "";
+            final String kOpts = interruptedOpts;
+            final boolean canResume = (killed.equals("install") || killed.equals("rebuild") || killed.equals("demo")) && new File(killed.equals("install") || killed.equals("demo") ? workdir : stWorkdir(), "steps_done.txt").isFile();
+            if (canResume) {
+                dialog("The last build did not finish", "The app was closed while it built the game. Resume continues where it stopped: the steps and the compiled files that are done are kept, only the rest is built. Start over builds everything again (your game file is asked for again).", Icons.REFRESH,
+                        new Btn("Resume the build", Icons.REFRESH, Card.STYLE_PRIMARY, () -> { resumeNext = true; workdir = killed.equals("install") || killed.equals("demo") ? workdir : stWorkdir(); startPlan(killed, "", Options.parse(kOpts), null); }),
+                        new Btn("Start over", Icons.BUILD, Card.STYLE_NORMAL, () -> { new File(killed.equals("install") || killed.equals("demo") ? workdir : stWorkdir(), "steps_done.txt").delete(); backHome(); }),
+                        new Btn("Report an issue", Icons.BUG, Card.STYLE_NORMAL, () -> beginReport(this::backHome, "The last " + killed + " did not finish: the app was closed while it worked.", "", "")));
+                return;
+            }
+            dialog("The last " + (killed.equals("install") ? "build" : killed) + " did not finish", "The app was closed while it worked (Android may have stopped it, or it crashed). The build log is kept. Sending it to the developer helps to fix this; you see what is sent first.", Icons.BUG,
+                    new Btn("Report an issue", Icons.BUG, Card.STYLE_PRIMARY, () -> beginReport(this::backHome, "The last " + killed + " did not finish: the app was closed while it worked.", "", "")),
+                    new Btn("Not now", Icons.CLOSE, Card.STYLE_NORMAL, null));
+            return;
+        }
+        if (f == null) return;
+        interruptedKind = "";
         CrashReports.markSeen(f);
         dialog("The setup app closed unexpectedly", "It wrote a crash report. Sharing it helps to fix the problem. You find it later under Logs and reports too.", Icons.BUG,
-                new Btn("Share the report", Icons.SHARE, Card.STYLE_PRIMARY, () -> shareFile(f, f.getName(), "Dissidia Recomp setup crash report")),
+                new Btn("Report an issue", Icons.BUG, Card.STYLE_PRIMARY, () -> beginReport(this::backHome, "The setup app closed unexpectedly (crash report " + f.getName() + ").", "", "")),
+                new Btn("Share the report", Icons.SHARE, Card.STYLE_NORMAL, () -> shareFile(f, f.getName(), "Dissidia Recomp setup crash report")),
                 new Btn("Save the report", Icons.SAVE, Card.STYLE_NORMAL, () -> saveFile(f, f.getName())),
                 new Btn("Not now", Icons.CLOSE, Card.STYLE_NORMAL, null));
+    }
+
+    // ------------------------------------------------------------------------------------------------------------- report an issue
+
+    private String reportText = "", reportFailure = "", reportStage = "", reportLines = "", reportStatus = "";
+    private boolean reportSending;
+    private Runnable reportBack;
+    private ReportClient.Spec reportSpec;
+    private ReportClient.Result reportResult;
+
+    private void beginReport(Runnable back, String failure, String stage, String lines) {
+        reportBack = back;
+        reportFailure = failure == null ? "" : failure;
+        reportStage = stage == null ? "" : stage;
+        reportLines = lines == null ? "" : lines;
+        reportStatus = "";
+        reportResult = null;
+        if (!reportSending) reportText = "";
+        go(this::showReport);
+    }
+
+    private void showReport() {
+        Page p = new Page(this, "report");
+        p.back = reportSending ? null : reportBack;
+        backdrop.setMood(BackdropView.MOOD_CRYSTAL);
+        final boolean done = reportResult != null && reportResult.ok;
+        p.head("Report an issue", done ? "Sent" : "What went wrong?", done
+                ? "Thank you. The issue is open on GitHub, where you can follow it."
+                : "Describe the problem in a few words: what you did, what you expected, what happened. The developer reads it on GitHub.");
+        if (!done) {
+            final EditText et = new EditText(this);
+            et.setText(reportText);
+            et.setHint("For example: the build stops at 40 percent");
+            et.setHintTextColor(Theme.TEXT_FAINT);
+            et.setTextColor(Theme.TEXT);
+            et.setTextSize(15);
+            et.setTypeface(Theme.body);
+            et.setMinLines(3);
+            et.setGravity(Gravity.TOP | Gravity.START);
+            et.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE | android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+            et.setEnabled(!reportSending);
+            et.setPadding(Theme.dp(12), Theme.dp(10), Theme.dp(12), Theme.dp(10));
+            android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
+            bg.setColor(0xC0101830);
+            bg.setStroke(Theme.dp(1), 0x90E2C47A);
+            bg.setCornerRadius(Theme.dp(8));
+            et.setBackground(bg);
+            et.addTextChangedListener(new android.text.TextWatcher() {
+                public void beforeTextChanged(CharSequence a, int b, int c, int d) {}
+                public void onTextChanged(CharSequence a, int b, int c, int d) { reportText = a.toString(); }
+                public void afterTextChanged(android.text.Editable a) {}
+            });
+            p.headerExtra.add(et);
+            p.focus = null;
+        }
+        // what is sent, exactly
+        reportSpec = ReportClient.spec(this, new File(stWorkdir()), appVersion(), runKind, reportFailure, reportStage, reportLines, hasAllFilesAccess());
+        StringBuilder sent = new StringBuilder("Your description; system information (app version, device, Android version, CPU, memory, free space");
+        sent.append(reportFailure.isEmpty() ? "" : ", which step failed").append("); ");
+        List<String> files = ReportClient.preview(reportSpec);
+        if (files.isEmpty()) sent.append("no log files yet. ");
+        else sent.append("files: ").append(android.text.TextUtils.join(", ", files)).append(". ");
+        sent.append("Never sent: your game file, your saves, cloud settings. Paths and tokens in the logs are scrubbed.");
+        p.card(new Card(this, Card.INFO, Icons.EYE, "What is sent", sent.toString()));
+        if (!reportStatus.isEmpty()) p.card(new Card(this, Card.INFO, reportResult != null && reportResult.ok ? Icons.CHECK : Icons.WARN, reportSending ? "Sending" : reportResult != null && reportResult.ok ? reportStatus : "Not sent", reportSending ? reportStatus : reportResult != null && reportResult.ok ? "The issue opens in your browser." : reportStatus));
+        if (reportResult != null && !reportResult.ok && !reportResult.savedPath.isEmpty()) {
+            final File z = new File(reportResult.savedPath);
+            p.card(new Card(this, Card.ACTION, Icons.SHARE, "Share the saved report", "A copy is saved at " + z.getPath() + ". Send it to the developer by hand.")).onClick(v -> shareZip(z));
+            p.card(new Card(this, Card.ACTION, Icons.SAVE, "Save the report as a file", "Save the zip where you choose.")).onClick(v -> saveZip(z));
+        }
+        if (done) {
+            final String u = reportResult.issueUrl;
+            p.card(new Card(this, Card.ACTION, Icons.EYE, "Open the issue again", u).style(Card.STYLE_PRIMARY)).onClick(v -> openUrl(u));
+        } else {
+            Card send = p.card(new Card(this, Card.ACTION, Icons.UP, reportSending ? "Sending..." : "Send the report", "Sends it to the developer's issue tracker, then opens the new issue in your browser.").style(Card.STYLE_PRIMARY));
+            if (!reportSending) send.onClick(v -> sendReport());
+        }
+        if (!reportSending) p.card(new Card(this, Card.ACTION, Icons.BACK, done ? "Done" : "Back", null).style(Card.STYLE_QUIET)).onClick(v -> { if (reportBack != null) reportBack.run(); });
+        show(p, dirOf(p));
+    }
+
+    private void sendReport() {
+        if (reportSending) return;
+        if (reportText.trim().isEmpty() && reportFailure.isEmpty()) { snack("Write a few words about what went wrong first."); return; }
+        reportSending = true;
+        reportStatus = "Collecting and sending the report...";
+        final String desc = reportText.trim() + (reportFailure.isEmpty() ? "" : (reportText.trim().isEmpty() ? "" : "\n\n") + "Failed: " + (reportStage.isEmpty() ? "" : reportStage + ": ") + reportFailure);
+        final String title = "Installer (Android): " + ReportClient.first(reportText.trim().isEmpty() ? reportFailure : reportText, 70);
+        final ReportClient.Spec spec = reportSpec;
+        refreshPage();
+        new Thread(() -> {
+            final ReportClient.Result r = ReportClient.send(this, spec, title, desc);
+            ui.post(() -> {
+                reportSending = false;
+                reportResult = r;
+                reportStatus = r.text;
+                if (r.ok) {
+                    reportText = "";
+                    if (!ReportClient.isTestService(this)) openUrl(r.issueUrl);   // (a test service's fake issue address is not worth a browser)
+                    snack(r.text);
+                }
+                if (page != null && page.id.equals("report")) refreshPage();
+            });
+        }, "report").start();
+    }
+
+    private void openUrl(String u) {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(u)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        } catch (Exception e) {
+            snack("No browser found. The issue is at " + u);
+        }
+    }
+
+    private void shareZip(File z) {
+        try {
+            File dst = new File(ShareProvider.dir(this), z.getName());
+            try (InputStream in = new FileInputStream(z); OutputStream out = new FileOutputStream(dst)) {
+                copy(in, out);
+            }
+            Uri u = ShareProvider.uri(z.getName());
+            Intent send = new Intent(Intent.ACTION_SEND);
+            send.setType("application/zip");
+            send.putExtra(Intent.EXTRA_STREAM, u);
+            send.putExtra(Intent.EXTRA_SUBJECT, "Dissidia Recomp setup report");
+            send.setClipData(ClipData.newRawUri(z.getName(), u));
+            send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(send, "Share the report"));
+        } catch (Exception e) {
+            snack("Could not share: " + e.getMessage());
+        }
+    }
+
+    private void saveZip(File z) {
+        saveSource = z.getPath();
+        try {
+            Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("application/zip");
+            i.putExtra(Intent.EXTRA_TITLE, z.getName());
+            startActivityForResult(i, REQ_SAVE);
+        } catch (Exception e) {
+            snack("Could not open the file picker: " + e.getMessage());
+        }
     }
 
     // ------------------------------------------------------------------------------------------------------------- activity results
@@ -1965,6 +2314,7 @@ public class SetupActivity extends Activity {
             try (Cursor c = getContentResolver().query(u, new String[] {OpenableColumns.DISPLAY_NAME}, null, null, null)) {
                 if (c != null && c.moveToFirst()) name = c.getString(0);
             }
+            pickedUriPath = uriToPath(u);
             ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(u, "r");
             int fd = pfd.detachFd();
             Engine.inheritFd(fd);   // the build tools inherit it (setup_from_iso.py "fd:N")
@@ -1972,6 +2322,26 @@ public class SetupActivity extends Activity {
         } catch (Exception e) {
             dialog("Cannot open the file", e.getMessage() == null ? e.toString() : e.getMessage(), Icons.WARN, new Btn("OK", Icons.CHECK, Card.STYLE_PRIMARY, null));
         }
+    }
+
+    /** The real file path of a picked document where Android's storage provider names one (primary:Dir/file, <card>:Dir/file), else "". */
+    private String uriToPath(Uri u) {
+        try {
+            if ("com.android.externalstorage.documents".equals(u.getAuthority())) {
+                String id = android.provider.DocumentsContract.getDocumentId(u);
+                int c = id.indexOf(':');
+                if (c > 0) {
+                    String vol = id.substring(0, c), rel = id.substring(c + 1);
+                    return (vol.equals("primary") ? "/storage/emulated/0" : "/storage/" + vol) + "/" + rel;
+                }
+            }
+            try (Cursor cu = getContentResolver().query(u, new String[] {"_data"}, null, null, null)) {   // some providers still hand out the path
+                if (cu != null && cu.moveToFirst() && cu.getString(0) != null && cu.getString(0).startsWith("/")) return cu.getString(0);
+            }
+        } catch (Exception e) {
+            // no path: the extras' discs are asked for
+        }
+        return "";
     }
 
     // ------------------------------------------------------------------------------------------------------------- small things
@@ -1992,7 +2362,7 @@ public class SetupActivity extends Activity {
         static final Map<String, String> defaults = new LinkedHashMap<>();   // from Engine.extrasJson
         static final ArrayList<String> discKeys = new ArrayList<>();
         static final ArrayList<String> actionKeys = new ArrayList<>();   // extras that are actions (add a texture pack): off again after a run
-        private static final List<String> NOT_OPTIONS = Arrays.asList("workdir", "iso", "version", "built_fp");
+        private static final List<String> NOT_OPTIONS = Arrays.asList("workdir", "iso", "iso_ref", "version", "built_fp");
         final LinkedHashMap<String, String> m = new LinkedHashMap<>();
 
         static Options from(Map<String, String> state) {

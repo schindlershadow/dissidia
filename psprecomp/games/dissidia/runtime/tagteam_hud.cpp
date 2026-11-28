@@ -23,16 +23,24 @@
 #include "../../../runtime/src/hle/psp_savedata_dialog.h"
 
 std::string dissidia_mods_dir();   // hooks_io.cpp
+int dissidia_ttnet_pause_menu(int* sel);   // tagteam_net.cpp: the online pause menu (0 closed, 1 menu, 2 forfeit confirm, 3 forfeit sent)
+void dissidia_menu_draw_hand(dissidia::MenuLayer& L, float x, float y, float a);   // menu_settings.cpp
 
 namespace {
 
 using dissidia::LayerColor;
-dissidia::MenuLayer g_layer;
+dissidia::MenuLayer g_layer("hud", true);
+struct HudInit { HudInit() { g_layer.incremental = false; } } g_hud_init;
 bool g_layer_shown = false;
 std::vector<TagHudFighter> g_fighters;
 std::vector<TagHudReserve> g_reserves;
 std::vector<TagHudOverhead> g_overhead; int g_overhead_style = 0; bool g_hide_panels = false;
 const uint8_t* g_hud_ram = nullptr;
+float (*g_top_fn)(uint32_t) = nullptr;
+float top_of(uint32_t a) { return g_top_fn ? g_top_fn(a) : 2.05f; }
+double g_vig_t0 = -10.0, g_vig_dur = 0.4; float g_vig_str = 0.f; int g_vig_side = 0;   // the lock-on screen pulse (red-orange edges)
+bool g_intro_running = false;
+TagHudLockInd g_lockind; std::map<uint32_t, double> g_lock_new; double g_lock_me_new = -10.0;   // actor -> wall-clock time it newly locked on
 std::string g_banner;
 struct Notice { std::string text; int kind; double until, start; };   // wall-clock seconds
 std::vector<Notice> g_notices;
@@ -211,7 +219,7 @@ void hit_floating(double tnow) {
     if (hpdmg_mode() < 2) return;
     for (const HitRec& r : g_hits) {
         const double age = tnow - r.t0; if (age >= 1.1 || !r.h.have_pos) continue;
-        const float p[3] = {r.h.pos[0], r.h.pos[1] + 2.1f, r.h.pos[2]}; float sx, sy; if (!tagteam_fx_project(p, sx, sy)) continue;
+        const float p[3] = {r.h.pos[0], r.h.pos[1] + (r.h.victim ? top_of(r.h.victim) : 2.05f) + 0.05f, r.h.pos[2]}; float sx, sy; if (!tagteam_fx_project(p, sx, sy)) continue;
         if (sx < 10.f || sx > 470.f || sy < 8.f || sy > 262.f) continue;
         TagHudHit h = r.h; const float w = text_w("-" + std::to_string(h.dmg), true, 8.f);
         dmg_number(h, age, sx - w / 2.f, sy - static_cast<float>(age) * 14.f, false, 8.f, 0.f);
@@ -261,7 +269,12 @@ void panel(const TagHudFighter& f, float x, float y, double tnow) {
             }
             g_layer.serif_caps(b, 7.6f, 1.f, 0.2f, bx, y + 16.f, LayerColor{180.f + 30.f * ph, 145.f + 60.f * ph, 255.f, 1.f});
         } else
-        g_layer.serif_caps(b, 7.6f, 1.f, 0.2f, bx, y + 16.f, f.brv == 0 ? LayerColor{255, 120, 110, 1.f} : LayerColor{255, 236, 190, 1.f});
+        g_layer.serif_caps(b, 7.6f, 1.f, 0.2f, bx, y + 16.f, (f.brv == 0 || f.broken) ? LayerColor{255, 120, 110, 1.f} : LayerColor{255, 236, 190, 1.f});
+        if (f.broken && !(f.break_flash >= 0.f && f.break_flash < 1.f)) {   // in break status: a steady "BREAK" beside the number until the BRV is back at base
+            const float pw = text_w("BREAK", true, 6.0f), px = right ? bx - 3.f - pw : bx + bw + 3.f;
+            const float pulse = 0.8f + 0.2f * static_cast<float>(std::sin(tnow * 5.0));
+            shadow_text("BREAK", true, 6.0f, px, y + 16.f, LayerColor{255, 96, 76, pulse});
+        }
     }
     // HP bar over the whole panel width, filling from the outer edge (as the retail slot panels). With the gauges the HP number sits on the row under it beside the
     // half-length assist chevrons (native layout: our side: assist at the left, HP number at the right of the box; the enemy's panel mirrored); without them it ends the bar row.
@@ -332,6 +345,47 @@ void reserve(const TagHudReserve& r) {
     }
 }
 
+// The online pause menu (Start in a Communications tag battle; the battle goes on): a card in the game's menu look with Resume / Forfeit, then the YES / NO confirm.
+void pause_menu(int state, int sel) {
+    g_layer.band(0.f, 0.f, 480.f, 272.f, [&](float, float) { return LayerColor{8, 10, 36, 0.38f}; });
+    const float x0 = 140.f, x1 = 340.f, y0 = 78.f, y1 = state == 3 ? 150.f : 190.f;
+    g_layer.band(x0 + 1.5f, y0 + 2.f, x1 + 2.5f, y1 + 3.f, [&](float, float) { return LayerColor{20, 20, 70, 0.30f}; });
+    g_layer.band(x0, y0, x1, y1, [&](float x, float y) {
+        const float e = std::min({x - x0, x1 - x, y - y0, y1 - y}), t = (y - y0) / (y1 - y0);
+        if (e < 1.f) return LayerColor{120, 124, 188, 1.f};
+        if (e < 2.2f) return LayerColor{255, 255, 255, 1.f};
+        return LayerColor{244 - 12 * t, 246 - 12 * t, 255 - 6 * t, 0.97f};
+    });
+    g_layer.band(x0 + 2.2f, y0 + 2.2f, x1 - 2.2f, y0 + 20.f, [&](float x, float y) {   // the navy title ribbon
+        const float t = (y - y0 - 2.2f) / 17.8f, fade = x > x1 - 50.f ? std::max(0.f, 1.f - (x - (x1 - 50.f)) / 47.8f) : 1.f;
+        return LayerColor{20 + 40 * (1 - t), 22 + 38 * (1 - t), 96 + 56 * (1 - t), fade};
+    });
+    const std::string title = state == 2 ? "FORFEIT THE MATCH?" : state == 3 ? "FORFEIT" : "PAUSE";
+    shadow_text(title, true, 9.f, x0 + 12.f, y0 + 15.f, LayerColor{255, 255, 255, 1.f});
+    if (state == 3) {
+        const std::string t = "Leaving the match...";
+        g_layer.text(t, true, 7.6f, (x0 + x1) / 2.f - text_w(t, true, 7.6f) / 2.f, y0 + 46.f, LayerColor{40, 42, 65, 1.f});
+        return;
+    }
+    const std::string a = state == 2 ? "NO" : "Resume", b = state == 2 ? "YES" : "Forfeit";
+    for (int i = 0; i < 2; i++) {
+        const float ry = y0 + 28.f + 26.f * static_cast<float>(i), rh = 20.f, rx0 = x0 + 22.f, rx1 = x1 - 12.f; const bool on = sel == i;
+        const float pt = 8.f;
+        g_layer.band(rx0, ry, rx1, ry + rh, [&](float x, float yy) {
+            const float dx = std::min(x - rx0, rx1 - x), half = rh / 2.f * (dx >= pt ? 1.f : 0.45f + 0.55f * dx / pt), dy = std::fabs(yy - (ry + rh / 2.f));
+            const float m = std::clamp((half - dy) * 2.f, 0.f, 1.f), v = (yy - ry) / rh, t = std::clamp((x - rx0) / (rx1 - rx0), 0.f, 1.f);
+            if (on) { float r = 63 + 71 * t * t, g = 53 + 83 * t * t, bl = 174 + 33 * t * t; if (v < 0.22f) { r += 34; g += 36; bl += 14; } return LayerColor{r, g, bl, m}; }
+            if (std::min(dy / std::max(half, 0.01f), 1.f) > 0.86f) return LayerColor{128, 126, 164, m};
+            return LayerColor{248 - 40 * v, 249 - 40 * v, 255 - 26 * v, m};
+        });
+        const std::string& t = i == 0 ? a : b;
+        shadow_text(t, true, 8.4f, rx0 + 16.f, ry + rh / 2.f + 3.f, on ? LayerColor{255, 255, 255, 1.f} : LayerColor{40, 42, 65, 1.f});
+        if (on) dissidia_menu_draw_hand(g_layer, rx0 - 20.f, ry + rh / 2.f - 12.f, 1.f);
+    }
+    const std::string hint = state == 2 ? "Cross: select   Circle: back" : "Cross: select   Start: resume";
+    g_layer.text(hint, true, 6.2f, (x0 + x1) / 2.f - text_w(hint, true, 6.2f) / 2.f, y1 - 8.f, LayerColor{70, 74, 130, 1.f});
+}
+
 void banner(const std::string& t) {
     const float em = 10.f, tw = text_w(t, true, em), cx = 240.f, y = 50.f;
     g_layer.band(cx - tw / 2.f - 40.f, y - 9.f, cx + tw / 2.f + 40.f, y + 5.f, [&](float x, float yy) {
@@ -382,15 +436,89 @@ void tagteam_hud_clear() { g_hits.clear(); g_notices.clear(); g_banner.clear(); 
 void tagteam_hud_set_banner(const std::string& t) { g_banner = t; }
 void tagteam_hud_overhead(const std::vector<TagHudOverhead>& bars, int style, bool hide_panels) { g_overhead = bars; g_overhead_style = style; g_hide_panels = hide_panels; }
 void tagteam_hud_set_ram(const uint8_t* rdram) { g_hud_ram = rdram; }
+void tagteam_hud_set_intro(bool r) { g_intro_running = r; }
+void tagteam_hud_set_top_fn(float (*fn)(uint32_t)) { g_top_fn = fn; }
+void tagteam_hud_lockind(const TagHudLockInd& li) {
+    const double t = now_s();
+    for (uint32_t a : li.fresh) { g_lock_new[a] = t; g_lock_me_new = t; }
+    if (!li.fresh.empty() && !std::getenv("PSPRECOMP_TAGTEAM_LOCKFX_OFF") && g_hud_ram) {   // a new lock-on: a short pulse, stronger / longer for the 2nd and later enemy, brighter on the side the enemy is on
+        g_vig_t0 = t; g_vig_str = li.by.size() >= 2 ? 1.f : 0.65f; g_vig_dur = (li.by.size() >= 2 ? 0.65 : 0.45) * (std::getenv("PSPRECOMP_TAGTEAM_LOCKFX_SLOW") ? std::atof(std::getenv("PSPRECOMP_TAGTEAM_LOCKFX_SLOW")) : 1.0); g_vig_side = 0;   // (_SLOW=N: test aid, N times longer)
+        float p[3]; std::memcpy(p, g_hud_ram + ((li.fresh[0] + 0x80u) & 0x07FFFFFFu), 12); p[1] += 1.0f; float sx, sy;
+        if (std::isfinite(p[0]) && std::isfinite(p[1]) && std::isfinite(p[2])) { if (!tagteam_fx_project(p, sx, sy)) g_vig_side = 2; else if (sx < 100.f) g_vig_side = -1; else if (sx > 380.f) g_vig_side = 1; }   // 2 = behind the camera: the bottom edge
+    }
+    g_lockind = li;
+    if (li.by.empty() || !li.me) g_lock_new.clear();
+}
 
 
+namespace {
+// ---- View smoothing (26 Nov, hudsmooth) ----
+// The HUD is drawn once per rendered frame, but the fighters' positions in guest memory change only on gameplay frames (30 Hz) while the 3D
+// view the points are projected with (ge_draw_last_view_proj) is the frame-interpolated one of the last list the renderer drew. A marker on
+// a fighter moved with the interpolated camera and stepped with the fighter: at 120 fps it crawled back 3 frames and jumped on the 4th.
+// A fighter's position is now blended the way the renderer blends the scene: between its positions at the gameplay frame before the list's
+// and the list's own, by the list's phase (ge_draw_last_view_proj_tag). Animation phases (pulse, bob) run on a clock that advances by
+// the elapsed frame time x the battle's slow-motion rate. View only. PSPRECOMP_TAGTEAM_HUDSMOOTH_OLD=1 = the old behaviour.
+struct PosRec { uint32_t gen; float p[3]; };
+std::map<uint32_t, std::vector<PosRec>> g_poshist;   // per actor: its position at the last few gameplay frames (oldest first)
+uint32_t g_view_gen = 0; bool g_view_on = false;     // the gameplay frame the frame being drawn belongs to (tagteam_hud_view)
+float g_anim_t = 0.f, g_anim_rate = 1.f; double g_anim_wall = -1.0;
+bool smooth_old() { static const bool o = std::getenv("PSPRECOMP_TAGTEAM_HUDSMOOTH_OLD") != nullptr; return o; }
+int smooth_mode() { static const int m = [] { const char* e = std::getenv("PSPRECOMP_INTERP"); return e && e[0] ? std::atoi(e) : 1; }(); return m; }   // the renderer's own switch: 0 off, 2 extrapolate
+bool raw_pos(uint32_t actor, float p[3]) {
+    if (!g_hud_ram || !actor) return false;
+    std::memcpy(p, g_hud_ram + ((actor + 0x80u) & 0x07FFFFFFu), 12);
+    return true;
+}
+void track_pos(uint32_t actor) {   // once per frame for every actor the HUD follows: records its position under this gameplay frame
+    if (!g_view_on || smooth_old()) return;
+    PosRec r; r.gen = g_view_gen; if (!raw_pos(actor, r.p)) return;
+    auto& h = g_poshist[actor];
+    if (!h.empty() && h.back().gen == r.gen) { std::memcpy(h.back().p, r.p, 12); return; }
+    if (!h.empty() && h.back().gen > r.gen) h.clear();   // a new battle: the numbering restarted
+    h.push_back(r); if (h.size() > 8) h.erase(h.begin());
+}
+}  // namespace
+bool tagteam_hud_pos(uint32_t actor, float p[3]) {
+    if (!raw_pos(actor, p)) return false;
+    if (!g_view_on || smooth_old() || smooth_mode() == 0) return true;
+    uint32_t rg = 0; float ph = -1.f;
+    if (!ge_draw_last_view_proj_tag(&rg, &ph) || !(ph > -1.0f)) return true;
+    track_pos(actor);
+    auto it = g_poshist.find(actor); if (it == g_poshist.end()) return true;
+    const std::vector<PosRec>& h = it->second;
+    const PosRec* cur = nullptr; const PosRec* prv = nullptr;
+    for (const PosRec& r : h) { if (r.gen == rg) cur = &r; else if (r.gen + 1 == rg) prv = &r; }
+    if (!cur) return true;                       // that list's gameplay frame is not recorded (too old / not followed then): the newest position
+    std::memcpy(p, cur->p, 12);
+    if (!prv) return true;
+    const float dx = cur->p[0] - prv->p[0], dy = cur->p[1] - prv->p[1], dz = cur->p[2] - prv->p[2];
+    if (dx * dx + dy * dy + dz * dz > 9.0f) return true;   // a teleport (the renderer does not blend over 3 m either)
+    const float t = smooth_mode() == 2 ? 1.0f + ph : ph;
+    for (int i = 0; i < 3; i++) p[i] = prv->p[i] + (cur->p[i] - prv->p[i]) * t;
+    return true;
+}
+void tagteam_hud_follow_target(uint32_t actor, bool has_target) {   // the lock-on ring's target: its position for this gameplay frame and the one before go to the renderer (psp_ge_draw.cpp)
+    static uint32_t s_last = 0;
+    if (!g_view_on || smooth_old()) { s_last = 0; return; }
+    if (!actor) { s_last = 0; if (has_target) ge_draw_set_follow_world(g_view_gen, nullptr, nullptr); return; }
+    if (actor != s_last) { g_poshist.erase(actor); s_last = actor; }   // a new target (fighter -> core -> fighter): no earlier position is blended with, the history starts here
+    track_pos(actor);
+    auto it = g_poshist.find(actor); if (it == g_poshist.end() || it->second.empty() || it->second.back().gen != g_view_gen) return;
+    const std::vector<PosRec>& h = it->second; const PosRec& c = h.back();
+    const PosRec* pv = h.size() >= 2 && h[h.size() - 2].gen + 1 == c.gen ? &h[h.size() - 2] : nullptr;
+    ge_draw_set_follow_world(c.gen, pv ? pv->p : nullptr, c.p);
+}
+void tagteam_hud_view(bool on, uint32_t gen, float slow_rate) {
+    g_view_on = on; g_view_gen = gen; g_anim_rate = std::clamp(slow_rate, 0.f, 1.f);
+}
 namespace {
 // One bar over a fighter's head (2.05 m above the feet): the retail HP bar's colours on a dark plate, the target's bravery above it.
 void overhead_bar(const TagHudOverhead& o) {
     if (!g_hud_ram || !o.actor) return;
-    float pos[3]; std::memcpy(pos, g_hud_ram + ((o.actor + 0x80u) & 0x07FFFFFFu), 12);
+    float pos[3]; if (!tagteam_hud_pos(o.actor, pos)) return;
     if (!std::isfinite(pos[0]) || !std::isfinite(pos[1]) || !std::isfinite(pos[2]) || std::fabs(pos[0]) > 1000.f || std::fabs(pos[2]) > 1000.f) return;   // (a fighter parked away from the stage)
-    const float head[3] = {pos[0], pos[1] + 2.05f, pos[2]};
+    const float head[3] = {pos[0], pos[1] + top_of(o.actor), pos[2]};
     float x, y; if (!tagteam_fx_project(head, x, y)) return;
     if (g_overhead_style == 3) return;   // the game's own panels, half size (tagteam.cpp npanel)
     if (g_overhead_style == 2) {   // the mini status panel: 64 x 19 above the head, the target's at 150 / 256 of full strength, the others at 70 / 256 (plugin v0.61)
@@ -427,27 +555,137 @@ void overhead_bar(const TagHudOverhead& o) {
 }  // namespace
 
 
+namespace {
+bool vig_active(double tnow) { return tnow - g_vig_t0 < g_vig_dur; }
+void vig_draw(double tnow) {
+    const float k = static_cast<float>((tnow - g_vig_t0) / g_vig_dur);
+    if (k < 0.f || k >= 1.f) return;
+    { static int n = 0; if (std::getenv("PSPRECOMP_TAGTEAM_LOG") && n++ % 60 == 0) std::fprintf(stderr, "[LOCKFX] pulse k=%.3f str=%.2f side=%d\n", k, g_vig_str, g_vig_side); }
+    const float a0 = 0.55f * g_vig_str * std::pow(1.f - k, 1.6f) * std::min(1.f, static_cast<float>(tnow - g_vig_t0) / 0.05f + 0.3f);   // quick rise, slow fade
+    const float wv = 58.f;
+    auto strip = [&](float x0, float y0, float x1, float y1, int dir, float boost) {   // dir: 0 left edge, 1 right, 2 top, 3 bottom
+        g_layer.band(x0, y0, x1, y1, [&](float x, float y) {
+            float d = dir == 0 ? (x - x0) : dir == 1 ? (x1 - x) : dir == 2 ? (y - y0) : (y1 - y);
+            d = 1.f - d / (dir < 2 ? wv : wv * 0.6f); if (d <= 0.f) return LayerColor{0, 0, 0, 0};
+            return LayerColor{255, 70.f + 50.f * d, 30.f, a0 * boost * d * d};
+        });
+    };
+    const float bl = g_vig_side == -1 ? 1.f : (g_vig_side == 0 ? 0.7f : 0.45f), br = g_vig_side == 1 ? 1.f : (g_vig_side == 0 ? 0.7f : 0.45f);
+    strip(0, 0, wv, 272, 0, bl); strip(480 - wv, 0, 480, 272, 1, br);
+    strip(0, 0, 480, wv * 0.6f, 2, 0.5f); strip(0, 272 - wv * 0.6f, 480, 272, 3, g_vig_side == 2 ? 1.f : 0.5f);
+}
+}  // namespace
+
+namespace {
+// ---- lock-on indicator: who has the player as their target ----
+bool world_pos(uint32_t actor, float p[3]) {
+    if (!g_hud_ram || !actor) return false;
+    if (!tagteam_hud_pos(actor, p)) return false;
+    return std::isfinite(p[0]) && std::isfinite(p[1]) && std::isfinite(p[2]) && std::fabs(p[0]) < 1000.f && std::fabs(p[2]) < 1000.f;
+}
+// An eye (almond with an iris) in the game's red-orange: cx, cy = centre, w = width. a = opacity, pulse 0..1 brightens the iris, flash 0..1 a bloom behind.
+void eye_icon(float cx, float cy, float w, float a, float pulse, float flash) {
+    const float h = w * 0.52f, hw = w * 0.5f, hh = h * 0.5f;
+    if (flash > 0.01f) g_layer.glow(cx, cy, w * (0.7f + 1.1f * (1.f - flash)), LayerColor{255, 150, 90, 0.75f * flash * a});
+    // dark plate (a slightly larger almond) so the eye reads on any stage
+    g_layer.band(cx - hw - 1.5f, cy - hh - 1.5f, cx + hw + 1.5f, cy + hh + 1.5f, [&](float x, float y) {
+        const float u = (x - cx) / (hw + 1.2f), cov = (1.f - u * u) * (hh + 1.2f) - std::fabs(y - cy);
+        if (std::fabs(u) >= 1.f || cov <= 0.f) return LayerColor{0, 0, 0, 0};
+        return LayerColor{14, 10, 24, 0.78f * a * std::min(1.f, cov * 1.5f)};
+    });
+    g_layer.band(cx - hw, cy - hh, cx + hw, cy + hh, [&](float x, float y) {
+        const float u = (x - cx) / hw, dy = y - cy, edge = (1.f - u * u) * hh - std::fabs(dy);
+        if (std::fabs(u) >= 1.f || edge <= 0.f) return LayerColor{0, 0, 0, 0};
+        const float ca = std::min(1.f, edge * 1.6f) * a;
+        const float r = std::sqrt((x - cx) * (x - cx) + dy * dy);
+        const float ir = hh * 0.95f, pr = hh * 0.42f;
+        if (r < pr) return LayerColor{20, 6, 10, ca};                                       // pupil
+        if (r < ir) return LayerColor{255.f, 80.f + 60.f * pulse, 40.f + 30.f * pulse, ca};   // iris: red-orange
+        return LayerColor{250, 232, 218, ca};                                                // white of the eye
+    });
+}
+float lock_age(uint32_t a, double tnow) { auto it = g_lock_new.find(a); return it == g_lock_new.end() ? 99.f : static_cast<float>(tnow - it->second); }
+void lockind_draw(double tnow) {
+    const TagHudLockInd& li = g_lockind;
+    if (li.by.empty() || !li.me) return;
+    const double anim = smooth_old() ? tnow : static_cast<double>(g_anim_t);   // pulse and bob: the clock that follows the game's slow motion
+    const float pulse = 0.5f + 0.5f * static_cast<float>(std::sin(anim * 6.0));
+    // -- on each enemy that is locked on: an eye over its head (above the overhead bar when there is one); off to the side of the screen: at the edge
+    for (uint32_t a : li.by) {
+        float pos[3]; if (!world_pos(a, pos)) continue;
+        const float head[3] = {pos[0], pos[1] + top_of(a), pos[2]};
+        float x, y; if (!tagteam_fx_project(head, x, y)) continue;
+        static const float up[4] = {7.f, 19.f, 30.f, 23.f};   // above: nothing / the HP bar + BRV / the mini panel / the PPSSPP panel
+        const float dy = up[std::clamp(li.oh_style, 0, 3)];
+        float ex = x, ey = y - dy; bool edge = false;
+        if (ex < 12.f) { ex = 12.f; edge = true; } else if (ex > 468.f) { ex = 468.f; edge = true; }
+        if (ey < 30.f) ey = 30.f;
+        if (ey > 252.f) { ey = 252.f; edge = true; }
+        const float age = lock_age(a, tnow), fl = age < 0.6f ? 1.f - age / 0.6f : 0.f;
+        const float pop = age < 0.18f ? 1.35f - 0.35f * (age / 0.18f) : 1.f;
+        if (std::getenv("PSPRECOMP_TAGTEAM_LOCKIND_DBG")) {   // test aid: a small green cross where the enemy's body centre (0.9 m up) projects: the retail lock-on ring should be centred on it
+            const float bc[3] = {pos[0], pos[1] + 0.9f, pos[2]}; float bx, by; if (tagteam_fx_project(bc, bx, by)) { g_layer.band(bx - 4.f, by - 0.5f, bx + 4.f, by + 0.5f, [&](float, float) { return LayerColor{80, 255, 80, 1.f}; }); g_layer.band(bx - 0.5f, by - 4.f, bx + 0.5f, by + 4.f, [&](float, float) { return LayerColor{80, 255, 80, 1.f}; }); }
+        }
+        eye_icon(ex, ey, (edge ? 12.f : 14.f) * pop, edge ? 0.8f : 0.95f, pulse, fl);
+    }
+    // -- on the player: a pulsing red-orange chevron over its head, "xN" with more than one (no floor ring: removed 25 Nov, user)
+    float me[3]; if (!world_pos(li.me, me)) return;
+    const float head[3] = {me[0], me[1] + top_of(li.me) + 0.3f, me[2]};
+    float hx, hy; const bool ok_head = tagteam_fx_project(head, hx, hy);
+    if (ok_head && hx > -20.f && hx < 500.f && hy > -20.f && hy < 292.f) {
+        const float bob = 1.5f * static_cast<float>(std::sin(anim * 5.0)), cx = hx, tipy = hy + bob, wd = 10.f, ht = 8.f, th = 4.8f;   // a V (pointing down at the player): its centre is the lowest
+        const float a = 0.95f;
+        g_layer.band(cx - wd - 1.5f, tipy - ht - 1.5f, cx + wd + 1.5f, tipy + th + 1.5f, [&](float x, float y) {   // dark outline of the chevron
+            const float yt = tipy - std::fabs(x - cx) * (ht / wd);
+            return (std::fabs(x - cx) <= wd + 1.4f && y >= yt - 1.4f && y <= yt + th + 1.4f) ? LayerColor{14, 10, 24, 0.75f * a} : LayerColor{0, 0, 0, 0};
+        });
+        g_layer.band(cx - wd, tipy - ht, cx + wd, tipy + th, [&](float x, float y) {
+            const float yt = tipy - std::fabs(x - cx) * (ht / wd);
+            if (std::fabs(x - cx) > wd || y < yt || y > yt + th) return LayerColor{0, 0, 0, 0};
+            const float t = (y - yt) / th;
+            return LayerColor{255.f, 90.f + 60.f * pulse - 30.f * t, 45.f + 30.f * pulse, a};
+        });
+        if (li.by.size() > 1) {
+            const std::string s = "x" + std::to_string(li.by.size());
+            shadow_text(s, true, 9.f, cx + wd + 4.f, tipy - 3.f, LayerColor{255, 214, 150, 1.f});
+        }
+    }
+}
+}  // namespace
+
 void tagteam_hud_draw(const std::vector<TagHudFighter>& fighters, const std::vector<TagHudReserve>& reserves) {
     g_fighters = fighters; g_reserves = reserves;
 }
-void tagteam_hud_hide() { g_hits.clear(); g_fighters.clear(); g_reserves.clear(); g_overhead.clear(); g_banner.clear(); g_notices.clear(); }
+void tagteam_hud_hide() { g_hits.clear(); g_fighters.clear(); g_reserves.clear(); g_overhead.clear(); g_banner.clear(); g_notices.clear(); g_lockind = TagHudLockInd(); g_lock_new.clear(); g_vig_t0 = -10.0; }
 
 bool tagteam_fx_draw(dissidia::MenuLayer& layer);   // tagteam_fx.cpp
 
 // once per frame: the HUD and the effects on the game layer
+namespace {
+struct Lap {   // PSPRECOMP_TAGTEAM_HITCH: where a slow layer frame spends its time
+    std::chrono::steady_clock::time_point t = std::chrono::steady_clock::now(); bool on = std::getenv("PSPRECOMP_TAGTEAM_HITCH") != nullptr; std::string acc;
+    void lap(const char* n) { if (!on) return; const auto now = std::chrono::steady_clock::now(); const double ms = std::chrono::duration<double, std::milli>(now - t).count(); t = now; if (ms >= 3.0) { char b[64]; std::snprintf(b, sizeof b, " %s=%.1f", n, ms); acc += b; } }
+    ~Lap() { if (on && !acc.empty()) std::fprintf(stderr, "[LAYERLAP]%s\n", acc.c_str()); }
+};
+}
 void tagteam_layer_frame(bool in_battle) {
+    Lap L;
     if (!in_battle) { tagteam_hud_hide(); }
     const double tnow = now_s();
+    { const double dt = g_anim_wall < 0 ? 0.0 : std::min(0.1, std::max(0.0, tnow - g_anim_wall)); g_anim_wall = tnow; g_anim_t += static_cast<float>(dt * g_anim_rate); }
+    for (const TagHudOverhead& o : g_overhead) track_pos(o.actor);
+    if (g_lockind.me) { track_pos(g_lockind.me); for (uint32_t a : g_lockind.by) track_pos(a); }
     g_notices.erase(std::remove_if(g_notices.begin(), g_notices.end(), [&](const Notice& n) { return n.until <= tnow; }), g_notices.end());
     g_hits.erase(std::remove_if(g_hits.begin(), g_hits.end(), [&](const HitRec& r) { return tnow - r.t0 >= kFeedLife + 0.1; }), g_hits.end());
-    const bool any = !g_fighters.empty() || !g_hits.empty() || !g_reserves.empty() || !g_overhead.empty() || !g_banner.empty() || !g_notices.empty();
-    g_layer.begin(std::max(2, psp_sddialog::output_scale()));
+    int pm_sel = 0; const int pm = dissidia_ttnet_pause_menu(&pm_sel);
+    const bool any = pm != 0 || !g_fighters.empty() || !g_hits.empty() || !g_reserves.empty() || !g_overhead.empty() || !g_lockind.by.empty() || vig_active(tnow) || !g_banner.empty() || !g_notices.empty();
+    L.lap("prep"); g_layer.begin(std::max(2, psp_sddialog::output_scale())); L.lap("begin");
     if (any) {
         for (const TagHudOverhead& o : g_overhead) if (!o.target) overhead_bar(o);   // (under the panels; the target's bar last, on top of the others)
         for (const TagHudOverhead& o : g_overhead) if (o.target) overhead_bar(o);
         int row[2] = {0, 0};
         for (const TagHudFighter& f : g_fighters) {
-            if (g_hide_panels) break;   // Settings > Debug > Hide Tag Team UI
+            if (g_hide_panels || g_intro_running) break;   // (not in the banters / intro) Settings > Debug > Hide Tag Team UI
             const int s = f.side != 0;
             const bool g = f.ex >= 0.f || f.assist >= 0.f;   // with the gauges a panel is 31 high (rows 34 apart) and its EX tube sits outside it
             // Smaller and a little see-through (user, 22 Nov: "the side HUD is too big and distracting"): the stack is zoomed to kSideZoom about the
@@ -457,7 +695,8 @@ void tagteam_layer_frame(bool in_battle) {
             panel(f, s == 0 ? (g ? 9.f : 4.f) : 480.f - (g ? 9.f : 4.f) - 112.f, 142.f - (g ? 34.f : 27.f) * row[s]++, tnow);
             g_layer.set_zoom(1.f, 0.f, 0.f); g_layer.opacity = 1.f;
         }
-        for (const TagHudReserve& r : g_reserves) reserve(r);
+        vig_draw(tnow); lockind_draw(tnow); L.lap("lockind");
+        L.lap("panels"); for (const TagHudReserve& r : g_reserves) reserve(r); L.lap("reserves");
         if (hpdmg_mode() > 0 && !g_hits.empty()) {   // fighters on the retail big panels (bottom corners, number beside the BRV): ours sits next to the retail pulse
             for (int s = 0; s < 2; s++) {
                 bool small = false; for (const TagHudFighter& f : g_fighters) if (f.id == g_big[s]) small = true;
@@ -466,12 +705,17 @@ void tagteam_layer_frame(bool in_battle) {
             hit_floating(tnow);
             { float top = 0.f; for (const Notice& n : g_notices) if (n.kind != 0) top += 19.f; hit_feed(tnow, top); }
         }
-        if (!g_banner.empty()) banner(g_banner);
+        L.lap("hits"); if (!g_banner.empty()) banner(g_banner); L.lap("banner");
         { float yd = 70.f, yj = 0.f;   // falls under the join banner, job powers along the top edge
           for (const Notice& n : g_notices) { if (n.kind == 0) { notice(n, yd, tnow); yd += 13.f; } else { notice(n, yj, tnow); yj += 19.f; } } }
     }
-    const bool fx = tagteam_fx_draw(g_layer);
+    if (pm) pause_menu(pm, pm_sel);
+    L.lap("notices"); const bool fx = tagteam_fx_draw(g_layer); L.lap("fx");
     if (!any && !fx) { if (g_layer_shown) { g_layer.clear(); g_layer_shown = false; } return; }
-    g_layer.publish();
+    g_layer.tag(pm ? "pause_menu" : "battle"); g_layer.publish(); L.lap("publish");
     g_layer_shown = true;
+}
+
+const uint32_t* dissidia_tagteam_face_px(const std::string& code, int* w, int* h) {   // the Free-for-all selector's tiles (the menu layer draws them itself)
+    const dissidia::GimImage* g = face(code); if (!g) return nullptr; *w = g->w; *h = g->h; return g->rgba.data();
 }

@@ -39,9 +39,11 @@
 #include "psp_game_module.h"
 #include "psp_runtime.h"
 #include "psp_settings.h"
+#include "psp_report.h"
 #include "recomp.h"
 #include "hle/psp_hle.h"
 #include "hle/psp_hle_adhoc.h"
+bool dissidia_ttnet_running(); uint32_t dissidia_netplay_ls_frame();   // tagteam_net.cpp / netplay.cpp
 float dissidia_tagteam_age();   // tagteam.cpp: its battle clock (one step per battle frame; the match pause runs on it)
 #include "psp_netplay.h"
 #include "psp_ge_draw.h"
@@ -71,6 +73,7 @@ float dissidia_tagteam_age();   // tagteam.cpp: its battle clock (one step per b
 #include <unordered_map>
 
 extern FuncPtr dissidia_ovl_battle_lookup(uint32_t vaddr);
+uint32_t dissidia_netplay_ls_frame();   // netplay.cpp
 extern FuncPtr dissidia_ovl_menu_lookup(uint32_t vaddr);
 extern FuncPtr dissidia_ovl_extra_lookup(uint32_t vaddr);
 
@@ -81,6 +84,9 @@ void dissidia_tagteam_frame_end(uint8_t* rdram, recomp_context* ctx);
 void dissidia_heapcheck_frame(const uint8_t* rdram);   // hooks_models.cpp (PSPRECOMP_HEAPCHECK=1: every game heap's chain checked)
 bool dissidia_tagteam_pad_blocked(uint32_t actor);   // tagteam.cpp: fighters held out of an EX Burst (any player, also a human's pad)   // tagteam.cpp: takes the tag team overlay off the screen when the fight stops refreshing it
 
+float dissidia_tt_chase_actor_scale(uint32_t actor, float ticks);   // tagteam.cpp
+float dissidia_tt_chase_cam_scale(uint32_t cam, float ticks);
+void dissidia_tt_chase_step_log(uint32_t actor, float before, float after);
 namespace {
 
 constexpr uint32_t OVL_BASE = 0x089DD4C0u;
@@ -119,7 +125,17 @@ double g_exb_t0 = 0;   // play time the current burst began (log only)
 const bool g_exb_log_on = std::getenv("PSPRECOMP_EXB_LOG") != nullptr;
 bool g_exb_poll = false;   // polling the burst's button tests on a held update (exb_poll_held)
 FuncPtr g_orig_ui_param = nullptr, g_orig_steer_move = nullptr, g_orig_pressed = nullptr, g_orig_rootmotion = nullptr, g_orig_slowmo = nullptr, g_orig_frame_end = nullptr, g_orig_pad = nullptr, g_orig_actor_dt = nullptr, g_orig_cam_dt = nullptr, g_orig_exb_ctrl = nullptr, g_orig_exb_pressed = nullptr, g_orig_exb_pressed2 = nullptr, g_orig_exb_prompt = nullptr, g_orig_exb_ui = nullptr, g_orig_face_step = nullptr;
-std::atomic<int> g_target{30};     // requested rate (settings / env)
+std::atomic<int> g_target{30};     // requested rate (settings / env); kUnlocked = the "Unlocked" choice (see below)
+// "Unlocked" frame rate (settings: Frame Rate -> Unlocked, saved fps=1000; PSPRECOMP_FPS=1000). In the fight (30 Hz logic running) the frame
+// loop is not paced: no vblank wait (psp_display_set_unlocked), frames come as fast as the machine draws them, the logic stays at 30 Hz by
+// the real-time clock and the frames between are interpolated (the phase follows the clock). To the game and the other players it is 240
+// (g_rate, the advertised rate); where it cannot hold (30 Hz logic off, a test pacing by frame count, a player at 30 / the lowest-rate rule
+// online, any menu / movie / loading screen) it simply is 240 fps with the normal vblank pacing. Vertical sync is the user's own setting:
+// on = frames come at the display's refresh rate (what the swap waits for), off = as fast as possible (capped at PSPRECOMP_UNLOCK_MAX fps,
+// default 1000, so a trivial scene does not spin a core at 5000 fps). PSPRECOMP_UNLOCK=0: the Unlocked choice acts as 240 fps.
+constexpr int kUnlocked = 1000;
+bool g_unlock_ok = true;
+double g_unl_frame_ms = 4.0;       // measured frame time while unlocked (smoothed): replaces 1000 / g_rate in the 30 Hz pacing
 int g_interval = 2;                // interval written on the last frame end (2 = 30 Hz, 1 = 60 Hz and above)
 int g_rate = 30;                   // logic rate in effect (30, 60, 90, ... one frame per vblank above 30)
 double g_play_ms = 0;              // wall-independent play time: advances by the frame's ticks (every frame, menus and battle)
@@ -137,6 +153,7 @@ bool g_exact_step = true;
 // every gameplay task skipped) and a zero step, so the game still draws but nothing advances. Gameplay is then the 30 fps game's by
 // construction; smoothing the frames in between is the renderer's job. The game's own frame-rate hooks see 30 fps (g_ticks 2).
 bool g_logic30 = true;
+bool in_fight();
 bool l30_active();                 // 30 Hz logic is on and the fight is past its intro
 uint64_t g_l30_frame = 0;
 bool g_l30_logic_now = true;       // the frame being run is a gameplay frame
@@ -176,6 +193,8 @@ uint64_t g_tick = 1;               // frame ends seen (the effect system updates
 // logic-rate log
 int64_t g_win_t0 = 0;
 int g_win_frames = 0;
+int g_win_logic = 0;               // PSPRECOMP_FPS_LOG: gameplay frames (30 Hz logic) in the window
+uint64_t g_win_steps = 0;
 
 uint32_t r32(uint32_t a) { uint32_t v; std::memcpy(&v, g_ram + (a & 0x07FFFFFFu), 4); return v; }
 float rdf(uint32_t a) { float f; std::memcpy(&f, g_ram + (a & 0x07FFFFFFu), 4); return f; }
@@ -761,7 +780,8 @@ void testdrive_frame(uint8_t* rdram, recomp_context* ctx) {
         }
         else if (e.kind == 3) { std::fprintf(stderr, "[TEST] quit at gt=%.0f ms\n", g_gt_ms); g_should_exit.store(true); }
     }
-    psp_ctrl_set_script(true, g_test_buttons, g_test_analog);
+    {   static const bool padfree = std::getenv("PSPRECOMP_TEST_PADFREE") != nullptr;   // test aid: the script's events (shots, quit, ...) run, but the pad is left to the debug socket / host (wall-clock presses)
+        if (!padfree) psp_ctrl_set_script(true, g_test_buttons, g_test_analog); }
     if (g_parity) {   // a sample every update (fps_parity.py compares on the 30 Hz lattice and aligns paths by whole updates): both fighters at this game moment
         const uint32_t pa = test_player(), da = test_fighter(1);
         char buf[512]; int n = std::snprintf(buf, sizeof buf, "[PAR] %.2f%s", g_gt_ms, lattice ? "" : "~");
@@ -842,11 +862,16 @@ constexpr uint32_t GRID_MASK = 0x2000u | 0x8000u;
 uint32_t dissidia_walk_filter(uint32_t buttons);   // direct_battle.cpp
 uint32_t dissidia_tagteam_pad(uint32_t raw);        // tagteam.cpp: the tag swap button
 uint32_t dissidia_tagteam_menu_pad(uint32_t raw);   // tagteam_menu.cpp: the CPU settings dialog takes the pad while it is open
+uint32_t dissidia_training_pad(uint32_t raw);   // training.cpp: Training mode's options panel takes the pad while it is open
+bool dissidia_training_ai_skip(uint32_t brain);
+void dissidia_training_frame_end(uint8_t* rdram, recomp_context* ctx, const uint32_t f[4], int idle, float age);
+void dissidia_training_overlay(bool paused_hint); bool dissidia_training_paused();
 namespace {
 uint32_t jecht_grid_filter(uint32_t raw) {
     raw = dissidia_walk_filter(raw);   // direct_battle.cpp: test-only pad record / replay of the menu walk (a no-op unless asked for)
     raw = dissidia_tagteam_pad(raw);   // tagteam.cpp: takes the swap button out of the input in a tag battle
     raw = dissidia_tagteam_menu_pad(raw);
+    raw = dissidia_training_pad(raw);
     if (l30_active()) {   // 30 Hz logic: the pad changes only on gameplay frames (the PSP reads it once per 30 Hz frame);
         static uint32_t shown = 0, latched = 0;            // a press that came and went between two of them is shown once (latched)
         latched |= raw & ~shown;
@@ -1078,7 +1103,8 @@ void note_negotiated_rate(int cap, bool own_rate) {
     static bool shown_own = false;
     if (cap == shown && own_rate == shown_own) return;
     shown_own = own_rate;
-    const int own = g_target.load(std::memory_order_relaxed);
+    int own = g_target.load(std::memory_order_relaxed);
+    if (own == kUnlocked) own = 240;   // advertised as 240
     char msg[96];
     if (cap && own_rate) {
         std::snprintf(msg, sizeof msg, "Online: %d fps (everyone above 30 keeps their own rate)", own);
@@ -1129,7 +1155,7 @@ bool l30_decide_next() {
     }
     // Timed from the end of the last frame, not from now: this runs part way through the frame, later on a gameplay frame (more work
     // before it) than on a drawn-only one, and timing from there gave uneven phases (0, 0.26, 0.73, 0.23 at a steady 60 fps: jitter).
-    const double frame = 1000.0 / g_rate, period = 1000.0 / 30.0;
+    const double frame = psp_display_unlocked() ? std::clamp(g_unl_frame_ms, 0.25, 16.0) : 1000.0 / g_rate, period = 1000.0 / 30.0;
     const double now = l30_now_ms();
     const double shown = g_l30_end_ms > 0 && now - g_l30_end_ms < 4 * frame ? g_l30_end_ms + 2 * frame : now + frame;   // the frame after this one reaches the screen about two frame times after the last frame ended
     if (g_l30_due_ms == 0 || shown - g_l30_due_ms > 100.0) g_l30_due_ms = shown;   // start, or far behind (a hitch): catch up at once
@@ -1143,8 +1169,20 @@ bool l30_decide_next() {
         now, shown, g_l30_due_ms, g_l30_last_ms, g_l30_next_logic ? "GAMEPLAY" : "drawn", g_l30_next_phase); }
     return g_l30_next_logic;
 }
+// Online, before the 30 Hz logic engages (it needs a fighter that has been updated once: the first lock-step frames), the fighters' first update takes the
+// frame step of THIS machine's rate, and keeps it in their blocks (+0x168 / +0x1B0 .., and the position's last bit): 90 fps 171/256, 120 fps 0.5, 60 fps 1.0.
+// Every machine now gives that update the 30 Hz step (2.0), as an engaged gameplay frame has. PSPRECOMP_NET_PRESTEP_OLD=1: the old per-machine step.
+bool online_prestep() {
+    static const bool old_step = std::getenv("PSPRECOMP_NET_PRESTEP_OLD") != nullptr;
+    if (old_step || !g_logic30 || g_rate <= 30 || overlay_id() != 1 || !in_fight()) return false;
+    if (!(psp_adhoc_group_fps_cap() > 0 || dissidia_ttnet_running())) return false;
+    static int logged = 0;
+    if (logged++ < 4) std::fprintf(stderr, "[FPS] online fight, 30 Hz logic not on yet: frame step 2.0 (the machine's own rate %d would give %.3f)\n", g_rate, step_for(g_rate, g_step_idx + 1));
+    return true;
+}
 float next_frame_step() {
     if (l30_active()) return l30_decide_next() ? 2.0f : 0.0f;
+    if (online_prestep()) return 2.0f;
     if (g_rate > 60) return step_for(g_rate, g_step_idx + 1);
     return -1.0f;   // constant step: leave it
 }
@@ -1187,6 +1225,12 @@ void frame_end_hook(uint8_t* rdram, recomp_context* ctx) {
             if (cap > 0 && cap < rate && !own_rate) rate = cap;   // never above what the slowest player asked for
         }
         if (rate < 30) rate = 30;
+        // (user 27 Nov: Deck at 90 fps desynced from phones at 30 / 120 on lock-step frame 1) the cause was the fighters' first update taking this machine's own frame step
+        // (online_prestep, fixed), so every rate plays as it is set. PSPRECOMP_NET_ODDFPS_ROUND=1: the old workaround, a rate whose rate/30 is not a power of two runs at the next exact one (90 -> 120).
+        { static const bool odd_round = std::getenv("PSPRECOMP_NET_ODDFPS_ROUND") != nullptr;
+          if (odd_round && (cap > 0 || dissidia_ttnet_running()) && overlay_id() == 1 && rate < kUnlocked) { const int n = rate / 30; if (n > 1 && (n & (n - 1)) != 0 || rate % 30) { int m = 1; while (m * 30 < rate) m <<= 1; rate = std::min(240, m * 30); } } }
+        const bool unlocked_cfg = g_target.load(std::memory_order_relaxed) == kUnlocked;
+        if (unlocked_cfg && rate >= kUnlocked) rate = 240;
         const int interval = rate > 30 ? 1 : 2;      // vblanks per frame: the vblank clock itself runs faster above 60
         psp_display_set_vblank_hz(rate > 60 ? rate : 60);
         if (r32(timer + 0x10u) != static_cast<uint32_t>(interval) || g_rate != rate) {
@@ -1202,14 +1246,34 @@ void frame_end_hook(uint8_t* rdram, recomp_context* ctx) {
         g_ticks = rate > 60 ? step_for(rate, g_step_idx) : 60.0f / static_cast<float>(rate);   // the step the update that just ran was given
         g_logic_step = g_ticks;
         if (l30_active()) { g_ticks = 2.0f; g_logic_step = g_l30_logic_now ? 2.0f : 0.0f; }
+        else if (overlay_id() == 1 && (cap > 0 || dissidia_ttnet_running())) {
+            // Online: the frames before the 30 Hz logic engages (the fight's first lock-step frame) ran with the step of THIS machine's rate (90 fps: 171/256, 120 fps: 0.5, 30: 2),
+            // which the fighters keep in their blocks (+0x168 / +0x1B0 ..): a Deck at 90 fps desynced from two phones at 120 on lock-step frame 1. Every machine uses the 30 Hz step there.
+            // PSPRECOMP_NET_PRESTEP_OLD=1: the old per-machine step.
+            static const bool old_step = std::getenv("PSPRECOMP_NET_PRESTEP_OLD") != nullptr;
+            if (!old_step) { g_ticks = 2.0f; g_logic_step = 2.0f; }
+        }
         g_fx_period = rate / 30;
+        psp_display_set_unlocked(unlocked_cfg && g_unlock_ok && rate == 240 && l30_active() && l30_clock_paced() && !g_scope_all);
     }
     g_orig_frame_end(rdram, ctx);
     psp_netplay_frame_end(battle_running());
     g_play_ms += 1000.0 / static_cast<double>(std::max(30, g_rate));
     input_debug_frame();
     testdrive_frame(rdram, ctx);
-    if (battle_running()) g_battle_age += g_logic_step; else g_battle_age = 0.f;
+    if (battle_running()) {
+        g_battle_age += g_logic_step;
+        // Online tag battle (docs "Batch eighty-two"): the battle age counts frames from when the battle started running ON THIS MACHINE, which can be a frame or two
+        // apart between machines; everything timed on it (mate call-in 50 frames after a KO, slot call-ins, countdowns) then lands on different lock-step frames.
+        // With the lock-step running the age is the lock-step frame x 2 ticks (the lock-step runs 30 frames per second whatever the fps), the same on every machine. PSPRECOMP_TAGTEAM_LSAGE_OLD=1: old.
+        static const bool lsage_old = std::getenv("PSPRECOMP_TAGTEAM_LSAGE_OLD") != nullptr;
+        if (!lsage_old && dissidia_ttnet_running()) { const uint32_t lf = dissidia_netplay_ls_frame(); if (lf) { g_battle_age = static_cast<float>(lf) * 2.0f; static uint32_t once = 0; if (once++ == 0) std::fprintf(stderr, "[LSAGE] the battle age follows the lock-step frame (frame %u -> age %.0f)\n", lf, g_battle_age); } }
+    } else g_battle_age = 0.f;
+    {   // Training mode (training.cpp; inert unless Battle Mode > Training was chosen): the fighters, the frames since one stepped (the pause menu) and the fight's age
+        int idle = 1 << 20; uint32_t tf[4] = {}; for (int i = 0; i < 4; i++) if (g_fighters[i] && g_tick - g_fighter_seen[i] < 3600) { tf[i] = g_fighters[i]; idle = std::min<int>(idle, static_cast<int>(g_tick - g_fighter_seen[i])); }
+        dissidia_training_frame_end(rdram, ctx, tf, idle, g_battle_age > 0.f ? g_battle_age : (overlay_id() == 1 ? 1.f : 0.f));
+        dissidia_training_overlay(dissidia_training_paused());
+    }
     {   // tall windows: the picture is centred from the moment the fight runs until the battle overlay goes (summons, the pause menu and
         // the results keep it; the loading / opponent pages before the fight are at the top like the menus), see ge_draw_note_scene_view
         static bool in_battle = false;
@@ -1274,7 +1338,11 @@ void frame_end_hook(uint8_t* rdram, recomp_context* ctx) {
         }
         const bool next_logic = l30_decide_next();
         const float next_phase = g_l30_next_phase;
-        g_l30_end_ms = l30_now_ms();
+        {
+            const double t = l30_now_ms();
+            if (g_l30_end_ms > 0 && t - g_l30_end_ms < 100.0) g_unl_frame_ms += (std::min(t - g_l30_end_ms, 33.0) - g_unl_frame_ms) * 0.05;
+            g_l30_end_ms = t;
+        }
         g_l30_frame++;
         g_l30_logic_now = next_logic;
         wrf(timer + 0x18u, g_l30_logic_now ? 2.0f : 0.0f);   // the coming frame's step (read directly by 85 battle sites); the global step follows via global_step_hook
@@ -1295,13 +1363,15 @@ void frame_end_hook(uint8_t* rdram, recomp_context* ctx) {
                                                              g_l30_list_tag.seq, g_l30_list_tag.record ? 1 : 0, tag.seq, tag.gen, tag.record ? 1 : 0, tag.phase);
         g_l30_list_tag = tag;
         if (rng_keep && !g_l30_logic_now) { for (int i = 0; i < 2; i++) rng_saved[i] = r32(RNG_WORDS[i]); rng_have = true; }   // the coming frame is drawn-only
-    } else if (g_rate > 60 && ok(timer)) wrf(timer + 0x18u, step_for(g_rate, ++g_step_idx));   // the frame waited for one (short) vblank: dt = 60 / rate (exact steps above)
+    } else if (ok(timer) && online_prestep()) wrf(timer + 0x18u, 2.0f);   // the next frame holds the fighters' first update (see online_prestep)
+    else if (g_rate > 60 && ok(timer)) wrf(timer + 0x18u, step_for(g_rate, ++g_step_idx));   // the frame waited for one (short) vblank: dt = 60 / rate (exact steps above)
     if (!l30_active()) { ge_interp_set_frame(GeInterpTag{}); g_l30_list_tag = GeInterpTag{}; }
 
     if (g_log && ok(timer)) {
         const int64_t t = now_ms();
         if (!g_win_t0) g_win_t0 = t;
         g_win_frames++;
+        if (l30_active() && g_logic_step > 0.0f) g_win_logic++;
         g_frame_no++;
         if (t - g_win_t0 >= 5000) {
             const int pose_n = g_pose_changed + g_pose_same;
@@ -1310,6 +1380,9 @@ void frame_end_hook(uint8_t* rdram, recomp_context* ctx) {
                          g_win_frames * 1000.0 / double(t - g_win_t0), g_interval, rdf(timer + 0x18u), rdf(FRAME_STEP),
                          overlay_id(), g_pose_changed, pose_n, pose_n ? 100.0 * g_pose_changed / pose_n : 0.0,
                          g_press_calls, g_press_edges, g_press_latched, g_press_dropped);
+            if (l30_active()) std::fprintf(stderr, "[FPS] 30 Hz logic: %.2f gameplay frames per second (%.1f frames per second drawn%s)\n", g_win_logic * 1000.0 / double(t - g_win_t0),
+                                           g_win_frames * 1000.0 / double(t - g_win_t0), psp_display_unlocked() ? ", unlocked" : "");
+            g_win_logic = 0;
             g_win_t0 = t;
             g_win_frames = 0;
             g_pose_changed = g_pose_same = 0;
@@ -1489,6 +1562,14 @@ void pressed_hook(uint8_t* rdram, recomp_context* ctx) {
             if (!k && ph && ns < 64) { seen[ns++] = key; std::fprintf(stderr, "[EXBT] pressed(08AB399C) obj=%08X bit=%u phase=%u in=%d gt=%.0f\n", obj, bit, ph, g_exb_in ? 1 : 0, g_gt_ms); } } }
     if (g_exb_log_on && (ctx->r[2] & 1) && overlay_id() == 1 && ok(r32(0x08A405E0u)) && r32(r32(0x08A405E0u) + 632u) != 0)
         std::fprintf(stderr, "[EXBG] bt=%.0f pad-edge pad=%08X(ctrl %08X) bit=%u owner=%08X in=%d\n", g_play_ms - g_exb_t0, obj, obj - 0x53Cu, bit, actor_of_pad(obj), g_exb_in ? 1 : 0);
+    {   static const bool lg3 = [] { const char* v = std::getenv("PSPRECOMP_EXB_LOG"); return v && v[0] == '3'; }();   // =3: every pad bit test (08AB399C) during a burst, counted by (pad, bit): calls / true
+        if (lg3 && overlay_id() == 1) {
+            static struct { uint32_t obj, bit; unsigned calls, tr, in; } tab[64]; static int nt = 0; static double lastp = 0;
+            int k = 0; while (k < nt && !(tab[k].obj == obj && tab[k].bit == bit)) k++;
+            if (k == nt && nt < 64) { tab[nt] = {obj, bit, 0, 0, 0}; nt++; }
+            if (k < 64) { tab[k].calls++; if (ctx->r[2] & 1) tab[k].tr++; if (g_exb_in) tab[k].in++; }
+            if (g_play_ms - lastp > 2000) { lastp = g_play_ms; for (int i = 0; i < nt; i++) std::fprintf(stderr, "[EXBP3] pad %08X bit %u: %u calls (%u in gated) %u true\n", tab[i].obj, tab[i].bit, tab[i].calls, tab[i].in, tab[i].tr); std::fprintf(stderr, "[EXBP3] --\n"); }
+        } }
     g_press_calls++;
     if (g_exb_in || g_exb_poll) return;   // the EX Burst keeps its own edges (sticky): a latched press would count once per run and again from the sticky flag
     if (!g_press_latch || g_ticks >= 2.0f || overlay_id() != 1) return;
@@ -1778,7 +1859,23 @@ void net_task_hook(uint8_t* rdram, recomp_context* ctx) {
     g_orig_net_task(rdram, ctx);
 }
 
+// Tag team (docs "Batch twenty"): the retail intro (camera shots, the "vs <enemy>" text, the fade) is run by update tasks of the battle scene list, not by the fighters, the global step or the
+// flow step, so pausing the fighters did not hold it. While the partners' banters play inside it (tagteam.cpp g_pre_hold) the scene list runs like a drawn-only frame (the (4, 4) filter: only the
+// tasks that are safe to run while paused) plus the object manager family (0x0884 1xxx: the fighters' updates, which the match pause already stops except for the banter's fighter) and the
+// camera manager's tasks (the banter close-up is written inside its update). PSPRECOMP_TAGTEAM_BANTERHOLD=0: no hold.
+bool g_hold_flow = false; float g_hold_dt = 0.f;
 void task_run_hook(uint8_t* rdram, recomp_context* ctx) {
+    if (g_hold_flow && ctx->r[5] == 1 && ctx->r[6] == 1 && (!l30_active() || g_l30_logic_now) && battle_scene_list(static_cast<uint32_t>(ctx->r[4]))) {
+        std::vector<std::pair<uint32_t, uint32_t>> saved;
+        uint32_t t = r32(static_cast<uint32_t>(ctx->r[4]) + 4u);
+        for (int i = 0; i < 200 && ok(t); i++, t = r32(t + 52u)) { const uint32_t f = r32(t); if ((f >= 0x08841000u && f < 0x08842000u) || f == 0x08B3C41Cu || f == 0x08B3C43Cu) { saved.push_back({t, r32(t + 40u)}); w32(t + 40u, r32(t + 40u) | 4u); } }
+        ctx->r[5] = 4; ctx->r[6] = 4;
+        g_hold_dt = rdf(FRAME_STEP); wrf(FRAME_STEP, 0.0f);   // (the camera manager's own shot track advances by the global step: held too; the banter's fighter is given it back in actor_dt_hook)
+        g_orig_task_run(rdram, ctx);
+        wrf(FRAME_STEP, g_hold_dt);
+        for (auto& sv : saved) w32(sv.first + 40u, sv.second);
+        return;
+    }
     if (l30_active() && !g_l30_logic_now && ctx->r[5] == 1 && ctx->r[6] == 1 && battle_scene_list(static_cast<uint32_t>(ctx->r[4]))) {
         ctx->r[5] = 4; ctx->r[6] = 4;   // a drawn-only frame: the battle runs as if paused
         static const bool none = std::getenv("PSPRECOMP_L30_NONE") != nullptr;   // experiment: no battle task at all on drawn-only frames
@@ -1864,8 +1961,10 @@ void actor_dt_hook(uint8_t* rdram, recomp_context* ctx) {
     const float before = ctx->f[0];
     struct NoteDt { recomp_context* c; ~NoteDt() { g_face_dt = c->f[0]; g_face_dt_set = true; } } note_dt{ctx};   // for face_step_hook
     if (match_paused_impl() && ok(actor) && g_ram[(actor + 0x542u) & 0x07FFFFFFu] == 0 && actor != g_pause_keep) { ctx->f[0] = 0.f; return; }
+    if (g_hold_flow && actor == g_pause_keep && ctx->f[0] == 0.f && g_hold_dt > 0.f && match_paused_impl()) ctx->f[0] = g_hold_dt;   // the held intro: the banter's fighter plays at the step the task pass was given
     if (g_test_freeze_cpu && g_gt_started && ok(actor) && g_ram[(actor + 0x542u) & 0x07FFFFFFu] == 0 && actor != test_player()) { ctx->f[0] = 0.f; return; }
     if (g_ticks != 2.0f && ok(actor) && own) ctx->f[0] *= g_ticks * 0.5f;   // own clock: a fixed 2.0 per frame
+    if (!own && ok(actor) && ctx->f[0] != 0.f) { const float b4 = ctx->f[0]; ctx->f[0] *= dissidia_tt_chase_actor_scale(actor, g_ticks); dissidia_tt_chase_step_log(actor, b4, ctx->f[0]); }   // tag team "chase slow: chasers only": actors outside a running chase do not take its slow motion
     if (g_action_start_step && g_ticks < 2.0f && ok(actor) && g_ram[(actor + 0x542u) & 0x07FFFFFFu] == 0) {
         for (int i = 0; i < 4; i++) {
             if (g_fighters[i] != actor) continue;
@@ -1897,6 +1996,7 @@ void cam_dt_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t cam = static_cast<uint32_t>(ctx->r[4]);
     g_orig_cam_dt(rdram, ctx);
     if (g_ticks != 2.0f && ok(cam) && r32(cam + 0x100u) == 2u) ctx->f[0] *= g_ticks * 0.5f;
+    if (ok(cam)) ctx->f[0] *= dissidia_tt_chase_cam_scale(cam, g_ticks);   // the camera of a fighter outside a running chase (chasers-only slow motion; by the camera's owner, the same on every machine)
 }
 
 
@@ -2013,6 +2113,7 @@ template <int I> void vt_probe(uint8_t* rdram, recomp_context* ctx) {
 template <int I> struct VtReg { static void go() { VtReg<I - 1>::go(); if (k_vtests[I] != 0x08B326C4u && k_vtests[I] != 0x08B324CCu && (g_vt_orig[I] = dissidia_ovl_battle_lookup(k_vtests[I]))) psp_dispatch_register(k_vtests[I], vt_probe<I>); } };
 template <> struct VtReg<-1> { static void go() {} };
 void vt_summary() {
+    if (g_exb_log_on) for (int k = 0; k < g_vt_npairs; k++) std::fprintf(stderr, "[EXBG] pair test %08X actor %08X\n", k_vtests[g_vt_pairs[k].test], g_vt_pairs[k].actor);
     for (int i = 0; i < kNV; i++) {
         bool any = false;
         for (int ph = 1; ph < 6; ph++) any = any || g_vt_calls[i][ph];
@@ -2026,6 +2127,10 @@ void vt_summary() {
 }
 
 void exb_log(const char* what, uint32_t ctl, bool ran) {
+    {   static const bool d = [] { const char* v = std::getenv("PSPRECOMP_EXB_LOG"); return v && v[0] == '4'; }();   // =4: dump the controller's words every 0.3 s
+        static double last = 0;
+        if (d && ok(ctl) && g_play_ms - last > 60) { last = g_play_ms; std::fprintf(stderr, "[EXBW] t=%.0f", g_play_ms); for (uint32_t o = 0; o < 0x300; o += 4) std::fprintf(stderr, " %X", r32(ctl + o)); std::fprintf(stderr, "\n");
+            for (int w = 0; w < 2; w++) { const uint32_t a = r32(ctl + 620u + 4u * w), c = ok(a) ? r32(a + 0x5C4u) : 0u; if (ok(c)) std::fprintf(stderr, "[EXBW] actor%d %08X pad %08X: %08X %08X %08X %08X %08X %08X\n", w, a, c + 0x53Cu, r32(c + 0x53Cu), r32(c + 0x540u), r32(c + 0x544u), r32(c + 0x548u), r32(c + 0x54Cu), r32(c + 0x550u)); } } }
     static const char* lv = std::getenv("PSPRECOMP_EXB_LOG");
     if (!lv || !ok(ctl)) return;
     const bool verbose = lv[0] == '2';   // =2: also the held (skipped) updates, with the full [EXB] line
@@ -2253,6 +2358,25 @@ void gauge_sm_hook(uint8_t* rdram, recomp_context* ctx) {
     wrf(FRAME_STEP, step);
 }
 
+// final10b: ovl_battle FUN_08AC8318 (an effect component embedded in every fighter, +0xBA4 of the actor: its five random floats land at actor +0xC40 / +0xC68) draws from the
+// effect LCG (0x09AFB89C). That LCG is reseeded once per delivered lock-step frame (tagteam_net.cpp) but is also drawn from by cosmetic code whose amount depends on the local view,
+// so the same emitter got different numbers on the machines of the other team ("fighter1.blockC00" desyncs, same values shifted by an index). In a lock-step battle each call now
+// starts the LCG from (gameplay LCG, lock-step frame, component address) and puts it back afterwards: the component's values are the same everywhere and it no longer shifts what
+// other effect code draws. PSPRECOMP_FXEMIT_RNG_OFF=1: as before.
+constexpr uint32_t FXEMIT_FN = 0x08AC8318u;
+FuncPtr g_orig_fxemit = nullptr;
+void fxemit_hook(uint8_t* rdram, recomp_context* ctx) {
+    static const bool off = std::getenv("PSPRECOMP_FXEMIT_RNG_OFF") != nullptr;
+    const uint32_t f = off ? 0u : dissidia_netplay_ls_frame();
+    if (!f || overlay_id() != 1) { g_orig_fxemit(rdram, ctx); return; }
+    constexpr uint32_t EFF = 0x09AFB89Cu, SIM = 0x09AF84D0u;
+    const uint32_t a0 = static_cast<uint32_t>(ctx->r[4]), saved = r32(EFF);
+    uint32_t h = (r32(SIM) ^ 0x7F4A7C15u) + f * 2654435761u + a0 * 0x85EBCA6Bu; h ^= h >> 15; h *= 0x2C1B3C6Du; h ^= h >> 12; h *= 0x297A2D39u; h ^= h >> 15;
+    w32(EFF, h);
+    g_orig_fxemit(rdram, ctx);
+    w32(EFF, saved);
+}
+
 // PSPRECOMP_EXB_LOG=1: which of the button-mash style updaters (all six virtual-button tests) the burst calls (log only)
 #define EXB_PROBE(NAME, ADDR) \
     FuncPtr g_orig_probe_##NAME = nullptr; \
@@ -2439,12 +2563,13 @@ void fx_install() {
 
 int fps_get() { return g_target.load(); }
 void fps_set(int fps) {
-    fps = fps < 30 ? 30 : fps > 240 ? 240 : (fps + 15) / 30 * 30;   // a multiple of 30
-    if (g_target.exchange(fps) != fps) std::fprintf(stderr, "[FPS] target frame rate %d\n", fps);
-    psp_adhoc_set_local_fps(fps);   // told to the other players
-    psp_present_set_target_fps(fps);   // Android: ask the display for a matching refresh rate
+    fps = fps >= kUnlocked ? kUnlocked : fps < 30 ? 30 : fps > 240 ? 240 : (fps + 15) / 30 * 30;   // a multiple of 30, or Unlocked
+    if (g_target.exchange(fps) != fps) std::fprintf(stderr, "[FPS] target frame rate %d%s\n", fps, fps == kUnlocked ? " (unlocked)" : "");
+    const int eff = fps == kUnlocked ? 240 : fps;
+    psp_adhoc_set_local_fps(eff);   // told to the other players (Unlocked: 240)
+    psp_present_set_target_fps(eff);   // Android: ask the display for a matching refresh rate (Unlocked: the highest it has)
 }
-const int k_rates[] = {30, 60, 90, 120, 150, 180, 210, 240};
+const int k_rates[] = {30, 60, 90, 120, 150, 180, 210, 240, kUnlocked};
 
 }  // namespace
 
@@ -2463,6 +2588,8 @@ int dissidia_ex_cores(float (*P)[3], int max) {
 // The position (actor+0x80, vec3) of the fighter nearest to `eye` among those that were updated in the last two
 // seconds, for camera.cpp: the game's own camera sits behind the fighter you control, so that is the one the free camera
 // pivots on. false when no fighter is known.
+static uint32_t g_nearest_actor = 0;
+uint32_t dissidia_nearest_actor() { return g_nearest_actor; }   // (camera.cpp, PSPRECOMP_INTROCAM_LOG=2) the actor of the last dissidia_nearest_fighter answer
 bool dissidia_nearest_fighter(const float eye[3], float pos[3]) {
     float best = 1e30f;
     bool found = false;
@@ -2471,13 +2598,16 @@ bool dissidia_nearest_fighter(const float eye[3], float pos[3]) {
         if (!a || !ok(a) || g_tick - g_fighter_seen[i] > 120) continue;
         float p[3] = {rdf(a + 0x80u), rdf(a + 0x84u), rdf(a + 0x88u)};
         const float d = (p[0] - eye[0]) * (p[0] - eye[0]) + (p[1] - eye[1]) * (p[1] - eye[1]) + (p[2] - eye[2]) * (p[2] - eye[2]);
-        if (d < best) { best = d; found = true; pos[0] = p[0]; pos[1] = p[1]; pos[2] = p[2]; }
+        if (d < best) { best = d; found = true; g_nearest_actor = a; pos[0] = p[0]; pos[1] = p[1]; pos[2] = p[2]; }
     }
     return found;
 }
 
 float dissidia_battle_age() { return g_battle_age; }   // ticks (1/60 s) since the battle started running (camera.cpp)
-float dissidia_logic_tick_len() { return g_ticks; }   // 1/60 s per game logic frame (tagteam.cpp: its own battle clock)
+float dissidia_logic_tick_len() { return g_ticks; }
+// tagteam_hud.cpp (HUD smoothing): the gameplay-frame number (the interpolation tag's gen) of the frame that just ran; false = no 30 Hz logic interpolation.
+// Called from dissidia_tagteam_frame_end, before this frame end publishes the tag of the coming frame.
+bool dissidia_hud_gen(uint32_t* gen) { if (!l30_active() || !(g_l30_list_tag.phase > -1.0f)) return false; *gen = g_l30_list_tag.gen; return true; }   // 1/60 s per game logic frame (tagteam.cpp: its own battle clock)
 
 // The fighter a person controls (its brain, actor +0x5C4, is in human mode: brain +0x54 != 0), 0 if none is known (camera.cpp).
 uint32_t dissidia_player_actor() {
@@ -2556,7 +2686,7 @@ float dissidia_own_clock_scale() { return g_ticks * 0.5f; }
 FuncPtr g_orig_cpu_tick = nullptr;
 void cpu_tick_noai_hook(uint8_t* rdram, recomp_context* ctx) {
     const uint32_t brain = static_cast<uint32_t>(ctx->r[4]);
-    const bool off = (g_env_no_ai && g_gt_started) || (g_dbg_no_ai && g_ai_armed);
+    const bool off = (g_env_no_ai && g_gt_started) || (g_dbg_no_ai && g_ai_armed) || (g_ai_armed && dissidia_training_ai_skip(brain));
     if (off && ok(brain) && static_cast<int32_t>(r32(brain + 0x54u)) == 0) return;   // only once the fight runs: the intro waits for the brains
     g_orig_cpu_tick(rdram, ctx);
 }
@@ -2577,10 +2707,16 @@ void dissidia_framerate_install(uint8_t* rdram) {
             // battle HUD archive, the same for every fighter and stage)
             static const uint32_t follow[] = {0xC33070u, 0xC7EA30u};
             ge_draw_set_hud_fixed_tex(follow, 2);
+            // The lock-on ring is no longer at 0xC33070 (0x81D0F0 in current runs, 1v1 and tag team): found by its content, so it follows the fighter
+            // on the frame-interpolated scene (psp_ge_draw.cpp IP2D) and stays on the picture on tall windows. PSPRECOMP_TAGTEAM_HUDSMOOTH_OLD=1 = not.
         }
+        static const uint64_t follow_hash[] = {0xe5465917458e8746ull};
+        if (!std::getenv("PSPRECOMP_TAGTEAM_HUDSMOOTH_OLD")) ge_draw_set_hud_fixed_tex_hash(follow_hash, 1, rdram);
     }
     const char* e = std::getenv("PSPRECOMP_FPS");
-    if (e && std::atoi(e) >= 30) g_target = (std::min(std::atoi(e), 240) + 15) / 30 * 30;
+    if (e && std::atoi(e) >= kUnlocked) g_target = kUnlocked;
+    else if (e && std::atoi(e) >= 30) g_target = (std::min(std::atoi(e), 240) + 15) / 30 * 30;
+    if ((e = std::getenv("PSPRECOMP_UNLOCK")) && e[0] == '0') g_unlock_ok = false;
     g_scope_all = (e = std::getenv("PSPRECOMP_FPS_SCOPE")) && std::strcmp(e, "all") == 0;
     g_log = (e = std::getenv("PSPRECOMP_FPS_LOG")) && e[0] && e[0] != '0';
     g_actor_log = (e = std::getenv("PSPRECOMP_ASSIST_LOG")) && e[0] && e[0] != '0';
@@ -2609,6 +2745,7 @@ void dissidia_framerate_install(uint8_t* rdram) {
     if ((g_face_fix || g_face_log) && (g_orig_face_step = psp_dispatch_probe_lookup(FACE_STEP))) psp_dispatch_register(FACE_STEP, face_step_hook);
     if ((g_orig_exb_pressed = dissidia_ovl_battle_lookup(EXB_PRESSED))) psp_dispatch_register(EXB_PRESSED, exb_pressed_hook);
     if ((g_orig_exb_pressed2 = dissidia_ovl_battle_lookup(EXB_PRESSED2))) psp_dispatch_register(EXB_PRESSED2, exb_pressed2_hook);
+    if ((g_orig_fxemit = dissidia_ovl_battle_lookup(FXEMIT_FN))) psp_dispatch_register(FXEMIT_FN, fxemit_hook);
     VtReg<kNV - 1>::go();   // sticky presses for every virtual-button test the gated burst code calls (+ counts with PSPRECOMP_EXB_LOG)
     if (std::getenv("PSPRECOMP_EXB_LOG")) {
         if ((g_orig_probe_a = dissidia_ovl_battle_lookup(0x08A32EBCu))) psp_dispatch_register(0x08A32EBCu, probe_a);
@@ -2689,11 +2826,17 @@ void dissidia_framerate_install(uint8_t* rdram) {
     if (const char* sm = std::getenv("PSPRECOMP_STEER_MOVE"); !(sm && sm[0] == '0') && (g_orig_steer_move = dissidia_ovl_battle_lookup(STEER_MOVE))) { psp_dispatch_register(STEER_MOVE, steer_move_hook); std::fprintf(stderr, "[FPS] steered-move hook installed\n"); }
     if (g_log && (g_orig_skel = psp_dispatch_probe_lookup(SKEL_BUILD))) psp_dispatch_register(SKEL_BUILD, skel_build_hook);
     fx_install();
+    psp_report::set_state_hook(+[]() -> std::string {   // the report button's "what was the game doing"
+        const uint32_t ovl = overlay_id();
+        return std::string("in_battle=") + (battle_running() ? "yes" : "no") + "\ncurrent_mode=" + (ovl == 0 ? "menu" : ovl == 1 ? "battle overlay" : "overlay " + std::to_string(ovl)) +
+               "\nframe_rate=" + std::to_string(g_target.load()) + "\nlogic30=" + (g_logic30 ? "on" : "off") + "\n";
+    });
     psp_settings_set_frame_rate_hook({k_rates, static_cast<int>(std::size(k_rates)), fps_get, fps_set});
-    psp_adhoc_set_local_fps(g_target.load());
-    psp_present_set_target_fps(g_target.load());
+    psp_adhoc_set_local_fps(g_target.load() == kUnlocked ? 240 : g_target.load());
+    psp_present_set_target_fps(g_target.load() == kUnlocked ? 240 : g_target.load());
     std::fprintf(stderr, "[FPS] frame rate %d (battle logic; scope %s)\n", g_target.load(), g_scope_all ? "all" : "battle");
 }
 
+void dissidia_hold_flow(bool on) { g_hold_flow = on; }   // tag team: hold the battle's update tasks (the retail intro) except the object manager and the camera
 void dissidia_pause_match(uint32_t keep, float seconds) { pause_match_impl(keep, seconds); }   // tag team call-in: the match stands still (see actor_dt_hook)
 bool dissidia_match_paused() { return match_paused_impl(); }

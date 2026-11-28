@@ -41,6 +41,25 @@
   `PSPRECOMP_FPS_SCOPE=all` also runs menus at 60 (they then run fast; for testing only).
   `PSPRECOMP_SETTINGS_MENU=0` disables the menu, `PSPRECOMP_SETTINGS=<file>` moves the settings file.
 
+## Unlocked frame rate
+
+**Frame Rate -> Unlocked** (last choice after 240; saved as `fps=1000`, `PSPRECOMP_FPS=1000`) draws the battle as often as the
+device manages. What it does, in `runtime/framerate.cpp` (`kUnlocked`) and `psp_display_set_unlocked` (`runtime/src/hle/psp_hle_display.cpp`):
+
+- Only in the fight itself (30 Hz logic running, paced by the real-time clock). The vblank wait then does not sleep to the next
+  boundary; the only floor is `PSPRECOMP_UNLOCK_MAX` frames per second (default 1000) so a trivial frame does not spin a core.
+  Gameplay stays at 30 Hz by the clock and the frames between are interpolated by the clock's phase (the 30 Hz pacing uses the
+  measured frame time instead of `1000 / rate`), so battle speed is the same as at 60 fps.
+- **Vertical sync is the user's own setting**: on = the swap waits for the display, so "unlocked" gives the refresh rate with no
+  frame cap of ours (VRR displays: as fast as they go); off = as fast as possible (tearing). On a phone, turn Vertical Sync on to
+  save battery. Android is asked for the highest display refresh rate (as with 240).
+- Menus, movies, loading, the pre-fight screens and everything outside the fight keep the normal pacing (menus 30), as does a
+  fight with 30 Hz logic off or a test pacing by frame count: there Unlocked is plain 240 fps.
+- Online: an Unlocked player advertises 240 (like a 240 fps player): everyone above 30 keeps their own rate with 30 Hz logic, the
+  lock-step battle runs at 30 Hz for all; if anybody is at 30 (or `PSPRECOMP_NET_SAME_FPS=1`) the group rate wins and Unlocked
+  just runs at that rate.
+- `PSPRECOMP_UNLOCK=0`: Unlocked acts as 240 fps.
+
 ## In multiplayer
 
 In an ad-hoc session ([multiplayer.md](multiplayer.md)) the game runs at the lowest rate any player asked for, so a

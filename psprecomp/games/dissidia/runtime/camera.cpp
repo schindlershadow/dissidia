@@ -53,17 +53,24 @@ extern FuncPtr dissidia_ovl_menu_lookup(uint32_t vaddr);
 extern FuncPtr dissidia_ovl_extra_lookup(uint32_t vaddr);
 extern void dissidia_tagteam_frame(uint8_t* rdram, recomp_context* ctx);   // tagteam.cpp: the tag swap's safe point (the camera step runs once per frame, outside any fighter's update)
 bool dissidia_nearest_fighter(const float eye[3], float pos[3]);   // framerate.cpp
+uint32_t dissidia_nearest_actor();   // framerate.cpp
 extern uint32_t g_dissidia_cine_actor, g_dissidia_cine_seq;   // roster.cpp (hitcam=)
 extern int g_dissidia_cine_ticks;
 float dissidia_battle_age();
 float dissidia_tagteam_age();   // tagteam.cpp: its battle clock (moves with the simulation)
+bool dissidia_tagteam_body(uint32_t A, float* ymin, float* ymax);   // tagteam.cpp: lowest / highest bone of the fighter's model now (model space, metres)
+bool dissidia_tagteam_intro_hold();   // tagteam.cpp: the partners' banters hold the retail intro now
+float dissidia_tagteam_intro_delay();   // tagteam.cpp: ticks the retail intro was held for the partners' banters
 uint32_t dissidia_player_actor();   // framerate.cpp: the human-controlled fighter
 
 float g_dissidia_last_eye[3] = {}, g_dissidia_last_tgt[3] = {}; uint32_t g_dissidia_last_cam = 0;   // the last SetEye (any camera object), for logs
-float g_entr_fov = 0.f;   // the fov the current entrance shot wants (0 = the game's)
+constexpr float kBanterLead = 18.f;   // ticks
+float g_pre_fov = 0.f;   // the retail camera's fov before the partners' banters held the intro
+float last_bE[3], last_bF[3], last_bfov = 0.f, last_b_age = 0.f; bool have_b = false, grace_done = true;   // the last banter shot drawn
+float g_entr_fov = 0.f; bool g_fov_scaled = false;   // the game's own fov before the first banter shot wrote its own: put back when the shots are over   // the fov the current entrance shot wants (0 = the game's)
 bool g_dissidia_entr_tight = false;   // the shot is a start-of-battle banter's: as tight as the retail intro close-up (eye ~1.8-2.4 m in front, chest height)
 bool g_dissidia_entr_more = false;    // another banter follows this one at once: no ease out to the game's camera between them
-uint32_t g_dissidia_entr_actor = 0; float g_dissidia_entr_pose_at = 0.f, g_dissidia_entr_until = 0.f;
+uint32_t g_dissidia_entr_actor = 0; float g_dissidia_entr_pose_at = 0.f, g_dissidia_entr_until = 0.f, g_dissidia_entr_t0 = 0.f, g_dissidia_entr_scale = 1.f;
 uint32_t g_dissidia_vic_actor = 0;   // the winner of a finished tag battle (tagteam.cpp): vic_frame
 namespace {
 
@@ -196,8 +203,11 @@ bool entr_frame(const float* eye, const float* tgt, float* E, float* F, float* w
     (void)tgt;
     if (!g_dissidia_entr_actor) return false;
     const float age = dissidia_tagteam_age();   // the tag clock, the one the entrance times are in
-    if (age >= g_dissidia_entr_until) { g_dissidia_entr_actor = 0; return false; }
-    float P[3]; if (!rdvec(g_dissidia_entr_actor + ACT_POS, P)) return false;
+    if (age >= g_dissidia_entr_until && g_dissidia_entr_tight && have_b && !grace_done && !std::getenv("PSPRECOMP_BANTER_NOGRACE")) {   // the last banter shot stays for ONE more camera update: the retail camera runs its first update of the "vs" shot in it, unseen (no frozen-camera frame between the cut)
+        grace_done = true; for (int i = 0; i < 3; i++) { E[i] = last_bE[i]; F[i] = last_bF[i]; } g_entr_fov = last_bfov; *w = 1.f; return true;
+    }
+    if (age >= g_dissidia_entr_until) { if (std::getenv("PSPRECOMP_ENTRCAM_LOG")) std::fprintf(stderr, "[ENTRCAM] shot over: actor %08X age %.0f until %.0f\n", g_dissidia_entr_actor, age, g_dissidia_entr_until); g_dissidia_entr_actor = 0; return false; }
+    float P[3]; if (!rdvec(g_dissidia_entr_actor + ACT_POS, P)) { if (std::getenv("PSPRECOMP_ENTRCAM_LOG")) std::fprintf(stderr, "[ENTRCAM] no position of %08X\n", g_dissidia_entr_actor); return false; }
     const float C[3] = {P[0], P[1] + 1.1f, P[2]};
     const float out = (g_dissidia_entr_tight && g_dissidia_entr_more) ? 1.f : smooth01((g_dissidia_entr_until - age) / 18.f);   // 0.3 s ease out (ages are 60ths); not between two banters
     if (g_dissidia_entr_pose_at > 0.f && age < g_dissidia_entr_pose_at) {   // warp-in: the game's eye, looking at him
@@ -234,7 +244,7 @@ bool entr_frame(const float* eye, const float* tgt, float* E, float* F, float* w
     float d[3] = {ld[0], 0.f, ld[1]};
     const float L = std::sqrt(d[0] * d[0] + d[2] * d[2]); if (L < 1e-3f) return false;
     d[0] /= L; d[2] /= L;
-    const float since = age - (g_dissidia_entr_pose_at > 0.f ? g_dissidia_entr_pose_at : (g_dissidia_entr_until - 150.f));
+    float since = age - (g_dissidia_entr_pose_at > 0.f ? g_dissidia_entr_pose_at : (g_dissidia_entr_tight && g_dissidia_entr_t0 > 0.f) ? g_dissidia_entr_t0 : (g_dissidia_entr_until - 150.f));   // (a banter whose line made it longer than 2.5 s: its shots run from its start)
     // banter: measured on the retail intro close-ups of the slot fighters (PSPRECOMP_INTROCAM_LOG): eye 2.1 - 2.4 m away horizontally, 1.75 - 2.0 m above his feet, looking at
     // 1.6 - 1.8 m, with a NARROW field of view (camera object + 0xC0: 21 - 26 degrees, the game's own is 50): head and chest fill the picture. The banter shot takes the same
     // (eye 2.2 -> 1.9 m, +1.75 m, look-at +1.55 m, fov 26); the call-in pose keeps its waist-up 2.8 -> 2.3 m at the normal fov.
@@ -245,6 +255,47 @@ bool entr_frame(const float* eye, const float* tgt, float* E, float* F, float* w
     E[0] = C[0] + d[0] * dist + sx * 0.7f; E[1] = C[1] + (tight ? 0.65f : 0.45f); E[2] = C[2] + d[2] * dist + sz * 0.7f;
     F[0] = C[0]; F[1] = C[1] + (tight ? 0.45f : 0.3f); F[2] = C[2];
     g_entr_fov = tight ? 26.f : 0.f;
+    static const bool cam_old = std::getenv("PSPRECOMP_BANTER_CAMOLD") != nullptr;
+    if (tight && !cam_old) {
+        // 25 Nov (user play-test 3): every banter shot is retail's own intro shot of a fighter, measured on the retail 1v1 intro (PSPRECOMP_INTROCAM_LOG=2, [INTROPATH]; the enemy slot
+        // fighter's two shots, ages 168 - 326 of `~/dissidia/tt/s2/ttbanter3/p0`, the same numbers in `q0`): E1, a low wide shot from his right (eye 0.28 m up, 1.7 m in front, 1.6 m to
+        // the right, looking at a point 1.1 m in front / 0.9 m right of him, so he stands off-centre; fov 36) for 122 ticks, then E2, a front close-up (eye 1.75 m in front at 1.04 m,
+        // look-at 0.8 m in front at 1.27 m, fov 23.1) for the rest. Numbers are in the fighter's frame (forward = matrix row 2, right = (fz, -fx), up from his feet). Same shot for every
+        // banter, a HARD cut at the start (retail cuts from the human's shot to the enemy's) and at the end. (Retail's per-character shots differ a little in height; the numbers are one character's.)
+        struct K { float t, ef, es, eu, lf, ls, lu, fov; };
+        static const K ks[] = {{0, 1.73f, 1.70f, 0.28f, 1.35f, 0.91f, 0.76f, 36.f}, {2, 1.73f, 1.70f, 0.28f, 1.33f, 0.91f, 0.76f, 36.f}, {14, 1.73f, 1.66f, 0.28f, 1.23f, 0.92f, 0.73f, 36.f},
+                               {26, 1.75f, 1.59f, 0.28f, 1.12f, 0.94f, 0.70f, 36.f}, {38, 1.76f, 1.56f, 0.28f, 1.08f, 0.94f, 0.68f, 36.f}, {50, 1.77f, 1.55f, 0.29f, 1.08f, 0.94f, 0.68f, 36.f},
+                               {62, 1.77f, 1.56f, 0.28f, 1.09f, 0.94f, 0.68f, 36.f}, {121, 1.77f, 1.56f, 0.28f, 1.09f, 0.94f, 0.68f, 36.f},
+                               {122, 1.78f, 0.10f, 1.04f, 0.81f, -0.05f, 1.27f, 23.1f}, {158, 1.71f, 0.12f, 1.04f, 0.75f, -0.05f, 1.29f, 23.1f}};
+        // The pose starts when the banter starts and its first ~0.3 s are the fighter settling into place (root motion: he is drawn off the shot's spot, sliding in; Vaan: 5.57 - 5.8 s of
+        // `~/dissidia/tt/s2/ttbanter4/s1`): the shot starts kBanterLead ticks later; until then the previous shot stays (the last banter's last frame, or retail's frozen camera for the first banter).
+        if (since < kBanterLead) { if (have_b && age >= last_b_age && age - last_b_age < 120.f) { for (int i = 0; i < 3; i++) { E[i] = last_bE[i]; F[i] = last_bF[i]; } g_entr_fov = last_bfov; *w = 1.f; return true; } return false; }
+        since -= kBanterLead;
+        const int nk = static_cast<int>(sizeof ks / sizeof ks[0]);
+        K c = since < 0.f ? ks[0] : ks[nk - 1];
+        for (int i = 0; i + 1 < nk; i++) if (since >= ks[i].t && since < ks[i + 1].t) { const float u = (since - ks[i].t) / (ks[i + 1].t - ks[i].t);
+            c = {since, ks[i].ef + (ks[i + 1].ef - ks[i].ef) * u, ks[i].es + (ks[i + 1].es - ks[i].es) * u, ks[i].eu + (ks[i + 1].eu - ks[i].eu) * u, ks[i].lf + (ks[i + 1].lf - ks[i].lf) * u,
+                 ks[i].ls + (ks[i + 1].ls - ks[i].ls) * u, ks[i].lu + (ks[i + 1].lu - ks[i].lu) * u, ks[i].fov + (ks[i + 1].fov - ks[i].fov) * u}; break; }
+        // The shot is retail's, measured on one character (Lightning: bones 4% .. 96% percentile span about 1.42 m): distances and heights scale with the speaking fighter's own bone span NOW (his model is not at his actor's
+        // origin: Golbez hovers and sinks 3 m during his pose, Shantotto is 0.75 m tall), and heights count from his lowest bone. Smoothed over a few updates (the pose breathes).
+        static float sm_s = 1.f, sm_lo = 0.f; static float sm_t0 = -1.f;
+        float lo = 0.f, hi = 0.f; float sc = 1.f, base = P[1];
+        if (!std::getenv("PSPRECOMP_BANTER_NOSCALE") && dissidia_tagteam_body(g_dissidia_entr_actor, &lo, &hi) && hi - lo > 0.3f) {
+            const float s_now = std::fmin(3.f, std::fmax(0.3f, (hi - lo) / 1.42f));
+            if (sm_t0 != g_dissidia_entr_t0) { sm_t0 = g_dissidia_entr_t0; sm_s = s_now; sm_lo = lo; } else { sm_s += (s_now - sm_s) * 0.25f; sm_lo += (lo - sm_lo) * 0.25f; }
+            sc = sm_s; base = P[1] + sm_lo;
+        }
+        const float rx = d[2], rz = -d[0];
+        // Heights scale with the fighter, the horizontal distances stay retail's (scaling them put a 0.75 m Shantotto's camera 0.9 m away - inside the near plane, she vanished) and the fov
+        // narrows / widens by the same factor (tan(fov / 2) * scale), so the framing is the same proportion of the body.
+        E[0] = P[0] + (d[0] * c.ef + rx * c.es); E[1] = base + c.eu * sc; E[2] = P[2] + (d[2] * c.ef + rz * c.es);
+        F[0] = P[0] + (d[0] * c.lf + rx * c.ls); F[1] = base + c.lu * sc; F[2] = P[2] + (d[2] * c.lf + rz * c.ls);
+        c.fov = 2.f * std::atan(std::tan(c.fov * 0.5f * 3.14159265f / 180.f) * sc) * 180.f / 3.14159265f;
+        g_entr_fov = std::getenv("PSPRECOMP_BANTER_FOVTEST") ? static_cast<float>(std::atof(std::getenv("PSPRECOMP_BANTER_FOVTEST"))) : c.fov; *w = 1.f;
+        for (int k2 = 0; k2 < 3; k2++) { last_bE[k2] = E[k2]; last_bF[k2] = F[k2]; } last_bfov = g_entr_fov; have_b = true; grace_done = false; last_b_age = age;
+        if (std::getenv("PSPRECOMP_ENTRCAM_LOG")) { static int nl = 0; if (nl++ % 10 == 0) std::fprintf(stderr, "[ENTRCAM] banter shot age %.0f since %.0f eye %.2f %.2f %.2f look-at %.2f %.2f %.2f fov %.1f fighter %.2f %.2f %.2f yaw9C %.3f yaw320 %.3f row2 %.3f %.3f fwd90 %.3f %.3f\n", age, since, E[0], E[1], E[2], F[0], F[1], F[2], c.fov, P[0], P[1], P[2], rdf(g_dissidia_entr_actor + 0x9Cu), rdf(g_dissidia_entr_actor + 0x320u), rdf(g_dissidia_entr_actor + 0x350u), rdf(g_dissidia_entr_actor + 0x358u), rdf(g_dissidia_entr_actor + 0x90u), rdf(g_dissidia_entr_actor + 0x98u)); }
+        return true;
+    }
     if (tight) {
         // the second banter follows the first at once: pan from the last close-up to this one, not through the game's wide camera
         const float kin = smooth01(since / (chain ? 18.f : 12.f));
@@ -418,7 +469,7 @@ void dissidia_cam_update(uint8_t* rdram, recomp_context* ctx) {
             }
         }
         if (g_lock_logs > 0 && !known) { static int n = 0; if (n++ % 60 == 0) std::fprintf(stderr, "[CAMLOCK] unknown: player %08X\n", pl); }
-        if (!g_ever_locked && dissidia_battle_age() < g_arm_ticks) { locked = true; known = false; }   // intro: the game's camera runs
+        if (!g_ever_locked && dissidia_battle_age() - dissidia_tagteam_intro_delay() < g_arm_ticks) { locked = true; known = false; }   // (25 Nov: the arming counts the time the partners' banters held the intro: the free hold took over the retail "vs" shot, fov and all)   // intro: the game's camera runs
         if (g_locked && !locked && g_game_valid) {
             g_relock_w = 0.f;   // just lost the lock: freeze the camera where the game had it
             std::memcpy(g_held_e, g_game_e, sizeof g_held_e); std::memcpy(g_held_t, g_game_t, sizeof g_held_t); g_held_valid = true; g_held_p_set = false;
@@ -488,14 +539,44 @@ void dissidia_cam_update(uint8_t* rdram, recomp_context* ctx) {
         if (ours) P[1] += 1.0f;
         ge_draw_set_view_blocker(ours, P, g_final_eye);
     }
+    // the partners' spawn leaves the camera object's fov 0 for an update (the intro camera data node reloads): a degenerate projection, one drawn frame of stray polygons. While the intro is held the
+    // last retail fov stands in (a write here, unlike one inside SetEye, reaches the projection).
+    if (dissidia_tagteam_intro_hold() && g_pre_fov > 1.f && !(rdf(g_mgr + 0xC0u) >= 1.f) && !std::getenv("PSPRECOMP_BANTER_NOFOVFIX")) wrf(g_mgr + 0xC0u, g_pre_fov);
     apply_fov(rdram);   // the render camera copy, culling and the GE projection use it
     if (set_wide) set_aspect(static_cast<float>(ge_draw_widescreen_width()) / 272.0f);
+}
+
+// Issue #136 video 3: after a slot fighter's KO swap the game's camera program sometimes computes eye / look-at = NaN (a lock block's +0x40.. words
+// are NaN) and keeps them for the rest of the battle: the 3D view is empty sky and the positional audio (listener = camera) turns into full-scale
+// static. SetEye gets the NaN vectors, so replace them here: look at the player's fighter from behind the last good eye's side.
+// PSPRECOMP_TAGTEAM_NOCAMNAN=1 = old behaviour.
+static void nan_guard(uint32_t cam, uint32_t eye) {
+    if (!g_in_update || cam != g_mgr) return;
+    static const bool off = std::getenv("PSPRECOMP_TAGTEAM_NOCAMNAN") != nullptr;
+    if (off) return;
+    float v[6]; bool bad = false;
+    for (int i = 0; i < 3; i++) { v[i] = rdf(eye + 4u * i); v[3 + i] = rdf(eye + 0x10u + 4u * i); }
+    for (float f : v) if (!std::isfinite(f) || std::fabs(f) > 1.0e6f) bad = true;
+    static float good[6] = {0, 0, 0, 0, 0, 0}; static bool have = false; static int n = 0;
+    if (!bad) { for (int i = 0; i < 6; i++) good[i] = v[i]; have = true; return; }
+    float P[3] = {0, 0, 0}; const bool pl = pl_pos(P) && std::isfinite(P[0]) && std::isfinite(P[1]) && std::isfinite(P[2]);
+    float T[3], E[3];
+    if (pl) { T[0] = P[0]; T[1] = P[1] + 1.4f; T[2] = P[2]; } else for (int i = 0; i < 3; i++) T[i] = have ? good[3 + i] : 0.f;
+    float dx = have ? good[0] - T[0] : 0.f, dz = have ? good[2] - T[2] : 6.f;
+    float len = std::sqrt(dx * dx + dz * dz);
+    if (!(len > 0.5f)) { dx = 0.f; dz = 6.f; len = 6.f; }
+    const float r = len < 4.f ? 4.f : (len > 8.f ? 8.f : len);
+    E[0] = T[0] + dx / len * r; E[1] = T[1] + 2.0f; E[2] = T[2] + dz / len * r;
+    for (int i = 0; i < 3; i++) { wrf(eye + 4u * i, E[i]); wrf(eye + 0x10u + 4u * i, T[i]); good[i] = E[i]; good[3 + i] = T[i]; }
+    have = true;
+    if (n++ < 5 || n % 600 == 0) std::fprintf(stderr, "[CAMNAN] SetEye got NaN / garbage (%f %f %f | %f %f %f): eye/look-at replaced (player %d) n=%d\n", v[0], v[1], v[2], v[3], v[4], v[5], (int)pl, n);
 }
 
 // SetEye(cam, vec): rotate vec about the target stored 0x10 after it, once per update.
 void dissidia_cam_seteye(uint8_t* rdram, recomp_context* ctx) {
     uint32_t cam = static_cast<uint32_t>(ctx->r[4]), eye = static_cast<uint32_t>(ctx->r[5]);
     g_ram = rdram;
+    nan_guard(cam, eye);
     for (int i = 0; i < 3; i++) { g_dissidia_last_eye[i] = rdf(eye + 4u * i); g_dissidia_last_tgt[i] = rdf(eye + 0x10u + 4u * i); } g_dissidia_last_cam = cam;
     float E[3], F[3], w = 0.f;
     bool held_now = false;
@@ -530,12 +611,34 @@ void dissidia_cam_seteye(uint8_t* rdram, recomp_context* ctx) {
             held_now = true;
         }
     }
-    if (g_in_update && cam == g_mgr && g_eye_calls == 0 && !held_now) {
+    if (g_in_update && cam == g_mgr && g_eye_calls == 0) {
+        // The partners' constructors leave one camera update with eye / target 0 while the intro is held: the last retail camera is shown for it.
+        static float pre_e[3], pre_t[3]; static bool pre_ok = false, pre_scaled = false; static int hold_updates = 0;
+        const float e3[3] = {rdf(eye), rdf(eye + 4), rdf(eye + 8)}, t3[3] = {rdf(eye + 0x10), rdf(eye + 0x14), rdf(eye + 0x18)}, fv = rdf(g_mgr + 0xC0u);
+        bool sane = std::isfinite(fv) && fv > 1.f;
+        for (int i = 0; i < 3; i++) if (!std::isfinite(e3[i]) || !std::isfinite(t3[i]) || std::fabs(e3[i]) > 5000.f || std::fabs(t3[i]) > 5000.f) sane = false;
+        if (std::fabs(e3[0]) < 1e-3f && std::fabs(e3[1]) < 1e-3f && std::fabs(e3[2]) < 1e-3f) sane = false;
+        const bool hold = dissidia_tagteam_intro_hold();
+        if (std::getenv("PSPRECOMP_CAMUP_LOG") && dissidia_tagteam_age() > 318.f && dissidia_tagteam_age() < 350.f) std::fprintf(stderr, "[CAMUP] age %.0f eye %.2f %.2f %.2f tgt %.2f %.2f %.2f fov %.1f sane %d hold %d entr %08X\n", dissidia_tagteam_age(), e3[0], e3[1], e3[2], t3[0], t3[1], t3[2], fv, sane, hold, g_dissidia_entr_actor);
+        if (!hold) { hold_updates = 0; if (sane) { std::memcpy(pre_e, e3, sizeof e3); std::memcpy(pre_t, t3, sizeof t3); g_pre_fov = fv; pre_ok = true; } if (pre_scaled && !g_dissidia_entr_actor) { ge_set_fov_scale(1.f); pre_scaled = false; } }
+        else if (pre_ok && !std::getenv("PSPRECOMP_BANTER_NOPRECAM") && (!sane || (++hold_updates <= 3 && std::fabs(fv - g_pre_fov) < 0.05f && (std::fabs(e3[0] - pre_e[0]) + std::fabs(e3[1] - pre_e[1]) + std::fabs(e3[2] - pre_e[2])) > 0.5f))) {   // (also the update after it: the camera is already on the next shot while its fov is still the old shot's - a view into the void)   // (only the broken update: the frozen retail camera behind it is retail's own next shot, the human's wide "vs" start, and is shown as it is)
+            for (int i = 0; i < 3; i++) { wrf(eye + 4 * i, pre_e[i]); wrf(eye + 0x10 + 4 * i, pre_t[i]); }
+            if (fv > 1.f && g_pre_fov > 1.f) { const float r = fv > 3.2f ? 3.14159265f / 180.f : 1.f; ge_set_fov_scale(std::tan(fv * r * 0.5f) / std::tan(g_pre_fov * r * 0.5f)); pre_scaled = true; }
+            if (std::getenv("PSPRECOMP_ENTRCAM_LOG")) { static int np = 0; if (np++ % 6 == 0) std::fprintf(stderr, "[ENTRCAM] held: last retail camera shown at age %.0f (game eye %.1f %.1f %.1f)\n", dissidia_tagteam_age(), e3[0], e3[1], e3[2]); }
+        }
+    }
+    if (g_in_update && cam == g_mgr && g_eye_calls == 0 && !held_now) {   // (25 Nov: the held free camera takes over 10 s into a battle; a long start - 3 v 3 banters run to 16 s - lost the banter close-ups to it)
         float ev[3] = {rdf(eye), rdf(eye + 4), rdf(eye + 8)}, tv[3] = {rdf(eye + 0x10), rdf(eye + 0x14), rdf(eye + 0x18)};
         if (static const bool il = std::getenv("PSPRECOMP_INTROCAM_LOG") != nullptr; il) {   // debug: the game's own eye / look-at against the nearest fighter (the retail intro close-up's framing)
             static int n = 0; float np[3];
-            if (n < 1500 && dissidia_nearest_fighter(ev, np)) {
+            if (n < 6000 && dissidia_nearest_fighter(ev, np)) {
                 const float dh = std::sqrt((ev[0] - np[0]) * (ev[0] - np[0]) + (ev[2] - np[2]) * (ev[2] - np[2])), dt = std::sqrt((tv[0] - np[0]) * (tv[0] - np[0]) + (tv[1] - np[1]) * (tv[1] - np[1]) + (tv[2] - np[2]) * (tv[2] - np[2]));
+                if (std::getenv("PSPRECOMP_INTROCAM_LOG")[0] == '2') {   // every update: the eye / look-at in the fighter's own frame (forward = matrix row 2, +0x350 / +0x358), for the retail intro's shot path
+                    const uint32_t na = dissidia_nearest_actor(); const float fx = rdf(na + 0x350u), fz = rdf(na + 0x358u), fl = std::sqrt(fx * fx + fz * fz) + 1e-6f, ux = fx / fl, uz = fz / fl;
+                    const float ex = ev[0] - np[0], ez = ev[2] - np[2], tx = tv[0] - np[0], tz = tv[2] - np[2];
+                    std::fprintf(stderr, "[INTROPATH] age=%.1f actor=%08X eye fwd %.2f side %.2f up %.2f | look fwd %.2f side %.2f up %.2f | fov %.1f ra %08X a0 %08X ent %08X | yaw9C %.3f yaw320 %.3f row2 %.3f %.3f fwd90 %.3f %.3f\n", dissidia_tagteam_age(), na, ex * ux + ez * uz, ex * uz - ez * ux, ev[1] - np[1], tx * ux + tz * uz, tx * uz - tz * ux, tv[1] - np[1], rdf(g_mgr + 0xC0u), static_cast<uint32_t>(ctx->r[31]), cam, g_dissidia_entr_actor, rdf(na + 0x9Cu), rdf(na + 0x320u), rdf(na + 0x350u), rdf(na + 0x358u), rdf(na + 0x90u), rdf(na + 0x98u));
+                    n++;
+                } else
                 if (n++ % 3 == 0) std::fprintf(stderr, "[INTROCAM] fov %.3f n=%d age=%.0f entr=%08X eye-fighter horiz %.2f dy %.2f look-at: dy %.2f dist %.2f eye %.1f %.1f %.1f\n", rdf(g_mgr + 0xC0u), n, dissidia_tagteam_age(), g_dissidia_entr_actor, dh, ev[1] - np[1], tv[1] - np[1], dt, ev[0], ev[1], ev[2]);
             }
         }
@@ -544,9 +647,16 @@ void dissidia_cam_seteye(uint8_t* rdram, recomp_context* ctx) {
                 wrf(eye + 4 * i, ev[i] + (E[i] - ev[i]) * w);
                 wrf(eye + 0x10 + 4 * i, tv[i] + (F[i] - tv[i]) * w);
             }
-            if (g_entr_fov > 0.f && g_dissidia_entr_actor && !std::getenv("PSPRECOMP_BANTER_NOFOV")) { const float fv = rdf(g_mgr + 0xC0u); wrf(g_mgr + 0xC0u, fv + (g_entr_fov - fv) * w); }   // the banter's narrow fov
+            if (g_entr_fov > 0.f && g_dissidia_entr_actor && !std::getenv("PSPRECOMP_BANTER_NOFOV")) {
+                // (25 Nov: writing the fov into the camera object, as the first banter shots did, changed nothing on screen - the game builds its projection before SetEye; checked with fov 12 / 60.)
+                // The retail shot's fov is reached with a view-only focal scale on every projection the game uploads (psp_ge_viewport.cpp ge_set_fov_scale).
+                const float fv = rdf(g_mgr + 0xC0u), r = fv > 3.2f ? 3.14159265f / 180.f : 1.f;
+                const float want = fv + (g_entr_fov - fv) * w;
+                if (fv > 1e-3f && want > 1e-3f) { ge_set_fov_scale(std::tan(fv * r * 0.5f) / std::tan(want * r * 0.5f)); g_fov_scaled = true; }
+                if (std::getenv("PSPRECOMP_ENTRCAM_LOG")) { static int nf = 0; if (nf++ % 10 == 0) std::fprintf(stderr, "[ENTRCAM] fov: game %.2f, banter wants %.2f (w %.2f)\n", fv, g_entr_fov, w); }
+            }
             g_eye_calls++;
-        }
+        } else if (g_fov_scaled) { ge_set_fov_scale(1.f); g_fov_scaled = false; }
     }
     float pivot[3];
     if (g_in_update && cam == g_mgr && g_eye_calls == 0 && g_yaw == 0.f && g_pitch == 0.f) g_piv_ok = g_rad_ok = false;   // back on the game's camera: start fresh next time

@@ -29,7 +29,7 @@ between players. Nobody has to forward a port or know anyone's address.
   | Server | the relay: a host name or `host:port` (default `party.schindlershadow.com:27500`); Cross edits |
   | Room | blank = the public room; Cross edits |
   | Direct Peers | LAN only: extra addresses to contact directly; Cross edits |
-  | Network Delay | 1-8 battle frames (default 2); see "Input delay" below |
+  | Network Delay | **Auto** (default) or 1-8 battle frames; see "Input delay" below |
   | Status | `Connected, 3 online`, `No answer from the server yet`, `Cannot find ...`, `LAN: 2 nearby` |
 
   Editing text: type on a keyboard (Enter saves, Esc cancels), or with a controller pick a letter with left / right,
@@ -76,13 +76,13 @@ forwarded by hand. Only the router on the local network is contacted.
 **Expect latency to matter.** The game runs a lock-step battle over reliable streams, and nothing here delays or
 predicts input. It was built for a few milliseconds of WiFi latency. A relay adds the trip to the server on top of the
 direct path; how much round-trip time the game tolerates has not been measured, so try a nearby partner first.
-**Expect latency to matter.** Battles run on our pad link (see "Battles: our pad link"): the default network delay of 2 frames
-covers a round trip up to about 130 ms without waiting. Raise the Network Delay for slower connections.
+**Expect latency to matter.** Battles run on our pad link (see "Battles: our pad link"). The default network delay, Auto,
+picks the delay from the measured ping at the start of every battle; a fixed 1-8 still works as before.
 
 ### Input delay
 
-There is ONE network delay: Settings > Network > **Network Delay** (`PSPRECOMP_NET_DELAY=1..8`, default 2; saved as
-`net_input_delay`; the old name `PSPRECOMP_NET_INPUT_DELAY` is still read when the new one is not set).
+There is ONE network delay: Settings > Network > **Network Delay** (`PSPRECOMP_NET_DELAY=auto|1..8`, default Auto; saved as
+`net_input_delay`, 0 = Auto; the old name `PSPRECOMP_NET_INPUT_DELAY` is still read when the new one is not set).
 `runtime/src/hle/psp_netplay.cpp` (`psp_netplay_input_delay`) holds it; both online battle engines use it:
 
 - plain battles: `comm_battle.cpp` (read again at every battle start, so a change in the menu applies to the next fight);
@@ -92,6 +92,39 @@ With N frames your own presses take effect N battle frames later and the other p
 arrive. The delays of both players add up; a rough guide is one frame per 70 ms of round-trip ping at 30 fps, the same
 value on both sides (the two copies work with different values too, each pad is labelled by its frame). There is no
 "Off" any more: 0 was the game's own exchange, which main's pad link replaces.
+
+**Auto** (26 Nov). At every battle start `psp_netplay_pick_delay()` reads the ad-hoc pings of the slowest path
+(`psp_hle_adhoc.cpp`: the smoothed round trip, its jitter as TCP's RTTVAR, and the share of pings lost since the players
+joined) and takes the smallest delay whose budget (two delays = 66.7 ms per frame at the 30 Hz logic) covers round trip +
+4 x jitter + 12 ms; one frame more off a LAN (round trip over 20 ms: a lost packet's words come a frame later with the next
+one), and one more when 1 % or more of the pings were lost. With no ping yet it is 2. The log says what it chose:
+`[NETPLAY] network delay Auto: 4 frame(s) for a round trip of 110 ms, jitter 8 ms, 0.0 % of the pings lost`.
+Plain battles keep it for the whole fight. The tag lock-step starts there and then follows the link (`tagteam_net.cpp`):
+
+- the lead (the input delay felt) grows only when the other machine reports that our words keep arriving late (two holds
+  of 8 ms or more in its last 5 s; at most once per 5.5 s, so the same holds are not counted twice), up to 3 above the start;
+- the retail rule that a waited frame samples the pad anyway (the lead climbed to 5 even on a LAN) is replaced: no new
+  sample after a wait while every peer still holds 2 or more of our words;
+- a late word is waited for up to 25 ms (resending every 8 ms) before a whole frame is given up;
+- a copy that runs ahead (it keeps holding frames for a player that has plenty of its words) gives up one frame itself,
+  which moves the slack to its own side;
+- shortening in the middle of a fight is off (it made a jittery link worse): `PSPRECOMP_TTLOCK_SHORTEN=1`.
+
+Measured with two copies on one PC (`PSPRECOMP_NET_LAG_MS` / `_JITTER_MS` / `_LOSS`, 60 s of moves, 30 fps, tag battle;
+"over 50 ms" = delivered frames more than 50 ms apart in the whole battle, copy A / copy B; 0 mismatched frames everywhere):
+
+| Link | Old: lead | Old: over 50 ms | Auto: lead | Auto: over 50 ms |
+|---|---|---|---|---|
+| clean (LAN) | 2 -> 5 | 27 / 25 (6 / 8 at full PC speed) | 1 | 4 / 7 |
+| 80 ms round trip | 2 -> 4 | 3 / 3 | 3 | 13 / 13 (2 / 3 at full PC speed) |
+| 80 ms + 30 ms jitter + 2 % loss (several runs each) | 2 -> 5 | 4 to 28 | 4-5 | 3 to 15 |
+| 140 ms + 20 ms jitter | 2 -> 6 | 24 / 37 (9 / 22 at full PC speed) | 4-5 | 2 / 6 |
+
+Frames over 50 ms also come from the PC itself: whenever the two copies dropped below 150 game frames per 5 s both had them,
+whatever the netcode (old code included); compare runs only where the PC kept full speed.
+
+Android: the ad-hoc layer also takes a `WIFI_MODE_FULL_LOW_LATENCY` Wi-Fi lock while online
+(`psp_android_wifi_low_latency_lock`, `PSPRECOMP_ADHOC_NOWIFILOCK=1` = off; the manifest has `WAKE_LOCK`). Not tested on a phone.
 
 ### Desync check (tag team battles)
 
@@ -133,7 +166,8 @@ Network trouble is shown on screen for six seconds (and logged as `[NET]`), each
 | lost the connection to the party server | nothing from the server for 6 s (it answers every second) |
 | nothing from *player* for N s (unstable connection) | a player in your group silent for 2.5 s |
 | lost *player* (nothing received for 4 s) | the player is dropped |
-| high latency to *player*: N ms | the round trip over 150 ms for 3 s |
+| Ping to *player* is N ms (direct / through the relay / LAN) + a Network Delay tip | the round trip over 120 ms for 3 s (each 45 s; was 150 ms "high latency"). The tip says what Network Delay is (Auto: frames now; or a fixed value and what this ping needs) and to raise it in Settings > Network (it cannot change during a session). `PSPRECOMP_ADHOC_MSG_OLD=1` = the old text at 150 ms |
+| Playing through the relay with *player* (ping N ms) + the cause | no direct path after the hole punch. The cause names a carrier-grade NAT when the introduced address is 100.64.0.0/10 or T-Mobile's 172.56.0.0/13 (or your own address is in 100.64/10, or a 10.x LAN address sits behind a public one that never answers: "probably"), else the firewall / router wording. Test aid `PSPRECOMP_ADHOC_FAKE_NAT=a.b.c.d` stands in for the player's public address in the message |
 | packet loss to *player*: N % | 15 % or more of the last pings unanswered |
 | waiting for the other player's input | the fight had to wait more than 5 frames within 2 s (battle link) |
 | the other player's game is an older version | the battle link fell back to the game's exchange |
@@ -200,7 +234,10 @@ fight.
 | Variable | Meaning |
 |---|---|
 | `PSPRECOMP_NET_LINK=0` | the game's own exchange |
-| `PSPRECOMP_NET_DELAY=<frames>` | input delay, default 2 (about 67 ms; covers a round trip up to about 130 ms without waiting), 1 to 8 |
+| `PSPRECOMP_NET_DELAY=auto\|<frames>` | input delay: Auto (default, from the ping at battle start) or 1 to 8 frames |
+| `PSPRECOMP_TTLOCK_ADAPT=0` | tag lock-step: the old fixed lead (retail sampling, no reports) |
+| `PSPRECOMP_TTLOCK_SHORTWAIT_MS=<ms>` | tag lock-step: how long a late word is waited for before a frame is given up (25; 0 = off) |
+| `PSPRECOMP_TTLOCK_LATE_MIN=<n>`, `_SHORTEN=1`, `_SHRINK_S=<s>`, `_SHRINK_MIN=<n>` | tag lock-step lead tuning (2 late holds; shortening off; 10 s; 3 words) |
 | `PSPRECOMP_NET_LINK_LOG=1` | log the link (linked, every 900 frames: checks agreed, frames waited, how a fight ended) |
 | `PSPRECOMP_NET_LINK_DROP=<percent>` | drop that share of the pad packets sent (tests) |
 
@@ -425,6 +462,16 @@ Adding a pack: build the mod, `netpack.py record <mods dir> <folder> --version N
 the game. The recorded hashes must be what `d1_moves.py` / the mod build makes on every machine (they are deterministic
 for the same discs: rebuilding from scratch gave identical files).
 
+**A received pack must equal a native install (27 Nov, pack v2).** A native install changes the game's data through the mod's main.bin: the new `ablt` records and the character's `chrl` row (abilities learned per level, used by CPU records). A pack received online makes both locally from the compiled-in list: the records copy a retail record and get the listed command / type / phase and **CP / AP costs** (`cp`, `cp_mastered`, `ap`), and the `chrl` row is replaced by the listed one (`netpack.py record` reads both from the mod's built main.bin; `dissidia_chrl_set_row`). Before v2 the costs and the `chrl` row differed, so a Bartz CPU fighter had other abilities on a machine that got the pack online and the fights desynced. `[ABLT]` log lines show the table hash and the records. Test: `tools/mp_diverge.py --pack` (in `tagteam_test.py --baseline` as `mp_pack_bartz_internet`). `PSPRECOMP_NETPACK_COSTS_OLD=1` = the old behaviour. When a pack changes anything else a fight reads (another table), add it to the pack too, or the players desync.
+
+## Persistent desync (27 Nov)
+
+The desync check cannot repair a fight, it only reports it. A fight that stays out of sync is a different fight on each machine (a player can be stunned or unable to move on one of them while the others play on). The first three reports show a 6 s toast; after that a toast every ~150 mismatched frames says "Out of sync with another player: ... Leave from the pause menu" and the log has `[NETSYNC] still out of sync with <mac> after N mismatched frames`. No automatic resync or match end yet (needs state transfer / rollback). `PSPRECOMP_DESYNC_TOAST_OLD=1` = only the first three reports.
+
+## Build id (26 Nov)
+
+Both players should run the same build: a different one can desync (plans, line-ups, banters, lock-step state). Every build sends its git commit and a netcode protocol version to the other players: at the end of the pack manifest (once a second while in a lobby; `'V'` u16 protocol, u8 length, commit string - older builds stop reading before it and show up as "an older build") and, in a tag battle, as a `'TV'` message on the roster channel. The log has `[BUILD]` lines. A different commit with the same protocol only warns on screen ("Online: another player runs build X (netcode 1), this game build Y (netcode 1). Fights may desync."). A different protocol version refuses the match on both sides, like a mod pack mismatch ("no match with a player in the lobby: ..."). Bump `kNetProtocolReal` (`runtime/net_packs.cpp`) when a change makes lock-step play incompatible. `PSPRECOMP_NETBUILD_FAKE=<id>[:<protocol>]` announces another build (tests).
+
 ## The party server
 
 `tools/adhoc_relay/` ([README](../../../../tools/adhoc_relay/README.md)) is a small C++ UDP relay. A client registers into a
@@ -437,6 +484,8 @@ silence as a lost server. `party.schindlershadow.com` runs it as a user service 
 forwarded; run your own with the README's two lines and point Server at it.
 
 ## Not implemented
+
+- **TODO (large, not started; user 26 Nov): rollback netcode for high-ping play.** Players on mobile / carrier-grade NAT links play through the relay at 150-250 ms, where input delay (Network Delay) alone stalls or feels sluggish. See "Rollback: what it would need" below; the tag team lock-step (`tagteam_net.cpp`) would need the same snapshot / predict / re-simulate layer.
 
 - `sceNetAdhocDiscover*` and game mode (`sceNetAdhocctlCreateEnterGameMode` and friends): the game imports Discover but
   nothing in Communications mode was seen to need it.

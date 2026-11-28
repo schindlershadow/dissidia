@@ -126,6 +126,56 @@ static void disc_checks(const std::filesystem::path& tmp) {
     CHECK(undub_disc_problem(undubcso).empty());
     CHECK(undub_disc_problem(d012).find("cannot be read") != std::string::npos);   // no PACKAGE.BIN: a broken 012 image
 
+    // the extra's disc is looked for next to the first image: right id found, wrong ones and junk skipped
+    {
+        fs::path dir = tmp / "folder";
+        fs::create_directories(dir);
+        write_file(dir / "a_012_en.iso", make_iso("ULUS10566", "DISSIDIA duodecim FINAL FANTASY", pkg_index(0x4300D781u, 3), "xyz"));
+        write_file(dir / "b_junk.iso", std::string(50000, 'x'));
+        const std::string first = write_file(dir / "first.iso", make_iso("ULES01359", "DISSIDIA duodecim FINAL FANTASY"));
+        CHECK(find_extra_disc("d1_moves", first).empty());   // no Dissidia 1 in the folder: ask
+        write_file(dir / "z_d1.iso", make_iso("ULUS10437", "DISSIDIA FINAL FANTASY"));
+        CHECK(find_extra_disc("d1_moves", first) == (dir / "z_d1.iso").string());
+        CHECK(find_extra_disc("d1_moves", "fd:7").empty());
+        CHECK(find_extra_disc("hd_textures", first).empty());   // not an extra with a disc
+    }
+    // free space: needed grows with the extras, a failing check names the numbers, the reasons read well
+    {
+        Options none, hd;
+        for (const Extra& e : extras()) none.set(e.key, "0");
+        hd = none;
+        hd.set("hd_textures", "1");
+        CHECK(needed_bytes(false, "", hd, false) > needed_bytes(false, "", none, false));
+        CHECK(needed_bytes(true, "", none, false) == kNeededBytesAndroid);
+        CHECK(kNeededBytesAndroid < (4LL << 30));   // one copy of the disc: the phone's peak is about 3.5 GB (was 5.5)
+        {   // disc files: in the game folder (phone), in an older install's work folder, or gone (ask for the game file again)
+            const std::filesystem::path g = tmp / "gamefolder", w = tmp / "workfolder";
+            CHECK(!disc_files_present(w.string(), g.string()));
+            std::filesystem::create_directories(g / "disc0/PSP_GAME/USRDIR/DATA"); write_file(g / "disc0/PSP_GAME/USRDIR/DATA/PACKAGE.BIN", "x");
+            CHECK(disc_files_present(w.string(), g.string()));
+            std::filesystem::remove_all(g);
+            std::filesystem::create_directories(w / "disc0/PSP_GAME/USRDIR/DATA"); write_file(w / "disc0/PSP_GAME/USRDIR/DATA/PACKAGE.BIN", "x");
+            CHECK(disc_files_present(w.string(), g.string()));
+        }
+        CHECK(needed_bytes(false, "", none, true) < (1LL << 30));
+        CHECK(space_problem(tmp.string(), 1LL << 20, false).empty());
+        const std::string sp = space_problem(tmp.string(), 1LL << 60, true);
+        CHECK(sp.find("Why: ") != std::string::npos && sp.find("What to do: ") != std::string::npos);
+        FailureCtx c; c.step = "Building the game on this device"; c.stage = "Compiling the game on this device"; c.workdir = tmp.string(); c.android = true;
+        c.error = "compiling failed:\nbatch_0000.cpp:1:1: error: CacheCheckFailed";
+        CHECK(explain_failure(c).kind == "space");
+        c.error = "compiling failed: x"; c.tail = "Killed"; CHECK(explain_failure(c).kind == "memory");
+        CHECK(explain_failure(c).todo.find("Fast build") != std::string::npos);
+        c.tail = ""; c.error = "compiling failed: generated/batch_0070.cpp:1:2: error: boo";
+        CHECK(explain_failure(c).kind == "compile" && explain_failure(c).why.find("batch_0070.cpp") != std::string::npos);
+        c.error = "linking failed: ld.lld: error: undefined symbol: x"; CHECK(explain_failure(c).kind == "link");
+        c.step = "Reading your game file"; c.stage = ""; c.error = "not a 2048-byte-sector ISO 9660 image (no 'CD001' at sector 16)"; CHECK(explain_failure(c).kind == "iso");
+        c.error = "ISO truncated while reading PSP_GAME/USRDIR/x"; CHECK(explain_failure(c).kind == "damaged");
+        c.error = "segment 0 of eboot does not match the binary this analysis was made from (SHA-256 differs)"; c.step = "Building the game"; CHECK(explain_failure(c).kind == "version");
+        c.error = ""; c.tail = ""; c.exit_code = 3; c.step = "Something"; CHECK(explain_failure(c).kind == "other");
+        c.cancelled = true; CHECK(explain_failure(c).kind == "cancelled");
+    }
+
     // real disc images, when given: SETUP_TEST_DISCS="<D1 USA iso>|<012 iso with English voices>|<undub iso>"
     if (const char* e = std::getenv("SETUP_TEST_DISCS")) {
         std::string v = e;

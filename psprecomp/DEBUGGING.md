@@ -173,7 +173,7 @@ survive).
 **Tripwire pattern** for rare, lldb-suppressed races: plant a one-shot in-process state dump
 at the symptom site and let normal runs capture it.
 
-## 6. Runtime debug socket (TCP 127.0.0.1:9999)
+## 6. Runtime debug socket (TCP 9999; loopback in a tagged release, all interfaces in dev builds)
 
 Started automatically (`runtime/src/psp_debug_socket.cpp`). One command per line via `nc`;
 multiple concurrent clients supported. **v2 framing:** every command replies
@@ -189,6 +189,15 @@ silently dropped. Full protocol details in the issue #35 section below.
 | `B <hexmask> <decms>` | Inject button mask for duration (UP=10, CROSS=4000, START=8; clamped 60 s) | `OK 0` |
 | `FF <decms> [x]` | Fast-forward for up to that long (clamped 120 s; `FF 0` stops): the vblank wait moves the game's clock to the next vblank instead of sleeping, so the game runs as fast as frames render (menus: ~800-1500 frames/s). `x` (2-1000) caps it at x times real time (each frame takes at least 1/x of the game time it covers on the host clock, the clock makes up the rest; nothing is caught up after a slow frame): a screen with an idle timer still gives a script real seconds to press (uncapped, Dissidia's title went on to its attract movie ~10 s after launch, before a CROSS every 1.5 s got through). A movie keeps its own pace (its picture follows its sound, which plays in real time; the game just redraws each movie frame more often). A press held by `B` spans many frames meanwhile (menus repeat it): stop, press, resume | `OK 0` |
 | `S <path>` | Screenshot: render thread writes 480x272 TGA to `<path>` | `OK 0` (≤10 s) or `ERR timeout` |
+| `LOGLS` | List the game folder's log files (last_run.log, prev_run.log, crash*, hang*, netdump*, `crash/`, `logs/`; never saves / settings / cloud) | `OK <len>` + JSON `{dir, files:[{name,size,mtime}]}` |
+| `LOGGET <name> <offset> <len>` | Read a slice of a log (≤4 MB per call; short at EOF, empty past it; works on a growing file) | `OK <n>` + raw bytes |
+| `LOGGZ <name> <offset> <len>` | Same, gzip-compressed (members concatenate) | `OK <gzlen> <rawlen>` + gzip bytes |
+
+**Pulling logs without adb / ssh** (27 Nov batch, `games/dissidia/tools/pull_log.py`): `pull_log.py <phone-ip>[:9999] [--prev] [--tail N] [--all] [--list] [-o out]`
+writes to `~/dissidia/tt/desk_logs/<host>_<date>/`; `pull_log.py --scan 192.168.2 [--pull]` finds the game devices on a /24. Android dev builds bind all
+interfaces (a tagged release and the desktop: loopback only; `PSPRECOMP_DEBUG_BIND=lan|loopback` in env.txt overrides). Peers other than the local machine may only use
+`I` and `LOG*` (`PSPRECOMP_DEBUG_LAN_FULL=1` lifts that). `PSPRECOMP_DEBUG_LOGS=0` switches the LOG commands off. The phone running as Android user 10
+works too: the game process reads its own folder. File IO is on the client's socket thread, not the game's.
 
 ```bash
 printf 'B 10 250\n'   | nc 127.0.0.1 9999   # UP
@@ -214,6 +223,7 @@ the socket for scripted/agent input.
 | `PSPRECOMP_3D_DIAG_BIG=<samples>` | Log only non-through draws that cover >= N pixels (find the layer that blankets the screen); uses `_FROM` |
 | `PSPRECOMP_3D_SKIP_VTYPE=<hex,...>` | Drop non-clear draws with these exact vertex types (isolate layers) |
 | debug socket `T <n>` | Arm a compact per-draw trace (`[DT]` lines: occlusion `pass=`, fb, depth/blend/tex state, v0 clip pos + colour, vertex addr + raw bytes, lighting-state changes, `BEGIN_LIST`/`PRESENT`/`CLEAR` markers) for the next <n> PRIMs starting at the next display list. Diff a good and a bad frame with it |
+| debug socket `REC <n> <dir>` | Write each of the next <n> presented frames (whole window) as `<dir>/fNNNNN_<ms>.tga` (steady-clock ms in the name): frame-by-frame checks of menu transitions (what shows between two screens). Costs one read-back per frame while armed |
 | `PSPRECOMP_XP_VT=<hex vtype>` + `PSPRECOMP_XP_MODE=<mask>` | Experiment: for draws with exactly this vertex type force depth test off (1), alpha test off (2), blend off (4), texture off (8) — to see whether a layer that reports `pass=0` is hidden by that state. `PSPRECOMP_GE_RECT_OLD=1` restores the pre-fix (no perspective divide) 3D-sprite expansion for A/B |
 | `PSPRECOMP_GE_FAST=0` (alias `PSPRECOMP_GE_LEGACY=1`) | Select the legacy per-PRIM GE path (CPU vertex decode + CPU skinning/lighting, one GL draw per PRIM). **The batched fast path (skinning/lighting in the vertex shader, state-keyed draw batching, ring VBO) is the default on every platform, macOS included.** Debug-socket `G <0\|1>` flips between them at run time |
 | `PSPRECOMP_GL_STATS=1` | One `[GLSTATS]` line per second: frames/s and per-frame GL calls by class (draws, uniforms, buffer uploads, texture uploads, binds, state, sync/query) plus the six hottest entry points. Implemented by wrapping glad's function pointers (`psp_gl_stats.cpp`), so every call site is counted at zero cost when unset. `=2` additionally polls `glGetError` after **every** call and logs the first 40 as `[GLERR] 0xNNNN after <function>` - run this on any new driver (Mac) to find the exact offending call |

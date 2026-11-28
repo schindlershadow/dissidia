@@ -19,7 +19,7 @@
     <uses-feature android:name="android.hardware.gamepad" android:required="false" />
     <!-- extractNativeLibs: the compiler, recompiler and Python are executables shipped as lib*.so and must exist as files in nativeLibraryDir
          (the only place an app may execute files from since Android 10) -->
-    <application android:label="Dissidia Recomp Setup" android:icon="@mipmap/ic_launcher" android:hasCode="true" android:allowBackup="false" android:debuggable="true" android:extractNativeLibs="true" android:largeHeap="true" android:hardwareAccelerated="true" android:requestLegacyExternalStorage="true">
+    <application android:label="Dissidia Recomp Setup" android:icon="@mipmap/ic_launcher" android:hasCode="true" android:allowBackup="false" android:debuggable="true" android:extractNativeLibs="true" android:largeHeap="true" android:hardwareAccelerated="true" android:requestLegacyExternalStorage="true" android:networkSecurityConfig="@xml/network_security_config">
         <activity android:name="org.psprecomp.setup.SetupActivity" android:exported="true" android:launchMode="singleTask"
             android:configChanges="orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation|density"
             android:screenOrientation="fullUser" android:theme="@style/SetupTheme" android:windowSoftInputMode="adjustResize">

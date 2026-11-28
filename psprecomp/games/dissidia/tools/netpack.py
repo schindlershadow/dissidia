@@ -5,7 +5,7 @@ A player who uses such a mod sends the other players what their game needs to sh
 voice bank), as deltas against the retail 012 files every player already has. Nothing a peer sends is trusted:
 
   * games/dissidia/net_packs.json lists, per known pack, every file it installs with its size and SHA-256, the SHA-256 of
-    the retail file the delta applies to, and the abilities it adds (id, the record it copies, command, kind). The game
+    the retail file the delta applies to, and the abilities it adds (id, the record it copies, command, kind, CP / AP costs: a record made from the list must be byte-for-byte what the mod's own build writes, or two players' fights differ). The game
     compiles the list in (runtime/net_packs.inc, generated from the JSON by `netpack.py inc`).
   * A receiver applies a delta to ITS OWN retail file and keeps the result only when its size and SHA-256 are the listed
     ones; the file is stored under that hash, never under a name a peer chose. The ability records are made locally
@@ -31,6 +31,7 @@ import zlib
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import package_extract as pe  # noqa: E402
+import roster_mainbin as rm  # noqa: E402
 
 GAME = os.path.abspath(os.path.join(HERE, '..'))
 PACKS_JSON = os.path.join(GAME, 'net_packs.json')
@@ -123,6 +124,23 @@ def save(j):
         f.write('\n')
 
 
+MAIN_BIN_CRC = 'by_crc/93307c1c.bin'   # the mod build's main.bin (MPK): system.bin 'ablt' + 'chrl' rows
+
+
+def chrl_row(mods, char):
+    """The character's 'chrl' row (abilities learned per level: 8-byte entries) of the mod's built main.bin, as hex; '' when the mod has none.
+    A native install has it through main.bin, a received pack must set it too (the CPU records learn by level: a Bartz CPU fighter had other
+    abilities on a machine that got the pack online, and the fights desynced)."""
+    path = os.path.join(mods, MAIN_BIN_CRC)
+    if not os.path.exists(path):
+        return ''
+    _, ents = rm.mpk_unpack(open(path, 'rb').read())
+    system = next(e[2] for e in ents if e[0] == 'system.bin')
+    _, arc = rm.arc_unpack(system)
+    _, rows = rm.parse_level_table(next(e[2] for e in arc if e[0] == 'chrl'), 'chrl')
+    return b''.join(rows[char][1]).hex() if char in rows else ''
+
+
 def cmd_record(a):
     mods, disc = a.mods, pe.Package(a.disc)
     owner = json.load(open(os.path.join(mods, RETAIL_STATE), encoding="utf-8"))
@@ -146,7 +164,12 @@ def cmd_record(a):
         if 'copy' in e and not e.get('disabled'):
             pack['abilities'].append({'id': '0x%04X' % ((char << 8) | int(k, 16)), 'copy': '0x%04X' % ((char << 8) | int(str(e['copy']), 16)),
                                       'cmd': str(e['cmd']), 'type': {'brave': 0, 'hp': 1}[e['type']],
-                                      'phase': {'ground': 0, 'midair': 1, 'follow-up': 0xFF}[e['phase']]})
+                                      'phase': {'ground': 0, 'midair': 1, 'follow-up': 0xFF}[e['phase']],
+                                      # the costs the mod's build writes (roster_mainbin.py: cp +0x0E, cp_mastered +0x10 default cp // 2, ap +0x12); -1 = the copy's own
+                                      'cp': int(e['cp']) if e.get('cp') is not None else -1,
+                                      'cp_mastered': (int(e['cp_mastered']) if e.get('cp_mastered') is not None else int(e['cp']) // 2) if e.get('cp') is not None else -1,
+                                      'ap': int(e['ap']) if e.get('ap') is not None else -1})
+    pack['chrl'] = chrl_row(mods, char)
     j = load()
     j['packs'] = [p for p in j['packs'] if p['name'] != name] + [pack]
     save(j)
@@ -164,8 +187,8 @@ def cmd_inc(_a=None):
             out.append('    {"%s", %d, "%s", %d, "%s"},' % (f['path'], f['size'], f['sha256'], f['base_size'], f['base_sha256']))
         out.append('  }, {')
         for x in p['abilities']:
-            out.append('    {%s, %s, %s, %d, %d},' % (x['id'], x['copy'], x['cmd'], x['type'], x['phase']))
-        out.append('  }},')
+            out.append('    {%s, %s, %s, %d, %d, %d, %d, %d},' % (x['id'], x['copy'], x['cmd'], x['type'], x['phase'], x.get('cp', -1), x.get('cp_mastered', -1), x.get('ap', -1)))
+        out.append('  }, "%s"},' % p.get('chrl', ''))
     with open(PACKS_INC, 'w', encoding="utf-8") as f:
         f.write('\n'.join(out) + '\n')
 

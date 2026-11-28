@@ -77,7 +77,15 @@ int ge_fov_offset() {
 void ge_set_fov_offset(int deg) { g_fov_off.store(std::clamp(deg, -20, 40)); }
 static std::atomic<bool> g_fov_proj{true};
 void ge_fov_use_projection(bool on) { g_fov_proj.store(on); }
+// A game module's per-frame view-only zoom (Dissidia: the tag team's banter close-ups, whose own fov writes reach the game's camera object after its projection was built):
+// every perspective projection has its focal scales multiplied by k (1 = off), on top of the offset.
+static std::atomic<float> g_fov_k{1.0f};
+void ge_set_fov_scale(float k) { g_fov_k.store(std::clamp(k, 0.2f, 5.0f)); }
 void ge_apply_fov(float* p) {
+    {
+        const float k = g_fov_k.load();
+        if (k != 1.0f && (p[11] < -0.5f && p[11] > -1.5f) && p[15] == 0.0f && p[5] > 1e-3f && p[0] > 1e-3f) { p[0] *= k; p[5] *= k; }
+    }
     const int off = ge_fov_offset();
     if (off == 0 || !g_fov_proj.load() || !(p[11] < -0.5f && p[11] > -1.5f) || p[15] != 0.0f || !(p[5] > 1e-3f) || !(p[0] > 1e-3f)) return;
     const float kPi = 3.14159265f;

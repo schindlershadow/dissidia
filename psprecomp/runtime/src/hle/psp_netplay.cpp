@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -15,18 +16,21 @@
 #include <string>
 #include <vector>
 
+std::string psp_adhoc_peer_nick(const uint8_t* mac);   // psp_hle_adhoc.cpp
+
 namespace {
 std::atomic<uint64_t> g_frame{0};
 std::atomic<bool> g_battle{false};
 const bool g_trace = [] { const char* e = std::getenv("PSPRECOMP_NET_TRACE"); return e && e[0] && e[0] != '0'; }();
 
-std::atomic<int> g_delay{-1};        // -1: not read from the environment yet
+std::atomic<int> g_delay{-1};        // the setting: -1 not read from the environment yet, 0 Auto, 1..8 fixed
+std::atomic<int> g_auto_delay{PSP_NETPLAY_DEFAULT_DELAY};   // what Auto chose at the last battle start
 std::atomic<int> g_check{-1};
 
 // ---- desync check ----
 // Message: "NSYN", version, value count, 2 spare bytes, frame (u32 LE), then the values (u32 LE each).
 constexpr uint8_t MSG_VERSION = 1;
-constexpr size_t MSG_HDR = 12, MAX_VALUES = 120;
+constexpr size_t MSG_HDR = 12, MAX_VALUES = 160;
 constexpr uint32_t KEEP_FRAMES = 600;   // frames kept waiting for the other side's values
 using Mac = std::array<uint8_t, 6>;
 using Values = std::vector<uint32_t>;
@@ -39,8 +43,9 @@ std::map<Mac, std::map<uint32_t, Values>> g_remote;
 uint32_t g_last_local = 0;
 bool g_have_local = false;
 uint64_t g_compared = 0, g_mismatched = 0;
-bool g_reported = false;                       // the first mismatch of this battle has been reported
+int g_reports = 0;                             // mismatching frames reported in full so far (the first few: tells a fixed difference, e.g. leftover memory, from a growing one, e.g. float drift)
 int64_t g_next_summary = 0;
+std::atomic<uint32_t> g_first_bad{0xFFFFFFFFu};   // the first mismatching frame of this battle (psp_netplay_first_mismatch)
 
 int64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -67,15 +72,35 @@ void compare(const Mac& peer, uint32_t frame, const Values& mine, const Values& 
     if (mine.size() != theirs.size()) differ++;
     if (!differ) return;
     g_mismatched++;
-    if (g_reported) return;
-    g_reported = true;
+    if (g_reports >= 3 && (g_mismatched % 150) == 0) {   // later on: which fields still differ (a fixed word or a spreading split)
+        std::string names;
+        for (size_t i = 0; i < n; i++) if (mine[i] != theirs[i]) { names += ' '; names += field_name((int)i); }
+        std::fprintf(stderr, "[NETSYNC] frame %u: %d fields differ:%s\n", frame, differ, names.c_str());
+    }
+    // A fight that stays out of sync is not the same fight on every machine (the player may not be able to move on one of them, see
+    // docs/multiplayer.md "Persistent desync"): the first toast lasts 6 s only, so say it again every ~5 s of mismatching with what to do.
+    // PSPRECOMP_DESYNC_TOAST_OLD=1: only the first three reports, as before.
+    static const bool old_toast = std::getenv("PSPRECOMP_DESYNC_TOAST_OLD") != nullptr;
+    if (!old_toast && g_mismatched >= 150 && (g_mismatched % 150) == 0) {
+        std::fprintf(stderr, "[NETSYNC] still out of sync with %s after %llu mismatched frames: the fight differs on the machines (other build, other mods, other save data): leave the match from the pause menu\n",
+                     mac_str(peer).c_str(), (unsigned long long)g_mismatched);
+        // 27 Nov (user): name the player this machine differs from when known.
+        const std::string who = std::getenv("PSPRECOMP_DESYNC_NAME_OLD") ? std::string() : psp_adhoc_peer_nick(peer.data());
+        const std::string txt = "Out of sync with " + (who.empty() ? std::string("another player") : who) + ": this fight differs on your machines (other build or mods?). Leave from the pause menu.";
+        ge_draw_toast(txt.c_str(), 5000, 40);
+    }
+    if (frame < g_first_bad.load(std::memory_order_relaxed)) g_first_bad.store(frame, std::memory_order_relaxed);
+    if (g_reports >= 3) return;
+    g_reports++;
     char msg[160];
     if (first >= 0) {
         std::fprintf(stderr, "[NETSYNC] DESYNC at frame %u with %s: %d of %zu fields differ, first %s local %08X remote %08X\n", frame,
                      mac_str(peer).c_str(), differ, n, field_name(first), mine[first], theirs[first]);
         for (size_t i = 0; i < n; i++)
             if (mine[i] != theirs[i]) std::fprintf(stderr, "[NETSYNC]   %-24s local %08X remote %08X\n", field_name((int)i), mine[i], theirs[i]);
-        std::snprintf(msg, sizeof msg, "Desync at frame %u (%s)", frame, field_name(first));
+        { const std::string who = std::getenv("PSPRECOMP_DESYNC_NAME_OLD") ? std::string() : psp_adhoc_peer_nick(peer.data());
+          if (who.empty()) std::snprintf(msg, sizeof msg, "Desync at frame %u (%s)", frame, field_name(first));
+          else std::snprintf(msg, sizeof msg, "Desync with %s at frame %u (%s)", who.c_str(), frame, field_name(first)); }
     } else {
         std::fprintf(stderr, "[NETSYNC] DESYNC at frame %u with %s: %zu values here, %zu there (different builds?)\n", frame,
                      mac_str(peer).c_str(), mine.size(), theirs.size());
@@ -96,19 +121,44 @@ void psp_netplay_frame_end(bool battle) {
     g_frame.fetch_add(1, std::memory_order_relaxed);
     g_battle.store(battle, std::memory_order_relaxed);
 }
+uint32_t psp_netplay_first_mismatch() { return g_first_bad.load(std::memory_order_relaxed); }
 uint64_t psp_netplay_frame() { return g_frame.load(std::memory_order_relaxed); }
 
-int psp_netplay_input_delay() {
+int psp_netplay_delay_setting() {
     int d = g_delay.load(std::memory_order_relaxed);
     if (d < 0) {
         const char* e = std::getenv("PSPRECOMP_NET_DELAY");
         if (!e || !*e) e = std::getenv("PSPRECOMP_NET_INPUT_DELAY");   // the old name
-        d = std::clamp(e ? std::atoi(e) : PSP_NETPLAY_DEFAULT_DELAY, PSP_NETPLAY_MIN_DELAY, PSP_NETPLAY_MAX_DELAY);
+        d = (!e || !*e || !std::strcmp(e, "auto")) ? PSP_NETPLAY_AUTO_DELAY : std::clamp(std::atoi(e), PSP_NETPLAY_AUTO_DELAY, PSP_NETPLAY_MAX_DELAY);
         g_delay.store(d, std::memory_order_relaxed);
     }
     return d;
 }
-void psp_netplay_set_input_delay(int frames) { g_delay.store(std::clamp(frames, PSP_NETPLAY_MIN_DELAY, PSP_NETPLAY_MAX_DELAY), std::memory_order_relaxed); }
+int psp_netplay_input_delay() {
+    const int d = psp_netplay_delay_setting();
+    return d == PSP_NETPLAY_AUTO_DELAY ? g_auto_delay.load(std::memory_order_relaxed) : d;
+}
+void psp_netplay_set_input_delay(int frames) { g_delay.store(std::clamp(frames, PSP_NETPLAY_AUTO_DELAY, PSP_NETPLAY_MAX_DELAY), std::memory_order_relaxed); }
+
+int psp_netplay_delay_for(int rtt_ms, int jitter_ms) {
+    const double need = std::max(0, rtt_ms) + 4.0 * std::max(0, jitter_ms) + 12.0;   // ms the two delays together have to cover
+    const int lost = rtt_ms > 20 ? 1 : 0;   // not a LAN: one frame more, so that a lost packet (its words come with the next, a frame later) is not a wait
+    return std::clamp(static_cast<int>(std::ceil(need / (2000.0 / 30.0))) + lost, PSP_NETPLAY_MIN_DELAY, PSP_NETPLAY_MAX_DELAY);
+}
+int psp_netplay_pick_delay() {
+    const int set = psp_netplay_delay_setting();
+    if (set != PSP_NETPLAY_AUTO_DELAY) return set;
+    const int rtt = psp_adhoc_ping_ms(), jit = psp_adhoc_ping_jitter_ms();
+    const int loss = psp_adhoc_ping_loss_permille();
+    // A path that loses packets (1 % of the pings or more): one frame more. A lost packet's words come with the next one, a frame
+    // later, and with jitter on top the delay for a clean path is one frame short for it (measured 26 Nov, 80 ms + 30 ms jitter +
+    // 2 % loss: starting at 4 the fight held or waited for input all through; the old lead of 5 did not).
+    const int d = rtt < 0 ? PSP_NETPLAY_DEFAULT_DELAY : std::min(PSP_NETPLAY_MAX_DELAY, psp_netplay_delay_for(rtt, jit) + (loss >= 10 ? 1 : 0));
+    g_auto_delay.store(d, std::memory_order_relaxed);
+    if (rtt < 0) std::fprintf(stderr, "[NETPLAY] network delay Auto: %d frames (no ping from the other player yet)\n", d);
+    else std::fprintf(stderr, "[NETPLAY] network delay Auto: %d frame(s) for a round trip of %d ms, jitter %d ms, %.1f %% of the pings lost\n", d, rtt, std::max(0, jit), loss / 10.0);
+    return d;
+}
 
 bool psp_netplay_sync_check() {
     int c = g_check.load(std::memory_order_relaxed);
@@ -138,7 +188,8 @@ void psp_netplay_submit_state(uint32_t frame, const uint32_t* values, int count)
             for (auto& [mac, m] : g_remote)
                 for (auto it = m.begin(); it != m.end();) it = it->first >= frame + KEEP_FRAMES ? m.erase(it) : std::next(it);
             g_compared = g_mismatched = 0;
-            g_reported = false;
+            g_reports = 0;
+            g_first_bad.store(0xFFFFFFFFu, std::memory_order_relaxed);
         }
         g_have_local = true;
         g_last_local = frame;

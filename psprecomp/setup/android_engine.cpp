@@ -22,6 +22,8 @@
 #include "install.h"
 #include "payload.h"
 #include "proc.h"
+#include "psp_report.h"
+#include "report_key.h"
 
 namespace fs = std::filesystem;
 
@@ -104,12 +106,13 @@ std::string options_text(const setup::Options& o) {
 // A plan that only prints what a build prints (for testing the app's pages where the bundled tools cannot run, e.g. the x86_64 emulator,
 // whose arm64 translation does not load the musl Python). Used when files/ui_demo exists (only `run-as` on a debuggable build can make it);
 // "fail" in that file makes the build step fail.
-std::vector<setup::Step> demo_plan(const std::string& work, bool fail) {
+std::vector<setup::Step> demo_plan(const std::string& work, const std::string& fail) {   // fail: "" = none, else compile / mem / space / iso
     auto sh = [](const std::string& script) { return std::vector<std::string>{"/system/bin/sh", "-c", script}; };
     setup::Step x, b, c;
     x.label = "Reading your game file";
     x.explain = "Reads the game's files out of your disc image. Nothing is uploaded. (demo)";
-    x.argv = sh("i=0; while [ $i -lt 30 ]; do echo \"extract: PSP_GAME/USRDIR/file_$i.bin\"; i=$((i+1)); sleep 0.08; done; echo 'decrypting EBOOT.BIN'; sleep 0.5");
+    x.argv = sh(fail == "iso" ? "echo '[1/4] Reading ISO x.iso'; sleep 1; echo \"error: not a 2048-byte-sector ISO 9660 image (no 'CD001' at sector 16)\"; exit 3"
+                              : "i=0; while [ $i -lt 30 ]; do echo \"extract: PSP_GAME/USRDIR/file_$i.bin\"; i=$((i+1)); sleep 0.08; done; echo 'decrypting EBOOT.BIN'; sleep 0.5");
     x.weight = 0.10;
     b.label = "Building the game on this device";
     b.explain = "Translates the game and compiles it here: the long part. (demo)";
@@ -118,7 +121,9 @@ std::vector<setup::Step> demo_plan(const std::string& work, bool fail) {
                             "echo '[psp-build] STEP 2/5 Translating the game'; for p in 10 40 80 100; do echo \"[psp-build] PROGRESS $p\"; sleep 0.4; done; "
                             "echo '[psp-build] STEP 3/5 Translating the overlays'; sleep 0.6; echo '[psp-build] STEP 4/5 Configuring'; sleep 0.4; "
                             "echo '[psp-build] STEP 5/5 Compiling the game'; i=1; while [ $i -le 160 ]; do echo \"[$i/160] Building CXX object generated/batch_$i.cpp.o\"; ") +
-                (fail ? "if [ $i = 70 ]; then echo 'generated/batch_70.cpp:1234:5: error: use of undeclared identifier'; echo '[psp-build] ERROR compiling batch_70.cpp failed'; exit 1; fi; " : "") +
+                (fail == "compile" ? "if [ $i = 70 ]; then echo 'generated/batch_70.cpp:1234:5: error: use of undeclared identifier'; echo '[psp-build] ERROR compiling batch_70.cpp failed'; exit 1; fi; " :
+                 fail == "space" ? "if [ $i = 20 ]; then echo '/data/user/0/org.psprecomp.setup/files/work/output/generated/batch_0000.cpp:1:1: error: CacheCheckFailed'; echo '[psp-build] ERROR compiling failed:'; exit 1; fi; " :
+                 fail == "mem" ? "if [ $i = 40 ]; then kill -9 $$; fi; " : "") +
                 "if [ $i = 33 ]; then echo 'warning: argument unused during compilation'; fi; if [ $((i % 8)) = 0 ]; then echo \"[psp-build] PROGRESS $((i * 100 / 160))\"; fi; i=$((i+1)); sleep 0.12; done; echo 'Linking libmain.so'; sleep 1");
     b.weight = 0.80;
     c.label = "Putting the game files where the game can read them";
@@ -220,9 +225,31 @@ JNI(jobjectArray, extrasNeedingDisc)(JNIEnv* e, jclass, jstring jopts, jstring j
 // what is wrong with it. The path may be "fd:N"; the descriptor's offset is not moved.
 JNI(jstring, discProblem)(JNIEnv* e, jclass, jstring key, jstring path) { return jstr(e, setup::extra_disc_problem(str(e, key), str(e, path))); }
 
+// Looks for the extra's disc in the folder of the first image (a real path): "" = none, ask the player.
+JNI(jstring, findExtraDisc)(JNIEnv* e, jclass, jstring key, jstring near_file) { return jstr(e, setup::find_extra_disc(str(e, key), str(e, near_file))); }
+
+// Free space the install (kind "install" / "rebuild") or the extras need, and the failure text when the work folder has less.
+JNI(jlong, neededBytes)(JNIEnv* e, jclass, jstring jopts, jstring jwork, jboolean extras_only) {
+    const std::string os = str(e, jopts);
+    setup::Options o = parse_options(os);
+    if (os == "@none") for (const setup::Extra& x : setup::extras()) o.set(x.key, "0");   // the build only (a rebuild downloads nothing)
+    return (jlong)setup::needed_bytes(true, str(e, jwork), o, extras_only);
+}
+JNI(jstring, spaceProblem)(JNIEnv* e, jclass, jstring jwork, jlong need) { return jstr(e, setup::space_problem(str(e, jwork), (long long)need, true)); }
+
+// Why a step failed, in words (setup/install.cpp explain_failure): { kind, title, text }.
+JNI(jobjectArray, explainFailure)(JNIEnv* e, jclass, jstring step, jstring stage, jstring error, jstring tail, jstring work, jint code, jboolean cancelled) {
+    setup::FailureCtx c;
+    c.step = str(e, step); c.stage = str(e, stage); c.error = str(e, error); c.tail = str(e, tail); c.workdir = str(e, work);
+    c.exit_code = code; c.android = true; c.cancelled = cancelled;
+    const setup::Failure f = setup::explain_failure(c);
+    return to_array(e, {f.kind, f.title(), f.text()});
+}
+
 JNI(jstring, layoutProblem)(JNIEnv* e, jclass) { return jstr(e, g_problem); }
 JNI(jboolean, feature)(JNIEnv* e, jclass, jstring name) { return setup::feature_available(g_layout, str(e, name)); }
 JNI(jstring, payloadFingerprint)(JNIEnv* e, jclass) { return jstr(e, g_layout.android_dir.empty() ? "" : setup::android_payload_fingerprint(g_layout)); }
+JNI(jboolean, discPresent)(JNIEnv* e, jclass, jstring jwork) { return setup::disc_files_present(str(e, jwork), setup::android_game_dir()); }
 JNI(jstring, gameDir)(JNIEnv* e, jclass) { return jstr(e, setup::android_game_dir()); }
 JNI(jstring, releaseRoot)(JNIEnv* e, jclass) { return jstr(e, g_root); }
 
@@ -257,7 +284,7 @@ JNI(jstring, plan)(JNIEnv* e, jclass, jstring jkind, jstring jiso, jstring jwork
     const std::string kind = str(e, jkind), iso = str(e, jiso), work = str(e, jwork);
     const setup::Options o = parse_options(str(e, jopts)), prev = parse_options(str(e, jprev));
     std::lock_guard<std::mutex> lk(g_mu);
-    if (kind == "demo" || kind == "demo-fail") g_plan = demo_plan(work, kind == "demo-fail");
+    if (kind == "demo" || kind.compare(0, 9, "demo-fail") == 0) g_plan = demo_plan(work, kind.size() > 10 ? kind.substr(10) : kind == "demo-fail" ? "compile" : "");
     else if (kind == "install") g_plan = setup::plan_install_android(g_layout, iso, work, o);
     else if (kind == "rebuild") g_plan = setup::plan_rebuild_android(g_layout, work);
     else g_plan = setup::plan_extras_android(g_layout, work, prev, o);
@@ -373,6 +400,55 @@ JNI(jstring, parseUpdate)(JNIEnv* e, jclass, jstring line) {
 JNI(void, inheritFd)(JNIEnv*, jclass, jint fd) {
     int fl = fcntl(fd, F_GETFD);
     if (fl >= 0) fcntl(fd, F_SETFD, fl & ~FD_CLOEXEC);
+}
+
+// ---- Report an issue (runtime/src/psp_report.cpp, the game's code: scrubbing, zip, system facts; the Java side does the HTTPS POST) ----
+// flat string arrays: files = rel, path, rel, path ...; facts = key, value, key, value ...
+static void report_product(JNIEnv* e, jstring version, jstring space_dir, jobjectArray files, jobjectArray facts) {
+    auto strs = [&](jobjectArray a) {
+        std::vector<std::string> v;
+        for (jsize i = 0, n = a ? e->GetArrayLength(a) : 0; i < n; i++) {
+            jstring s = (jstring)e->GetObjectArrayElement(a, i);
+            v.push_back(str(e, s));
+            e->DeleteLocalRef(s);
+        }
+        return v;
+    };
+    psp_report::Product p;
+    p.name = "installer";
+    p.version = str(e, version);
+    p.space_dir = str(e, space_dir);
+    const auto f = strs(files), k = strs(facts);
+    for (size_t i = 0; i + 1 < f.size(); i += 2) p.files.push_back({f[i], f[i + 1], 8u << 20});
+    for (size_t i = 0; i + 1 < k.size(); i += 2) p.facts.push_back({k[i], k[i + 1]});
+    psp_report::set_product(p);
+}
+
+// The files a report holds: "name|bytes" lines (the page shows them before anything is sent).
+JNI(jobjectArray, reportPreview)(JNIEnv* e, jclass, jstring version, jstring space_dir, jobjectArray files, jobjectArray facts) {
+    report_product(e, version, space_dir, files, facts);
+    std::vector<std::string> out;
+    for (const auto& f : psp_report::preview(false)) out.push_back(f.name + "|" + std::to_string(f.size));
+    return to_array(e, out);
+}
+
+// Builds the zip (scrubbed logs + report.json with the system facts) into `out`. "" = ok, else the error.
+JNI(jstring, reportBuild)(JNIEnv* e, jclass, jstring version, jstring space_dir, jobjectArray files, jobjectArray facts, jstring title, jstring desc, jstring out) {
+    report_product(e, version, space_dir, files, facts);
+    psp_report::Params p;
+    p.title = str(e, title);
+    p.description = str(e, desc);
+    p.include_dump = false;
+    std::string err;
+    if (!psp_report::build_zip_file(p, str(e, out), &err)) return jstr(e, err.empty() ? "could not build the report" : err);
+    return jstr(e, "");
+}
+
+// X-Report-Sig for a zip file: HMAC-SHA256(report_key.h's key, "<time>\n<sha256 of the file>"). The key lives only in report_key.h.
+JNI(jstring, reportSign)(JNIEnv* e, jclass, jstring time, jstring zip) {
+    std::ifstream f(str(e, zip), std::ios::binary);
+    std::string b((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    return jstr(e, psp_report::hmac_sha256_hex(PSPRECOMP_REPORT_KEY, str(e, time) + "\n" + psp_report::sha256_hex(reinterpret_cast<const uint8_t*>(b.data()), b.size())));
 }
 
 JNI(jlong, freeSpace)(JNIEnv* e, jclass, jstring path) { return (jlong)setup::free_space(str(e, path)); }

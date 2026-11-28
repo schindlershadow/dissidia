@@ -14,8 +14,11 @@
 //   psprecomp_setup --headless --iso FILE --dir DIR   the install steps without a window (prints the output; for scripts/tests)
 //   psprecomp_setup --headless ... --saves SAVEDATA   also import the saves of a SAVEDATA folder
 //   psprecomp_setup --headless ... --extra KEY=VALUE  turn on an extra / give its disc (repeatable; e.g. d1_moves=1 d1_iso=FILE)
+//   psprecomp_setup --headless ... --dlc GAMEFOLDER   also import Dissidia 012's DLC (PSP/GAME/<id>: the .edat files) as a mod
+//   psprecomp_setup --import-dlc GAMEFOLDER --dir DIR  copy the DLC into an install (an install step; no window)
 //   psprecomp_setup --import-saves SAVEDATA --dir DIR  copy Dissidia 012 saves into an install (an install step; no window)
 //   psprecomp_setup --root DIR               use DIR as the release folder instead of this program's folder
+//   psprecomp_setup --report "TEXT" [--dir DIR] [--report-step "WHAT FAILED"]   send a "Report an issue" without a window (tests; PSPRECOMP_REPORT_URL picks the service)
 //   psprecomp_setup --screenshots OUTDIR     write PPM images of the pages (documentation / look checks) and exit
 #define SDL_MAIN_HANDLED   // keep the plain main() on Windows (see SDL_SetMainReady below)
 #include <SDL.h>
@@ -25,14 +28,18 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
+#include <functional>
 #include <vector>
 
 #include "../runtime/src/hle/psp_savedata_dialog.h"
 #include "../runtime/src/hle/psp_savemgr.h"
+#include "../runtime/include/psp_report.h"
+#include "../games/dissidia/runtime/dlc_import.h"
 #include "install.h"
 #include "extras.h"
 #include "../runtime/include/psp_app_icon_installer.h"   // the wizard has its own icon, not the game's
@@ -109,6 +116,25 @@ struct Entry {
     std::string name, path, info;
     bool dir = false, up = false, use_here = false, type_path = false;
 };
+
+// A failure text ("<what>\n\nWhy: ...\n\nWhat to do: ...") as (label, body) rows; a plain text is one row.
+std::vector<std::pair<std::string, std::string>> paragraphs(const std::string& t) {
+    std::vector<std::pair<std::string, std::string>> v;
+    size_t a = 0;
+    while (a <= t.size()) {
+        size_t b = t.find("\n\n", a);
+        std::string p = t.substr(a, b == std::string::npos ? std::string::npos : b - a);
+        if (!p.empty()) {
+            if (p.compare(0, 5, "Why: ") == 0) v.push_back({"Why", p.substr(5)});
+            else if (p.compare(0, 12, "What to do: ") == 0) v.push_back({"What to do", p.substr(12)});
+            else v.push_back({v.empty() ? "What happened" : "More", p});
+        }
+        if (b == std::string::npos) break;
+        a = b + 2;
+    }
+    if (v.empty()) v.push_back({"What happened", t});
+    return v;
+}
 
 std::string upper(std::string s) {
     for (auto& c : s) c = (char)std::toupper((unsigned char)c);
@@ -198,7 +224,7 @@ struct Browser {
 };
 
 // -------------------------------------------------------------------------------------------------------------- app
-enum class Screen { Welcome, PickInfo, PickIso, PickUndub, Waiting, InstallDir, BrowseDir, TypePath, Options, Build, Done, Failed, Checking, UpdateAvail, Message };
+enum class Screen { Welcome, PickInfo, PickIso, PickUndub, Waiting, InstallDir, BrowseDir, TypePath, Options, Build, Done, Failed, Checking, UpdateAvail, Message, Report, ReportText, Interrupted };
 // What a file/folder pick is for.
 enum class Pick { Iso, Disc, Dir };   // Disc: the second disc image of an extra (pick_extra; setup/extras.cpp)
 
@@ -226,6 +252,7 @@ struct App {
     setup::Options opt;
     std::vector<psp_savemgr::Source> save_sources;   // PPSSPP / memory sticks that hold Dissidia 012 saves (found when Options opens)
     bool save_sources_scanned = false;
+    std::vector<dissidia_dlc::Source> dlc_sources;   // PPSSPP / memory sticks that hold Dissidia 012's DLC (found with the saves)
     bool rebuild_only = false;
     bool android_inst = false;   // the running plan is the Android device install
     bool updating = false;
@@ -244,6 +271,33 @@ struct App {
     // native (system) file dialogs; the built-in browser is the fallback
     std::unique_ptr<pfd::open_file> file_dlg;
     std::unique_ptr<pfd::select_folder> dir_dlg;
+    // Dialogs we no longer want. Destroying a pfd dialog blocks until the user closes it (it waits for the child
+    // process / thread), which froze the whole wizard on Back / "Use the simple browser instead". They wait here and
+    // are destroyed once they have finished, without ever blocking the render loop.
+    std::vector<std::function<bool()>> dlg_graveyard;   // each returns true once its dialog finished (and has destroyed it)
+    void drop_dialogs() {
+        retire(std::move(file_dlg));
+        retire(std::move(dir_dlg));
+    }
+    template <class D> void retire(std::unique_ptr<D> d) {
+        if (!d) return;
+#ifndef _WIN32
+        d->kill();   // SIGKILL the zenity/kdialog child; reaping it is quick
+#endif
+        std::shared_ptr<D> sp(std::move(d));
+        sp->close_async();   // Windows: post WM_CLOSE to the dialog's windows (never blocks); the helper process was killed above elsewhere
+        dlg_graveyard.push_back([sp]() mutable {
+            if (!sp->ready(0)) { sp->close_async(); return false; }   // keep asking until it is gone
+            sp.reset();
+            return true;
+        });
+    }
+    bool dialogs_pending() const { return file_dlg || dir_dlg || !dlg_graveyard.empty(); }
+    void reap_dialogs() {
+        for (size_t i = 0; i < dlg_graveyard.size();) {
+            if (dlg_graveyard[i]()) dlg_graveyard.erase(dlg_graveyard.begin() + i); else ++i;
+        }
+    }
     Pick pick = Pick::Iso;
     std::string pick_extra;   // Pick::Disc: the key of the extra whose disc is picked
     const setup::Extra* picked_extra() const { return setup::find_extra(pick_extra); }
@@ -251,7 +305,7 @@ struct App {
 
     // Every page is drawn by the game's Settings screen renderer. The extras' rows come from the shared list (setup/extras.cpp, also the
     // Android app's), then the desktop's own options.
-    enum OptKind { OR_EXTRA, OR_UPDATES, OR_ANDROID, OR_SAVES, OR_STEAM, OR_FOLDER, OR_START, OR_BACK };
+    enum OptKind { OR_EXTRA, OR_UPDATES, OR_ANDROID, OR_SAVES, OR_DLC, OR_STEAM, OR_FOLDER, OR_START, OR_BACK };
     struct OptRow {
         OptKind kind;
         std::string extra;   // OR_EXTRA: its key
@@ -269,6 +323,7 @@ struct App {
         }
         r.push_back({OR_ANDROID, ""});
         r.push_back({OR_SAVES, ""});
+        r.push_back({OR_DLC, ""});
         r.push_back({OR_STEAM, ""});
         if (!extras_mode) {
             r.push_back({OR_UPDATES, ""});
@@ -284,6 +339,16 @@ struct App {
         for (size_t k = 0; k < r.size(); k++) if (r[k] == focus) i = (int)k;
         go(Screen::Options, i);
     }
+
+    // "Report an issue" (psp_report.cpp, the game's code): the description is typed with the on-screen keyboard (host keyboard or pad)
+    std::string rep_text;                 // what the player typed
+    Screen rep_back = Screen::Welcome;    // where Back goes
+    bool rep_sent = false;                // a report went out (the status row shows its result)
+    bool rep_working = false;
+    std::string rep_value;                // the Status row's short value: "Issue #N opened" / "Not sent"
+    std::string rep_failed_step;          // the step that failed (Failed page), put into the report
+    std::string rep_status;               // last status line
+    std::string marker_path;              // exists while an install runs: found at the next start = the last run did not end
 
     // build
     setup::Proc proc;
@@ -339,7 +404,7 @@ struct App {
             p.title = "DISSIDIA 012 SETUP";
             if (!layout_problem.empty()) {
                 p.tab = "Problem";
-                p.rows = {row("Quit", layout_problem)};
+                p.rows = {row("Quit", layout_problem), row("Report an issue", "Send a report about this problem to the developer.")};
             }
             else if (installed()) {
                 p.tab = "Installed";
@@ -349,12 +414,14 @@ struct App {
                           row("Check for updates", "Look for a newer release of the game files (not available yet)."),
                           row("Rebuild the game", "Compile the game again from your extracted files. Use this if the game does not start."),
                           row("Install again", "Pick a game file and install from scratch (your saves are kept)."),
+                          row("Report an issue", "Tell the developer what went wrong. You see exactly what is sent before it goes."),
                           row("Quit")};
             } else {
                 p.tab = "Welcome";
                 p.rows = {row("Install the game",
                               "Builds the game on this computer from your own copy of Dissidia 012 (EU or US, ISO or CSO). "
                               "Nothing from the game is downloaded or shipped with this program. It takes a while."),
+                          row("Report an issue", "Tell the developer what went wrong. You see exactly what is sent before it goes."),
                           row("Quit")};
             }
             break;
@@ -418,6 +485,8 @@ struct App {
             bool an = setup::feature_available(layout, "android");
             if (!save_sources_scanned) {
                 save_sources = psp_savemgr::detect_sources(true);
+                dlc_sources = dissidia_dlc::detect();
+                if (opt.import_dlc.empty() && !dlc_sources.empty()) opt.import_dlc = dlc_sources[0].path;   // found: import it unless the player turns it off
                 save_sources_scanned = true;
             }
             for (OptRow k : option_rows()) {
@@ -441,6 +510,18 @@ struct App {
                         sv.can_dec = sv.can_inc = true;
                     } else sv.help = "No PPSSPP or memory stick saves of Dissidia 012 were found. You can import saves later in the game (Triangle in the save list).";
                     p.rows.push_back(sv);
+                    break;
+                }
+                case OR_DLC: {
+                    MenuRow dl = row("Import DLC", "", "None found");
+                    if (!dlc_sources.empty()) {
+                        dl.help = "Copies Dissidia 012's downloadable content (extra costumes, music, Aerith's unlock) from PPSSPP or a PSP memory stick into the game as a mod, whatever the region. The originals are not changed. Settings > Mods in the game turns it on and off, and installs it later from a folder or a zip.";
+                        dl.value = "Off";
+                        for (auto& src : dlc_sources)
+                            if (src.path == opt.import_dlc) dl.value = src.label + " (" + std::to_string(src.files) + " files)";
+                        dl.can_dec = dl.can_inc = true;
+                    } else dl.help = "No PPSSPP or memory stick with Dissidia 012's DLC was found. You can install it later in the game: Settings > Mods > Install DLC (from a folder or a zip).";
+                    p.rows.push_back(dl);
                     break;
                 }
                 case OR_STEAM:
@@ -495,7 +576,8 @@ struct App {
         case Screen::Message:
             p.title = msg_title;
             p.tab = "Info";
-            p.rows = {row("OK", msg_text)};
+            for (const auto& pa : paragraphs(msg_text)) if (paragraphs(msg_text).size() > 1) p.rows.push_back(row(pa.first, pa.second));
+            p.rows.push_back(row("OK", paragraphs(msg_text).size() > 1 ? std::string("Close this.") : msg_text));
             break;
         case Screen::Done:
             p.title = "ALL DONE";
@@ -505,10 +587,33 @@ struct App {
                 p.rows.push_back(row("Install on an Android device", "The Android version is built: " + cur_workdir() + "/android/dissidia.apk. This installs it on a device connected with USB or wireless debugging (adb in your PATH) and copies the game files to it. Or install the APK by hand and copy the folders (see docs/android.md)."));
             p.rows.push_back(row("Quit", (shortcut_note.empty() ? std::string() : shortcut_note + ". ") + "The game can also be started with this program any time."));
             break;
+        case Screen::Interrupted:
+            p.title = "LAST RUN STOPPED";
+            p.tab = "Report";
+            p.rows = {row("Report an issue", "The last install did not finish: the program was closed or crashed while it ran. Send the install log to the developer so it can be fixed."),
+                      row("Continue")};
+            break;
+        case Screen::Report: {
+            p.title = "REPORT AN ISSUE";
+            p.tab = "Send";
+            const std::string d = rep_text.empty() ? std::string("(not written yet)") : shorten_left(rep_text, 34);
+            p.rows = {row("What went wrong", "Describe the problem in a few words (what you did, what you expected, what happened). Select to type it with the keyboard.", d),
+                      row("Files that will be sent", report_files_help()),
+                      row("Send the report", "Sends the report to the developer's issue tracker on GitHub, then opens the new issue in your browser. Nothing is sent before you choose this."),
+                      row("Status", rep_status.empty() ? std::string("Nothing is sent until you choose Send the report.") : rep_status, rep_working ? "Sending..." : rep_sent ? rep_value : ""),
+                      row("Back")};
+            if (!rep_working && !rep_sent) p.rows[3].value = "";
+            break;
+        }
+        case Screen::ReportText:
+            break;
         case Screen::Failed:
             p.title = "NOT FINISHED";
             p.tab = "Stopped";
-            p.rows = {row("Try again", fail_msg + " Trying again continues where it stopped.")};
+            for (const auto& pa : paragraphs(fail_msg)) p.rows.push_back(row(pa.first, pa.second, pa.first == "What happened" ? fail_title : ""));
+            p.rows.push_back(row("Try again", "Runs the steps again; what is already done is kept."));
+            p.rows.push_back(
+                      row("Report an issue", "Send the log and what failed to the developer. You see what is sent first."));
             if (can_open_log()) {
                 p.rows.push_back(row("Open setup.log", "The log of this install: every step's output and why it stopped. " + log_path));
                 p.rows.push_back(row("Show setup.log in its folder", "Opens the install folder with setup.log selected, e.g. to send the file. " + log_path));
@@ -518,6 +623,104 @@ struct App {
             break;
         }
         return p;
+    }
+
+    // ---- Report an issue ----
+    static std::string release_version(const std::string& root) {
+        std::ifstream f(fs::path(root) / "release.json");
+        std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        size_t at = s.find("\"version\"");
+        if (at == std::string::npos) return "dev";
+        at = s.find('"', s.find(':', at) + 1);
+        const size_t e = at == std::string::npos ? at : s.find('"', at + 1);
+        return e == std::string::npos ? "dev" : s.substr(at + 1, e - at - 1);
+    }
+    // Names the files of this install for the report (the same list the preview shows).
+    void report_configure() {
+        psp_report::Product pr;
+        pr.name = "installer";
+        pr.version = release_version(layout.root);
+        const std::string wd = cur_workdir();
+        const std::string logp = !log_path.empty() ? log_path : (fs::path(wd) / "setup.log").string();
+        pr.files.push_back({"setup.log", logp, 8u << 20});
+        if (!wd.empty()) {
+            for (const char* n : {"last_run.log", "prev_run.log", "run.log"}) pr.files.push_back({n, (fs::path(wd) / n).string(), 8u << 20});
+            std::error_code ec;
+            for (auto it = fs::directory_iterator(wd, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
+                const std::string n = it->path().filename().string(), l = lower(n);
+                if (l.rfind("crash", 0) == 0 || l.rfind("hs_err", 0) == 0) pr.files.push_back({n, it->path().string(), 1u << 20});
+            }
+        }
+        pr.save_dir = (fs::path(marker_path).parent_path() / "reports").string();
+        pr.space_dir = wd.empty() ? setup::home_dir() : wd;
+        std::error_code ec;
+        if (!fs::exists(pr.space_dir, ec)) pr.space_dir = setup::home_dir();
+        pr.facts.push_back({"installer_screen", std::to_string((int)screen)});
+#ifdef _WIN32
+        pr.facts.push_back({"installer_platform", "windows"});
+#else
+        pr.facts.push_back({"installer_platform", "linux"});
+#endif
+        pr.facts.push_back({"extras", opt.get("hd_textures").empty() ? "" : "hd_textures=" + opt.get("hd_textures")});
+        psp_report::set_product(pr);
+    }
+    std::string report_files_help() {
+        report_configure();
+        std::string s = "Sent: your description, the installer's version, OS, CPU, memory and free space, which step failed, and ";
+        for (const auto& f : psp_report::preview(false)) {
+            if (f.name == "report.json") continue;
+            s += f.name + ", ";
+        }
+        s += "(your user name and home folder are replaced by ~). Never sent: your disc image, cloud.ini, saves.";
+        return s;
+    }
+    void begin_report(Screen back) {
+        rep_back = back;
+        rep_sent = rep_working = false;
+        rep_status.clear();
+        go(Screen::Report, 0);
+    }
+    void send_report() {
+        if (rep_working) return;
+        if (rep_text.empty() && rep_failed_step.empty()) { rep_status = "Write a few words about what went wrong first (What went wrong)."; dirty = true; return; }
+        report_configure();
+        psp_report::Params p;
+        p.description = rep_text;
+        if (!rep_failed_step.empty()) p.description += (rep_text.empty() ? "" : "\n\n") + std::string("Failed: ") + rep_failed_step;
+        p.title = "Installer: " + (rep_text.empty() ? rep_failed_step : rep_text.substr(0, 70));
+        p.include_dump = false;
+        if (!rep_failed_step.empty()) p.extra.push_back({"failure", rep_failed_step});
+        if (!prog.stage.empty()) p.extra.push_back({"last_step", prog.stage});
+        if (!prog.last_line.empty()) p.extra.push_back({"last_line", prog.last_line});
+        if (!psp_report::start(p)) { rep_status = "A report is already being sent."; dirty = true; return; }
+        rep_working = true;
+        rep_sent = false;
+        rep_status = "Collecting the report...";
+        dirty = true;
+    }
+    void pump_report() {
+        if (!rep_working) return;
+        const psp_report::Status st = psp_report::status();
+        if (st.text != rep_status && st.state == psp_report::Status::Working) { rep_status = st.text; dirty = true; }
+        if (!psp_report::take_finished()) return;
+        rep_working = false;
+        rep_sent = true;
+        rep_status = st.text;
+        rep_value = st.state == psp_report::Status::Done ? st.text : "Not sent";
+        sel = 3;   // the Status row, whose help says what happened (and where the zip was saved when it did not go)
+        if (st.state == psp_report::Status::Done) {
+            std::fprintf(stderr, "[REPORT] %s %s\n", st.text.c_str(), st.issue_url.c_str());
+            const char* no = std::getenv("PSPRECOMP_REPORT_NO_OPEN");
+            if (!(no && no[0] == '1')) SDL_OpenURL(st.issue_url.c_str());
+            rep_status = st.text + ". Your browser opens it: " + st.issue_url;
+        }
+        log_line("report: " + rep_status);
+        dirty = true;
+    }
+    void marker(bool on) {
+        if (marker_path.empty()) return;
+        if (on) { if (FILE* f = std::fopen(marker_path.c_str(), "wb")) { std::fputs("install running\n", f); std::fclose(f); } }
+        else { std::error_code ec; fs::remove(marker_path, ec); }
     }
 
     bool can_open_log() const {   // a desktop with a setup.log to show (Android: the app's storage, not reachable from here)
@@ -542,6 +745,8 @@ struct App {
         else if (update) plan = setup::plan_update(layout, state.workdir, o, upd);
         else plan = rebuild ? setup::plan_rebuild(layout, state.workdir, o) : setup::plan_install(layout, iso, workdir, o);
         log_open((rebuild || update || extras) ? state.workdir : workdir);
+        rep_failed_step.clear();
+        marker(true);
         prog = setup::Progress();
         prog.stage = plan[0].label;
         prog.explain = plan[0].explain;
@@ -571,16 +776,33 @@ struct App {
         logf = std::fopen(log_path.c_str(), "ab");
         if (logf) { std::fprintf(logf, "\n===== psprecomp_setup run =====\n"); std::fflush(logf); }
     }
+    std::deque<std::string> tail_lines;   // the last output lines (the failure reason looks at them)
     void log_line(const std::string& l) {
+        tail_lines.push_back(l);
+        if (tail_lines.size() > 40) tail_lines.pop_front();
         if (logf) { std::fprintf(logf, "%s\n", l.c_str()); std::fflush(logf); }
     }
 
-    void fail(const std::string& msg) {
+    void fail(const std::string& msg, int code = 0) {
         log_line("FAILED: " + msg);
         building = false;
-        fail_msg = msg;
-        go(Screen::Failed);
+        marker(false);
+        setup::FailureCtx fc;
+        fc.step = prog.step >= 0 && prog.step < (int)plan.size() ? plan[(size_t)prog.step].label : "";
+        fc.stage = prog.stage;
+        fc.error = prog.error.empty() ? msg : prog.error;
+        for (const std::string& t : tail_lines) fc.tail += t + "\n";
+        fc.workdir = cur_workdir();
+        fc.exit_code = code;
+        const setup::Failure f = setup::explain_failure(fc);
+        log_line("Reason (" + f.kind + "): " + f.why);
+        fail_msg = f.text();
+        fail_kind = f.kind;
+        fail_title = f.title();
+        rep_failed_step = (prog.stage.empty() ? std::string() : prog.stage + ": ") + msg;
+        go(Screen::Failed, paragraphs(fail_msg).size() > 1 ? 1 : 0);   // on the "Why" row
     }
+    std::string fail_kind, fail_title;
 
     void pump_build() {
         std::string line;
@@ -602,7 +824,7 @@ struct App {
                     log_line("optional step failed: " + step_note);
                     prog.error.clear();
                 } else {
-                    fail(prog.error.empty() ? "A step failed (exit code " + std::to_string(code) + "); see setup.log in the install folder." : prog.error + ".");
+                    fail(prog.error.empty() ? "A step failed (exit code " + std::to_string(code) + "); see setup.log in the install folder." : prog.error + ".", code);
                     return;
                 }
             } else if (opt_step) step_note = "The game was added to your Steam library.";
@@ -618,6 +840,7 @@ struct App {
                 start_step();
             } else {
                 building = false;
+                marker(false);
                 if (!rebuild_only) {
                     state.workdir = workdir;
                     state.iso = iso;
@@ -633,6 +856,7 @@ struct App {
                     if (setup::create_shortcut(workdir, layout.root, &where, &serr)) shortcut_note = "A menu entry was added: " + where;
                     else shortcut_note = "No menu entry (" + serr + ")";
                     if (!step_note.empty()) shortcut_note += ". " + step_note;
+                    if (!auto_disc_note.empty()) shortcut_note += ". " + auto_disc_note;
                 }
                 if (extras_run) {
                     extras_mode = false;
@@ -742,8 +966,7 @@ struct App {
     }
 
     void open_browser() {
-        file_dlg.reset();
-        dir_dlg.reset();
+        drop_dialogs();
         br.exts = pick == Pick::Disc && picked_extra() ? picked_extra()->disc.patterns : std::vector<std::string>{".iso", ".cso"};
         br.open(pick_start(pick), pick == Pick::Dir);
         go(pick == Pick::Dir ? Screen::BrowseDir : pick == Pick::Disc ? Screen::PickUndub : Screen::PickIso);
@@ -777,6 +1000,7 @@ struct App {
     }
 
     void poll_native() {
+        reap_dialogs();
         if (file_dlg && file_dlg->ready(0)) {
             auto r = file_dlg->result();
             file_dlg.reset();
@@ -822,16 +1046,41 @@ struct App {
         start_plan(false, false, false, true);
     }
 
-    void start_install_or_ask() {
-        if (extras_mode) {
-            auto need = setup::extras_needing_disc(layout, false, opt, &state.options);   // an extra turned on that is built from a second disc
-            if (!need.empty()) { pick_extra = need[0]; begin_pick(Pick::Disc, Screen::Options); return; }
-            start_extras();
-            return;
+    // The extras that need a second disc: use one found next to the first image the player picked (id / voices checked), else ask.
+    std::vector<std::string> discs_still_needed() {
+        const std::string ref = !iso.empty() ? iso : state.iso;
+        auto need = setup::extras_needing_disc(layout, false, opt, extras_mode ? &state.options : nullptr);
+        while (!need.empty()) {
+            const setup::Extra* e = setup::find_extra(need[0]);
+            const std::string f = e ? setup::find_extra_disc(e->key, ref) : "";
+            if (f.empty()) break;
+            opt.set(e->disc.key, f);
+            std::fprintf(stderr, "Using %s from the same folder as your game file for: %s\n", f.c_str(), e->title.c_str());
+            auto_disc_note += (auto_disc_note.empty() ? "" : "\n") + std::string("Used ") + fs::path(f).filename().string() + " (same folder) for " + e->title + ".";
+            need = setup::extras_needing_disc(layout, false, opt, extras_mode ? &state.options : nullptr);
         }
-        // extras built from a second disc image (undub, Dissidia 1) need it first
-        auto need = setup::extras_needing_disc(layout, false, opt, nullptr);
+        return need;
+    }
+    std::string auto_disc_note;   // which extra discs were found next to the game file (shown on the finished page)
+
+    // Free space before anything starts: the whole install (or the extras) must fit; else say how much is missing and why.
+    bool space_ok() {
+        const std::string dir = extras_mode ? cur_workdir() : workdir;
+        const std::string why = setup::space_problem(dir, setup::needed_bytes(false, dir, opt, extras_mode), false);
+        if (why.empty()) return true;
+        msg_title = "NOT ENOUGH SPACE";
+        msg_text = why;
+        msg_back = Screen::Options;
+        go(Screen::Message, 1);   // on the "Why" row
+        return false;
+    }
+
+    void start_install_or_ask() {
+        auto_disc_note.clear();
+        auto need = discs_still_needed();   // extras built from a second disc image (undub, Dissidia 1) need it first
         if (!need.empty()) { pick_extra = need[0]; begin_pick(Pick::Disc, Screen::Options); return; }
+        if (!space_ok()) return;
+        if (extras_mode) { start_extras(); return; }
         std::error_code ec;
         fs::create_directories(workdir, ec);
         if (ec) { fail("Cannot create " + workdir + ": " + ec.message()); return; }
@@ -864,6 +1113,13 @@ struct App {
             if (save_sources.empty()) opt.import_saves.clear();
             break;
         }
+        case OR_DLC: {   // Off -> each detected source -> Off
+            size_t i = 0;
+            if (!opt.import_dlc.empty()) { while (i < dlc_sources.size() && dlc_sources[i].path != opt.import_dlc) i++; i++; }
+            opt.import_dlc = i < dlc_sources.size() ? dlc_sources[i].path : "";
+            if (dlc_sources.empty()) opt.import_dlc.clear();
+            break;
+        }
         default: break;
         }
         dirty = true;
@@ -877,7 +1133,7 @@ struct App {
     void confirm() {
         switch (screen) {
         case Screen::Welcome:
-            if (!layout_problem.empty()) { quit = true; break; }
+            if (!layout_problem.empty()) { if (sel == 1) begin_report(Screen::Welcome); else quit = true; break; }
             if (installed()) {
                 switch (sel) {
                 case 0: play(); break;
@@ -886,12 +1142,14 @@ struct App {
                 case 3: begin_check(true); break;
                 case 4: opt = state.options; start_plan(true); break;
                 case 5: begin_pick(Pick::Iso, Screen::Welcome); break;
+                case 6: begin_report(Screen::Welcome); break;
                 default: quit = true;
                 }
             } else if (sel == 0) {
                 if (workdir.empty()) workdir = setup::default_install_dir();
                 begin_pick(Pick::Iso, Screen::Welcome);
-            } else quit = true;
+            } else if (sel == 1) begin_report(Screen::Welcome);
+            else quit = true;
             break;
         case Screen::PickInfo:
             if (sel == 2) begin_pick(pick, before_pick, true);
@@ -899,7 +1157,7 @@ struct App {
             break;
         case Screen::Waiting:
             if (sel == 0) open_browser();
-            else { file_dlg.reset(); dir_dlg.reset(); go(before_pick); }
+            else { drop_dialogs(); go(before_pick); }
             break;
         case Screen::PickIso:
         case Screen::PickUndub:
@@ -965,22 +1223,38 @@ struct App {
             else quit = true;
             break;
         case Screen::Failed: {
-            const int extra = can_open_log() ? 2 : 0;   // rows 1 and 2: open setup.log / show it in its folder
+            const int np = (int)paragraphs(fail_msg).size();   // the reason rows come first
+            if (sel < np) break;
+            sel -= np;
+            const int extra = can_open_log() ? 2 : 0;   // rows 2 and 3: open setup.log / show it in its folder (row 1: Report an issue)
             if (sel == 0) { if (!plan.empty()) start_plan(rebuild_only && !updating && !android_inst, updating, android_inst); else go(Screen::Welcome); }
-            else if (sel <= extra) {
+            else if (sel == 1) begin_report(Screen::Failed);
+            else if (sel <= extra + 1) {
                 if (logf) std::fflush(logf);
                 std::string err;
-                if (!setup::open_on_desktop(log_path, sel == 2, &err)) {
+                if (!setup::open_on_desktop(log_path, sel == 3, &err)) {
                     msg_title = "SETUP LOG";
                     msg_text = "Could not open it (" + err + "). The file is " + log_path;
                     msg_back = Screen::Failed;
                     go(Screen::Message);
                 }
             }
-            else if (sel == extra + 1) go(Screen::Welcome);
+            else if (sel == extra + 2) go(Screen::Welcome);
             else quit = true;
             break;
         }
+        case Screen::Interrupted:
+            if (sel == 0) begin_report(Screen::Welcome); else go(Screen::Welcome);
+            break;
+        case Screen::Report:
+            if (sel == 0) {
+                osk.begin(u"What went wrong", std::u16string(rep_text.begin(), rep_text.end()), 300, true);
+                psp_sddialog::osk_set_active(true);
+                go(Screen::ReportText);
+            } else if (sel == 2) send_report();
+            else if (sel == 4) { if (!rep_working) go(rep_back); }
+            break;
+        case Screen::ReportText:
         case Screen::TypePath:
             break;
         }
@@ -989,7 +1263,7 @@ struct App {
     void cancel() {
         switch (screen) {
         case Screen::Waiting:
-            file_dlg.reset(); dir_dlg.reset();
+            drop_dialogs();
             go(before_pick);
             break;
         case Screen::PickIso:
@@ -1023,6 +1297,12 @@ struct App {
         }
         case Screen::UpdateAvail:
             if (launch_mode) play(); else go(Screen::Welcome);
+            break;
+        case Screen::Report:
+            if (!rep_working) go(rep_back);
+            break;
+        case Screen::Interrupted:
+            go(Screen::Welcome);
             break;
         default:
             break;
@@ -1063,7 +1343,7 @@ struct App {
             drag_accum += dy - touch_y;
             touch_x = dx; touch_y = dy;
             if (std::abs(dy - touch_y0) > 10 || std::abs(dx - touch_x0) > 10) touch_moved = true;
-            if (screen != Screen::TypePath && screen != Screen::Build) {
+            if (screen != Screen::TypePath && screen != Screen::ReportText && screen != Screen::Build) {
                 const float step = 22;   // design units of drag per row
                 int n = row_count();
                 while (drag_accum > step) { sel = n ? std::max(0, sel - 1) : 0; drag_accum -= step; dirty = true; }   // finger down = list moves down = earlier rows
@@ -1075,36 +1355,128 @@ struct App {
                 int64_t dt = std::max<int64_t>(1, now_ms() - touch_t0);
                 float v = (dy - touch_y0) / (float)dt;
                 int extra = std::abs(v) < 0.3f ? 0 : (int)std::max(-120.f, std::min(120.f, -v * 90.f));   // only a quick flick
-                if (std::abs(extra) > 2 && screen != Screen::TypePath && screen != Screen::Build) {
+                if (std::abs(extra) > 2 && screen != Screen::TypePath && screen != Screen::ReportText && screen != Screen::Build) {
                     int n = row_count();
                     sel = n ? std::max(0, std::min(n - 1, sel + extra)) : 0;
                     dirty = true;
                 }
                 return;
             }
-            if (screen == Screen::TypePath) return;
-            // hit-test against what the settings renderer drew (its geometry is in the same 480x272 design units)
-            const psp_sddialog::SetGeom& G = view.geom();
-            if (G.back.w > 0 && G.back.has(dx, dy) && screen != Screen::Welcome) { cancel(); return; }
-            int top = 0;
-            if (is_browser()) {   // page() lists only the visible window of the browser's entries
-                int total = (int)br.list.size();
-                top = std::max(0, std::min(sel - MENU_ROWS / 2, total - MENU_ROWS));
-            }
-            for (const auto& r : G.rows) {
-                if (!r.r.has(dx, dy)) continue;
-                sel = top + r.idx;
-                dirty = true;
-                if (r.dec.w > 0 && r.dec.has(dx, dy)) adjust(-1);
-                else if (r.inc.w > 0 && r.inc.has(dx, dy)) adjust(+1);
-                else confirm();
+            if (screen == Screen::TypePath || screen == Screen::ReportText) return;
+            tap(dx, dy);
+        }
+    }
+
+    // ---- mouse (desktop): hover picks the row under the pointer (and shows a hand), ONE left click acts at once (on press), right click goes back ----
+    // Hit-test against what the settings renderer drew (its geometry is in the same 480x272 design units).
+    // Returns 0 = nothing, 1 = the Back / Close button, 2 = a row (row_idx = its index in the page / browser list).
+    int hit(float dx, float dy, const psp_sddialog::SetGeom::Row** row, int* row_idx) {
+        const psp_sddialog::SetGeom& G = view.geom();
+        if (G.back.w > 0 && G.back.has(dx, dy)) return 1;
+        int top = 0;
+        if (is_browser()) {   // page() lists only the visible window of the browser's entries
+            int total = (int)br.list.size();
+            top = std::max(0, std::min(sel - MENU_ROWS / 2, total - MENU_ROWS));
+        }
+        for (const auto& r : G.rows) {
+            if (!r.r.has(dx, dy)) continue;
+            *row = &r; *row_idx = top + r.idx;
+            return 2;
+        }
+        return 0;
+    }
+
+    void tap(float dx, float dy) {
+        const psp_sddialog::SetGeom::Row* r = nullptr;
+        int idx = 0;
+        int h = hit(dx, dy, &r, &idx);
+        if (h == 1) { cancel(); return; }
+        if (h != 2) return;
+        sel = idx;
+        dirty = true;
+        if (r->dec.w > 0 && r->dec.has(dx, dy)) adjust(-1);
+        else if (r->inc.w > 0 && r->inc.has(dx, dy)) adjust(+1);
+        else confirm();
+    }
+
+    SDL_Cursor* cur_hand = nullptr;
+    SDL_Cursor* cur_arrow = nullptr;
+    bool cur_is_hand = false;
+    void set_hand(bool on) {
+        if (on == cur_is_hand) return;
+        cur_is_hand = on;
+        if (!cur_hand) { cur_hand = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_HAND); cur_arrow = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_ARROW); }
+        if (SDL_Cursor* c = on ? cur_hand : cur_arrow) SDL_SetCursor(c);
+    }
+
+    bool mouse_to_design(int mx, int my, float& dx, float& dy) {
+        // SDL already maps mouse events into the renderer's logical (960x544) space (SDL_RenderSetLogicalSize): any window size / HiDPI
+        // scale / letterbox arrives as canvas pixels. (Mapping again with SDL_RenderWindowToLogical would be off at every size but 960x544.)
+        dx = (float)mx / (float)SCALE;
+        dy = (float)my / (float)SCALE;
+        return true;
+    }
+
+    void mouse_event(const SDL_Event& ev) {
+        if (ev.type == SDL_MOUSEMOTION ? ev.motion.which == SDL_TOUCH_MOUSEID : ev.type == SDL_MOUSEWHEEL ? ev.wheel.which == SDL_TOUCH_MOUSEID : ev.button.which == SDL_TOUCH_MOUSEID) return;   // touch has its own path
+        if (ev.type == SDL_MOUSEWHEEL) {
+            if (screen == Screen::TypePath || screen == Screen::ReportText) return;
+            int n = row_count();
+            int step = ev.wheel.y > 0 ? -1 : ev.wheel.y < 0 ? 1 : 0;
+            if (n && step) { sel = std::max(0, std::min(n - 1, sel + step)); dirty = true; }
+            return;
+        }
+        if (screen == Screen::TypePath || screen == Screen::ReportText) {   // the on-screen keyboard: click its keys (or type on the host keyboard)
+            if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_RIGHT) {
+                psp_sddialog::osk_set_active(false);
+                if (screen == Screen::ReportText) go(Screen::Report, 0); else go(Screen::BrowseDir);
                 return;
             }
+            if (ev.type == SDL_MOUSEWHEEL) return;
+            float kx, ky;
+            const bool mv = ev.type == SDL_MOUSEMOTION;
+            mouse_to_design(mv ? ev.motion.x : ev.button.x, mv ? ev.motion.y : ev.button.y, kx, ky);
+            const bool click = ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_LEFT;
+            if (!mv && !click) return;
+            const bool over = osk.pointer(kx, ky, click);
+            if (mv) set_hand(over);
+            dirty = true;
+            return;
+        }
+        float dx, dy;
+        const int mx = ev.type == SDL_MOUSEMOTION ? ev.motion.x : ev.button.x, my = ev.type == SDL_MOUSEMOTION ? ev.motion.y : ev.button.y;
+        mouse_to_design(mx, my, dx, dy);
+        const psp_sddialog::SetGeom::Row* r = nullptr;
+        int idx = 0;
+        int h = hit(dx, dy, &r, &idx);
+        if (ev.type == SDL_MOUSEMOTION) {
+            bool hand = h == 1;
+            if (h == 2) {
+                Page pg = page();
+                int pi = is_browser() ? r->idx : idx;   // page() rows are the visible window for the browser
+                bool dead = pi >= 0 && pi < (int)pg.rows.size() && pg.rows[pi].disabled;
+                hand = !dead && !(screen == Screen::Build && idx < 3);   // the progress / info lines are not buttons
+                if (idx != sel && !dead) { sel = idx; dirty = true; }
+            }
+            set_hand(hand);
+        } else if (ev.type == SDL_MOUSEBUTTONDOWN) {
+            if (ev.button.button == SDL_BUTTON_LEFT) tap(dx, dy);
+            else if (ev.button.button == SDL_BUTTON_RIGHT && screen != Screen::Welcome) cancel();
         }
     }
 
     void update_input() {
         in.update(pad);
+        if (screen == Screen::ReportText) {
+            auto r = osk.update(in.pad_held, now_ms());
+            dirty = true;
+            if (r == psp_sddialog::Result::Selected) {
+                psp_sddialog::osk_set_active(false);
+                rep_text = utf8_of(osk.text());
+                go(Screen::Report, 2);   // on to Send
+            }
+            return;
+        }
         if (screen == Screen::TypePath) {
             auto r = osk.update(in.pad_held, now_ms());
             dirty = true;
@@ -1136,6 +1508,16 @@ struct App {
             if (p & BTN_LTRIGGER) { sel = std::max(0, sel - MENU_ROWS); dirty = true; }
             if (p & BTN_RTRIGGER) { sel = std::min(n - 1, sel + MENU_ROWS); dirty = true; }
         }
+    }
+
+    static std::string utf8_of(const std::u16string& t) {
+        std::string u8;
+        for (char16_t c : t) {
+            if (c < 0x80) u8 += (char)c;
+            else if (c < 0x800) { u8 += (char)(0xC0 | (c >> 6)); u8 += (char)(0x80 | (c & 0x3F)); }
+            else { u8 += (char)(0xE0 | (c >> 12)); u8 += (char)(0x80 | ((c >> 6) & 0x3F)); u8 += (char)(0x80 | (c & 0x3F)); }
+        }
+        return u8;
     }
 
     static std::string nice(const std::string& up) {   // "WHERE TO INSTALL" -> "Where to install"
@@ -1183,7 +1565,7 @@ struct App {
 
     void render_page() {
         canvas.clear(0xFF000000);
-        if (screen == Screen::TypePath) {
+        if (screen == Screen::TypePath || screen == Screen::ReportText) {
             osk.render(canvas);
             return;
         }
@@ -1223,7 +1605,7 @@ void write_ppm(const Canvas& c, const std::string& path) {
     std::fclose(f);
 }
 
-int run_headless(const setup::Layout& l, const std::string& iso, const std::string& dir, const std::string& saves,
+int run_headless(const setup::Layout& l, const std::string& iso, const std::string& dir, const std::string& saves, const std::string& dlc,
                  const std::vector<std::pair<std::string, std::string>>& extras) {
     std::string prob = l.problem();
     if (!prob.empty()) { std::fprintf(stderr, "error: %s\n", prob.c_str()); return 2; }
@@ -1231,28 +1613,64 @@ int run_headless(const setup::Layout& l, const std::string& iso, const std::stri
     fs::create_directories(dir, ec);
     setup::Options o;
     o.import_saves = saves;
+    o.import_dlc = dlc;
     for (const auto& kv : extras) o.set(kv.first, kv.second);
     auto plan = setup::plan_install(l, iso, dir, o);
     setup::Progress prog;
+    std::deque<std::string> tail;
+    auto why_failed = [&](size_t i, int code, const std::string& err) {   // the plain-words reason (the same as the window's failure page)
+        setup::FailureCtx fc;
+        fc.step = plan[i].label; fc.stage = prog.stage; fc.error = err; fc.workdir = dir; fc.exit_code = code;
+        for (const std::string& t : tail) fc.tail += t + "\n";
+        std::fprintf(stderr, "\n%s\n", setup::explain_failure(fc).text().c_str());
+    };
+    if (const std::string sp = setup::space_problem(dir, setup::needed_bytes(false, dir, o, false), false); !sp.empty()) {
+        std::fprintf(stderr, "error: %s\n", sp.c_str());
+        return 1;
+    }
     for (size_t i = 0; i < plan.size(); i++) {
         prog.step = (int)i;
         std::printf("== %s\n", plan[i].label.c_str());
         setup::Proc p;
-        if (!p.start(plan[i].argv, plan[i].env, "")) { std::fprintf(stderr, "error: %s\n", p.error().c_str()); return 1; }
+        if (!p.start(plan[i].argv, plan[i].env, "")) { std::fprintf(stderr, "error: %s\n", p.error().c_str()); why_failed(i, 0, "Could not start: " + p.error()); return 1; }
         while (p.busy()) {
             std::string line;
             while (p.read_line(line)) {
                 setup::feed_line(prog, plan, line, SDL_GetTicks64());
                 std::printf("%s\n", line.c_str());
+                tail.push_back(line);
+                if (tail.size() > 40) tail.pop_front();
             }
             SDL_Delay(20);
         }
-        if (p.exit_code() != 0 || !prog.error.empty()) { std::fprintf(stderr, "error: step '%s' failed (%d) %s\n", plan[i].label.c_str(), p.exit_code(), prog.error.c_str()); return 1; }
+        if (p.exit_code() != 0 || !prog.error.empty()) { std::fprintf(stderr, "error: step '%s' failed (%d) %s\n", plan[i].label.c_str(), p.exit_code(), prog.error.c_str()); why_failed(i, p.exit_code(), prog.error); return 1; }
         prog.fraction = std::max(prog.fraction, setup::step_done_fraction(plan, (int)i));
         std::printf("== %s done (%d%%)\n", plan[i].label.c_str(), (int)(prog.fraction * 100));
     }
     std::printf("installed: %s\n", setup::game_binary(dir).c_str());
     return setup::game_installed(dir) ? 0 : 1;
+}
+
+// --report TEXT [--dir DIR]: the Report an issue upload without a window (tests, support). Prints the result; exit 0 when the issue was opened.
+int run_report_cli(const setup::Layout& l, const std::string& dir, const std::string& text, const std::string& step) {
+    psp_report::Product pr;
+    pr.name = "installer";
+    pr.version = App::release_version(l.root);
+    pr.files.push_back({"setup.log", (fs::path(dir.empty() ? "." : dir) / "setup.log").string(), 8u << 20});
+    pr.space_dir = dir.empty() ? "." : dir;
+    pr.save_dir = (fs::path(dir.empty() ? "." : dir) / "reports").string();
+    psp_report::set_product(pr);
+    psp_report::Params p;
+    p.description = text + (step.empty() ? "" : "\n\nFailed: " + step);
+    p.title = "Installer: " + text.substr(0, 70);
+    p.include_dump = false;
+    if (!step.empty()) p.extra.push_back({"failure", step});
+    for (const auto& f : psp_report::preview(false)) std::printf("file: %s (%zu bytes)\n", f.name.c_str(), f.size);
+    if (!psp_report::start(p)) return 1;
+    while (!psp_report::take_finished()) SDL_Delay(50);
+    const psp_report::Status st = psp_report::status();
+    std::printf("%s\n%s\n%s\n", st.state == psp_report::Status::Done ? "DONE" : "FAILED", st.text.c_str(), st.issue_url.c_str());
+    return st.state == psp_report::Status::Done ? 0 : 1;
 }
 
 }  // namespace
@@ -1293,6 +1711,14 @@ static int import_saves_cli(const std::string& from, const std::string& workdir)
         else { std::fprintf(stderr, "%s: %s\n", s.name.c_str(), err.c_str()); failed++; }
     }
     return failed ? 1 : 0;
+}
+
+// --import-dlc FROM --dir DIR: copy the DLC files (.edat) under FROM (a PSP/GAME/<id> folder) into DIR/mods as the mod Dissidia 012 DLC.
+// Run by the install plan as a step; no window.
+static int import_dlc_cli(const std::string& from, const std::string& workdir) {
+    const dissidia_dlc::Result r = dissidia_dlc::import_folder(from, (fs::path(workdir) / "mods").string());
+    std::printf("%s\n", r.text.c_str());
+    return r.ok ? 0 : 1;
 }
 
 // Unpacks the bundled release, with a small window that only shows a progress bar (title carries the text).
@@ -1343,9 +1769,10 @@ static std::string unpack_payload_with_window(const std::filesystem::path& exe, 
 
 int main(int argc, char** argv) {
     attach_parent_console();
-    std::string root, iso, dir, play_dir, shots, import_from, saves_from;
+    std::string root, iso, dir, play_dir, shots, import_from, saves_from, import_dlc_from, dlc_from;
+    bool autostart = false;
     bool headless = false, play = false, launch = false;
-    std::string unpack_to;
+    std::string unpack_to, report_text, report_step;
     std::vector<std::pair<std::string, std::string>> extras;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -1355,14 +1782,19 @@ int main(int argc, char** argv) {
         else if (a == "--dir") next(dir);
         else if (a == "--import-saves") next(import_from);
         else if (a == "--saves") next(saves_from);
+        else if (a == "--import-dlc") next(import_dlc_from);
+        else if (a == "--dlc") next(dlc_from);
         else if (a == "--unpack") next(unpack_to);   // single-file release: unpack the bundled release folder there and exit
         else if (a == "--headless") headless = true;
+        else if (a == "--autostart") autostart = true;   // test aid: with --iso and --dir, open the window straight on the install (as if Start installing was chosen)
         else if (a == "--extra" && i + 1 < argc) {
             const std::string kv = argv[++i];
             const size_t eq = kv.find('=');
             if (eq == std::string::npos || eq == 0) { std::fprintf(stderr, "--extra needs KEY=VALUE\n"); return 2; }
             extras.push_back({kv.substr(0, eq), kv.substr(eq + 1)});
         }
+        else if (a == "--report") next(report_text);
+        else if (a == "--report-step") next(report_step);
         else if (a == "--launch") launch = true;
         else if (a == "--screenshots") next(shots);
         else if (a == "--play") { play = true; if (i + 1 < argc && argv[i + 1][0] != '-') play_dir = argv[++i]; }
@@ -1371,6 +1803,10 @@ int main(int argc, char** argv) {
     if (!import_from.empty()) {
         if (dir.empty()) { std::fprintf(stderr, "--import-saves needs --dir DIR\n"); return 2; }
         return import_saves_cli(import_from, dir);
+    }
+    if (!import_dlc_from.empty()) {
+        if (dir.empty()) { std::fprintf(stderr, "--import-dlc needs --dir DIR\n"); return 2; }
+        return import_dlc_cli(import_dlc_from, dir);
     }
     SDL_SetMainReady();
     // Single-file release: the release folder is appended to this program (payload.h); unpack it once, then run from there.
@@ -1399,12 +1835,14 @@ int main(int argc, char** argv) {
 
     char* pref = SDL_GetPrefPath("psprecomp", "setup");
     std::string state_file = std::string(pref ? pref : "./") + "install.ini";
+    const std::string pref2 = pref ? pref : "./";
     if (pref) SDL_free(pref);
     setup::State state = setup::load_state(state_file);
 
+    if (!report_text.empty()) return run_report_cli(layout, dir, report_text, report_step);
     if (headless) {
         if (iso.empty() || dir.empty()) { std::fprintf(stderr, "--headless needs --iso FILE and --dir DIR\n"); return 2; }
-        return run_headless(layout, iso, dir, saves_from, extras);
+        return run_headless(layout, iso, dir, saves_from, dlc_from, extras);
     }
     if (play) {
         std::string wd = play_dir.empty() ? state.workdir : play_dir;
@@ -1430,6 +1868,11 @@ int main(int argc, char** argv) {
     app.iso = state.iso;
     app.opt = state.options;
     app.launch_mode = launch;
+    app.marker_path = pref2 + "install.running";
+    if (shots.empty() && fs::exists(app.marker_path)) {   // the last install never reached its end (killed, crashed, power loss)
+        app.marker(false);
+        if (app.layout_problem.empty()) app.go(Screen::Interrupted);
+    }
 
     if (!shots.empty()) {   // look check without a window
         std::error_code ec;
@@ -1472,14 +1915,37 @@ int main(int argc, char** argv) {
         app.log_path = (std::filesystem::path(shots) / "setup.log").string();   // a log to offer (the rows need the file)
         { std::ofstream(app.log_path) << "example\n"; }
         app.go(Screen::Failed, 1); shot("7_failed");
+        {   // the reasons the installer gives (the same text a real failure shows)
+            setup::FailureCtx fc; fc.step = "Building the game"; fc.stage = "Compiling the game"; fc.workdir = app.workdir;
+            fc.error = "compiling failed:\n/work/output/generated/batch_0000.cpp:1:1: error: CacheCheckFailed";
+            { auto ff = setup::explain_failure(fc); app.fail_msg = ff.text(); app.fail_title = ff.title(); } app.go(Screen::Failed, 0); shot("7b_failed_space");
+            fc.step = "Reading your game file"; fc.stage = ""; fc.error = "not a 2048-byte-sector ISO 9660 image (no 'CD001' at sector 16)";
+            { auto ff = setup::explain_failure(fc); app.fail_msg = ff.text(); app.fail_title = ff.title(); } app.go(Screen::Failed, 0); shot("7c_failed_iso");
+            fc.step = "Building the game"; fc.stage = "Compiling the game"; fc.error = "compiling failed: generated/batch_0070.cpp:1234:5: error: boom"; fc.tail = "";
+            { auto ff = setup::explain_failure(fc); app.fail_msg = ff.text(); app.fail_title = ff.title(); } app.go(Screen::Failed, 0); shot("7d_failed_compile");
+            fc.error = "A step failed (exit code -1)."; fc.exit_code = -1;
+            { auto ff = setup::explain_failure(fc); app.fail_msg = ff.text(); app.fail_title = ff.title(); } app.go(Screen::Failed, 0); shot("7e_failed_memory");
+            app.msg_title = "NOT ENOUGH SPACE";
+            app.msg_text = setup::space_problem(app.workdir, 1LL << 60, false);
+            app.go(Screen::Message, 0); shot("7f_not_enough_space");
+        }
         { std::error_code ec; std::filesystem::remove(app.log_path, ec); }
         app.osk.begin(u"Folder path", u"/home/player", 200, true);
         app.go(Screen::TypePath); shot("8_type_path");
+        app.rep_text = "The compile step stops at 40 percent and the window closes";
+        app.rep_failed_step = "Compiling the game: A step failed (exit code 1)";
+        app.go(Screen::Report, 2); shot("9_report");
+        app.rep_sent = true; app.rep_value = "Issue #144 opened"; app.rep_status = "Issue #144 opened. Your browser opens it: https://github.com/schindlershadow/dissidia/issues/144";
+        app.go(Screen::Report, 3); shot("9b_report_sent");
+        app.osk.begin(u"What went wrong", u"The compile step stops", 300, true);
+        app.go(Screen::ReportText); shot("9c_report_text");
+        app.go(Screen::Interrupted); shot("9d_interrupted");
         std::printf("%d screenshots in %s\n", n, shots.c_str());
         SDL_Quit();
         return 0;
     }
 
+    SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");   // the click that focuses the window also acts
     app.win = SDL_CreateWindow("Dissidia Recomp", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 480 * SCALE, 272 * SCALE,
                                SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
     if (!app.win) { std::fprintf(stderr, "cannot create a window: %s\n", SDL_GetError()); return 1; }
@@ -1496,6 +1962,7 @@ int main(int argc, char** argv) {
     for (int i = 0; i < SDL_NumJoysticks(); i++)
         if (SDL_IsGameController(i) && (app.pad = SDL_GameControllerOpen(i))) break;
     SDL_StartTextInput();
+    if (autostart && !iso.empty() && !dir.empty()) { app.iso = iso; app.workdir = dir; app.start_install_or_ask(); }
     if (app.installed() && app.layout_problem.empty()) {
         if (setup::update_check_enabled(app.state.workdir)) app.begin_check(false);
         else if (launch) app.play();
@@ -1506,7 +1973,7 @@ int main(int argc, char** argv) {
         while (SDL_PollEvent(&ev)) {
             switch (ev.type) {
             case SDL_QUIT:
-                if (app.building) app.proc.kill();
+                if (app.building) { app.proc.kill(); app.marker(false); }
                 app.quit = true;
                 break;
             case SDL_CONTROLLERDEVICEADDED:
@@ -1523,8 +1990,13 @@ int main(int argc, char** argv) {
             case SDL_FINGERUP:
                 app.touch_event(ev);
                 break;
+            case SDL_MOUSEMOTION:
+            case SDL_MOUSEBUTTONDOWN:
+            case SDL_MOUSEWHEEL:
+                app.mouse_event(ev);
+                break;
             case SDL_TEXTINPUT:
-                if (app.screen == Screen::TypePath)
+                if (app.screen == Screen::TypePath || app.screen == Screen::ReportText)
                     for (const unsigned char* c = (const unsigned char*)ev.text.text; *c; c++)
                         if (*c >= 0x20 && *c < 0x7F) psp_sddialog::osk_push_key(*c);
                 break;
@@ -1534,10 +2006,13 @@ int main(int argc, char** argv) {
                 } else if (ev.key.keysym.sym == SDLK_F11 || (ev.key.keysym.sym == SDLK_RETURN && (ev.key.keysym.mod & KMOD_ALT))) {
                     bool fs_on = SDL_GetWindowFlags(app.win) & SDL_WINDOW_FULLSCREEN_DESKTOP;
                     SDL_SetWindowFullscreen(app.win, fs_on ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
-                } else if (app.screen == Screen::TypePath) {
+                } else if (app.screen == Screen::TypePath || app.screen == Screen::ReportText) {
                     if (ev.key.keysym.sym == SDLK_BACKSPACE) psp_sddialog::osk_push_key(8);
                     else if (ev.key.keysym.sym == SDLK_RETURN) psp_sddialog::osk_push_key(13);
-                    else if (ev.key.keysym.sym == SDLK_ESCAPE) { psp_sddialog::osk_set_active(false); app.go(Screen::BrowseDir); }
+                    else if (ev.key.keysym.sym == SDLK_ESCAPE) {
+                        psp_sddialog::osk_set_active(false);
+                        if (app.screen == Screen::ReportText) app.go(Screen::Report, 0); else app.go(Screen::BrowseDir);
+                    }
                 }
                 break;
             case SDL_WINDOWEVENT:
@@ -1546,11 +2021,12 @@ int main(int argc, char** argv) {
             }
         }
         app.poll_native();
+        app.pump_report();
         if (app.checking) app.pump_check();
         if (app.building) app.pump_build();
         app.update_input();
         int64_t t = now_ms();
-        if (app.dirty || (app.building && t - app.last_draw > 250)) {
+        if (app.dirty || ((app.building || app.rep_working) && t - app.last_draw > 250)) {
             app.dirty = false;   // before drawing: the settings view asks for the next frame while it animates
             app.present();
             app.last_draw = t;
@@ -1558,6 +2034,12 @@ int main(int argc, char** argv) {
         SDL_Delay(8);
     }
     if (app.building) app.proc.kill();
+    app.drop_dialogs();
+    if (app.dialogs_pending()) {
+        // A native dialog is still open. Destroying a pfd dialog waits for it to close, so leave without running destructors.
+        for (int i = 0; i < 25 && !app.dlg_graveyard.empty(); i++) { app.reap_dialogs(); SDL_Delay(20); }
+        if (!app.dlg_graveyard.empty()) { std::fflush(nullptr); std::_Exit(0); }
+    }
     if (app.tex) SDL_DestroyTexture(app.tex);
     if (app.ren) SDL_DestroyRenderer(app.ren);
     if (app.win) SDL_DestroyWindow(app.win);

@@ -310,7 +310,7 @@ uint32_t tag_for_battle() {
 void begin(uint32_t net, bool watcher) {
     g_link = Link{};
     g_link.state = Link::GAME;
-    g_delay = static_cast<uint32_t>(psp_netplay_input_delay());   // the Settings row may have changed since the last battle
+    g_delay = static_cast<uint32_t>(psp_netplay_pick_delay());   // the Settings row may have changed since the last battle; Auto: from the ping now
     uint8_t peers[16][6]; size_t n = 0; uint8_t own[6];
     psp_adhoc_group_peers(peers, 16, &n, own);
     if (n == 0) return;

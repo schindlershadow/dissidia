@@ -222,6 +222,17 @@ void psp_audio_push(int source, const int16_t* pcm, int frames, int channels, in
     if (s.frames_queued() + static_cast<size_t>(frames) > MAX_BACKLOG_FRAMES) { s.overruns++; return; }
     size_t base = s.fifo.size();
     s.fifo.resize(base + static_cast<size_t>(frames) * 2);
+    static const bool chk = std::getenv("PSPRECOMP_AUDIOCHK") != nullptr;   // debug: one line per second per source: pushes, peak after volume, last volume (headless has no device)
+    struct Chk { uint64_t pushes = 0; int peak = 0, vl = 0, vr = 0; };
+    static Chk ck[PSP_AUDIO_SRC_COUNT]; static Clock::time_point ck_t{};
+    if (chk) {
+        Chk& c = ck[source]; c.pushes++; c.vl = volL; c.vr = volR;
+        for (int i = 0; i < frames * channels; i++) c.peak = std::max(c.peak, std::abs((pcm[i] * volL) >> 15));
+        if (now - ck_t > std::chrono::seconds(1)) {
+            ck_t = now;
+            for (int k = 0; k < PSP_AUDIO_SRC_COUNT; k++) if (ck[k].pushes) { std::fprintf(stderr, "[AUDIOCHK] src%d pushes %llu peak %d vol %d/%d\n", k, (unsigned long long)ck[k].pushes, ck[k].peak, ck[k].vl, ck[k].vr); ck[k] = Chk(); }
+        }
+    }
     for (int i = 0; i < frames; i++) {
         int l, r;
         if (channels == 1) { l = r = pcm[i]; }

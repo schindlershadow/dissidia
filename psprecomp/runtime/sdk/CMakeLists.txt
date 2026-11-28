@@ -12,6 +12,10 @@
 cmake_minimum_required(VERSION 3.20)
 project(psprecomp_game CXX C)
 
+# No a * b + c fusion (FMA) on any platform: online play is lock-step and compares the simulation bit for bit between machines
+# (see the same line in runtime/CMakeLists.txt; an Android copy drifted from a PC copy from frame 1).
+add_compile_options(-ffp-contract=off)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 

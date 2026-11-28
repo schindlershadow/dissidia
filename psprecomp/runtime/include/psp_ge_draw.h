@@ -43,6 +43,9 @@ void ge_draw_set_hud_zones(int top_rows, int bottom_rows, int bottom_visible);
 int ge_draw_hud_bottom_rows();   // the room kept for the HUD under the touch controls, PSP rows (0 = none)
 // Textures (tex_addr & 0xFFFFFF) whose 2D draws are never pinned: markers that follow a fighter (the lock-on ring) stay on the picture.
 void ge_draw_set_hud_fixed_tex(const uint32_t* addrs, int n);
+// The world position (feet) of the target the lock-on ring is on, for gameplay frame `gen` (the interpolation tag's gen): newest `cur` and the frame before `prev` (null: unknown); cur null = the target has no usable position: the ring gets no offset. Game thread, every frame.
+void ge_draw_set_follow_world(uint32_t gen, const float* prev, const float cur[3]);
+void ge_draw_set_hud_fixed_tex_hash(const uint64_t* hashes, int n, const uint8_t* rdram);   // the same by content (FNV-1a of the first 256 bytes of the texture's memory): the address moves between builds
 void ge_draw_set_hud_follow_scale(float k);   // 2D follow marks: move their centre about the screen centre by k (FOV change on the game side); 1 = off
 // Test harnesses: 0 draw as usual, 1 rasterizer discard, 2 skip the draw calls (lists are still processed). Applied at the next present.
 void ge_draw_request_no_raster(int mode);
@@ -114,6 +117,7 @@ void ge_draw_perf_set_gameplay(bool on);
 
 /// A short message over the picture, top centre, for `ms` milliseconds (a new call replaces the old
 /// message). Any thread. Used for "frame rate set to 30 fps" when a multiplayer group agrees on one.
+void ge_draw_toast_deferred(const char* text, int ms, int y_px = 10);   // the same, but the time starts at the first present (for a message queued at start-up)
 void ge_draw_toast(const char* text, int ms, int y_px = 10);   // y_px: distance of the box from the top of the picture, in PSP pixels (272 high)
 
 /// A bright frame around the picture (3% thick on every side, colour 0xRRGGBB) for `ms` milliseconds; a new call replaces the old one.
@@ -124,6 +128,7 @@ void ge_draw_flash(uint32_t rgb, int ms);
 /// player's chest) fades out to a see-through alpha, like the game's own wall fade does for its camera (the game computes that from its
 /// own eye, so a camera we move ourselves needs it done here). Call once per camera update (game thread).
 bool ge_draw_last_view_proj(float view[12], float proj[16]);   // view (4x3) and projection (4x4) of the last completed main scene (column-major, GE layout)
+bool ge_draw_last_view_proj_tag(uint32_t* gen, float* phase);   // the frame-interpolation tag (gen, phase; -1 = none) of the display list that view / projection came from (any thread)
 void ge_draw_last_eye(float eye[3], float fwd[3]);   // debug: eye and view direction of the last depth-tested 3D draw
 void ge_draw_set_view_blocker(bool active, const float target[3], const float eye[3]);   // eye: the game camera's eye this update; only draws made from that view fade
 // Camera collision against the stage geometry the main view has drawn (static, non-skinned, depth-writing draws, cached in world
@@ -138,6 +143,13 @@ float ge_draw_camera_probe_result(uint32_t* id);
 /// (so a screen that stops calling it loses the layer by itself). Any thread.
 void ge_draw_set_game_layer(const uint32_t* rgba, int w, int h);
 void ge_draw_clear_game_layer();
+/// The next ge_draw_set_game_layer stays shown this many ms without a newer one (default 150).
+void ge_draw_set_game_layer_ttl(int ms);
+/// Counts every set / clear of the layer; a module that caches its own image compares it to know the layer is still its own.
+uint64_t ge_draw_game_layer_serial();
+/// Keeps the layer shown as it is for another ttl (the one set by ge_draw_set_game_layer_ttl, else 150 ms) without a new image (no upload).
+/// False when no layer is held (it expired or was cleared): publish again.
+bool ge_draw_game_layer_touch();
 /// Parts of the game's own picture redrawn elsewhere under the game layer, this frame's pixels (e.g. a neighbouring row's underline
 /// for an added menu row, whatever texture pack draws it): source and destination rectangles in PSP units (480x272, y down), a
 /// destination of another size stretches. Opaque. Kept with the layer image; set them before ge_draw_set_game_layer.

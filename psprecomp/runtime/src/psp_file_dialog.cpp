@@ -46,28 +46,63 @@ void finish(unsigned gen, State s, const std::string& path, const std::string& e
 // ------------------------------------------------------------------------------------------------------------- Android
 // org.psprecomp.game.FilePicker (android/game_java): static methods, loaded through the activity's class loader (FindClass from a
 // native thread only sees the system classes).
+// A failed lookup is retried (at most once a second, 10 times): an early call can come before SDL has the activity. The cause is logged.
+std::string java_exception_text(JNIEnv* env) {
+    jthrowable t = env->ExceptionOccurred();
+    if (!t) return "";
+    env->ExceptionClear();
+    std::string r = "a Java exception";
+    jclass tc = env->GetObjectClass(t);
+    jmethodID ts = tc ? env->GetMethodID(tc, "toString", "()Ljava/lang/String;") : nullptr;
+    if (ts) {
+        jstring m = static_cast<jstring>(env->CallObjectMethod(t, ts));
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        else if (m) { const char* c = env->GetStringUTFChars(m, nullptr); if (c) { r = c; env->ReleaseStringUTFChars(m, c); } env->DeleteLocalRef(m); }
+    } else env->ExceptionClear();
+    if (tc) env->DeleteLocalRef(tc);
+    env->DeleteLocalRef(t);
+    return r;
+}
 jclass picker_class(JNIEnv* env) {
     static jclass cls = nullptr;
-    static bool tried = false;
-    if (tried) return cls;
-    tried = true;
+    static int fails = 0;
+    static uint32_t last_ms = 0;
+    if (cls || fails >= 10) return cls;
+    const uint32_t now = SDL_GetTicks();
+    if (fails && now - last_ms < 1000) return nullptr;
+    last_ms = now;
+    if (env->ExceptionCheck()) env->ExceptionClear();   // a pending exception from other code would make every call below fail
+    std::string why;
     jobject act = static_cast<jobject>(SDL_AndroidGetActivity());
-    if (!act) return nullptr;
-    jclass ac = env->GetObjectClass(act);
-    jmethodID gcl = env->GetMethodID(ac, "getClassLoader", "()Ljava/lang/ClassLoader;");
-    jobject loader = env->CallObjectMethod(act, gcl);
-    jclass lc = env->FindClass("java/lang/ClassLoader");
-    jmethodID load = env->GetMethodID(lc, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
-    jstring n = env->NewStringUTF("org.psprecomp.game.FilePicker");
-    jobject c = env->CallObjectMethod(loader, load, n);
-    if (env->ExceptionCheck()) { env->ExceptionClear(); c = nullptr; }
-    if (c) cls = static_cast<jclass>(env->NewGlobalRef(c));
-    env->DeleteLocalRef(n);
-    env->DeleteLocalRef(lc);
-    env->DeleteLocalRef(ac);
-    env->DeleteLocalRef(act);
-    if (!cls) std::fprintf(stderr, "[FILEDLG] this APK has no FilePicker (an older build): the in-game browser is used\n");
-    return cls;
+    if (!act) why = "SDL has no activity yet";
+    else {
+        jclass ac = env->GetObjectClass(act);
+        jmethodID gcl = env->GetMethodID(ac, "getClassLoader", "()Ljava/lang/ClassLoader;");
+        jobject loader = gcl ? env->CallObjectMethod(act, gcl) : nullptr;
+        if (env->ExceptionCheck() || !loader) why = "getClassLoader: " + java_exception_text(env);
+        else {
+            jclass lc = env->FindClass("java/lang/ClassLoader");
+            jmethodID load = lc ? env->GetMethodID(lc, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;") : nullptr;
+            jstring n = env->NewStringUTF("org.psprecomp.game.FilePicker");
+            jobject c = load ? env->CallObjectMethod(loader, load, n) : nullptr;
+            if (env->ExceptionCheck()) { why = java_exception_text(env); c = nullptr; }
+            else if (!c) why = "loadClass returned null";
+            if (c) { cls = static_cast<jclass>(env->NewGlobalRef(c)); env->DeleteLocalRef(c); }
+            env->DeleteLocalRef(n);
+            if (lc) env->DeleteLocalRef(lc);
+            env->DeleteLocalRef(loader);
+        }
+        env->DeleteLocalRef(ac);
+        env->DeleteLocalRef(act);
+    }
+    if (cls) {
+        if (fails) std::fprintf(stderr, "[FILEDLG] FilePicker found on try %d\n", fails + 1);
+        return cls;
+    }
+    ++fails;
+    std::fprintf(stderr, "[FILEDLG] no FilePicker (try %d of 10): %s%s\n", fails, why.c_str(),
+                 why.find("ClassNotFound") != std::string::npos ? " (this APK was built from an Android part without android/game_java: an older build)" : "");
+    return nullptr;
 }
 std::string jstr(JNIEnv* env, jstring s) {
     if (!s) return "";
@@ -122,9 +157,8 @@ bool available() { return backend()[0] != 0; }
 
 const char* backend() {
 #if defined(__ANDROID__)
-    static int has = -1;
-    if (has < 0) { JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv()); has = env && picker_class(env) ? 1 : 0; }
-    return has ? "Android" : "";
+    JNIEnv* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());   // not cached here: picker_class retries a failed lookup
+    return env && picker_class(env) ? "Android" : "";
 #else
     return desktop_available() ? "system" : "";
 #endif

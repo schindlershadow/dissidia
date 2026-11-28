@@ -43,6 +43,8 @@ import time
 # On Android the bundled Python is started through the app's loader (psprecomp/setup/proc.cpp): child pythons need the same prefix
 PYEXE = ([os.environ["PSPRECOMP_PY_LOADER"]] if os.environ.get("PSPRECOMP_PY_LOADER") else []) + [sys.executable]
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import discdir   # noqa: E402  where disc0 is (the phone keeps it only in the game's folder)
 ANALYSES = ["analysis", "analysis_battle", "analysis_menu", "analysis_extra", "analysis_supacc"]
 STEPS = ["analysis", "recompile", "overlays", "configure", "build"]
 PROGRESS = False
@@ -93,6 +95,48 @@ def run(cmd, env=None, cwd=None, filt=None):
         die("%s failed (exit %d)" % (os.path.basename(cmd[0]), p.returncode))
 
 
+def mem_free_kb():
+    import objcache
+    return objcache.mem_free_kb()
+
+
+def objcache_setup(work, env, build, extra_id=""):
+    """The object cache of the generated code (objcache.py): returns the cmake argument that makes it the compiler launcher, or [] when
+    it is off (PSPRECOMP_NO_OBJCACHE=1). An update then compiles only the generated files whose code changed.
+    The cache is next to the build folder (<work>/objcache for <work>/build, <work>/android/objcache for the Android build made on
+    a PC): each build folder has its own, so one does not remove what the other uses."""
+    if os.environ.get("PSPRECOMP_NO_OBJCACHE"):
+        return []
+    import objcache
+    cache = os.path.join(os.path.dirname(os.path.abspath(build)), "objcache")
+    env["PSPRECOMP_OBJCACHE"] = cache
+    env["PSPRECOMP_OBJCACHE_WORK"] = work
+    env["PSPRECOMP_OBJCACHE_MANIFEST"] = os.path.join(build, "objcache.manifest")   # a folder: which cache entry each object uses
+    env["PSPRECOMP_OBJCACHE_BUILD"] = "%d-%d" % (time.time(), os.getpid())          # this run (for its hit / miss count)
+    if extra_id:
+        env["PSPRECOMP_OBJCACHE_ID"] = extra_id
+    os.makedirs(cache, exist_ok=True)
+    objcache.gate_reset(cache)   # no compile is running, nothing is measured yet
+    py = PYEXE + ([] if os.environ.get("PYTHONHOME") else ["-I"]) + [os.path.join(HERE, "objcache.py")]
+    return ["-DCMAKE_CXX_COMPILER_LAUNCHER=" + ";".join(x.replace("\\", "/") for x in py)]
+
+
+def objcache_done(work, env):
+    """After the build: what was compiled and why, and the cache keeps only what this build folder uses."""
+    if "PSPRECOMP_OBJCACHE_MANIFEST" not in env:
+        return
+    import glob
+    import objcache
+    n_src = sum(len(glob.glob(os.path.join(work, pat))) for pat in ("output/generated/*.cpp", "overlays/*/generated/*.cpp"))
+    r = objcache.prune_build(env["PSPRECOMP_OBJCACHE"], env["PSPRECOMP_OBJCACHE_MANIFEST"], min_objects=n_src, build=env["PSPRECOMP_OBJCACHE_BUILD"])
+    if r["hit"] or r["miss"]:
+        say("Game code: %d files compiled%s, %d unchanged since the last build (reused)%s" % (
+            r["miss"], " (why: %s)" % objcache.reasons_text(r["reasons"]) if r["miss"] else "", r["hit"],
+            "; %d objects of an older build removed" % r["removed"] if r["removed"] else ""))
+    else:
+        say("Game code: nothing to compile (no file changed)")
+
+
 def android_build(a, work, env, jobs, exe):
     """Steps 4-5 for Android: NDK (downloaded once), configure + compile the generated game against the release's Android core, pack the APK."""
     sys.path.insert(0, HERE)
@@ -104,7 +148,7 @@ def android_build(a, work, env, jobs, exe):
     if ab.is_device():
         step(4, "Preparing the Android toolchain (the compiler that ships with the app)")
         step(5, "Compiling the game on this device (the long step)")
-        lib = ab.device_build(adir, work, jobs, say, tag, die)
+        lib = ab.device_build(adir, work, a.jobs or min(3, os.cpu_count() or 2), say, tag, die, jobs_fixed=bool(a.jobs))
         apk = ab.pack_apk(adir, work, lib, run, say, env)
         tag("DONE", apk)
         say("\nDone: %s" % apk)
@@ -134,8 +178,10 @@ def android_build(a, work, env, jobs, exe):
     if fixed:
         say("Fixed %d files dated in the future (time zone of the archive)" % fixed)
     ovl = ";".join(os.path.join(work, "overlays", n) for n in ("battle", "menu", "extra", "supacc", "xmods"))
+    v = ab.load_versions(adir)
     run(["cmake", "-S", os.path.join(adir, "sdk"), "-B", bd, "-G", "Ninja", "-DCMAKE_TOOLCHAIN_FILE=" + tc, "-DCMAKE_BUILD_TYPE=Release",
-         "-DPSPRECOMP_OUTPUT_DIR=" + os.path.join(work, "output"), "-DPSPRECOMP_OVERLAY_DIRS=" + ovl], env=env)
+         "-DPSPRECOMP_OUTPUT_DIR=" + os.path.join(work, "output"), "-DPSPRECOMP_OVERLAY_DIRS=" + ovl] +
+        objcache_setup(work, env, bd, "android ndk %s api %s" % (v.get("ndk", {}).get("version", "?"), v.get("api", "?"))), env=env)
     step(5, "Compiling the game for Android (the long step)")
     ninja = re.compile(r"^\[(\d+)/(\d+)\]")
 
@@ -148,6 +194,7 @@ def android_build(a, work, env, jobs, exe):
     lib = os.path.join(bd, "libmain.so")
     if not os.path.isfile(lib):
         die("the build finished but %s is missing" % lib)
+    objcache_done(work, env)
     apk = ab.pack_apk(adir, work, lib, run, say, env)
     tag("DONE", apk)
     say("\nDone: %s\nCopy it to the device with games/dissidia/tools/android_install.py (needs adb), or install the APK by hand and copy the game folder (see docs/android.md)." % apk)
@@ -175,18 +222,27 @@ def main():
     work = os.path.abspath(a.workdir)
     game = os.path.abspath(a.game)
     repo = os.path.abspath(a.repo)
-    disc = os.path.join(work, "disc0", "PSP_GAME")
     if not os.path.isdir(work):
         die("workdir %s does not exist (run setup_from_iso.py first)" % work)
-    jobs = a.jobs or min(3, os.cpu_count() or 2)
-    if not a.jobs and os.path.isfile("/proc/meminfo"):   # about 1.5 GB per compile job: a phone is killed, not slowed, when it runs out
-        try:
-            kb = int(re.search(r"MemTotal:\s+(\d+)", open("/proc/meminfo").read()).group(1))
-            jobs = max(1, min(jobs, int(kb / 1048576 / 2.2)))
-        except (OSError, AttributeError, ValueError):
-            pass
-
+    disc = os.path.join(discdir.disc_dir(work, say), "PSP_GAME")
+    if discdir.home() and not discdir.has_game(os.path.dirname(disc)):
+        die("the game's files are not in %s (the folder was deleted?): pick your game file (.iso / .cso) again to build it from the disc" % os.path.dirname(disc))
     env = dict(os.environ)
+    # Compile jobs. Before: at most 3 on any machine. Now, unless `--jobs N` is given: one per core, and each compile waits in the
+    # launcher (objcache.py, the memory gate) until the memory that is free right now covers it, so a small machine is not overrun
+    # and a large one is not held back. Where the free memory cannot be read (macOS) or the launcher is off: at most 4.
+    # The phone's own build has the same rule in its build loop (android_build.py).
+    cpus = os.cpu_count() or 2
+    jobs = a.jobs or cpus
+    if not a.jobs:
+        avail_kb = mem_free_kb()
+        if avail_kb and not os.environ.get("PSPRECOMP_NO_OBJCACHE") and not os.environ.get("PSPRECOMP_JOBS_FIXED"):
+            env["PSPRECOMP_OBJCACHE_GATE"] = "1"
+            say("Compile jobs: up to %d (one per core), started as the free memory allows (%.1f GB free now)" % (jobs, avail_kb / 1048576.0))
+        else:
+            jobs = max(1, min(cpus, int((avail_kb / 1048576.0 - 1.0) / 1.5))) if avail_kb else min(4, cpus)
+            say("Compile jobs: %d (%d cores)" % (jobs, cpus))
+
     exe = ".exe" if os.name == "nt" else ""
     tc_file = None   # the bundle's CMake toolchain file, when --toolchain is a bundle
     if a.toolchain:
@@ -229,9 +285,9 @@ def main():
     for tool in (() if a.no_compile or a.android else ("cmake",)):
         if not shutil.which(tool, path=env["PATH"]):
             die("%s not found in PATH (a release bundles it; pass --toolchain)" % tool)
-    eboot = os.path.join(work, "EBOOT.dec.elf")
-    if not os.path.isfile(eboot):
-        die("%s missing: run setup_from_iso.py first" % eboot)
+    eboot = discdir.eboot_elf(work, say)   # the phone's cleanup removes it; made again from the disc's EBOOT.BIN
+    if not eboot:
+        die("%s missing: run setup_from_iso.py first" % os.path.join(work, "EBOOT.dec.elf"))
 
     # ------------------------------------------------------------------ 1. analysis
     step(1, "Rebuilding the analysis from your files")
@@ -344,7 +400,10 @@ def main():
         cfg += ["-G", "Ninja", "-DCMAKE_TOOLCHAIN_FILE=" + tc_file, "-DCMAKE_EXE_LINKER_FLAGS=-s"]   # -s: no debug info (212 -> ~45 MB)
     elif shutil.which("ninja", path=env["PATH"]):
         cfg += ["-G", "Ninja"] if not os.path.isfile(cache) else []
-    if shutil.which("ccache", path=env["PATH"]):
+    launcher = objcache_setup(work, env, build)   # ours works without anything installed and survives the release folder changing
+    if launcher:
+        cfg += launcher
+    elif shutil.which("ccache", path=env["PATH"]):
         cfg.append("-DCMAKE_CXX_COMPILER_LAUNCHER=ccache")
     run(cfg, env=env)
 
@@ -365,6 +424,7 @@ def main():
     binary = os.path.join(build, "psprecomp_runtime" + exe)
     if not os.path.isfile(binary):
         die("the build finished but %s is missing" % binary)
+    objcache_done(work, env)
     tag("DONE", binary)
     say("\nDone: %s\nRun it: %s" % (binary, os.path.join(game, "tools", "run.sh") + " " + work))
 
