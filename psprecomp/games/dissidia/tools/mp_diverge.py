@@ -286,6 +286,7 @@ def main(argv):
     if nores:
         base.pop('PSPRECOMP_TAGTEAM_KOLIST'); base.pop('PSPRECOMP_TAGTEAM_KOLIST_NAT'); base.pop('PSPRECOMP_TAGTEAM_KOLIST_LSFRAME')
     cpus = a.slow_cpus or (pick_core(slot) if a.slow != 'none' else '2')
+    base.setdefault('PSPRECOMP_VK_RECORD', '1')
     envA = {**base, 'MP_FILL': '1', 'MP_FPS': str(a.fps_a), 'MP_RS': a.rs_a, 'PSPRECOMP_ADHOC_PORT': str(udp), **kv(a.env_a)}
     envB = {**base, 'MP_SAVE': save_b, 'MP_FPS': str(a.fps_b), 'MP_INI': 'voice=jp', 'MP_RS': a.rs_b, 'PSPRECOMP_ADHOC_PORT': str(udp + 8), **kv(a.env_b)}
     if a.net == 'lan':   # LAN: each copy knows the other's span (no broadcast to the real LAN reaches another job)

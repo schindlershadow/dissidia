@@ -1,3 +1,4 @@
+#include <atomic>
 #include "psp_vk_glsl.h"
 #ifndef PSPVK_NO_GLSLANG
 #include <glslang/Public/ShaderLang.h>
@@ -258,11 +259,7 @@ bool shader_recording() {
     static const bool on = [] {
         const char* e = std::getenv("PSPRECOMP_VK_RECORD");
         if (e && e[0]) return e[0] != '0';
-#ifdef __ANDROID__
-        return true;
-#else
-        return false;
-#endif
+        return true;   // every platform records (PSPRECOMP_VK_RECORD=0 turns it off): each device contributes to the shipped pack list
     }();
     return on;
 }
@@ -308,6 +305,11 @@ bool parse_shader_pack(const std::vector<uint8_t>& d, std::vector<PackShader>* o
     return true;
 }
 
+static std::atomic<void (*)()> g_miss_hook{nullptr};
+static std::atomic<bool> g_miss_quiet{false};
+void set_compile_miss_hook(void (*fn)()) { g_miss_hook.store(fn); }
+void compile_miss_quiet(bool quiet) { g_miss_quiet.store(quiet); }
+
 bool compile_cached(Stage stage, const std::string& glsl, std::vector<uint32_t>* spirv, std::string* err) {
     const std::string dir = cache_dir();
     char name[64] = {};
@@ -326,6 +328,7 @@ bool compile_cached(Stage stage, const std::string& glsl, std::vector<uint32_t>*
             std::fclose(f);
         }
     }
+    if (!g_miss_quiet.load()) if (auto h = g_miss_hook.load()) h();
     if (!compile_to_spirv(stage, glsl, spirv, err)) {
         if (err && !dir.empty() && err->find("PSPVK_NO_GLSLANG") != std::string::npos)
         {

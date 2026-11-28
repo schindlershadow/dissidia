@@ -160,7 +160,7 @@ class XCopy(m.Copy):
 
     def game_env(self, base, paths):
         e = {k: v for k, v in self.env.items() if k.startswith('PSPRECOMP_') or k.startswith('MP_NET')}
-        e.update(PSPRECOMP_SETTINGS=paths['ini'], PSPRECOMP_MS0=paths['ms0'], PSPRECOMP_DISC0=paths['disc0'], PSPRECOMP_ADHOC_MODE=self.env.get('MP_NETMODE', 'internet'),
+        e.update(PSPRECOMP_VK_RECORD='1', PSPRECOMP_SETTINGS=paths['ini'], PSPRECOMP_MS0=paths['ms0'], PSPRECOMP_DISC0=paths['disc0'], PSPRECOMP_ADHOC_MODE=self.env.get('MP_NETMODE', 'internet'),
                  PSPRECOMP_ADHOC_NICK=self.side, PSPRECOMP_DEBUG_PORT=str(self.rport), PSPRECOMP_CHARMOD='0', PSPRECOMP_AUDIO='0', PSPRECOMP_SAVEDATA_AUTO='0',
                  PSPRECOMP_NET_TRACE='1', PSPRECOMP_CLOUD='0', PSPRECOMP_CROSS_MID='1', PSPRECOMP_NO_PADS='1', SDL_AUDIODRIVER='dummy',
                  PSPRECOMP_TAGTEAM_LOG='1')

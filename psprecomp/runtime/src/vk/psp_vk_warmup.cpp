@@ -19,6 +19,9 @@ namespace {
 bool read_pack(std::vector<uint8_t>* out) {
     const char* e = std::getenv("PSPRECOMP_SHADER_PACK");
     SDL_RWops* rw = SDL_RWFromFile(e && e[0] ? e : "shaders.pack", "rb");   // Android: the APK's assets/shaders.pack
+    if (!rw && !(e && e[0])) {   // desktop: the build puts shaders.pack next to the executable
+        if (char* base = SDL_GetBasePath()) { rw = SDL_RWFromFile((std::string(base) + "shaders.pack").c_str(), "rb"); SDL_free(base); }
+    }
     if (!rw) return false;
     const Sint64 n = SDL_RWsize(rw);
     if (n > 8 && n < (256 << 20)) {
@@ -62,6 +65,7 @@ void warmup_shaders() {
     std::fprintf(stderr, "[VKGL] shader pack: %zu shaders, %zu to compile\n", all.size(), todo.size());
     if (todo.empty()) return;
 
+    pspvk::compile_miss_quiet(true);
     const int total = int(todo.size());
     std::atomic<int> next{0}, done{0}, failed{0};
     const char* dl = std::getenv("PSPRECOMP_WARMUP_DELAY_MS");   // testing: slow each shader down so the screen can be looked at
@@ -97,6 +101,7 @@ void warmup_shaders() {
     for (auto& th : pool) th.join();
     draw_progress(total, total);
     psp_sddialog::menu_overlay_clear();
+    pspvk::compile_miss_quiet(false);
     std::fprintf(stderr, "[VKGL] shader pack: compiled %d shaders (%d failed) in %u ms\n", total, failed.load(), unsigned(SDL_GetTicks() - t0));
 }
 
