@@ -3276,9 +3276,14 @@ void control_foe_hook(uint8_t* rdram, recomp_context* ctx) {
     g_ram = rdram;
     const uint32_t actor = static_cast<uint32_t>(ctx->r[4]), mgr = dissidia_camera_manager();
     uint32_t want = 0, saved = 0;
-    if (g_bs && mgr && !camfoe_sim_old() && ok(mgr, 0x900) && g_cf_view) {
+    // (27 Nov, regression mp_div_team3_lan: desync at frame 1943 on a parked human) the first version keyed on g_cf_view (this machine's own camera
+    // write) and g_cf_sim (sampled when THIS machine's camera wrote): both local. Online every fighter now gets its own foe (+0x300, lock-stepped
+    // state), whoever drives it. PSPRECOMP_TAGTEAM_CAMFOE2_OLD=1: the first version.
+    static const bool cf2_old = std::getenv("PSPRECOMP_TAGTEAM_CAMFOE2_OLD") != nullptr;
+    const bool online = !cf2_old && dissidia_ttnet_running();
+    if (g_bs && mgr && !camfoe_sim_old() && ok(mgr, 0x900) && (online || g_cf_view)) {
         saved = rd(mgr + 0x8B4u);
-        want = (ok(actor, 0x12D0) && pad_driven(actor)) ? rd(actor + 0x300u) : g_cf_sim;
+        want = online ? (ok(actor, 0x12D0) ? rd(actor + 0x300u) : 0u) : (ok(actor, 0x12D0) && pad_driven(actor)) ? rd(actor + 0x300u) : g_cf_sim;
         if (!ok(want, 0x12D0) || want == saved) want = 0; else wr(mgr + 0x8B4u, want);
     }
     g_orig_control(rdram, ctx);
