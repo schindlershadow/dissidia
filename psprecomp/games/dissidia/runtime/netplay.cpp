@@ -129,10 +129,17 @@ uint32_t hashed_word(uint32_t a, uint32_t off) {
     const uint32_t w = r32(a + off);
     return (ok(w) || psp_guest_user_ok(w, 4)) ? 0 : w & viewer_mask(off);   // a pointer (also into the high RAM, where a rebuilt fighter's files live) is not compared
 }
+// The lock block's two cursor fade values (+0x444 and +0x584, 0..0xFF, FF = fully shown; the lock-on cursors' alpha) are drawing state: the UI update steps them on
+// every game-loop pass, also on the passes where the lock-step waits for a late packet, so a machine that stalled shows one more fade step for a frame or two than the
+// other (30 Nov: mp_div_team3_lan desktop runs, "fighter1.lockblk" E5 vs FF at the frame the lock moved, back in line two frames later). PSPRECOMP_NETSYNC_LBFADE_OLD=1: compared.
+bool lb_fade_word(uint32_t i) {
+    static const bool old = std::getenv("PSPRECOMP_NETSYNC_LBFADE_OLD") != nullptr;
+    return !old && (i == 0x444u || i == 0x584u);
+}
 uint32_t fnv_plain(uint32_t a, uint32_t n, bool lockblk = false) {   // a block outside the fighter struct (the CPU brain, the lock block): guest pointers left out only
     if (!ok(a) || !ok(a + n)) return 0;
     uint32_t h = 2166136261u;
-    for (uint32_t i = 0; i < n; i += 4) { uint32_t w = r32(a + i); if (ok(w) || psp_guest_user_ok(w, 4) || (lockblk && i == 0x124u)) w = 0; for (int k = 0; k < 4; k++) { h ^= (w >> (8 * k)) & 0xFFu; h *= 16777619u; } }   // (lock block +0x125: the local player's own block)
+    for (uint32_t i = 0; i < n; i += 4) { uint32_t w = r32(a + i); if (ok(w) || psp_guest_user_ok(w, 4) || (lockblk && (i == 0x124u || lb_fade_word(i)))) w = 0; for (int k = 0; k < 4; k++) { h ^= (w >> (8 * k)) & 0xFFu; h *= 16777619u; } }   // (lock block +0x125: the local player's own block)
     return h;
 }
 uint32_t fnv(uint32_t a, uint32_t off, uint32_t n) {
